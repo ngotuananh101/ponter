@@ -1,0 +1,10 @@
+{
+  "name": "@remote/webrtc-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "echo ok",
+    "typecheck": "echo ok"
+  }
+}

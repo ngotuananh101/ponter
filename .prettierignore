@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+target
+.turbo
+pnpm-lock.yaml
+docs
+.remember
+.claude
+.superpowers
