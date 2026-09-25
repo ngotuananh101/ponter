@@ -481,7 +481,13 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(err.code).toBe('VALIDATION_ERROR');
     });
 
-    it('rejects a non-existent deviceId with 404 NOT_FOUND', async () => {
+    it.each([
+      ['a non-existent deviceId', { deviceId: 'does-not-exist' }],
+      ['a non-existent agentId', { agentId: 'does-not-exist' }],
+      ['an empty-string deviceId', { deviceId: '' }],
+      ['an empty-string agentId', { agentId: '' }],
+      ['a non-string deviceId', { deviceId: 12345 }],
+    ])('rejects %s with 404 NOT_FOUND', async (_label, payload) => {
       const res = await app.request(
         '/api/sessions',
         {
@@ -490,83 +496,7 @@ describe('Devices, Agents & Sessions REST API', () => {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ deviceId: 'does-not-exist' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects a non-existent agentId with 404 NOT_FOUND', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ agentId: 'does-not-exist' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects an empty-string deviceId with 404 (not 500)', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ deviceId: '' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects an empty-string agentId with 404 (not 500)', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ agentId: '' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects a non-string deviceId with 404 (not 500)', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ deviceId: 12345 }),
+          body: JSON.stringify(payload),
         },
         env,
       );
