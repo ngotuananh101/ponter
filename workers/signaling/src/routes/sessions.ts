@@ -19,6 +19,32 @@ router.get('/', async (c) => {
   return c.json(list);
 });
 
+/**
+ * Resolve an optional owned-reference id from untrusted input.
+ *
+ * `undefined` and `null` mean "not supplied" and resolve to `null` so they
+ * are stored as SQL NULL. Any other value must be a non-empty string after
+ * trimming, and must exist in the caller's tenancy — otherwise 404 NOT_FOUND.
+ */
+async function resolveOwnedId(
+  raw: unknown,
+  lookup: (candidate: string) => Promise<unknown | undefined>,
+  notFoundMessage: string,
+): Promise<string | null> {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  const candidate = typeof raw === 'string' ? raw.trim() : '';
+  if (!candidate) {
+    throw new AppError(notFoundMessage, 404, 'NOT_FOUND');
+  }
+  const found = await lookup(candidate);
+  if (!found) {
+    throw new AppError(notFoundMessage, 404, 'NOT_FOUND');
+  }
+  return candidate;
+}
+
 router.post('/', async (c) => {
   const user = c.get('user');
   // `catch(() => null)` keeps a malformed body out of the 500 path, and the
@@ -36,53 +62,27 @@ router.post('/', async (c) => {
 
   const db = getDb(c.env.DB);
 
-  // Validate the optional references before they reach SQLite. `undefined` and
-  // `null` mean "not supplied" (stored as NULL). Any other value must be a
-  // non-empty string after trimming: an empty string or a non-string can never
-  // name a real row, and handing it to D1 would surface the foreign-key
-  // violation as a 500 instead of a clean 404.
-  //
-  // The lookup is scoped by `userId`, so a cross-tenant id is indistinguishable
-  // from a missing one (404, no enumeration of other users' resources).
-  let deviceId: string | null = null;
-  if (body.deviceId !== undefined && body.deviceId !== null) {
-    const candidate =
-      typeof body.deviceId === 'string' ? body.deviceId.trim() : '';
+  const deviceId = await resolveOwnedId(
+    body.deviceId,
+    (candidate) =>
+      db
+        .select()
+        .from(devices)
+        .where(and(eq(devices.id, candidate), eq(devices.userId, user.id)))
+        .get(),
+    'Device not found',
+  );
 
-    const device = candidate
-      ? await db
-          .select()
-          .from(devices)
-          .where(and(eq(devices.id, candidate), eq(devices.userId, user.id)))
-          .get()
-      : undefined;
-
-    if (!device) {
-      throw new AppError('Device not found', 404, 'NOT_FOUND');
-    }
-
-    deviceId = candidate;
-  }
-
-  let agentId: string | null = null;
-  if (body.agentId !== undefined && body.agentId !== null) {
-    const candidate =
-      typeof body.agentId === 'string' ? body.agentId.trim() : '';
-
-    const agent = candidate
-      ? await db
-          .select()
-          .from(agents)
-          .where(and(eq(agents.id, candidate), eq(agents.userId, user.id)))
-          .get()
-      : undefined;
-
-    if (!agent) {
-      throw new AppError('Agent not found', 404, 'NOT_FOUND');
-    }
-
-    agentId = candidate;
-  }
+  const agentId = await resolveOwnedId(
+    body.agentId,
+    (candidate) =>
+      db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, candidate), eq(agents.userId, user.id)))
+        .get(),
+    'Agent not found',
+  );
 
   const [created] = await db
     .insert(sessions)

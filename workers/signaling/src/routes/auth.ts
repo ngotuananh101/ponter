@@ -132,7 +132,7 @@ auth.post('/login', async (c) => {
     .where(eq(users.username, body.username))
     .get();
 
-  if (!user || !user.passwordHash) {
+  if (!user?.passwordHash) {
     throw new AppError(
       'Invalid username or password',
       401,
@@ -212,7 +212,7 @@ auth.post('/refresh', async (c) => {
     .where(eq(users.id, payload.sub))
     .get();
 
-  if (!user || !user.isActive) {
+  if (!user?.isActive) {
     throw new AppError(
       'User is inactive or not found',
       401,

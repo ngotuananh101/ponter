@@ -11,7 +11,7 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (
   next,
 ) => {
   const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader?.startsWith('Bearer ')) {
     throw new AppError(
       'Missing or invalid Authorization header',
       401,
@@ -53,7 +53,7 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (
     .where(eq(users.id, payload.sub))
     .get();
 
-  if (!user || !user.isActive) {
+  if (!user?.isActive) {
     throw new AppError('User is inactive or not found', 401, 'UNAUTHORIZED');
   }
 

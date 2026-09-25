@@ -10,7 +10,7 @@ function buf2hex(buffer: ArrayBuffer): string {
 function hex2buf(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+    bytes[i] = Number.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }
@@ -52,7 +52,7 @@ export async function verifyPassword(
     return false;
   }
 
-  const iterations = parseInt(parts[3]?.replace('i=', '') ?? '', 10);
+  const iterations = Number.parseInt(parts[3]?.replace('i=', '') ?? '', 10);
   const saltHex = parts[4];
   const targetHashHex = parts[5];
 
