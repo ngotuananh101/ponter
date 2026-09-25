@@ -38,6 +38,19 @@ router.post('/', async (c) => {
   }
 
   const db = getDb(c.env.DB);
+
+  // `agents.id` is the caller-supplied primary key (no `$defaultFn`), so a
+  // repeat registration must be a 409 rather than a raw UNIQUE violation 500.
+  const existing = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, body.id))
+    .get();
+
+  if (existing) {
+    throw new AppError('Agent already exists', 409, 'AGENT_EXISTS');
+  }
+
   const [created] = await db
     .insert(agents)
     .values({

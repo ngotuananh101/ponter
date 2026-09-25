@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AppContext } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { getDb } from '../db/client';
-import { devices } from '../db/schema';
+import { devices, sessions } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { AppError } from '../middleware/error';
 
@@ -38,6 +38,23 @@ router.post('/', async (c) => {
   }
 
   const db = getDb(c.env.DB);
+
+  // `devices.fingerprint` carries a UNIQUE constraint, so a repeat
+  // registration must surface as a 409 rather than a raw constraint 500.
+  const existing = await db
+    .select()
+    .from(devices)
+    .where(eq(devices.fingerprint, body.fingerprint))
+    .get();
+
+  if (existing) {
+    throw new AppError(
+      'Device fingerprint already registered',
+      409,
+      'DEVICE_EXISTS',
+    );
+  }
+
   const [created] = await db
     .insert(devices)
     .values({
@@ -66,6 +83,14 @@ router.delete('/:id', async (c) => {
   if (!existing) {
     throw new AppError('Device not found', 404, 'NOT_FOUND');
   }
+
+  // `sessions.device_id` references `devices(id)` with no `ON DELETE` action,
+  // so with foreign keys enforced a bare delete would fail on any session that
+  // still points at this device. Detach those rows first.
+  await db
+    .update(sessions)
+    .set({ deviceId: null })
+    .where(eq(sessions.deviceId, deviceId));
 
   await db.delete(devices).where(eq(devices.id, deviceId));
   return c.json({ success: true });

@@ -61,6 +61,12 @@ type SessionResponse = {
   metadata: string | null;
 };
 
+type ErrorResponse = {
+  error: string;
+  code: string;
+  details: unknown;
+};
+
 /**
  * `D1Database.exec()` splits its input on newlines, so a multi-line
  * `CREATE TABLE` is torn apart mid-statement. `D1Database.batch()` takes one
@@ -201,6 +207,100 @@ describe('Devices, Agents & Sessions REST API', () => {
       );
       expect(((await listAfter.json()) as DeviceResponse[]).length).toBe(0);
     });
+
+    it('rejects a duplicate fingerprint with 409 DEVICE_EXISTS', async () => {
+      const first = await app.request(
+        '/api/devices',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            fingerprint: 'fp_duplicate',
+            deviceType: 'desktop',
+          }),
+        },
+        env,
+      );
+      expect(first.status).toBe(201);
+
+      const second = await app.request(
+        '/api/devices',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            fingerprint: 'fp_duplicate',
+            deviceName: 'Another machine',
+            deviceType: 'laptop',
+          }),
+        },
+        env,
+      );
+
+      expect(second.status).toBe(409);
+      const err = (await second.json()) as ErrorResponse;
+      expect(err.code).toBe('DEVICE_EXISTS');
+    });
+
+    it('deletes a device referenced by a session without a 500', async () => {
+      const devRes = await app.request(
+        '/api/devices',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            fingerprint: 'fp_referenced',
+            deviceType: 'desktop',
+          }),
+        },
+        env,
+      );
+      expect(devRes.status).toBe(201);
+      const device = (await devRes.json()) as DeviceResponse;
+
+      const sessRes = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ deviceId: device.id }),
+        },
+        env,
+      );
+      expect(sessRes.status).toBe(201);
+      const session = (await sessRes.json()) as SessionResponse;
+      expect(session.deviceId).toBe(device.id);
+
+      // Deleting the device must detach the referencing session rather than
+      // tripping the `sessions.device_id` foreign key.
+      const delRes = await app.request(
+        `/api/devices/${device.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(delRes.status).toBe(200);
+
+      const getRes = await app.request(
+        `/api/sessions/${session.id}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(getRes.status).toBe(200);
+      const detached = (await getRes.json()) as SessionResponse;
+      expect(detached.deviceId).toBeNull();
+    });
   });
 
   describe('Agents API (/api/agents)', () => {
@@ -248,6 +348,49 @@ describe('Devices, Agents & Sessions REST API', () => {
       const single = (await singleRes.json()) as AgentResponse;
       expect(single.hostname).toBe('ubuntu-desktop');
     });
+
+    it('rejects a duplicate agent id with 409 AGENT_EXISTS', async () => {
+      const payload = JSON.stringify({
+        id: 'agent_dup',
+        hostname: 'first-host',
+        publicKey: 'pk_dup',
+      });
+
+      const first = await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: payload,
+        },
+        env,
+      );
+      expect(first.status).toBe(201);
+
+      const second = await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            id: 'agent_dup',
+            hostname: 'second-host',
+            publicKey: 'pk_dup_2',
+          }),
+        },
+        env,
+      );
+
+      expect(second.status).toBe(409);
+      const err = (await second.json()) as ErrorResponse;
+      expect(err.code).toBe('AGENT_EXISTS');
+    });
   });
 
   describe('Sessions API (/api/sessions)', () => {
@@ -294,6 +437,117 @@ describe('Devices, Agents & Sessions REST API', () => {
       );
       const terminatedSession = (await getAfter.json()) as SessionResponse;
       expect(terminatedSession.status).toBe('terminated');
+    });
+
+    it('rejects a null JSON body with 400 VALIDATION_ERROR', async () => {
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: 'null',
+        },
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects a non-existent deviceId with 404 NOT_FOUND', async () => {
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ deviceId: 'does-not-exist' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('NOT_FOUND');
+    });
+
+    it('rejects a non-existent agentId with 404 NOT_FOUND', async () => {
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ agentId: 'does-not-exist' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('NOT_FOUND');
+    });
+
+    it('rejects a cross-tenant deviceId with 404 NOT_FOUND', async () => {
+      // Register a second user and give them a device the first user must not
+      // be able to attach to their own session.
+      const otherReg = await app.request(
+        '/api/auth/register',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'other',
+            password: 'Password123!',
+            publicKey: 'pk_other',
+          }),
+        },
+        env,
+      );
+      const other = (await otherReg.json()) as AuthResponse;
+
+      const otherDevRes = await app.request(
+        '/api/devices',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${other.token}`,
+          },
+          body: JSON.stringify({
+            fingerprint: 'fp_other_user',
+            deviceType: 'desktop',
+          }),
+        },
+        env,
+      );
+      expect(otherDevRes.status).toBe(201);
+      const otherDevice = (await otherDevRes.json()) as DeviceResponse;
+
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ deviceId: otherDevice.id }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('NOT_FOUND');
     });
   });
 });
