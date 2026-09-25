@@ -263,7 +263,11 @@ describe('Real P2P Handshake (werift)', () => {
     await offererPC.start();
     await offererPC.waitForChannel('control', 12000);
 
-    expect(statesA.length).toBeGreaterThan(0);
+    // Spec §7: "The P2P test must assert a real `connected` state, not merely
+    // that no error was thrown." werift emits connecting → connected, and a
+    // channel cannot open before DTLS/SCTP complete, so `connected` is always
+    // present here.
+    expect(statesA).toContain('connected');
   }, 20000);
 
   it('times out waitForChannel when peer does not respond', async () => {

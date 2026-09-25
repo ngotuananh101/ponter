@@ -32,7 +32,11 @@ export class PeerConnection {
     this.peer.onIceCandidate((candidate) => {
       if (this.isClosed) return;
       const msg = createCandidateSignal('', candidate);
-      void this.transport.send(msg);
+      // Fire-and-forget: a candidate arriving as the transport closes must not
+      // surface as an unhandled rejection, which would terminate a Node host.
+      void this.transport.send(msg).catch((error: unknown) => {
+        console.error('[PeerConnection] failed to send ICE candidate', error);
+      });
     });
 
     // 2. Hook incoming remote data channels
@@ -57,7 +61,12 @@ export class PeerConnection {
 
     // 5. Subscribe to incoming signaling messages
     this.unsubscribeTransport = this.transport.subscribe((msg) => {
-      void this.handleSignal(msg);
+      // Signal payloads are attacker-controlled (spec §7), so a malformed one
+      // throws inside `handleSignal`. Swallow the rejection here: an unhandled
+      // rejection terminates the process in Node and masks the real signal.
+      void this.handleSignal(msg).catch((error: unknown) => {
+        console.error('[PeerConnection] failed to handle signal', error);
+      });
     });
   }
 
