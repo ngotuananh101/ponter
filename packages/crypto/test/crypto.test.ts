@@ -111,4 +111,36 @@ describe('packages/crypto', () => {
   it('7. deletePrivateKey for a missing user ID does not throw (idempotent)', async () => {
     await expect(deletePrivateKey('never-existed')).resolves.toBeUndefined();
   });
+
+  it('8. A transaction aborted by the runtime rejects the promise with an Error instance', async () => {
+    const pair = await generateUserKeyPair();
+    const realTx = IDBDatabase.prototype.transaction;
+    let hooked = false;
+
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase['transaction']>
+    ) {
+      const tx = realTx.apply(this, args);
+      if (!hooked) {
+        hooked = true;
+        queueMicrotask(() => {
+          try {
+            tx.abort();
+          } catch {
+            // ignore if already settled
+          }
+        });
+      }
+      return tx;
+    };
+
+    try {
+      await expect(
+        savePrivateKey('user-abort-test', pair.privateKey),
+      ).rejects.toBeInstanceOf(Error);
+    } finally {
+      IDBDatabase.prototype.transaction = realTx;
+    }
+  });
 });
