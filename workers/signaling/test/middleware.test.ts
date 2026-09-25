@@ -7,35 +7,21 @@ import { errorHandler, AppError } from '../src/middleware/error';
 import { corsMiddleware } from '../src/middleware/cors';
 import { signAccessToken, signRefreshToken } from '../src/utils/jwt';
 import type { AppContext } from '../src/types';
+import { RESET_STATEMENTS, TEST_JWT_SECRET } from './helpers';
 
-/**
- * `D1Database.exec()` splits its input on newlines, so a multi-line
- * `CREATE TABLE` is torn apart mid-statement. `D1Database.batch()` takes one
- * prepared statement per array entry, keeping each statement's exact
- * multi-line SQL while still running them sequentially and atomically.
- */
-const RESET_STATEMENTS = [
-  'DROP TABLE IF EXISTS users',
-  `CREATE TABLE users (
-        id TEXT PRIMARY KEY,
-        username TEXT NOT NULL UNIQUE,
-        email TEXT UNIQUE,
-        public_key TEXT NOT NULL,
-        password_hash TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )`,
+const MIDDLEWARE_RESET_STATEMENTS = [
+  ...RESET_STATEMENTS,
   `INSERT INTO users (id, username, public_key, is_active) VALUES ('usr_active', 'alice', 'pk_1', 1)`,
   `INSERT INTO users (id, username, public_key, is_active) VALUES ('usr_inactive', 'eve', 'pk_2', 0)`,
 ];
 
 describe('Auth Middleware & Token Revocation', () => {
-  const secret = 'jwt-secret-min-32-chars-for-test-suit';
   let app: Hono<AppContext>;
 
   beforeEach(async () => {
-    await env.DB.batch(RESET_STATEMENTS.map((sql) => env.DB.prepare(sql)));
+    await env.DB.batch(
+      MIDDLEWARE_RESET_STATEMENTS.map((sql) => env.DB.prepare(sql)),
+    );
 
     app = new Hono<AppContext>();
     app.onError(errorHandler);
@@ -51,13 +37,17 @@ describe('Auth Middleware & Token Revocation', () => {
   });
 
   it('allows active user with valid token', async () => {
-    const { token } = await signAccessToken('usr_active', 'alice', secret);
+    const { token } = await signAccessToken(
+      'usr_active',
+      'alice',
+      TEST_JWT_SECRET,
+    );
     const res = await app.request(
       '/protected/profile',
       {
         headers: { Authorization: `Bearer ${token}` },
       },
-      { ...env, JWT_SECRET: secret },
+      { ...env, JWT_SECRET: TEST_JWT_SECRET },
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { user: { username: string } };
@@ -65,7 +55,11 @@ describe('Auth Middleware & Token Revocation', () => {
   });
 
   it('rejects revoked token recorded in KV CACHE with 401', async () => {
-    const { token, jti } = await signAccessToken('usr_active', 'alice', secret);
+    const { token, jti } = await signAccessToken(
+      'usr_active',
+      'alice',
+      TEST_JWT_SECRET,
+    );
     // Put token in revocation blacklist in KV
     await env.CACHE.put(`token:revoked:${jti}`, '1');
 
@@ -74,7 +68,7 @@ describe('Auth Middleware & Token Revocation', () => {
       {
         headers: { Authorization: `Bearer ${token}` },
       },
-      { ...env, JWT_SECRET: secret },
+      { ...env, JWT_SECRET: TEST_JWT_SECRET },
     );
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
@@ -85,7 +79,11 @@ describe('Auth Middleware & Token Revocation', () => {
     // Token is revoked AND its subject does not exist in D1. The two checks
     // produce different errors, so the message tells us which ran first: a
     // DB-first implementation would report 'User is inactive or not found'.
-    const { token, jti } = await signAccessToken('usr_ghost', 'ghost', secret);
+    const { token, jti } = await signAccessToken(
+      'usr_ghost',
+      'ghost',
+      TEST_JWT_SECRET,
+    );
     await env.CACHE.put(`token:revoked:${jti}`, '1');
 
     const res = await app.request(
@@ -93,7 +91,7 @@ describe('Auth Middleware & Token Revocation', () => {
       {
         headers: { Authorization: `Bearer ${token}` },
       },
-      { ...env, JWT_SECRET: secret },
+      { ...env, JWT_SECRET: TEST_JWT_SECRET },
     );
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
@@ -101,13 +99,17 @@ describe('Auth Middleware & Token Revocation', () => {
   });
 
   it('rejects inactive user with 401 even if token is valid', async () => {
-    const { token } = await signAccessToken('usr_inactive', 'eve', secret);
+    const { token } = await signAccessToken(
+      'usr_inactive',
+      'eve',
+      TEST_JWT_SECRET,
+    );
     const res = await app.request(
       '/protected/profile',
       {
         headers: { Authorization: `Bearer ${token}` },
       },
-      { ...env, JWT_SECRET: secret },
+      { ...env, JWT_SECRET: TEST_JWT_SECRET },
     );
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
@@ -115,13 +117,13 @@ describe('Auth Middleware & Token Revocation', () => {
   });
 
   it('rejects a refresh token used as an access token', async () => {
-    const { token } = await signRefreshToken('usr_active', secret);
+    const { token } = await signRefreshToken('usr_active', TEST_JWT_SECRET);
     const res = await app.request(
       '/protected/profile',
       {
         headers: { Authorization: `Bearer ${token}` },
       },
-      { ...env, JWT_SECRET: secret },
+      { ...env, JWT_SECRET: TEST_JWT_SECRET },
     );
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
@@ -139,7 +141,7 @@ describe('Auth Middleware & Token Revocation', () => {
       {
         headers: { Authorization: `Bearer ${token}` },
       },
-      { ...env, JWT_SECRET: secret },
+      { ...env, JWT_SECRET: TEST_JWT_SECRET },
     );
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
