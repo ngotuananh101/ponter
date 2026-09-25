@@ -11,10 +11,10 @@ This guide covers step-by-step instructions to deploy the backend services (`@re
 4. [Provision Cloudflare Resources](#4-provision-cloudflare-resources)
    - [Create D1 Database](#41-create-d1-database)
    - [Create KV Namespace](#42-create-kv-namespace)
-5. [Configure `wrangler.toml`](#5-configure-wranglertoml)
-6. [Configure Production Secrets](#6-configure-production-secrets)
-7. [Apply Database Migrations](#7-apply-database-migrations)
-8. [Deploy the Worker](#8-deploy-the-worker)
+5. [Configure Production Settings (`wrangler.prod.toml`)](#5-configure-production-settings-wranglerprodtoml)
+6. [Apply Database Migrations](#6-apply-database-migrations)
+7. [Deploy the Worker](#7-deploy-the-worker)
+8. [Configure Production Secrets](#8-configure-production-secrets)
 9. [Verify Deployment](#9-verify-deployment)
 10. [Automate Deployment with GitHub Actions (CI/CD)](#10-automate-deployment-with-github-actions-cicd)
 11. [Free Tier Quotas & Monitoring](#11-free-tier-quotas--monitoring)
@@ -106,7 +106,7 @@ Save the `id` value for the next step.
 
 ---
 
-## 5. Configure Production Settings (Local Machine Deployment)
+## 5. Configure Production Settings (`wrangler.prod.toml`)
 
 To deploy from your personal machine without committing your real Cloudflare IDs to Git:
 
@@ -143,29 +143,13 @@ id = "YOUR_REAL_KV_NAMESPACE_ID"
 enabled = true
 ```
 
-> **Security Note:** In production, do **not** define `JWT_SECRET` and `REFRESH_TOKEN_SECRET` in `[vars]`. Use Cloudflare Secrets instead (step 6).
+> **Security Note:** In production, do **not** put `JWT_SECRET` and `REFRESH_TOKEN_SECRET` in `[vars]`. We will set them as encrypted Cloudflare Secrets in Step 8.
 
 ---
 
-## 6. Configure Production Secrets
+## 6. Apply Database Migrations
 
-Store sensitive secrets securely in Cloudflare's encrypted secret store:
-
-```bash
-# Set JWT Access Token secret (minimum 32 characters)
-pnpm --filter @remote/signaling exec wrangler secret put JWT_SECRET
-
-# Set Refresh Token secret (minimum 32 characters)
-pnpm --filter @remote/signaling exec wrangler secret put REFRESH_TOKEN_SECRET
-```
-
-When prompted in the terminal, paste your strong random secrets.
-
----
-
-## 7. Apply Database Migrations
-
-Apply the database schema (6 tables: `users`, `devices`, `agents`, `sessions`, `signals`, `audit_logs`) to the remote D1 database:
+Apply the database schema (6 tables: `users`, `devices`, `agents`, `sessions`, `signals`, `audit_logs`) to your remote Cloudflare D1 database:
 
 ```bash
 # From root using wrangler.prod.toml
@@ -184,7 +168,7 @@ pnpm --filter @remote/signaling exec wrangler d1 execute remote-access --remote 
 
 ---
 
-## 8. Deploy the Worker
+## 7. Deploy the Worker
 
 Deploy the Worker package to Cloudflare edge from your machine:
 
@@ -205,6 +189,25 @@ Deployed remote-signaling triggers (x.xx sec)
   https://remote-signaling.<your-subdomain>.workers.dev
 Current Version ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
+
+---
+
+## 8. Configure Production Secrets
+
+> **Important:** Cloudflare requires the Worker (`remote-signaling`) to be deployed at least once (Step 7) before secrets can be attached to it. Running `wrangler secret put` on a non-existent worker will fail with an error.
+> When you run `wrangler secret put`, Cloudflare securely encrypts the secret and immediately applies it to the active Worker deployment without requiring a manual redeployment.
+
+Store your production secrets securely using Wrangler:
+
+```bash
+# Set JWT Access Token secret (minimum 32 characters)
+pnpm --filter @remote/signaling exec wrangler secret put JWT_SECRET --config wrangler.prod.toml
+
+# Set Refresh Token secret (minimum 32 characters)
+pnpm --filter @remote/signaling exec wrangler secret put REFRESH_TOKEN_SECRET --config wrangler.prod.toml
+```
+
+When prompted in the terminal, paste your strong random secret strings (e.g., generated with `openssl rand -base64 32`).
 
 ---
 
