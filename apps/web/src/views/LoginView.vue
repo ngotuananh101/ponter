@@ -1,17 +1,22 @@
 <script setup lang="ts">
+import { onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
+import { safeRedirect } from '@/lib/safe-redirect';
 import LoginForm from '@/components/auth/LoginForm.vue';
 
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 
+onMounted(() => {
+  authStore.clearError();
+});
+
 async function handleLogin(payload: { username: string; password: string }) {
   try {
     await authStore.login(payload.username, payload.password);
-    const redirect = (route.query.redirect as string) || '/dashboard';
-    router.push(redirect);
+    router.push(safeRedirect(route.query.redirect));
   } catch {
     // Error state is captured in store
   }
