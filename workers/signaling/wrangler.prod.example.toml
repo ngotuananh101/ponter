@@ -2,7 +2,7 @@
 # Copy this file to workers/signaling/wrangler.prod.toml and fill in your real Cloudflare IDs:
 # cp workers/signaling/wrangler.prod.example.toml workers/signaling/wrangler.prod.toml
 
-name = "remote-signaling"
+name = "ponta-remote"
 main = "src/index.ts"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]

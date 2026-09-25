@@ -51,6 +51,12 @@ This specification details the architecture, design, and implementation plan for
 - **Decision:** Use **Vitest** with `@cloudflare/vitest-pool-workers` to execute tests directly inside Cloudflare's `workerd` runtime with local D1 and KV support.
 - **Rationale:** Tests execute against real runtime semantics rather than fragile mocks, providing high-fidelity integration test coverage.
 
+### ADR-06: Worker service name is `ponta-remote`
+- **Context:** The original architecture bound the Worker service name to `remote-signaling`. When the repository was connected to Cloudflare Workers Builds (Git integration), Cloudflare derived the service name from the repository slug and provisioned a Worker named `ponta-remote`. Deploying with a divergent `name` in `wrangler.toml` would have created a second, duplicate Worker and left the Git-connected one permanently failing its build check on every pull request.
+- **Decision:** The Worker service name is **`ponta-remote`** everywhere — `workers/signaling/wrangler.toml`, `workers/signaling/wrangler.prod.example.toml`, and the deployment guide. The npm package name (`@remote/signaling`) and the source directory (`workers/signaling`) are unchanged: they describe the code's role, not the deployed service identity.
+- **Rationale:** A single source of truth for the deployed service name keeps the CLI (`wrangler deploy`) and the Cloudflare Git integration targeting the same Worker, eliminating duplicate services and spurious failing checks on pull requests.
+- **Consequence:** Any future environment split (e.g. `[env.staging]`) must follow the same base name — `ponta-remote-staging`, not `remote-signaling-staging`.
+
 ---
 
 ## 3. Package Structure & Toolchain
@@ -127,7 +133,7 @@ workers/signaling/
 ### 3.3 Wrangler Configuration (`workers/signaling/wrangler.toml`)
 
 ```toml
-name = "remote-signaling"
+name = "ponta-remote"
 main = "src/index.ts"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]

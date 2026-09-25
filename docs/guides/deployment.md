@@ -119,7 +119,7 @@ To deploy from your personal machine without committing your real Cloudflare IDs
 2. Open `workers/signaling/wrangler.prod.toml` and fill in your real `database_id` and KV `id`:
 
 ```toml
-name = "remote-signaling"
+name = "ponta-remote"
 main = "src/index.ts"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -184,9 +184,9 @@ pnpm --filter @remote/signaling run deploy:prod
 
 Upon completion, Wrangler outputs the deployed URL:
 ```
-Uploaded remote-signaling (x.xx sec)
-Deployed remote-signaling triggers (x.xx sec)
-  https://remote-signaling.<your-subdomain>.workers.dev
+Uploaded ponta-remote (x.xx sec)
+Deployed ponta-remote triggers (x.xx sec)
+  https://ponta-remote.<your-subdomain>.workers.dev
 Current Version ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
@@ -194,7 +194,7 @@ Current Version ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 ## 8. Configure Production Secrets
 
-> **Important:** Cloudflare requires the Worker (`remote-signaling`) to be deployed at least once (Step 7) before secrets can be attached to it. Running `wrangler secret put` on a non-existent worker will fail with an error.
+> **Important:** Cloudflare requires the Worker (`ponta-remote`) to be deployed at least once (Step 7) before secrets can be attached to it. Running `wrangler secret put` on a non-existent worker will fail with an error.
 > When you run `wrangler secret put`, Cloudflare securely encrypts the secret and immediately applies it to the active Worker deployment without requiring a manual redeployment.
 
 Store your production secrets securely using Wrangler:
@@ -216,7 +216,7 @@ When prompted in the terminal, paste your strong random secret strings (e.g., ge
 ### 9.1 Health Check
 Test the public health endpoint:
 ```bash
-curl https://remote-signaling.<your-subdomain>.workers.dev/health
+curl https://ponta-remote.<your-subdomain>.workers.dev/health
 ```
 **Expected response:**
 ```json
@@ -226,7 +226,7 @@ curl https://remote-signaling.<your-subdomain>.workers.dev/health
 ### 9.2 Registration & Authentication Flow
 Test user registration:
 ```bash
-curl -X POST https://remote-signaling.<your-subdomain>.workers.dev/api/auth/register \
+curl -X POST https://ponta-remote.<your-subdomain>.workers.dev/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "username": "admin",
