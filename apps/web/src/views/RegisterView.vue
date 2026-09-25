@@ -1,10 +1,15 @@
 <script setup lang="ts">
+import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import RegisterForm from '@/components/auth/RegisterForm.vue';
 
 const router = useRouter();
 const authStore = useAuthStore();
+
+onMounted(() => {
+  authStore.clearError();
+});
 
 async function handleRegister(payload: {
   username: string;
