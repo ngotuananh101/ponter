@@ -112,19 +112,24 @@ export class HttpClient {
     return await this.request<T>(method, path, { ...options, retried: true });
   }
 
+  /**
+   * Clear stored tokens and notify the auth listener.
+   *
+   * Both refresh failure paths must do exactly this before rejecting, so it
+   * lives in one place; `error` is returned so callers can `throw` it.
+   */
+  private async failRefresh(error: ApiError): Promise<ApiError> {
+    await this.storage.clearTokens();
+    this.onAuthError?.(error);
+    return error;
+  }
+
   private async doRefresh(): Promise<void> {
     const refreshToken = await this.storage.getRefreshToken();
     if (!refreshToken) {
-      const err = new ApiError(
-        'No refresh token available',
-        401,
-        'UNAUTHORIZED',
+      throw await this.failRefresh(
+        new ApiError('No refresh token available', 401, 'UNAUTHORIZED'),
       );
-      await this.storage.clearTokens();
-      if (this.onAuthError) {
-        this.onAuthError(err);
-      }
-      throw err;
     }
 
     try {
@@ -160,11 +165,7 @@ export class HttpClient {
           error instanceof Error ? error.message : 'Refresh failed';
         apiErr = new ApiError(message, 401, 'REFRESH_FAILED');
       }
-      await this.storage.clearTokens();
-      if (this.onAuthError) {
-        this.onAuthError(apiErr);
-      }
-      throw apiErr;
+      throw await this.failRefresh(apiErr);
     }
   }
 }
