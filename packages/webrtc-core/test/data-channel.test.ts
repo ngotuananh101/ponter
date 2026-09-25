@@ -58,9 +58,16 @@ describe('DataChannelManager', () => {
     mgr.registerChannel(ch);
 
     const received: string[] = [];
-    mgr.onRawMessage('terminal', (data) => received.push(String(data)));
+    const unsubscribe = mgr.onRawMessage('terminal', (data) =>
+      received.push(String(data)),
+    );
 
     ch.simulateMessage('hello terminal');
+    expect(received).toEqual(['hello terminal']);
+
+    // The returned closure must actually detach the handler.
+    unsubscribe();
+    ch.simulateMessage('after unsubscribe');
     expect(received).toEqual(['hello terminal']);
   });
 
@@ -78,6 +85,11 @@ describe('DataChannelManager', () => {
     expect(parsed.type).toBe('ping');
     expect(parsed.payload).toEqual({ seq: 1 });
     expect(typeof parsed.timestamp).toBe('number');
+
+    // sendRaw passes bytes through untouched: no framing, no JSON envelope.
+    mgr.sendRaw('control', 'raw-bytes');
+    expect(ch.sentData).toHaveLength(2);
+    expect(ch.sentData[1]).toBe('raw-bytes');
   });
 
   it('parses and routes typed DataChannelMessage on receive', () => {
@@ -86,7 +98,7 @@ describe('DataChannelManager', () => {
     mgr.registerChannel(ch);
 
     const received: Array<{ type: string; payload: unknown }> = [];
-    mgr.onMessage('control', (msg) => {
+    const unsubscribe = mgr.onMessage('control', (msg) => {
       received.push({ type: msg.type, payload: msg.payload });
     });
 
@@ -100,6 +112,18 @@ describe('DataChannelManager', () => {
     );
 
     expect(received).toEqual([{ type: 'ack', payload: { ok: true } }]);
+
+    // The returned closure must actually detach the handler.
+    unsubscribe();
+    ch.simulateMessage(
+      JSON.stringify({
+        channel: 'control',
+        type: 'ack_after_unsubscribe',
+        payload: { ok: false },
+        timestamp: Date.now(),
+      }),
+    );
+    expect(received).toEqual([{ type: 'ack', payload: { ok: true } }]);
   });
 
   it('notifies on channel state transitions', () => {
@@ -108,11 +132,16 @@ describe('DataChannelManager', () => {
     mgr.registerChannel(ch);
 
     const states: string[] = [];
-    mgr.onStateChange('files', (s) => states.push(s));
+    const unsubscribe = mgr.onStateChange('files', (s) => states.push(s));
 
     ch.simulateOpen();
     ch.close();
 
+    expect(states).toEqual(['open', 'closed']);
+
+    // The returned closure must actually detach the handler.
+    unsubscribe();
+    ch.simulateOpen();
     expect(states).toEqual(['open', 'closed']);
   });
 
