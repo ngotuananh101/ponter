@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
@@ -76,20 +76,27 @@ export const sessions = sqliteTable('sessions', {
   metadata: text('metadata'),
 });
 
-export const signals = sqliteTable('signals', {
-  id: text('id')
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  sessionId: text('session_id')
-    .notNull()
-    .references(() => sessions.id, { onDelete: 'cascade' }),
-  type: text('type').notNull(), // 'offer' | 'answer' | 'ice-candidate'
-  payload: text('payload').notNull(),
-  createdAt: text('created_at')
-    .notNull()
-    .default(sql`(datetime('now'))`),
-  expiresAt: text('expires_at'),
-});
+export const signals = sqliteTable(
+  'signals',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(), // 'offer' | 'answer' | 'ice-candidate'
+    payload: text('payload').notNull(),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    expiresAt: text('expires_at'),
+  },
+  (table) => [
+    index('signals_session_created_idx').on(table.sessionId, table.createdAt),
+    index('signals_expires_at_idx').on(table.expiresAt),
+  ],
+);
 
 export const auditLogs = sqliteTable('audit_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
