@@ -4,3 +4,4 @@ export * from './adapter';
 export * from './signal-handler';
 export * from './transport';
 export * from './data-channel';
+export * from './connection';
