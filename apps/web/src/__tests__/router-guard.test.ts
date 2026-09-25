@@ -1,12 +1,15 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { router } from '@/router';
 import { useAuthStore } from '@/stores/auth';
+import { apiClient } from '@/services/client';
+import { tokenStorage } from '@/services/token-storage';
 import type { User } from '@remote/shared';
 
 describe('Router Guards', () => {
   beforeEach(async () => {
     setActivePinia(createPinia());
+    tokenStorage.clearTokens();
     const store = useAuthStore();
     store.restored = true;
     store.user = null;
@@ -38,6 +41,25 @@ describe('Router Guards', () => {
     store.status = 'authenticated';
 
     await router.push('/login');
+    expect(router.currentRoute.value.path).toBe('/dashboard');
+  });
+
+  it('19. The guard restores the session before deciding, so a stored token keeps the user on /dashboard', async () => {
+    const store = useAuthStore();
+    store.restored = false; // the guard must do the restoring
+    tokenStorage.setTokens({
+      accessToken: 'valid-token',
+      refreshToken: 'valid-ref',
+    });
+    vi.spyOn(apiClient.users, 'me').mockResolvedValue({
+      user: { id: 'u1', username: 'alice' } as unknown as User,
+    });
+
+    // Force a navigation from a different route to ensure the guard runs
+    await router.push('/login');
+    await router.push('/dashboard');
+
+    expect(store.restored).toBe(true);
     expect(router.currentRoute.value.path).toBe('/dashboard');
   });
 });

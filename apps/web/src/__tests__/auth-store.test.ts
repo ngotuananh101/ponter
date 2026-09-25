@@ -70,12 +70,24 @@ describe('Auth Store (Pinia)', () => {
       password: 'password123',
     });
 
-    expect(regSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        username: 'bob',
-        publicKey: 'MFkwEwYHKoZIzj0CAQYIKoZ...',
-      }),
-    );
+    expect(regSpy).toHaveBeenCalledTimes(1);
+    const payload = regSpy.mock.calls[0]![0] as unknown as Record<
+      string,
+      unknown
+    >;
+    // The exact key set is load-bearing: an extra `privateKey` field must fail here.
+    expect(Object.keys(payload).sort()).toEqual([
+      'email',
+      'password',
+      'publicKey',
+      'username',
+    ]);
+    expect(payload).toEqual({
+      username: 'bob',
+      email: undefined,
+      password: 'password123',
+      publicKey: 'MFkwEwYHKoZIzj0CAQYIKoZ...',
+    });
     expect(saveSpy).toHaveBeenCalledWith('u-reg-1', dummyKey);
     expect(store.user?.id).toBe('u-reg-1');
   });

@@ -207,4 +207,34 @@ describe('Refresh Queue & Concurrency Tests', () => {
     expect(storage.clearTokens).toHaveBeenCalled();
     expect(onAuthError).toHaveBeenCalledTimes(1);
   });
+
+  it('11. A 401 from an auth path with default auth does NOT trigger a refresh', async () => {
+    const storage = new MemoryStorage();
+    storage.setTokens({ accessToken: 'tok', refreshToken: 'valid-refresh' });
+
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'Invalid credentials',
+          code: 'INVALID_CREDENTIALS',
+        }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const client = new ApiClient({
+      baseUrl: 'http://localhost:8787',
+      storage,
+      fetch: mockFetch,
+    });
+
+    // NOTE: deliberately NOT `auth: false` — this is the branch that exercises
+    // the `isAuthPath` guard. Removing the guard would make this refresh and
+    // call fetch twice.
+    await expect(
+      client.http.request('POST', '/api/auth/login', { body: {} }),
+    ).rejects.toMatchObject({ status: 401 });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
 });
