@@ -6,7 +6,11 @@ packages:
 allowBuilds:
   esbuild: true
   workerd: true
+  # reka-ui -> @floating-ui/vue -> vue-demi has a postinstall script.
+  # Without this, `shadcn-vue init` fails with ERR_PNPM_IGNORED_BUILDS.
+  vue-demi: true
 
 minimumReleaseAgeExclude:
   - miniflare@5.20260923.0-alpha
   - wrangler@4.139.0
+  - vite@8.3.1

@@ -15,14 +15,17 @@
     "format:check": "prettier --check .",
     "format": "prettier --write .",
     "deploy:workers": "pnpm --filter @remote/signaling deploy:prod",
-    "db:migrate:prod": "pnpm --filter @remote/signaling db:migrate:prod"
+    "db:migrate:prod": "pnpm --filter @remote/signaling db:migrate:prod",
+    "dev:web": "pnpm --filter @remote/web dev"
   },
   "devDependencies": {
     "@types/node": "24.13.6",
     "eslint": "10.11.0",
+    "eslint-plugin-vue": "10.11.1",
     "prettier": "3.9.9",
     "turbo": "2.11.3",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.70.1"
+    "typescript-eslint": "8.70.1",
+    "vue-eslint-parser": "10.4.1"
   }
 }
