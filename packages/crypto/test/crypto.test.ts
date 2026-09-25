@@ -190,69 +190,60 @@ describe('packages/crypto', () => {
     };
   }
 
-  it('8. A transaction aborted with a null error rejects with an Error, not null', async () => {
-    const pair = await generateUserKeyPair();
-    const { restore } = installFakeDatabase('onabort');
-
+  /**
+   * Run `operation` against a fake database whose transaction fires `fire`
+   * with `error` still `null`, and return what it settles to.
+   *
+   * The 250 ms race is the point: without an `onabort` handler the promise
+   * never settles, and the placeholder surfaces that instead of hanging the
+   * suite.
+   */
+  async function settleUnderNullError(
+    fire: 'onerror' | 'onabort',
+    operation: () => Promise<void>,
+  ): Promise<'pending' | unknown> {
+    const { restore } = installFakeDatabase(fire);
     try {
-      const outcome = await Promise.race([
-        savePrivateKey('user-abort-test', pair.privateKey).then(
+      return await Promise.race([
+        operation().then(
           () => 'resolved' as const,
           (reason: unknown) => reason,
         ),
-        // A promise left pending (no `onabort` handler) would never reject.
         new Promise<'pending'>((resolve) =>
           setTimeout(() => resolve('pending'), 250),
         ),
       ]);
-
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toBe('Failed to save private key');
     } finally {
       restore();
     }
+  }
+
+  it('8. A transaction aborted with a null error rejects with an Error, not null', async () => {
+    const pair = await generateUserKeyPair();
+    const outcome = await settleUnderNullError('onabort', () =>
+      savePrivateKey('user-abort-test', pair.privateKey),
+    );
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('Failed to save private key');
   });
 
   it('9. A transaction error with a null reason rejects with an Error, not null', async () => {
     const pair = await generateUserKeyPair();
-    const { restore } = installFakeDatabase('onerror');
+    const outcome = await settleUnderNullError('onerror', () =>
+      savePrivateKey('user-null-error', pair.privateKey),
+    );
 
-    try {
-      const outcome = await Promise.race([
-        savePrivateKey('user-null-error', pair.privateKey).then(
-          () => 'resolved' as const,
-          (reason: unknown) => reason,
-        ),
-        new Promise<'pending'>((resolve) =>
-          setTimeout(() => resolve('pending'), 250),
-        ),
-      ]);
-
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toBe('Failed to save private key');
-    } finally {
-      restore();
-    }
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('Failed to save private key');
   });
 
   it('10. deletePrivateKey normalises a null transaction error the same way', async () => {
-    const { restore } = installFakeDatabase('onabort');
+    const outcome = await settleUnderNullError('onabort', () =>
+      deletePrivateKey('user-delete-abort'),
+    );
 
-    try {
-      const outcome = await Promise.race([
-        deletePrivateKey('user-delete-abort').then(
-          () => 'resolved' as const,
-          (reason: unknown) => reason,
-        ),
-        new Promise<'pending'>((resolve) =>
-          setTimeout(() => resolve('pending'), 250),
-        ),
-      ]);
-
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toBe('Failed to delete private key');
-    } finally {
-      restore();
-    }
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('Failed to delete private key');
   });
 });
