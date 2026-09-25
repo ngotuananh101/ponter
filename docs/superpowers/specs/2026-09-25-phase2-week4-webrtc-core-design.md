@@ -63,7 +63,7 @@ from two executed spikes (see §2.2); F5-F14 from direct file inspection.
 |---|---|---|
 | **F1** | **ICE candidates arrive before the remote description.** `setLocalDescription()` emits candidates immediately, so a candidate can reach the peer before the offer/answer that gives it meaning. A naive handler crashes. | Spike 1 crashed with `TypeError: Cannot read properties of undefined (reading 'type')` at `setRemoteDescription`. Fixed by buffering: both peers logged `flushed 5 buffered ICE`. |
 | **F2** | **`createDataChannel` must be called before `createOffer`.** Otherwise the initial SDP carries no `m=application` (SCTP) section and the remote peer never receives the channel. | Spike 2 failed with `timeout waiting for terminal (saw: missing)` until channel creation was moved ahead of `connect()`. |
-| **F3** | **`werift` is not a drop-in for the browser API.** Events use `.subscribe()` on typed emitters (`pc.onIceCandidate.subscribe`, `dc.stateChanged.subscribe`), not `addEventListener`/`onicecandidate`; `getStats()` returns a `Map`, not an `Array`; a data channel exposes `.state`/`.stateChanged` while the browser exposes `.readyState`. | Spike 2 failed with `stats.filter is not a function`. `Object.getOwnPropertyNames` on the channel prototype lists `setReadyState`/`stateChanged`, and `dc.readyState` read `'connecting'` with `dc.state` `undefined`. |
+| **F3** | **`werift` is not a drop-in for the browser API.** Events use `.subscribe()` on typed emitters (`pc.onIceCandidate.subscribe`, `dc.stateChanged.subscribe`), not `addEventListener`/`onicecandidate`; `setLocalDescription()` returns `SessionDescription` rather than `void`; a data channel's state event is `.stateChanged` while the browser's is `'open'`-style events on `.readyState`. **`getStats()` is *not* a difference**: both werift and the DOM return `RTCStatsReport`, which is `ReadonlyMap`-like in both. | Spike 2 failed with `stats.filter is not a function` because the *spike* wrongly assumed an `Array` — verified afterwards that werift's `getStats()` returns an `RTCStatsReport` with `values`/`forEach` and no `filter`, and that `lib.dom.d.ts:44846` declares `interface RTCStatsReport extends ReadonlyMap<string, any>`. `Object.getOwnPropertyNames` on the channel prototype lists `setReadyState`/`stateChanged`; `dc.readyState` read `'connecting'`. |
 | **F4** | **Loopback needs no ICE servers.** Two peers on the same host connect using host candidates alone; CI needs neither STUN nor TURN. | Spike 1 reported `succeeded candidate pairs: 2` with `iceServers: []`, selecting `host/udp` pairs. |
 | **F5** | **`werift` is pure TypeScript with no native build.** Install is fast and hermetic, so it is safe as a devDependency. | `npm install werift@0.24.4` → `added 42 packages in 3s`. Dependencies are `@noble/curves`, `tweetnacl`, `@peculiar/x509`, `multicast-dns`, `mediabunny`, etc. — no `node-gyp`, no prebuilt binary. |
 | **F6** | **The `signals` table already exists and is unused.** It has `id`, `session_id`, `type`, `payload`, `created_at`, `expires_at`, with `ON DELETE CASCADE` to `sessions`. No source file reads or writes it. | `workers/signaling/db/migrations/0000_initial.sql:55-63`; `workers/signaling/src/db/schema.ts:79-92`; `grep -rn "signals" workers/signaling/src/` matches only the schema definition. |
@@ -118,8 +118,8 @@ Node has no native WebRTC; `werift` supplies one but with a different API surfac
 
 **Decision.** `webrtc-core` depends on a narrow interface, `RTCPeerConnectionLike`, containing only
 the operations the flow needs. Two adapters implement it: `BrowserAdapter` (thin, near 1:1 over
-the DOM API) and `WeriftAdapter` (normalises emitters to callbacks and `getStats()` `Map` to
-`Array`). `webrtc-core` imports neither runtime directly.
+the DOM API) and `WeriftAdapter` (normalises emitters to callbacks). `webrtc-core` imports neither
+runtime directly.
 
 **Rationale.** The seam spike proved both the interface and the adapter boundary work end-to-end
 (§2.2). Normalisation is confined to two small adapter files, so the core logic is written once and
@@ -303,7 +303,7 @@ export interface RTCPeerConnectionLike {
   onIceCandidate(handler: (candidate: RTCIceCandidateInit) => void): void;
   onDataChannel(handler: (channel: RTCDataChannelLike) => void): void;
   onConnectionStateChange(handler: (state: string) => void): void;
-  getStats(): Promise<unknown[]>;
+  getStats(): Promise<RTCStatsReport>;
   close(): Promise<void>;
 }
 
@@ -320,15 +320,18 @@ export interface PeerConnectionOptions {
 
 ### 4.3 `WeriftAdapter` Normalisation
 
-The three F3 differences, resolved in one file:
+The F3 differences, resolved in one file:
 
 | Browser API | `werift` | Adapter action |
 |---|---|---|
 | `pc.addEventListener('icecandidate', h)` | `pc.onIceCandidate.subscribe(h)` | wrap in `onIceCandidate(handler)` |
 | `dc.addEventListener('message', h)` | `dc.onMessage.subscribe(h)` | wrap in `onMessage(handler)` |
-| `dc.readyState` | `dc.stateChanged.subscribe` (`dc.readyState` exists but is not the event) | map both to `onStateChange(handler)` |
-| `getStats()` → `Array` | `getStats()` → `Map` | convert to `Array` |
+| `dc.addEventListener('close'\|'open', h)` | `dc.stateChanged.subscribe(h)` | wrap in `onStateChange(handler)` |
+| `setLocalDescription()` → `Promise<void>` | → `Promise<SessionDescription>` | await and discard the return value |
+| `getStats()` → `Promise<RTCStatsReport>` | `Promise<RTCStatsReport>` | **no conversion needed** (both `ReadonlyMap`-like; see F3) |
 | `new RTCPeerConnection({iceServers})` | same constructor shape | pass through |
+
+`RTCPeerConnectionLike.getStats()` therefore returns `RTCStatsReport`, not `unknown[]`.
 
 ### 4.4 `PeerConnection` (`src/connection.ts`)
 
