@@ -19,7 +19,11 @@ export class HttpClient {
   private refreshPromise: Promise<void> | null = null;
 
   constructor(config: ApiClientConfig) {
-    this.baseUrl = config.baseUrl.replace(/\/+$/, '');
+    let normalized = config.baseUrl;
+    while (normalized.endsWith('/')) {
+      normalized = normalized.slice(0, -1);
+    }
+    this.baseUrl = normalized;
     this.storage = config.storage;
     this.onAuthError = config.onAuthError;
     this.customFetch = config.fetch ?? globalThis.fetch.bind(globalThis);
@@ -30,7 +34,8 @@ export class HttpClient {
     path: string,
     options: RequestOptions = {},
   ): Promise<T> {
-    const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    const url = `${this.baseUrl}${normalizedPath}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -96,9 +101,7 @@ export class HttpClient {
     path: string,
     options: RequestOptions,
   ): Promise<T> {
-    if (this.refreshPromise === null) {
-      this.refreshPromise = this.doRefresh();
-    }
+    this.refreshPromise ??= this.doRefresh();
 
     try {
       await this.refreshPromise;
@@ -149,14 +152,14 @@ export class HttpClient {
         refreshToken: data.refreshToken,
       });
     } catch (error) {
-      const apiErr =
-        error instanceof ApiError
-          ? error
-          : new ApiError(
-              error instanceof Error ? error.message : 'Refresh failed',
-              401,
-              'REFRESH_FAILED',
-            );
+      let apiErr: ApiError;
+      if (error instanceof ApiError) {
+        apiErr = error;
+      } else {
+        const message =
+          error instanceof Error ? error.message : 'Refresh failed';
+        apiErr = new ApiError(message, 401, 'REFRESH_FAILED');
+      }
       await this.storage.clearTokens();
       if (this.onAuthError) {
         this.onAuthError(apiErr);

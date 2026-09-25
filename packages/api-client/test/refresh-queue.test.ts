@@ -4,12 +4,12 @@ import type { TokenStorageAdapter, TokenPair } from '../src/types';
 
 class MemoryStorage implements TokenStorageAdapter {
   tokens: TokenPair = { accessToken: '', refreshToken: '' };
-  getAccessToken = vi.fn(() => this.tokens.accessToken || null);
-  getRefreshToken = vi.fn(() => this.tokens.refreshToken || null);
-  setTokens = vi.fn((t: TokenPair) => {
+  getAccessToken = vi.fn(async () => this.tokens.accessToken || null);
+  getRefreshToken = vi.fn(async () => this.tokens.refreshToken || null);
+  setTokens = vi.fn(async (t: TokenPair) => {
     this.tokens = t;
   });
-  clearTokens = vi.fn(() => {
+  clearTokens = vi.fn(async () => {
     this.tokens = { accessToken: '', refreshToken: '' };
   });
 }

@@ -6,10 +6,10 @@ export interface TokenPair {
 }
 
 export interface TokenStorageAdapter {
-  getAccessToken(): Promise<string | null> | string | null;
-  getRefreshToken(): Promise<string | null> | string | null;
-  setTokens(tokens: TokenPair): Promise<void> | void;
-  clearTokens(): Promise<void> | void;
+  getAccessToken(): Promise<string | null>;
+  getRefreshToken(): Promise<string | null>;
+  setTokens(tokens: TokenPair): Promise<void>;
+  clearTokens(): Promise<void>;
 }
 
 export type AuthErrorHandler = (error: ApiError) => void;
