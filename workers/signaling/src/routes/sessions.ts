@@ -28,7 +28,7 @@ router.get('/', async (c) => {
  */
 async function resolveOwnedId(
   raw: unknown,
-  lookup: (candidate: string) => Promise<unknown | undefined>,
+  lookup: (candidate: string) => Promise<unknown>,
   notFoundMessage: string,
 ): Promise<string | null> {
   if (raw === undefined || raw === null) {
