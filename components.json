@@ -1,0 +1,4 @@
+{
+  "style": "new-york",
+  "tailwind": { "css": "src/style.css" }
+}
