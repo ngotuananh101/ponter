@@ -28,10 +28,14 @@ export class AuthResource {
   }
 
   async login(username: string, password: string): Promise<LoginResponse> {
-    const res = await this.http.request<LoginResponse>('POST', '/api/auth/login', {
-      body: { username, password },
-      auth: false,
-    });
+    const res = await this.http.request<LoginResponse>(
+      'POST',
+      '/api/auth/login',
+      {
+        body: { username, password },
+        auth: false,
+      },
+    );
     await this.http.storage.setTokens({
       accessToken: res.token,
       refreshToken: res.refreshToken,
@@ -40,12 +44,17 @@ export class AuthResource {
   }
 
   async logout(refreshToken?: string): Promise<{ success: boolean }> {
-    const token = refreshToken || (await this.http.storage.getRefreshToken()) || undefined;
+    const token =
+      refreshToken || (await this.http.storage.getRefreshToken()) || undefined;
     try {
-      return await this.http.request<{ success: boolean }>('POST', '/api/auth/logout', {
-        body: token ? { refreshToken: token } : {},
-        auth: true, // Requires Bearer token
-      });
+      return await this.http.request<{ success: boolean }>(
+        'POST',
+        '/api/auth/logout',
+        {
+          body: token ? { refreshToken: token } : {},
+          auth: true, // Requires Bearer token
+        },
+      );
     } finally {
       await this.http.storage.clearTokens();
     }

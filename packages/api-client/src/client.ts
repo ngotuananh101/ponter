@@ -112,7 +112,11 @@ export class HttpClient {
   private async doRefresh(): Promise<void> {
     const refreshToken = await this.storage.getRefreshToken();
     if (!refreshToken) {
-      const err = new ApiError('No refresh token available', 401, 'UNAUTHORIZED');
+      const err = new ApiError(
+        'No refresh token available',
+        401,
+        'UNAUTHORIZED',
+      );
       await this.storage.clearTokens();
       if (this.onAuthError) {
         this.onAuthError(err);
@@ -121,11 +125,14 @@ export class HttpClient {
     }
 
     try {
-      const response = await this.customFetch(`${this.baseUrl}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken }),
-      });
+      const response = await this.customFetch(
+        `${this.baseUrl}/api/auth/refresh`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        },
+      );
 
       if (!response.ok) {
         throw await ApiError.fromResponse(response);

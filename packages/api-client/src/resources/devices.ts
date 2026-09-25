@@ -21,6 +21,9 @@ export class DevicesResource {
   }
 
   async remove(id: string): Promise<{ success: boolean }> {
-    return await this.http.request<{ success: boolean }>('DELETE', `/api/devices/${id}`);
+    return await this.http.request<{ success: boolean }>(
+      'DELETE',
+      `/api/devices/${id}`,
+    );
   }
 }

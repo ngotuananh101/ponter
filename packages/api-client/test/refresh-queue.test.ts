@@ -23,49 +23,55 @@ describe('Refresh Queue & Concurrency Tests', () => {
     });
 
     let refreshCallCount = 0;
-    const mockFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      const urlStr = url.toString();
+    const mockFetch = vi.fn(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        const urlStr = url.toString();
 
-      // Refresh endpoint
-      if (urlStr.endsWith('/api/auth/refresh')) {
-        refreshCallCount++;
-        return new Response(
-          JSON.stringify({
-            token: 'fresh-access',
-            refreshToken: 'valid-refresh',
-            expiresIn: 900,
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        );
-      }
-
-      // Any resource endpoint
-      const authHeader = (init?.headers as Record<string, string>)?.[
-        'Authorization'
-      ];
-      if (authHeader === 'Bearer expired-access') {
-        return new Response(
-          JSON.stringify({ error: 'Token expired', code: 'UNAUTHORIZED' }),
-          { status: 401, headers: { 'Content-Type': 'application/json' } },
-        );
-      }
-
-      if (authHeader === 'Bearer fresh-access') {
-        if (urlStr.endsWith('/api/users/me')) {
-          return new Response(JSON.stringify({ user: { id: 'u1' } }), {
-            status: 200,
-          });
+        // Refresh endpoint
+        if (urlStr.endsWith('/api/auth/refresh')) {
+          refreshCallCount++;
+          return new Response(
+            JSON.stringify({
+              token: 'fresh-access',
+              refreshToken: 'valid-refresh',
+              expiresIn: 900,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
         }
-        if (urlStr.endsWith('/api/devices')) {
-          return new Response(JSON.stringify([{ id: 'd1' }]), { status: 200 });
-        }
-        if (urlStr.endsWith('/api/agents')) {
-          return new Response(JSON.stringify([{ id: 'a1' }]), { status: 200 });
-        }
-      }
 
-      return new Response('Not found', { status: 404 });
-    });
+        // Any resource endpoint
+        const authHeader = (init?.headers as Record<string, string>)?.[
+          'Authorization'
+        ];
+        if (authHeader === 'Bearer expired-access') {
+          return new Response(
+            JSON.stringify({ error: 'Token expired', code: 'UNAUTHORIZED' }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
+        if (authHeader === 'Bearer fresh-access') {
+          if (urlStr.endsWith('/api/users/me')) {
+            return new Response(JSON.stringify({ user: { id: 'u1' } }), {
+              status: 200,
+            });
+          }
+          if (urlStr.endsWith('/api/devices')) {
+            return new Response(JSON.stringify([{ id: 'd1' }]), {
+              status: 200,
+            });
+          }
+          if (urlStr.endsWith('/api/agents')) {
+            return new Response(JSON.stringify([{ id: 'a1' }]), {
+              status: 200,
+            });
+          }
+        }
+
+        return new Response('Not found', { status: 404 });
+      },
+    );
 
     const client = new ApiClient({
       baseUrl: 'http://localhost:8787',

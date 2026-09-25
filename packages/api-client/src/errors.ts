@@ -9,7 +9,12 @@ export class ApiError extends Error {
   readonly code: string;
   readonly details: unknown;
 
-  constructor(message: string, status: number, code: string, details: unknown = null) {
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    details: unknown = null,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;

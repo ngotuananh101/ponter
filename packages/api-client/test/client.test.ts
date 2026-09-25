@@ -17,7 +17,10 @@ class MemoryStorage implements TokenStorageAdapter {
 describe('ApiClient general requests & resources', () => {
   it('1. Attaches Authorization: Bearer <token> when token is stored', async () => {
     const storage = new MemoryStorage();
-    storage.setTokens({ accessToken: 'access-123', refreshToken: 'refresh-456' });
+    storage.setTokens({
+      accessToken: 'access-123',
+      refreshToken: 'refresh-456',
+    });
 
     const mockFetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify([{ id: 'dev-1' }]), {
@@ -44,9 +47,11 @@ describe('ApiClient general requests & resources', () => {
 
   it('2. Omits the header when no token is stored', async () => {
     const storage = new MemoryStorage();
-    const mockFetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify([{ id: 'dev-1' }]), { status: 200 }),
-    );
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify([{ id: 'dev-1' }]), { status: 200 }),
+      );
 
     const client = new ApiClient({
       baseUrl: 'http://localhost:8787',
@@ -56,7 +61,9 @@ describe('ApiClient general requests & resources', () => {
 
     await client.devices.list();
     const callInit = mockFetch.mock.calls[0]![1] as RequestInit;
-    expect((callInit.headers as Record<string, string>)['Authorization']).toBeUndefined();
+    expect(
+      (callInit.headers as Record<string, string>)['Authorization'],
+    ).toBeUndefined();
   });
 
   it('3. Parses { error, code, details } into ApiError with status and code', async () => {
