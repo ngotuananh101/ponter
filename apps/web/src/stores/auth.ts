@@ -25,7 +25,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function restore(): Promise<void> {
     if (restored.value) return;
 
-    const token = tokenStorage.getAccessToken();
+    const token = await tokenStorage.getAccessToken();
     if (!token) {
       status.value = 'idle';
       restored.value = true;
@@ -86,13 +86,17 @@ export const useAuthStore = defineStore('auth', () => {
       status.value = 'authenticated';
     } catch (err) {
       status.value = 'error';
-      error.value = isApiError(err) ? err.message : 'Registration failed';
+      error.value = isApiError(err)
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : 'Registration failed';
       throw err;
     }
   }
 
   async function logout(): Promise<void> {
-    const refreshToken = tokenStorage.getRefreshToken();
+    const refreshToken = await tokenStorage.getRefreshToken();
     if (user.value?.id) {
       try {
         await deletePrivateKey(user.value.id);
@@ -118,6 +122,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await apiClient.users.me();
       user.value = res.user;
+      status.value = 'authenticated';
     } catch (err) {
       if (isApiError(err) && err.status === 401) {
         tokenStorage.clearTokens();
