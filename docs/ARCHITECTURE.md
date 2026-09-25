@@ -721,7 +721,7 @@ path = "src/main.rs"
 
 **File:** `workers/signaling/wrangler.toml`
 ```toml
-name = "remote-signaling"
+name = "ponta-remote"
 main = "src/index.ts"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -743,11 +743,11 @@ binding = "CACHE"
 id = ""
 
 [env.development]
-name = "remote-signaling-dev"
+name = "ponta-remote-dev"
 vars = { ENVIRONMENT = "development" }
 
 [env.staging]
-name = "remote-signaling-staging"
+name = "ponta-remote-staging"
 
 [observability]
 enabled = true

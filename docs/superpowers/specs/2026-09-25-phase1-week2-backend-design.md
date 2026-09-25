@@ -51,6 +51,16 @@ This specification details the architecture, design, and implementation plan for
 - **Decision:** Use **Vitest** with `@cloudflare/vitest-pool-workers` to execute tests directly inside Cloudflare's `workerd` runtime with local D1 and KV support.
 - **Rationale:** Tests execute against real runtime semantics rather than fragile mocks, providing high-fidelity integration test coverage.
 
+### ADR-06: Worker service name is `ponta-remote`
+- **Context:** The original architecture bound the Worker service name to `remote-signaling`. The repository was later connected to Cloudflare Workers Builds (Git integration) while `wrangler.toml` still declared `name = "remote-signaling"`, producing a name mismatch between the two. Investigation of the resulting failing GitHub check run established the mechanism precisely:
+  - A **Workers Builds project** (the Git-connected CI configuration) and a **Worker service** (a deployed script on the edge) are **two distinct objects**. Connecting a repository creates the former; the latter exists only after a successful `wrangler deploy`.
+  - The build project's name comes from the **repository slug / dashboard project name**, not from the `wrangler.toml` `name` field. Evidence: the check run was already named `Workers Builds: ponta-remote` on commits `b15edad`, `11785bd`, and `46eaaf6` — hours before `d976b61` changed `wrangler.toml` to `ponta-remote` (verified via `git log -L 1,1:workers/signaling/wrangler.toml`).
+  - The GitHub App (`cloudflare-workers-and-pages`) creates a check run on every push while the build project exists — **even when no Worker service of that name exists at all**. The check run's own output stated verbatim: `Preview creation failed: This Worker does not exist on your account.`
+- **Decision:** The Worker service name is **`ponta-remote`** everywhere — `workers/signaling/wrangler.toml`, `workers/signaling/wrangler.prod.example.toml`, and the deployment guide. The npm package name (`@remote/signaling`) and the source directory (`workers/signaling`) are unchanged: they describe the code's role, not the deployed service identity.
+- **Rationale:** Aligning `wrangler.toml` with the build project's name means the CLI deploy (`pnpm deploy:workers`) and the Git integration target the same service, so the first successful CLI deploy satisfies the build project's expectation instead of creating a second, divergent Worker.
+- **Consequence:** Any future environment split (e.g. `[env.staging]`) must follow the same base name — `ponta-remote-staging`, not `remote-signaling-staging`.
+- **Open item (not resolved by this ADR):** The Workers Builds project still fails on every push because it is configured with the repository root as its build root — where no Wrangler configuration exists — and because `workers/signaling/wrangler.toml` carries placeholder bindings (`local-db-binding`, `local-cache-binding`) unsuitable for a cloud build. Resolving it requires either disconnecting the Git integration (Dashboard → the Worker → Settings → Builds → Disconnect) or configuring the build root as `workers/signaling` with CI-appropriate bindings. The check is not a required status check on `main`, so it does not block merges.
+
 ---
 
 ## 3. Package Structure & Toolchain
@@ -127,7 +137,7 @@ workers/signaling/
 ### 3.3 Wrangler Configuration (`workers/signaling/wrangler.toml`)
 
 ```toml
-name = "remote-signaling"
+name = "ponta-remote"
 main = "src/index.ts"
 compatibility_date = "2024-09-01"
 compatibility_flags = ["nodejs_compat"]

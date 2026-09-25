@@ -1,0 +1,26 @@
+# Template for local machine deployment (DO NOT commit your real wrangler.prod.toml)
+# Copy this file to workers/signaling/wrangler.prod.toml and fill in your real Cloudflare IDs:
+# cp workers/signaling/wrangler.prod.example.toml workers/signaling/wrangler.prod.toml
+
+name = "ponta-remote"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+JWT_EXPIRES_IN = "15m"
+REFRESH_TOKEN_EXPIRES_IN = "7d"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "remote-access"
+database_id = "YOUR_REAL_D1_DATABASE_ID"
+migrations_dir = "db/migrations"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "YOUR_REAL_KV_NAMESPACE_ID"
+
+[observability]
+enabled = true
