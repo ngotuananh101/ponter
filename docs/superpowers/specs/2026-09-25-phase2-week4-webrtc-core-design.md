@@ -165,9 +165,15 @@ table has no delivered marker (F7), and the test fixtures never create the table
 schema change has to be mirrored into fixtures that are already duplicated four ways (F9).
 
 **Decision.** Polling is cursor-based: the client sends the id of the last signal it processed
-(`?after=<signalId>`), and the server returns signals for that session ordered by `created_at`
-(ties broken by `id`), excluding everything up to and including the cursor, capped at a fixed page
-size. The table is unchanged except for an added index.
+(`?after=<signalId>`), and the server returns signals for that session ordered by SQLite `rowid`,
+excluding everything at or before the cursor's rowid, capped at a fixed page size. The table is
+unchanged except for an added index.
+
+Ordering is by `rowid`, not `created_at`: `created_at` has one-second resolution, so two signals
+written in the same second are indistinguishable by timestamp, and breaking the tie by `id` compares
+random UUIDs rather than insertion order. A cursor of `(created_at, id)` can therefore skip a signal
+permanently — verified on the local D1 runner: inserting `sig_z` then `sig_a` in the same second and
+polling with `after=sig_z` returned nothing. `rowid` is strictly monotonic, so the cursor cannot skip.
 
 **Rationale.** Polling becomes **idempotent** — a crashed or retried client re-reads without loss,
 and there is no window in which a signal is marked delivered but never received. Two peers polling
@@ -448,8 +454,9 @@ enforced on all four routes, including the poll.
 
 - **Write.** Each POST inserts one row: `type` ∈ `offer|answer|ice-candidate`, `payload` = the
   JSON-encoded `SignalMessage` data, `expires_at` = now + 5 minutes.
-- **Read.** Poll selects rows for the session ordered by `created_at` then `id`, excluding rows at
-  or before the cursor, capped at `limit` (default 50, max 200). It returns the new cursor.
+- **Read.** Poll selects rows for the session ordered by `rowid`, excluding rows at or before the
+  cursor's rowid, capped at `limit` (default 50, max 200). It returns the new cursor (the last
+  returned row's `id`, which the next poll resolves back to its `rowid`).
 - **Expiry.** `expires_at` bounds how long an undelivered signal survives. A sweep deletes expired
   rows; Week 4 relies on the `WHERE expires_at > now` filter and documents the sweep as a follow-up
   (there is no cron trigger in `wrangler.toml`, and adding one is out of scope).
@@ -528,7 +535,8 @@ suite growing from **97** to **135** tests (24 in `webrtc-core`, 14 in `workers/
   look like a network problem. The P2P test must assert a real `connected` state, not merely that
   no error was thrown.
 - **F2 is second.** Channels created after `start()` are silently absent on the remote side.
-- Cursor semantics must be stable under duplicate `created_at` values (hence the `id` tie-break).
+- Cursor semantics must be stable under duplicate `created_at` values (hence `rowid` ordering —
+  see ADR-03).
 - `limit` must be clamped server-side; an unbounded poll is a denial-of-service vector.
 
 **Boundaries**

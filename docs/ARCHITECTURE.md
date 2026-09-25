@@ -930,23 +930,29 @@ export interface RegisterRequest {
 
 ```typescript
 // packages/shared/src/types/signaling.ts
+// Wire types cross JSON network boundaries and Cloudflare Workers (which lack DOM libs).
+// Conversion to RTCSessionDescriptionInit / RTCIceCandidateInit occurs inside packages/webrtc-core.
 export interface SignalOffer {
   sessionId: string;
-  sdp: RTCSessionDescriptionInit;
+  sdp: string;
   capabilities: string[];
 }
 
 export interface SignalAnswer {
   sessionId: string;
-  sdp: RTCSessionDescriptionInit;
+  sdp: string;
   approved: boolean;
 }
 
-export interface IceCandidate {
+export interface IceCandidateSignal {
   sessionId: string;
-  candidate: RTCIceCandidateInit;
+  candidate: string;
+  sdpMid: string | null;
+  sdpMLineIndex: number | null;
 }
 ```
+
+> **Week 4 Security Boundary Note:** Authentication in Week 4 validates that the session is owned by the calling user. Differentiating the browser client from the desktop agent within the same user's account requires agent-scoped credentials, which are introduced in Week 5 alongside the Rust desktop agent.
 
 ### 6.3 REST API Routes
 
