@@ -4,7 +4,7 @@ const ACCESS_TOKEN_KEY = 'remote.accessToken';
 const REFRESH_TOKEN_KEY = 'remote.refreshToken';
 
 export class LocalStorageTokenAdapter implements TokenStorageAdapter {
-  getAccessToken(): string | null {
+  async getAccessToken(): Promise<string | null> {
     try {
       return localStorage.getItem(ACCESS_TOKEN_KEY);
     } catch {
@@ -12,7 +12,7 @@ export class LocalStorageTokenAdapter implements TokenStorageAdapter {
     }
   }
 
-  getRefreshToken(): string | null {
+  async getRefreshToken(): Promise<string | null> {
     try {
       return localStorage.getItem(REFRESH_TOKEN_KEY);
     } catch {
@@ -20,7 +20,7 @@ export class LocalStorageTokenAdapter implements TokenStorageAdapter {
     }
   }
 
-  setTokens(tokens: TokenPair): void {
+  async setTokens(tokens: TokenPair): Promise<void> {
     try {
       localStorage.setItem(ACCESS_TOKEN_KEY, tokens.accessToken);
       localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken);
@@ -29,7 +29,7 @@ export class LocalStorageTokenAdapter implements TokenStorageAdapter {
     }
   }
 
-  clearTokens(): void {
+  async clearTokens(): Promise<void> {
     try {
       localStorage.removeItem(ACCESS_TOKEN_KEY);
       localStorage.removeItem(REFRESH_TOKEN_KEY);

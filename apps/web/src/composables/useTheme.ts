@@ -21,10 +21,11 @@ function getInitialTheme(): Theme {
     // Ignore localStorage failures
   }
 
+  // `typeof` guard is required: optional chaining does not protect against an
+  // undeclared identifier (SSR), only against null/undefined values.
   if (
     typeof window !== 'undefined' &&
-    window.matchMedia &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches
   ) {
     return 'dark';
   }

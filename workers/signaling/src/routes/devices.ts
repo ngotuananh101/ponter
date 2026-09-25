@@ -10,7 +10,7 @@ const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
 
 /** Mirrors the `device_type` domain documented in `src/db/schema.ts`. */
-const ALLOWED_DEVICE_TYPES = ['desktop', 'mobile', 'web'];
+const ALLOWED_DEVICE_TYPES = new Set(['desktop', 'mobile', 'web']);
 
 router.get('/', async (c) => {
   const user = c.get('user');
@@ -40,7 +40,7 @@ router.post('/', async (c) => {
     );
   }
 
-  if (!ALLOWED_DEVICE_TYPES.includes(body.deviceType)) {
+  if (!ALLOWED_DEVICE_TYPES.has(body.deviceType)) {
     throw new AppError(
       'Invalid deviceType, must be desktop, mobile, or web',
       400,

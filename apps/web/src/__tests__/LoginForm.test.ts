@@ -37,4 +37,16 @@ describe('LoginForm.vue', () => {
     expect(submitBtn.attributes('disabled')).toBeDefined();
     expect(wrapper.text()).toContain('Signing in...');
   });
+
+  it('19. Submitting whitespace-only username shows validation message and emits nothing', async () => {
+    const wrapper = mount(LoginForm, {
+      global: { stubs: { RouterLink: true } },
+    });
+    await wrapper.find('#username').setValue('   ');
+    await wrapper.find('#password').setValue('password123');
+    await wrapper.find('form').trigger('submit.prevent');
+
+    expect(wrapper.text()).toContain('Please enter both username and password');
+    expect(wrapper.emitted('submit')).toBeUndefined();
+  });
 });

@@ -1,18 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ApiClient } from '../src/index';
-import type { TokenStorageAdapter, TokenPair } from '../src/types';
-
-class MemoryStorage implements TokenStorageAdapter {
-  private tokens: TokenPair = { accessToken: '', refreshToken: '' };
-  getAccessToken = vi.fn(() => this.tokens.accessToken || null);
-  getRefreshToken = vi.fn(() => this.tokens.refreshToken || null);
-  setTokens = vi.fn((t: TokenPair) => {
-    this.tokens = t;
-  });
-  clearTokens = vi.fn(() => {
-    this.tokens = { accessToken: '', refreshToken: '' };
-  });
-}
+import { MemoryStorage, jsonResponse, makeClient } from './helpers';
 
 describe('ApiClient general requests & resources', () => {
   it('1. Attaches Authorization: Bearer <token> when token is stored', async () => {
@@ -22,18 +9,10 @@ describe('ApiClient general requests & resources', () => {
       refreshToken: 'refresh-456',
     });
 
-    const mockFetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify([{ id: 'dev-1' }]), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-
-    const client = new ApiClient({
-      baseUrl: 'http://localhost:8787',
-      storage,
-      fetch: mockFetch,
-    });
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ id: 'dev-1' }]));
+    const client = makeClient(storage, mockFetch);
 
     const res = await client.devices.list();
     expect(res).toEqual([{ id: 'dev-1' }]);
@@ -49,15 +28,8 @@ describe('ApiClient general requests & resources', () => {
     const storage = new MemoryStorage();
     const mockFetch = vi
       .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify([{ id: 'dev-1' }]), { status: 200 }),
-      );
-
-    const client = new ApiClient({
-      baseUrl: 'http://localhost:8787',
-      storage,
-      fetch: mockFetch,
-    });
+      .mockResolvedValue(new Response(JSON.stringify([{ id: 'dev-1' }])));
+    const client = makeClient(storage, mockFetch);
 
     await client.devices.list();
     const callInit = mockFetch.mock.calls[0]![1] as RequestInit;
@@ -69,21 +41,16 @@ describe('ApiClient general requests & resources', () => {
   it('3. Parses { error, code, details } into ApiError with status and code', async () => {
     const storage = new MemoryStorage();
     const mockFetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
+      jsonResponse(
+        {
           error: 'Username already taken',
           code: 'USERNAME_EXISTS',
           details: null,
-        }),
-        { status: 409, headers: { 'Content-Type': 'application/json' } },
+        },
+        409,
       ),
     );
-
-    const client = new ApiClient({
-      baseUrl: 'http://localhost:8787',
-      storage,
-      fetch: mockFetch,
-    });
+    const client = makeClient(storage, mockFetch);
 
     await expect(
       client.auth.register({
@@ -107,12 +74,7 @@ describe('ApiClient general requests & resources', () => {
         statusText: 'Bad Gateway',
       }),
     );
-
-    const client = new ApiClient({
-      baseUrl: 'http://localhost:8787',
-      storage,
-      fetch: mockFetch,
-    });
+    const client = makeClient(storage, mockFetch);
 
     await expect(client.users.me()).rejects.toMatchObject({
       name: 'ApiError',
@@ -125,22 +87,14 @@ describe('ApiClient general requests & resources', () => {
   it('5. login persists the mapped token pair through the adapter', async () => {
     const storage = new MemoryStorage();
     const mockFetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          user: { id: 'u1', username: 'alice' },
-          token: 'jwt-access-token',
-          refreshToken: 'jwt-refresh-token',
-          expiresIn: 900,
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
+      jsonResponse({
+        user: { id: 'u1', username: 'alice' },
+        token: 'jwt-access-token',
+        refreshToken: 'jwt-refresh-token',
+        expiresIn: 900,
+      }),
     );
-
-    const client = new ApiClient({
-      baseUrl: 'http://localhost:8787',
-      storage,
-      fetch: mockFetch,
-    });
+    const client = makeClient(storage, mockFetch);
 
     const res = await client.auth.login('alice', 'password123');
     expect(res.user.username).toBe('alice');
@@ -154,18 +108,10 @@ describe('ApiClient general requests & resources', () => {
     const storage = new MemoryStorage();
     storage.setTokens({ accessToken: 'access-1', refreshToken: 'refresh-1' });
 
-    const mockFetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ success: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-
-    const client = new ApiClient({
-      baseUrl: 'http://localhost:8787',
-      storage,
-      fetch: mockFetch,
-    });
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ success: true }));
+    const client = makeClient(storage, mockFetch);
 
     const res = await client.auth.logout('refresh-1');
     expect(res.success).toBe(true);

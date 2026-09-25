@@ -111,4 +111,139 @@ describe('packages/crypto', () => {
   it('7. deletePrivateKey for a missing user ID does not throw (idempotent)', async () => {
     await expect(deletePrivateKey('never-existed')).resolves.toBeUndefined();
   });
+
+  /**
+   * A transaction torn down without ever completing must still settle the
+   * returned promise. Per the IndexedDB spec, `abort()` leaves
+   * `transaction.error` as `null`, so the raw `reject(tx.error)` pattern
+   * rejected with `null` — not an `Error` — and a missing `onabort` handler
+   * left the promise pending forever.
+   *
+   * fake-indexeddb does not reproduce that: aborting a pending request
+   * synthesises an `AbortError` DOMException, which already is an `Error`. So
+   * these tests swap in a fully fake database whose transaction fires the
+   * chosen event with `error` still `null`, exercising the exact spec'd path.
+   *
+   * The database is faked end to end (not just `transaction`) on purpose: the
+   * failure under test leaves the promise unsettled, so a real connection
+   * would never be closed, and the still-open handle would block the
+   * `beforeEach` `deleteDatabase` for every following test.
+   */
+  type FakeTransaction = {
+    error: DOMException | null;
+    oncomplete: (() => void) | null;
+    onerror: (() => void) | null;
+    onabort: (() => void) | null;
+    objectStore: () => { put: () => void; delete: () => void };
+  };
+
+  function installFakeDatabase(fire: 'onerror' | 'onabort'): {
+    restore: () => void;
+  } {
+    const fakeTx: FakeTransaction = {
+      error: null,
+      oncomplete: null,
+      onerror: null,
+      onabort: null,
+      objectStore: () => ({
+        put: () => {
+          queueMicrotask(() => fakeTx[fire]?.());
+        },
+        delete: () => {
+          queueMicrotask(() => fakeTx[fire]?.());
+        },
+      }),
+    };
+
+    const fakeDb = {
+      close: () => {},
+      transaction: () => fakeTx as unknown as IDBTransaction,
+    };
+
+    // The global is replaced wholesale rather than patching `IDBDatabase`
+    // methods, so no real connection is ever opened — see the note above about
+    // a leaked handle blocking `beforeEach`.
+    const realIndexedDB = globalThis.indexedDB;
+    const fakeRequest: {
+      result: IDBDatabase;
+      onupgradeneeded: (() => void) | null;
+      onsuccess: (() => void) | null;
+      onerror: (() => void) | null;
+    } = {
+      result: fakeDb as unknown as IDBDatabase,
+      onupgradeneeded: null,
+      onsuccess: null,
+      onerror: null,
+    };
+
+    globalThis.indexedDB = {
+      open: () => {
+        queueMicrotask(() => fakeRequest.onsuccess?.());
+        return fakeRequest as unknown as IDBOpenDBRequest;
+      },
+    } as unknown as IDBFactory;
+
+    return {
+      restore: () => {
+        globalThis.indexedDB = realIndexedDB;
+      },
+    };
+  }
+
+  /**
+   * Run `operation` against a fake database whose transaction fires `fire`
+   * with `error` still `null`, and return what it settles to.
+   *
+   * The 250 ms race is the point: without an `onabort` handler the promise
+   * never settles, and the placeholder surfaces that instead of hanging the
+   * suite.
+   */
+  async function settleUnderNullError(
+    fire: 'onerror' | 'onabort',
+    operation: () => Promise<void>,
+  ): Promise<'pending' | unknown> {
+    const { restore } = installFakeDatabase(fire);
+    try {
+      return await Promise.race([
+        operation().then(
+          () => 'resolved' as const,
+          (reason: unknown) => reason,
+        ),
+        new Promise<'pending'>((resolve) =>
+          setTimeout(() => resolve('pending'), 250),
+        ),
+      ]);
+    } finally {
+      restore();
+    }
+  }
+
+  it('8. A transaction aborted with a null error rejects with an Error, not null', async () => {
+    const pair = await generateUserKeyPair();
+    const outcome = await settleUnderNullError('onabort', () =>
+      savePrivateKey('user-abort-test', pair.privateKey),
+    );
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('Failed to save private key');
+  });
+
+  it('9. A transaction error with a null reason rejects with an Error, not null', async () => {
+    const pair = await generateUserKeyPair();
+    const outcome = await settleUnderNullError('onerror', () =>
+      savePrivateKey('user-null-error', pair.privateKey),
+    );
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('Failed to save private key');
+  });
+
+  it('10. deletePrivateKey normalises a null transaction error the same way', async () => {
+    const outcome = await settleUnderNullError('onabort', () =>
+      deletePrivateKey('user-delete-abort'),
+    );
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toBe('Failed to delete private key');
+  });
 });

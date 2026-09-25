@@ -7,6 +7,7 @@ import { hashPassword, verifyPassword } from '../utils/crypto';
 import { signAccessToken, signRefreshToken, verifyToken } from '../utils/jwt';
 import { AppError } from '../middleware/error';
 import { authMiddleware } from '../middleware/auth';
+import { verifyTokenForUser } from '../utils/auth';
 import { toPublicUser } from '../utils/user';
 
 const auth = new Hono<AppContext>();
@@ -132,7 +133,7 @@ auth.post('/login', async (c) => {
     .where(eq(users.username, body.username))
     .get();
 
-  if (!user || !user.passwordHash) {
+  if (!user?.passwordHash) {
     throw new AppError(
       'Invalid username or password',
       401,
@@ -185,40 +186,33 @@ auth.post('/refresh', async (c) => {
     throw new AppError('refreshToken is required', 400, 'VALIDATION_ERROR');
   }
 
-  let payload;
-  try {
-    payload = await verifyToken(body.refreshToken, c.env.REFRESH_TOKEN_SECRET);
-  } catch {
-    throw new AppError(
-      'Invalid or expired refresh token',
-      401,
-      'INVALID_REFRESH_TOKEN',
-    );
-  }
-
-  if (payload.type !== 'refresh') {
-    throw new AppError('Invalid token type', 401, 'INVALID_TOKEN_TYPE');
-  }
-
-  const isRevoked = await c.env.CACHE.get(`token:revoked:${payload.jti}`);
-  if (isRevoked) {
-    throw new AppError('Refresh token has been revoked', 401, 'TOKEN_REVOKED');
-  }
-
-  const db = getDb(c.env.DB);
-  const user = await db
-    .select()
-    .from(users)
-    .where(eq(users.id, payload.sub))
-    .get();
-
-  if (!user || !user.isActive) {
-    throw new AppError(
-      'User is inactive or not found',
-      401,
-      'ACCOUNT_INACTIVE',
-    );
-  }
+  // The refresh token is held to the same four checks as an access token in
+  // `authMiddleware`; only the wording and codes differ, so the shared helper
+  // takes those as parameters.
+  const { user } = await verifyTokenForUser(
+    c,
+    body.refreshToken,
+    c.env.REFRESH_TOKEN_SECRET,
+    'refresh',
+    {
+      invalid: {
+        message: 'Invalid or expired refresh token',
+        code: 'INVALID_REFRESH_TOKEN',
+      },
+      wrongType: {
+        message: 'Invalid token type',
+        code: 'INVALID_TOKEN_TYPE',
+      },
+      revoked: {
+        message: 'Refresh token has been revoked',
+        code: 'TOKEN_REVOKED',
+      },
+      inactive: {
+        message: 'User is inactive or not found',
+        code: 'ACCOUNT_INACTIVE',
+      },
+    },
+  );
 
   const { token, exp } = await signAccessToken(
     user.id,

@@ -189,7 +189,7 @@ describe('Devices, Agents & Sessions REST API', () => {
       );
       expect(listRes.status).toBe(200);
       const list = (await listRes.json()) as DeviceResponse[];
-      expect(list.length).toBe(1);
+      expect(list).toHaveLength(1);
 
       // 3. Delete device
       const delRes = await app.request(
@@ -205,7 +205,8 @@ describe('Devices, Agents & Sessions REST API', () => {
         { headers: { Authorization: `Bearer ${token}` } },
         env,
       );
-      expect(((await listAfter.json()) as DeviceResponse[]).length).toBe(0);
+      const listAfterJson = (await listAfter.json()) as DeviceResponse[];
+      expect(listAfterJson).toHaveLength(0);
     });
 
     it('rejects a duplicate fingerprint with 409 DEVICE_EXISTS', async () => {
@@ -355,7 +356,7 @@ describe('Devices, Agents & Sessions REST API', () => {
       );
       expect(listRes.status).toBe(200);
       const list = (await listRes.json()) as AgentResponse[];
-      expect(list.length).toBe(1);
+      expect(list).toHaveLength(1);
       // `noUncheckedIndexedAccess` makes `list[0]` possibly undefined; the
       // optional chain keeps the assertion honest and the file type-clean.
       expect(list[0]?.id).toBe('agent_host_1');
@@ -480,7 +481,13 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(err.code).toBe('VALIDATION_ERROR');
     });
 
-    it('rejects a non-existent deviceId with 404 NOT_FOUND', async () => {
+    it.each([
+      ['a non-existent deviceId', { deviceId: 'does-not-exist' }],
+      ['a non-existent agentId', { agentId: 'does-not-exist' }],
+      ['an empty-string deviceId', { deviceId: '' }],
+      ['an empty-string agentId', { agentId: '' }],
+      ['a non-string deviceId', { deviceId: 12345 }],
+    ])('rejects %s with 404 NOT_FOUND', async (_label, payload) => {
       const res = await app.request(
         '/api/sessions',
         {
@@ -489,83 +496,7 @@ describe('Devices, Agents & Sessions REST API', () => {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ deviceId: 'does-not-exist' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects a non-existent agentId with 404 NOT_FOUND', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ agentId: 'does-not-exist' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects an empty-string deviceId with 404 (not 500)', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ deviceId: '' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects an empty-string agentId with 404 (not 500)', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ agentId: '' }),
-        },
-        env,
-      );
-
-      expect(res.status).toBe(404);
-      const err = (await res.json()) as ErrorResponse;
-      expect(err.code).toBe('NOT_FOUND');
-    });
-
-    it('rejects a non-string deviceId with 404 (not 500)', async () => {
-      const res = await app.request(
-        '/api/sessions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ deviceId: 12345 }),
+          body: JSON.stringify(payload),
         },
         env,
       );
