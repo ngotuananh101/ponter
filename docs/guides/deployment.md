@@ -16,9 +16,10 @@ This guide covers step-by-step instructions to deploy the backend services (`@re
 7. [Deploy the Worker](#7-deploy-the-worker)
 8. [Configure Production Secrets](#8-configure-production-secrets)
 9. [Verify Deployment](#9-verify-deployment)
-10. [Automate Deployment with GitHub Actions (CI/CD)](#10-automate-deployment-with-github-actions-cicd)
-11. [Free Tier Quotas & Monitoring](#11-free-tier-quotas--monitoring)
-12. [Troubleshooting & FAQ](#12-troubleshooting--faq)
+10. [Cloudflare Workers Builds (Git Integration) — Important Distinction](#10-cloudflare-workers-builds-git-integration--important-distinction)
+11. [Automate Deployment with GitHub Actions (CI/CD)](#11-automate-deployment-with-github-actions-cicd)
+12. [Free Tier Quotas & Monitoring](#12-free-tier-quotas--monitoring)
+13. [Troubleshooting & FAQ](#13-troubleshooting--faq)
 
 ---
 
@@ -257,11 +258,48 @@ pnpm --filter @remote/signaling exec wrangler tail
 
 ---
 
-## 10. Automate Deployment with GitHub Actions (CI/CD)
+## 10. Cloudflare Workers Builds (Git Integration) — Important Distinction
+
+If you ever connect this repository to **Cloudflare Workers Builds** (Workers & Pages → your Worker → Settings → Builds → Connect to Git), you must understand that Cloudflare creates **two independent objects**:
+
+| | **Workers Builds project** | **Worker service** |
+|---|---|---|
+| What it is | The Git-connected CI configuration | A deployed script running on Cloudflare's edge |
+| Created when | The moment you connect the repository in the Dashboard | Only after a **successful** `wrangler deploy` |
+| Owns the GitHub check run | Yes — via the `cloudflare-workers-and-pages` GitHub App | No |
+
+**Consequences you should expect:**
+
+1. **Check runs appear even with no Worker service.** The GitHub App creates a `Workers Builds: <project name>` check run on every push while the build project exists — including when no Worker of that name exists at all. In that case the build fails with a message like:
+   ```
+   Preview creation failed: This Worker does not exist on your account.
+   ```
+2. **The check run name does NOT come from `wrangler.toml`.** It comes from the build project's name, which Cloudflare derives from the repository slug / Dashboard project name. Renaming `name` in `wrangler.toml` will not rename the check run — only renaming the project in the Dashboard will.
+3. **Preview builds fire on every push by default.** The **"Enable Preview Builds"** option in *Settings → Builds → Branch control* triggers a preview build for every push to a non-production branch. Disable it to stop preview builds (and their check runs) on feature branches.
+4. **A failing build does not block merges** unless you explicitly add it as a required status check in GitHub branch protection.
+
+**Why a monorepo build fails at the repository root:** the build project defaults to the **repository root** as its build root, where no Wrangler configuration exists. Also note `workers/signaling/wrangler.toml` intentionally carries *placeholder* bindings (`local-db-binding`, `local-cache-binding`) for local development and tests, so it cannot deploy to the cloud as-is.
+
+### Resolving it
+
+**Option A — Disconnect (recommended if you deploy via CLI):**
+Dashboard → Workers & Pages → select the project → **Settings** → **Builds** → **Disconnect**. The check runs stop appearing on subsequent pushes.
+
+**Option B — Configure it correctly for the monorepo:**
+In **Settings → Builds**:
+- **Root directory:** `workers/signaling`
+- **Deploy command:** `npx wrangler deploy`
+- Then provide cloud-appropriate bindings for the build environment (a real D1 `database_id` and KV `id`, plus the `JWT_SECRET` / `REFRESH_TOKEN_SECRET` secrets). Without real bindings the build will still fail.
+
+> **Warning:** Never point the build's deploy command at `wrangler.prod.example.toml` — it contains placeholder values (`YOUR_REAL_D1_DATABASE_ID`) and the deploy will fail.
+
+---
+
+## 11. Automate Deployment with GitHub Actions (CI/CD)
 
 To automatically deploy when merging to `main`:
 
-### 10.1 Create Cloudflare API Token
+### 11.1 Create Cloudflare API Token
 1. Go to [Cloudflare Dashboard > My Profile > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 2. Click **Create Token** > use the **Edit Cloudflare Workers** template.
 3. Grant permissions:
@@ -269,12 +307,12 @@ To automatically deploy when merging to `main`:
 4. Copy the generated API token.
 5. Copy your **Account ID** from the Cloudflare Dashboard Workers overview page.
 
-### 10.2 Add GitHub Repository Secrets
+### 11.2 Add GitHub Repository Secrets
 Go to your GitHub repository > **Settings > Secrets and variables > Actions** and add:
 - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token
 - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID
 
-### 10.3 GitHub Actions Workflow
+### 11.3 GitHub Actions Workflow
 Create `.github/workflows/deploy-workers.yml`:
 
 ```yaml
@@ -310,22 +348,31 @@ jobs:
       - name: Run Tests
         run: pnpm test
 
+      # wrangler.prod.toml is gitignored, so CI must materialize it from secrets.
+      - name: Generate production Wrangler config
+        run: |
+          cp workers/signaling/wrangler.prod.example.toml workers/signaling/wrangler.prod.toml
+          sed -i "s|YOUR_REAL_D1_DATABASE_ID|${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}|" workers/signaling/wrangler.prod.toml
+          sed -i "s|YOUR_REAL_KV_NAMESPACE_ID|${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}|" workers/signaling/wrangler.prod.toml
+
       - name: Apply D1 Migrations
-        run: pnpm --filter @remote/signaling run db:migrate:remote
+        run: pnpm --filter @remote/signaling run db:migrate:prod
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy Worker
-        run: pnpm --filter @remote/signaling run deploy
+        run: pnpm --filter @remote/signaling run deploy:prod
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
+> **Note:** This workflow needs three additional repository secrets beyond the two in §11.2: `CLOUDFLARE_D1_DATABASE_ID` and `CLOUDFLARE_KV_NAMESPACE_ID`. If you would rather not maintain a generated config in CI, deploy from your local machine with `pnpm deploy:workers` instead — that is the workflow this guide's Steps 5–8 describe.
+
 ---
 
-## 11. Free Tier Quotas & Monitoring
+## 12. Free Tier Quotas & Monitoring
 
 Cloudflare provides a generous Free tier suitable for testing and personal setups:
 
@@ -341,7 +388,7 @@ Cloudflare provides a generous Free tier suitable for testing and personal setup
 
 ---
 
-## 12. Troubleshooting & FAQ
+## 13. Troubleshooting & FAQ
 
 ### Issue: `Cannot find module 'cloudflare:test'`
 **Solution**: Make sure `tsconfig.json` specifies `"types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"]` (with subpath `/types`).
@@ -349,7 +396,7 @@ Cloudflare provides a generous Free tier suitable for testing and personal setup
 ### Issue: `D1_ERROR: no such table: users`
 **Solution**: Migrations have not been applied to the remote database. Run:
 ```bash
-pnpm --filter @remote/signaling run db:migrate:remote
+pnpm db:migrate:prod
 ```
 
 ### Issue: `Token has been revoked` error on valid login
@@ -357,3 +404,11 @@ pnpm --filter @remote/signaling run db:migrate:remote
 
 ### Issue: Malformed JSON or 400 Bad Request
 **Solution**: Ensure requests send headers `Content-Type: application/json` and valid non-empty JSON bodies.
+
+### Issue: GitHub check run `Workers Builds: <name>` fails with "This Worker does not exist on your account"
+**Cause**: A Workers Builds project (Git integration) exists for this repository, but no Worker service with that name has ever been deployed successfully. The build project creates the check run regardless of whether the Worker exists.
+**Solution**: See [Section 10](#10-cloudflare-workers-builds-git-integration--important-distinction). Either disconnect the Git integration (Dashboard → the project → Settings → Builds → Disconnect), or configure the build root as `workers/signaling` with real D1/KV bindings. Deploying once from the CLI with a matching `name` in `wrangler.toml` also resolves the "does not exist" error.
+
+### Issue: Worker deployed but the Dashboard shows a different service name than `wrangler.toml`
+**Cause**: A Workers Builds project created from a Git connection takes its name from the repository slug / Dashboard project name, not from `wrangler.toml`. If the two diverge, `wrangler deploy` creates a second, separate Worker.
+**Solution**: Keep `name` in `wrangler.toml` identical to the Dashboard project name. This repository standardizes on `ponta-remote` (see ADR-06 in the Phase 1 Week 2 design spec).
