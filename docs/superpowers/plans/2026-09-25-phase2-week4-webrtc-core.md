@@ -276,7 +276,7 @@ Edit `packages/webrtc-core/package.json`:
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@remote/shared": "workspace:*"
@@ -438,11 +438,9 @@ class BrowserDataChannel implements RTCDataChannelLike {
   }
 
   send(data: string | ArrayBuffer | Uint8Array): void {
-    if (typeof data === 'string' || data instanceof ArrayBuffer) {
-      this.dc.send(data);
-    } else {
-      this.dc.send(data);
-    }
+    // `RTCDataChannel.send` accepts string | Blob | ArrayBuffer | ArrayBufferView,
+    // and Uint8Array is an ArrayBufferView, so no conversion is needed here.
+    this.dc.send(data);
   }
 
   close(): void {
@@ -788,6 +786,10 @@ Implement `src/signal-handler.ts` (converting between wire `SignalMessage` and l
   }
   export class RESTPollingTransport implements SignalTransport { ... }
   ```
+- Behaviour: the transport is session-scoped. `send()` serializes
+  `{ ...msg.data, sessionId: this.sessionId }` as the POST body, so callers do not have to populate
+  `sessionId` themselves. `PeerConnection` (Task 6) builds signals with `sessionId: ''` and relies on
+  this; `poll()` likewise falls back to `this.sessionId` when a payload omits it.
 
 - [ ] **Step 1: Write test for `signal-handler.ts`**
 
@@ -1310,7 +1312,12 @@ export class RESTPollingTransport implements SignalTransport {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.token}`,
       },
-      body: JSON.stringify(msg.data),
+      // The transport is session-scoped, so it stamps the session id onto the
+      // wire payload. `PeerConnection` builds signals without one because the
+      // spec's `PeerConnectionOptions` carries no sessionId; re-assigning an
+      // existing key preserves its position, so payloads that already carry the
+      // correct id serialize identically.
+      body: JSON.stringify({ ...msg.data, sessionId: this.sessionId }),
     });
 
     if (!res.ok) {
@@ -2255,9 +2262,17 @@ git commit -m "feat(webrtc-core): implement PeerConnection state machine and ver
 
 Create migration `0001_signal_indexes.sql` to add indexes on `signals(session_id, created_at)` and `signals(expires_at)` in D1, updating the Drizzle migration journal.
 
+**Generate, do not hand-write.** `drizzle-kit generate` writes three artifacts in lockstep:
+the `.sql` file, `meta/0001_snapshot.json`, and the `_journal.json` entry. Hand-writing only the
+`.sql` and the journal entry leaves the snapshot missing, and the *next* `db:generate` run then
+emits a spurious duplicate `0002_*.sql`. So the migration is produced by declaring the indexes in
+the Drizzle schema and running the generator, per spec §5.5.
+
 **Files:**
-- Create: `workers/signaling/db/migrations/0001_signal_indexes.sql`
-- Modify: `workers/signaling/db/migrations/meta/_journal.json`
+- Modify: `workers/signaling/src/db/schema.ts`
+- Create (generated): `workers/signaling/db/migrations/0001_signal_indexes.sql`
+- Create (generated): `workers/signaling/db/migrations/meta/0001_snapshot.json`
+- Modify (generated): `workers/signaling/db/migrations/meta/_journal.json`
 
 **Interfaces:**
 - Produces:
@@ -2267,41 +2282,89 @@ Create migration `0001_signal_indexes.sql` to add indexes on `signals(session_id
   ```
 - Consumes: `signals` table from `0000_initial.sql`.
 
-- [ ] **Step 1: Create `0001_signal_indexes.sql`**
+- [ ] **Step 1: Declare the indexes in `workers/signaling/src/db/schema.ts`**
 
-Create `workers/signaling/db/migrations/0001_signal_indexes.sql`:
+`drizzle-kit` only generates what the schema declares. Add `index` to the existing
+`drizzle-orm/sqlite-core` import, then convert the `signals` table definition to the
+callback form that carries its indexes. The columns are unchanged; only the third argument is new.
+
+Replace:
+```typescript
+export const signals = sqliteTable('signals', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  type: text('type').notNull(), // 'offer' | 'answer' | 'ice-candidate'
+  payload: text('payload').notNull(),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(datetime('now'))`),
+  expiresAt: text('expires_at'),
+});
+```
+
+With:
+```typescript
+export const signals = sqliteTable(
+  'signals',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(), // 'offer' | 'answer' | 'ice-candidate'
+    payload: text('payload').notNull(),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    expiresAt: text('expires_at'),
+  },
+  (table) => [
+    index('signals_session_created_idx').on(table.sessionId, table.createdAt),
+    index('signals_expires_at_idx').on(table.expiresAt),
+  ],
+);
+```
+
+- [ ] **Step 2: Generate the migration**
+
+Run:
+```bash
+pnpm --filter @remote/signaling db:generate
+```
+Expected: drizzle-kit reports the two new indexes and writes
+`db/migrations/0001_<random-name>.sql` plus `db/migrations/meta/0001_snapshot.json`, and appends an
+entry to `db/migrations/meta/_journal.json`.
+
+- [ ] **Step 3: Rename the generated migration to `0001_signal_indexes`**
+
+Rename the generated `0001_<random-name>.sql` to `0001_signal_indexes.sql`, and in
+`db/migrations/meta/_journal.json` change that entry's `tag` from `0001_<random-name>` to
+`0001_signal_indexes`. Leave its generated `when` and `version` values exactly as drizzle wrote
+them — do not invent a timestamp. Do **not** rename `meta/0001_snapshot.json`; drizzle resolves
+snapshots by index, not by tag.
+
+The resulting `db/migrations/0001_signal_indexes.sql` must contain:
 ```sql
 CREATE INDEX `signals_session_created_idx` ON `signals` (`session_id`, `created_at`);--> statement-breakpoint
 CREATE INDEX `signals_expires_at_idx` ON `signals` (`expires_at`);
 ```
 
-- [ ] **Step 2: Update `workers/signaling/db/migrations/meta/_journal.json`**
+- [ ] **Step 4: Verify the rename left no drift**
 
-Edit `workers/signaling/db/migrations/meta/_journal.json` to register entry index 1:
-```json
-{
-  "version": "7",
-  "dialect": "sqlite",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "6",
-      "when": 1790302012686,
-      "tag": "0000_initial",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1790370000000,
-      "tag": "0001_signal_indexes",
-      "breakpoints": true
-    }
-  ]
-}
+Run:
+```bash
+pnpm --filter @remote/signaling db:generate
 ```
+Expected: "No schema changes, nothing to migrate" — and **no** new `0002_*` file appears. If a new
+file was generated, the snapshot is out of sync: delete the stray file and repeat from Step 2.
 
-- [ ] **Step 3: Apply migration to local test runner**
+- [ ] **Step 5: Apply migration to local test runner**
 
 Run:
 ```bash
@@ -2309,10 +2372,18 @@ pnpm --filter @remote/signaling db:migrate:local
 ```
 Expected: Successfully applied migration `0001_signal_indexes`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Run the full signaling suite to verify no regression**
+
+Run:
+```bash
+pnpm --filter @remote/signaling test
+```
+Expected: All existing test files PASS (46 tests).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add workers/signaling/db/migrations/0001_signal_indexes.sql workers/signaling/db/migrations/meta/_journal.json
+git add workers/signaling/src/db/schema.ts workers/signaling/db/migrations/0001_signal_indexes.sql workers/signaling/db/migrations/meta/0001_snapshot.json workers/signaling/db/migrations/meta/_journal.json
 git commit -m "feat(signaling): add migration 0001_signal_indexes for cursor polling and TTL cleanup"
 ```
 
@@ -3056,10 +3127,11 @@ git commit -m "feat(signaling): implement tenant-isolated REST signaling routes 
 
 ### Task 9: Documentation & Architecture Synchronization
 
-Update `docs/ARCHITECTURE.md` (lines 935–947) to correct the historical contradiction where `SignalOffer` and `SignalAnswer` were typed with `RTCSessionDescriptionInit` instead of `string`. Add a clear note explaining the ADR-07 resolution and the Week 4 peer separation boundary limitation (§5.4).
+Update `docs/ARCHITECTURE.md` (lines 935–947) to correct the historical contradiction where `SignalOffer` and `SignalAnswer` were typed with `RTCSessionDescriptionInit` instead of `string`. Add a clear note explaining the ADR-07 resolution and the Week 4 peer separation boundary limitation (§5.4). Then correct the design spec's cursor-ordering text, which still describes the `created_at` tie-break that Task 8's poll replaces with `rowid`.
 
 **Files:**
 - Modify: `docs/ARCHITECTURE.md:930-955`
+- Modify: `docs/superpowers/specs/2026-09-25-phase2-week4-webrtc-core-design.md` (ADR-03, §5.3, §7)
 
 - [ ] **Step 1: Update `docs/ARCHITECTURE.md`**
 
@@ -3115,7 +3187,53 @@ Add an explicit note documenting the accepted Week 4 limitation:
 > **Week 4 Security Boundary Note:** Authentication in Week 4 validates that the session is owned by the calling user. Differentiating the browser client from the desktop agent within the same user's account requires agent-scoped credentials, which are introduced in Week 5 alongside the Rust desktop agent.
 ```
 
-- [ ] **Step 2: Run complete repository verification suite**
+- [ ] **Step 2: Correct the cursor-ordering text in the design spec**
+
+`docs/superpowers/specs/2026-09-25-phase2-week4-webrtc-core-design.md` still specifies the ordering
+that Task 8 proved lossy. Fix all three sites so the spec matches the shipped code.
+
+In **ADR-03**, replace:
+```markdown
+(`?after=<signalId>`), and the server returns signals for that session ordered by `created_at`
+(ties broken by `id`), excluding everything up to and including the cursor, capped at a fixed page
+size. The table is unchanged except for an added index.
+```
+With:
+```markdown
+(`?after=<signalId>`), and the server returns signals for that session ordered by SQLite `rowid`,
+excluding everything at or before the cursor's rowid, capped at a fixed page size. The table is
+unchanged except for an added index.
+
+Ordering is by `rowid`, not `created_at`: `created_at` has one-second resolution, so two signals
+written in the same second are indistinguishable by timestamp, and breaking the tie by `id` compares
+random UUIDs rather than insertion order. A cursor of `(created_at, id)` can therefore skip a signal
+permanently — verified on the local D1 runner: inserting `sig_z` then `sig_a` in the same second and
+polling with `after=sig_z` returned nothing. `rowid` is strictly monotonic, so the cursor cannot skip.
+```
+
+In **§5.3**, replace:
+```markdown
+- **Read.** Poll selects rows for the session ordered by `created_at` then `id`, excluding rows at
+  or before the cursor, capped at `limit` (default 50, max 200). It returns the new cursor.
+```
+With:
+```markdown
+- **Read.** Poll selects rows for the session ordered by `rowid`, excluding rows at or before the
+  cursor's rowid, capped at `limit` (default 50, max 200). It returns the new cursor (the last
+  returned row's `id`, which the next poll resolves back to its `rowid`).
+```
+
+In **§7**, replace:
+```markdown
+- Cursor semantics must be stable under duplicate `created_at` values (hence the `id` tie-break).
+```
+With:
+```markdown
+- Cursor semantics must be stable under duplicate `created_at` values (hence `rowid` ordering —
+  see ADR-03).
+```
+
+- [ ] **Step 3: Run complete repository verification suite**
 
 Run:
 ```bash
@@ -3128,14 +3246,14 @@ Expected:
 - `test`: exactly **135 passing tests** across the entire monorepo:
   - `workers/signaling`: 60 tests (46 existing + 14 signaling)
   - `packages/webrtc-core`: 24 tests (6 signal-handler + 7 transport + 6 data-channel + 5 p2p)
-  - `apps/web`: 29 tests
+  - `apps/web`: 30 tests
   - `packages/api-client`: 11 tests
   - `packages/crypto`: 10 tests
-  - `packages/shared`: 1 test
+  - (`packages/shared` has no test script and no test files; it contributes 0)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add docs/ARCHITECTURE.md
+git add docs/ARCHITECTURE.md docs/superpowers/specs/2026-09-25-phase2-week4-webrtc-core-design.md
 git commit -m "docs(architecture): sync signaling wire types with shared package and note Week 4 auth boundary"
 ```
