@@ -14,7 +14,7 @@ import { SessionsResource } from './resources/sessions';
 export class HttpClient {
   readonly baseUrl: string;
   readonly storage: TokenStorageAdapter;
-  readonly onAuthError?: AuthErrorHandler;
+  onAuthError?: AuthErrorHandler;
   private readonly customFetch: typeof fetch;
   private refreshPromise: Promise<void> | null = null;
 

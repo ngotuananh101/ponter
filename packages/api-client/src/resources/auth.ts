@@ -39,13 +39,6 @@ export class AuthResource {
     return res;
   }
 
-  async refresh(refreshToken: string): Promise<{ token: string; refreshToken: string; expiresIn: number }> {
-    return await this.http.request('POST', '/api/auth/refresh', {
-      body: { refreshToken },
-      auth: false,
-    });
-  }
-
   async logout(refreshToken?: string): Promise<{ success: boolean }> {
     const token = refreshToken || (await this.http.storage.getRefreshToken()) || undefined;
     try {
