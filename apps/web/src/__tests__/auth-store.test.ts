@@ -131,7 +131,7 @@ describe('Auth Store (Pinia)', () => {
     expect(logoutSpy).toHaveBeenCalledWith('r');
     expect(store.user).toBeNull();
     expect(store.status).toBe('idle');
-    expect(tokenStorage.getAccessToken()).toBeNull();
+    expect(await tokenStorage.getAccessToken()).toBeNull();
   });
 
   it('6. restore() with no stored token leaves store idle and does not call API', async () => {
@@ -176,6 +176,6 @@ describe('Auth Store (Pinia)', () => {
 
     expect(store.user).toBeNull();
     expect(store.status).toBe('idle');
-    expect(tokenStorage.getAccessToken()).toBeNull();
+    expect(await tokenStorage.getAccessToken()).toBeNull();
   });
 });

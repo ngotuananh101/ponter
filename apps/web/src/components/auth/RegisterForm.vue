@@ -32,7 +32,10 @@ const confirmPassword = ref('');
 const validationError = ref<string | null>(null);
 
 function validateEmail(val: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  // Domain labels exclude `.` so there is exactly one way to match each dot;
+  // the original `[^\s@]+\.` had overlapping classes and backtracked
+  // super-linearly on adversarial input.
+  return /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(val);
 }
 
 function handleSubmit() {

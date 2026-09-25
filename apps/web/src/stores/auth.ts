@@ -12,6 +12,13 @@ import { isApiError } from '@remote/api-client';
 
 export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'error';
 
+function describeError(err: unknown, fallback: string): string {
+  if (isApiError(err) || err instanceof Error) {
+    return err.message;
+  }
+  return fallback;
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null);
   const status = ref<AuthStatus>('idle');
@@ -55,11 +62,7 @@ export const useAuthStore = defineStore('auth', () => {
       status.value = 'authenticated';
     } catch (err) {
       status.value = 'error';
-      error.value = isApiError(err)
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : 'Login failed';
+      error.value = describeError(err, 'Login failed');
       throw err;
     }
   }
@@ -86,11 +89,7 @@ export const useAuthStore = defineStore('auth', () => {
       status.value = 'authenticated';
     } catch (err) {
       status.value = 'error';
-      error.value = isApiError(err)
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : 'Registration failed';
+      error.value = describeError(err, 'Registration failed');
       throw err;
     }
   }
