@@ -349,6 +349,8 @@ describe('Signaling REST API (/api/signal)', () => {
       env,
     );
     expect(res.status).toBe(400);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects missing candidate on ice-candidate with 400 VALIDATION_ERROR', async () => {
@@ -365,6 +367,8 @@ describe('Signaling REST API (/api/signal)', () => {
       env,
     );
     expect(res.status).toBe(400);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('VALIDATION_ERROR');
   });
 
   it('clamps limit to maximum 200 on poll', async () => {
