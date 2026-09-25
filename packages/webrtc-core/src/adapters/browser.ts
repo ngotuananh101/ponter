@@ -1,7 +1,4 @@
-import type {
-  RTCPeerConnectionLike,
-  RTCDataChannelLike,
-} from '../types';
+import type { RTCPeerConnectionLike, RTCDataChannelLike } from '../types';
 import type { IceServerConfig } from '@remote/shared';
 
 class BrowserDataChannel implements RTCDataChannelLike {
@@ -49,20 +46,28 @@ class BrowserDataChannel implements RTCDataChannelLike {
 
 export class BrowserAdapter implements RTCPeerConnectionLike {
   private readonly pc: RTCPeerConnection;
-  private readonly iceHandlers: Array<(candidate: RTCIceCandidateInit) => void> = [];
-  private readonly channelHandlers: Array<(channel: RTCDataChannelLike) => void> = [];
+  private readonly iceHandlers: Array<
+    (candidate: RTCIceCandidateInit) => void
+  > = [];
+  private readonly channelHandlers: Array<
+    (channel: RTCDataChannelLike) => void
+  > = [];
   private readonly stateHandlers: Array<(state: string) => void> = [];
 
   constructor(config: { iceServers?: IceServerConfig[] } = {}) {
     if (typeof RTCPeerConnection === 'undefined') {
-      throw new Error('BrowserAdapter requires RTCPeerConnection in the global environment');
+      throw new Error(
+        'BrowserAdapter requires RTCPeerConnection in the global environment',
+      );
     }
 
-    const rtcIceServers: RTCIceServer[] = (config.iceServers ?? []).map((s) => ({
-      urls: s.urls,
-      ...(s.username ? { username: s.username } : {}),
-      ...(s.credential ? { credential: s.credential } : {}),
-    }));
+    const rtcIceServers: RTCIceServer[] = (config.iceServers ?? []).map(
+      (s) => ({
+        urls: s.urls,
+        ...(s.username ? { username: s.username } : {}),
+        ...(s.credential ? { credential: s.credential } : {}),
+      }),
+    );
 
     this.pc = new RTCPeerConnection({ iceServers: rtcIceServers });
 
@@ -97,11 +102,15 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
     return await this.pc.createAnswer();
   }
 
-  async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
+  async setLocalDescription(
+    description: RTCSessionDescriptionInit,
+  ): Promise<void> {
     await this.pc.setLocalDescription(description);
   }
 
-  async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+  async setRemoteDescription(
+    description: RTCSessionDescriptionInit,
+  ): Promise<void> {
     await this.pc.setRemoteDescription(description);
   }
 
@@ -109,7 +118,10 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
     await this.pc.addIceCandidate(candidate);
   }
 
-  createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannelLike {
+  createDataChannel(
+    label: string,
+    options?: RTCDataChannelInit,
+  ): RTCDataChannelLike {
     const dc = this.pc.createDataChannel(label, options);
     return new BrowserDataChannel(dc);
   }

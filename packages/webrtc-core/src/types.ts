@@ -15,7 +15,10 @@ export interface RTCPeerConnectionLike {
   setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
   addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
-  createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannelLike;
+  createDataChannel(
+    label: string,
+    options?: RTCDataChannelInit,
+  ): RTCDataChannelLike;
   onIceCandidate(handler: (candidate: RTCIceCandidateInit) => void): void;
   onDataChannel(handler: (channel: RTCDataChannelLike) => void): void;
   onConnectionStateChange(handler: (state: string) => void): void;

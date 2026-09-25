@@ -1,14 +1,17 @@
 import { RTCPeerConnection as WeriftPC } from 'werift';
-import type {
-  RTCPeerConnectionLike,
-  RTCDataChannelLike,
-} from '../types';
+import type { RTCPeerConnectionLike, RTCDataChannelLike } from '../types';
 import type { IceServerConfig } from '@remote/shared';
 
 class WeriftDataChannel implements RTCDataChannelLike {
   private readonly stateHandlers: Array<(state: string) => void> = [];
 
-  constructor(private readonly dc: InstanceType<typeof WeriftPC>['createDataChannel'] extends (...args: never[]) => infer R ? R : never) {
+  constructor(
+    private readonly dc: InstanceType<
+      typeof WeriftPC
+    >['createDataChannel'] extends (...args: never[]) => infer R
+      ? R
+      : never,
+  ) {
     // Normalise werift's stateChanged event
     this.dc.stateChanged.subscribe((state) => {
       for (const handler of this.stateHandlers) {
@@ -63,8 +66,12 @@ class WeriftDataChannel implements RTCDataChannelLike {
 
 export class WeriftAdapter implements RTCPeerConnectionLike {
   private readonly pc: WeriftPC;
-  private readonly iceHandlers: Array<(candidate: RTCIceCandidateInit) => void> = [];
-  private readonly channelHandlers: Array<(channel: RTCDataChannelLike) => void> = [];
+  private readonly iceHandlers: Array<
+    (candidate: RTCIceCandidateInit) => void
+  > = [];
+  private readonly channelHandlers: Array<
+    (channel: RTCDataChannelLike) => void
+  > = [];
   private readonly stateHandlers: Array<(state: string) => void> = [];
 
   constructor(config: { iceServers?: IceServerConfig[] } = {}) {
@@ -120,14 +127,18 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
     };
   }
 
-  async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
+  async setLocalDescription(
+    description: RTCSessionDescriptionInit,
+  ): Promise<void> {
     await this.pc.setLocalDescription({
       type: description.type as never,
       sdp: description.sdp,
     });
   }
 
-  async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+  async setRemoteDescription(
+    description: RTCSessionDescriptionInit,
+  ): Promise<void> {
     await this.pc.setRemoteDescription({
       type: description.type as never,
       sdp: description.sdp,
@@ -138,7 +149,10 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
     await this.pc.addIceCandidate(candidate);
   }
 
-  createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannelLike {
+  createDataChannel(
+    label: string,
+    options?: RTCDataChannelInit,
+  ): RTCDataChannelLike {
     const dc = this.pc.createDataChannel(label, options);
     return new WeriftDataChannel(dc as never);
   }
