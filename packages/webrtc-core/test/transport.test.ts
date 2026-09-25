@@ -29,11 +29,15 @@ describe('RESTPollingTransport', () => {
 
     const msg: SignalMessage = {
       type: 'offer',
-      data: { sessionId: 'sess_1', sdp: 'v=0', capabilities: ['terminal'] },
+      data: { sessionId: '', sdp: 'v=0', capabilities: ['terminal'] },
     };
 
     await transport.send(msg);
 
+    const body = JSON.parse(
+      ((fetchSpy.mock.calls[0] as unknown[])[1] as RequestInit).body as string,
+    );
+    expect(body).toMatchObject({ sessionId: 'sess_1' });
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://test/api/signal/offer',
       expect.objectContaining({
@@ -42,7 +46,6 @@ describe('RESTPollingTransport', () => {
           Authorization: 'Bearer token_abc',
           'Content-Type': 'application/json',
         }),
-        body: JSON.stringify(msg.data),
       }),
     );
     transport.close();
@@ -66,16 +69,19 @@ describe('RESTPollingTransport', () => {
 
     const msg: SignalMessage = {
       type: 'answer',
-      data: { sessionId: 'sess_1', sdp: 'v=0', approved: true },
+      data: { sessionId: '', sdp: 'v=0', approved: true },
     };
 
     await transport.send(msg);
 
+    const body = JSON.parse(
+      ((fetchSpy.mock.calls[0] as unknown[])[1] as RequestInit).body as string,
+    );
+    expect(body).toMatchObject({ sessionId: 'sess_1' });
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://test/api/signal/answer',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify(msg.data),
       }),
     );
     transport.close();
@@ -104,7 +110,7 @@ describe('RESTPollingTransport', () => {
     const msg: SignalMessage = {
       type: 'ice-candidate',
       data: {
-        sessionId: 'sess_1',
+        sessionId: '',
         candidate: 'cand_1',
         sdpMid: '0',
         sdpMLineIndex: 0,
@@ -113,20 +119,21 @@ describe('RESTPollingTransport', () => {
 
     await transport.send(msg);
 
+    const body = JSON.parse(
+      ((fetchSpy.mock.calls[0] as unknown[])[1] as RequestInit).body as string,
+    );
+    expect(body).toMatchObject({ sessionId: 'sess_1' });
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://test/api/signal/ice-candidate',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify(msg.data),
       }),
     );
     transport.close();
   });
 
   it('polls signals, advances cursor, and notifies subscribers', async () => {
-    let _callCount = 0;
     const fetchSpy = vi.fn(async (url: string) => {
-      _callCount++;
       if (url.includes('/api/signal/poll')) {
         return new Response(
           JSON.stringify({
@@ -234,15 +241,16 @@ describe('RESTPollingTransport', () => {
 
     transport.subscribe(() => {});
 
-    // Poll 1: 100ms
+    // Poll 1: at 100ms (initial interval)
     await vi.advanceTimersByTimeAsync(110);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // Poll 2: backed off (150ms)
-    await vi.advanceTimersByTimeAsync(120);
-    expect(fetchSpy).toHaveBeenCalledTimes(1); // not yet
-    await vi.advanceTimersByTimeAsync(50);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // Poll 2: backed off to 150ms, scheduled from the first poll's absolute
+    // time (100ms), so it fires at exactly 250ms. Verify the boundary.
+    await vi.advanceTimersByTimeAsync(139); // 110 + 139 = 249ms
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // 250ms not yet reached
+    await vi.advanceTimersByTimeAsync(1); // 249 + 1 = 250ms
+    expect(fetchSpy).toHaveBeenCalledTimes(2); // fires at 250ms
 
     transport.close();
   });
