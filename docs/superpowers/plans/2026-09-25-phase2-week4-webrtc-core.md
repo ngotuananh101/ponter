@@ -438,9 +438,17 @@ class BrowserDataChannel implements RTCDataChannelLike {
   }
 
   send(data: string | ArrayBuffer | Uint8Array): void {
-    // `RTCDataChannel.send` accepts string | Blob | ArrayBuffer | ArrayBufferView,
-    // and Uint8Array is an ArrayBufferView, so no conversion is needed here.
-    this.dc.send(data);
+    // lib.dom declares four separate `send` overloads (string, Blob,
+    // ArrayBuffer, ArrayBufferView) with NO union overload, so a union argument
+    // matches none of them. Narrow explicitly. Re-wrapping the bytes in a fresh
+    // Uint8Array also widens ArrayBufferLike to ArrayBuffer for the overload.
+    if (typeof data === 'string') {
+      this.dc.send(data);
+    } else if (data instanceof ArrayBuffer) {
+      this.dc.send(data);
+    } else {
+      this.dc.send(new Uint8Array(data));
+    }
   }
 
   close(): void {
@@ -597,13 +605,18 @@ class WeriftDataChannel implements RTCDataChannelLike {
 
   onMessage(handler: (data: string | ArrayBuffer) => void): void {
     this.dc.onMessage.subscribe((raw) => {
-      if (Buffer.isBuffer(raw)) {
-        // Convert Buffer to ArrayBuffer for universal consumer compatibility
-        const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-        handler(ab);
-      } else {
+      if (typeof raw === 'string') {
         handler(raw);
+        return;
       }
+      // werift delivers Buffers; the seam hands consumers an ArrayBuffer so both
+      // adapters agree. Copy the exact byte range: a Buffer is a view into a
+      // shared pool, so handing out `raw.buffer` would leak unrelated bytes, and
+      // `Buffer.buffer` is ArrayBufferLike (ArrayBuffer | SharedArrayBuffer),
+      // which the seam's `ArrayBuffer` does not accept.
+      const copy = new ArrayBuffer(raw.byteLength);
+      new Uint8Array(copy).set(raw);
+      handler(copy);
     });
   }
 
