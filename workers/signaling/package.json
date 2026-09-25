@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --config wrangler.prod.toml",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply remote-access --local",
     "db:migrate:remote": "wrangler d1 migrations apply remote-access --remote",
+    "db:migrate:prod": "wrangler d1 migrations apply remote-access --remote --config wrangler.prod.toml",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

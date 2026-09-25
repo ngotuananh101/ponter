@@ -106,9 +106,17 @@ Save the `id` value for the next step.
 
 ---
 
-## 5. Configure `wrangler.toml`
+## 5. Configure Production Settings (Local Machine Deployment)
 
-Open `workers/signaling/wrangler.toml` and update the `database_id` and KV `id` with the real values from step 4:
+To deploy from your personal machine without committing your real Cloudflare IDs to Git:
+
+1. Copy the production template file:
+   ```bash
+   cp workers/signaling/wrangler.prod.example.toml workers/signaling/wrangler.prod.toml
+   ```
+   *(Note: `wrangler.prod.toml` is ignored in `.gitignore`, so your real IDs will never be committed).*
+
+2. Open `workers/signaling/wrangler.prod.toml` and fill in your real `database_id` and KV `id`:
 
 ```toml
 name = "remote-signaling"
@@ -160,27 +168,35 @@ When prompted in the terminal, paste your strong random secrets.
 Apply the database schema (6 tables: `users`, `devices`, `agents`, `sessions`, `signals`, `audit_logs`) to the remote D1 database:
 
 ```bash
-pnpm --filter @remote/signaling run db:migrate:remote
+# From root using wrangler.prod.toml
+pnpm db:migrate:prod
+
+# Or directly in workers/signaling:
+pnpm --filter @remote/signaling run db:migrate:prod
 ```
 
-*This executes `wrangler d1 migrations apply remote-access --remote` using migrations from `workers/signaling/db/migrations/`.*
+*This executes `wrangler d1 migrations apply remote-access --remote --config wrangler.prod.toml` using migrations from `workers/signaling/db/migrations/`.*
 
 Verify migrations by inspecting the remote database tables:
 ```bash
-pnpm --filter @remote/signaling exec wrangler d1 execute remote-access --remote --command "SELECT name FROM sqlite_master WHERE type='table';"
+pnpm --filter @remote/signaling exec wrangler d1 execute remote-access --remote --config wrangler.prod.toml --command "SELECT name FROM sqlite_master WHERE type='table';"
 ```
 
 ---
 
 ## 8. Deploy the Worker
 
-Deploy the Worker package to Cloudflare edge:
+Deploy the Worker package to Cloudflare edge from your machine:
 
 ```bash
-pnpm --filter @remote/signaling run deploy
+# From root using wrangler.prod.toml
+pnpm deploy:workers
+
+# Or directly in workers/signaling:
+pnpm --filter @remote/signaling run deploy:prod
 ```
 
-*This executes `wrangler deploy`.*
+*This executes `wrangler deploy --config wrangler.prod.toml`.*
 
 Upon completion, Wrangler outputs the deployed URL:
 ```

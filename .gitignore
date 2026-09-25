@@ -41,4 +41,6 @@ Thumbs.db
 # Cloudflare Wrangler & Miniflare artifacts
 .wrangler/
 .mf/
+wrangler.prod.toml
+wrangler.*.local.toml
 
