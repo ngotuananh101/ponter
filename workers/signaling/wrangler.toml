@@ -1,0 +1,24 @@
+name = "remote-signaling"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+JWT_SECRET = "dev-secret-change-in-production-min-32-chars"
+JWT_EXPIRES_IN = "15m"
+REFRESH_TOKEN_SECRET = "dev-refresh-secret-min-32-chars"
+REFRESH_TOKEN_EXPIRES_IN = "7d"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "remote-access"
+database_id = "local-db-binding"
+migrations_dir = "db/migrations"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "local-cache-binding"
+
+[observability]
+enabled = true

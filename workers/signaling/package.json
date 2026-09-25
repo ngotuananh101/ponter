@@ -4,7 +4,26 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "echo ok",
-    "typecheck": "echo ok"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply remote-access --local",
+    "db:migrate:remote": "wrangler d1 migrations apply remote-access --remote",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@remote/shared": "workspace:*",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.13.9"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.139.0"
   }
 }

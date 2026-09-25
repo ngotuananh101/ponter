@@ -37,3 +37,8 @@ Thumbs.db
 .remember/
 .superpowers/
 .claude/settings.local.json
+
+# Cloudflare Wrangler & Miniflare artifacts
+.wrangler/
+.mf/
+
