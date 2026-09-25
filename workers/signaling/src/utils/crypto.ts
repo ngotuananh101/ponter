@@ -56,7 +56,16 @@ export async function verifyPassword(
   const saltHex = parts[4];
   const targetHashHex = parts[5];
 
-  if (!iterations || !saltHex || !targetHashHex) {
+  // Guard the iteration count as well as the hex fields: a stored hash with a
+  // non-numeric or absurd `i=` would otherwise reach `deriveBits` and throw
+  // (or hang) instead of cleanly failing verification.
+  if (
+    !iterations ||
+    iterations < 1 ||
+    iterations > 4294967295 ||
+    !saltHex ||
+    !targetHashHex
+  ) {
     return false;
   }
 

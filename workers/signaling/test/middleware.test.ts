@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { authMiddleware } from '../src/middleware/auth';
 import { errorHandler, AppError } from '../src/middleware/error';
 import { corsMiddleware } from '../src/middleware/cors';
@@ -197,6 +198,21 @@ describe('Global Error Handler', () => {
       code: 'INTERNAL_SERVER_ERROR',
       details: null,
     });
+  });
+
+  it('passes through a Hono HTTPException response unchanged', async () => {
+    // Hono's own `HTTPException` carries a complete response; the handler must
+    // return it as-is rather than flattening it to a 500.
+    const app = new Hono<AppContext>();
+    app.onError(errorHandler);
+    app.get('/not-found', () => {
+      throw new HTTPException(404, { message: 'Nothing here' });
+    });
+
+    const res = await app.request('/not-found', {}, env);
+    expect(res.status).toBe(404);
+    // `HTTPException`'s default response is `text/plain`, carrying its message.
+    expect(await res.text()).toBe('Nothing here');
   });
 });
 

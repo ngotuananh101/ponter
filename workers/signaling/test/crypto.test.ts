@@ -26,6 +26,17 @@ describe('Crypto & JWT Utilities', () => {
       const isValid = await verifyPassword('password', 'invalid-hash-string');
       expect(isValid).toBe(false);
     });
+
+    it('rejects a serialized hash with an out-of-range iteration count', async () => {
+      // Zero iterations and a value above the PBKDF2 maximum must both fail
+      // cleanly rather than reaching `deriveBits` and throwing.
+      const zeroIterations = '$pbkdf2$v=1$i=0$abcdef$0123456789abcdef';
+      const tooManyIterations =
+        '$pbkdf2$v=1$i=99999999999$abcdef$0123456789abcdef';
+
+      expect(await verifyPassword('password', zeroIterations)).toBe(false);
+      expect(await verifyPassword('password', tooManyIterations)).toBe(false);
+    });
   });
 
   describe('JWT Tokens', () => {

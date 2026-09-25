@@ -39,6 +39,17 @@ export const errorHandler: ErrorHandler = (err, c) => {
     );
   }
 
+  // Hono's own `HTTPException` (and anything else exposing `getResponse`)
+  // already carries a fully-formed response — including the status and body it
+  // was constructed with. Rebuild from that instead of flattening it to a 500.
+  if (
+    err instanceof Error &&
+    'getResponse' in err &&
+    typeof (err as { getResponse: unknown }).getResponse === 'function'
+  ) {
+    return (err as { getResponse: () => Response }).getResponse();
+  }
+
   console.error('[Unhandled Error]', err);
   return c.json(
     {

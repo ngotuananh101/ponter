@@ -180,6 +180,110 @@ describe('Auth & Users REST API', () => {
     expect(profile.user.username).toBe('charlie');
   });
 
+  it('rejects registration with a password shorter than 8 characters', async () => {
+    const res = await app.request(
+      '/api/auth/register',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'shortpass',
+          password: 'short',
+          publicKey: 'pk_shortpass',
+        }),
+      },
+      env,
+    );
+
+    expect(res.status).toBe(400);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects registration with a username shorter than 3 characters', async () => {
+    const res = await app.request(
+      '/api/auth/register',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'ab',
+          password: 'Password123!',
+          publicKey: 'pk_shortuser',
+        }),
+      },
+      env,
+    );
+
+    expect(res.status).toBe(400);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('VALIDATION_ERROR');
+  });
+
+  /**
+   * Register a user then flip `is_active` directly, since no route exposes
+   * deactivation yet. Login must not reveal the inactive state to a caller who
+   * does not know the password.
+   */
+  async function registerInactiveUser(username: string) {
+    await app.request(
+      '/api/auth/register',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username,
+          password: 'Password123!',
+          publicKey: `pk_${username}`,
+        }),
+      },
+      env,
+    );
+
+    await env.DB.prepare('UPDATE users SET is_active = 0 WHERE username = ?')
+      .bind(username)
+      .run();
+  }
+
+  it('returns INVALID_CREDENTIALS for a wrong password on an inactive account', async () => {
+    await registerInactiveUser('frank');
+
+    const res = await app.request(
+      '/api/auth/login',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'frank',
+          password: 'WrongPassword1!',
+        }),
+      },
+      env,
+    );
+
+    expect(res.status).toBe(401);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('returns ACCOUNT_INACTIVE for a correct password on an inactive account', async () => {
+    await registerInactiveUser('grace');
+
+    const res = await app.request(
+      '/api/auth/login',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'grace', password: 'Password123!' }),
+      },
+      env,
+    );
+
+    expect(res.status).toBe(401);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('ACCOUNT_INACTIVE');
+  });
+
   it('refreshes token via /api/auth/refresh', async () => {
     const regRes = await app.request(
       '/api/auth/register',

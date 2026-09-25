@@ -7,34 +7,12 @@ import { hashPassword, verifyPassword } from '../utils/crypto';
 import { signAccessToken, signRefreshToken, verifyToken } from '../utils/jwt';
 import { AppError } from '../middleware/error';
 import { authMiddleware } from '../middleware/auth';
+import { toPublicUser } from '../utils/user';
 
 const auth = new Hono<AppContext>();
 
-/**
- * Projection of a `users` row safe to return over the API. The password hash
- * and internal `metadata` column are deliberately omitted.
- */
-function toPublicUser(user: {
-  id: string;
-  username: string;
-  email: string | null;
-  publicKey: string;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-  lastLoginAt: string | null;
-}) {
-  return {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    publicKey: user.publicKey,
-    isActive: user.isActive,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    lastLoginAt: user.lastLoginAt,
-  };
-}
+const MIN_USERNAME_LENGTH = 3;
+const MIN_PASSWORD_LENGTH = 8;
 
 auth.post('/register', async (c) => {
   const body = await c.req
@@ -54,10 +32,30 @@ auth.post('/register', async (c) => {
     );
   }
 
+  // Trim before validating so a username of only whitespace cannot slip past
+  // the length check, and so uniqueness compares the stored value exactly.
+  const username = body.username.trim();
+
+  if (username.length < MIN_USERNAME_LENGTH) {
+    throw new AppError(
+      'Username must be at least 3 characters',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  if (body.password.length < MIN_PASSWORD_LENGTH) {
+    throw new AppError(
+      'Password must be at least 8 characters',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
   const db = getDb(c.env.DB);
 
   // Check username or email uniqueness
-  const conditions = [eq(users.username, body.username)];
+  const conditions = [eq(users.username, username)];
   if (body.email) {
     conditions.push(eq(users.email, body.email));
   }
@@ -68,7 +66,7 @@ auth.post('/register', async (c) => {
     .get();
 
   if (existing) {
-    if (existing.username === body.username) {
+    if (existing.username === username) {
       throw new AppError('Username already taken', 409, 'USERNAME_EXISTS');
     }
     throw new AppError('Email already registered', 409, 'EMAIL_EXISTS');
@@ -81,7 +79,7 @@ auth.post('/register', async (c) => {
     .insert(users)
     .values({
       id: userId,
-      username: body.username,
+      username,
       email: body.email ?? null,
       publicKey: body.publicKey,
       passwordHash,
@@ -142,10 +140,9 @@ auth.post('/login', async (c) => {
     );
   }
 
-  if (!user.isActive) {
-    throw new AppError('User account is inactive', 401, 'ACCOUNT_INACTIVE');
-  }
-
+  // Verify the password before reporting account state. Checking `isActive`
+  // first would let an unauthenticated caller probe whether a username exists
+  // and is deactivated, without ever knowing the password.
   const isValid = await verifyPassword(body.password, user.passwordHash);
   if (!isValid) {
     throw new AppError(
@@ -153,6 +150,10 @@ auth.post('/login', async (c) => {
       401,
       'INVALID_CREDENTIALS',
     );
+  }
+
+  if (!user.isActive) {
+    throw new AppError('User account is inactive', 401, 'ACCOUNT_INACTIVE');
   }
 
   await db

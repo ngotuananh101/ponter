@@ -237,7 +237,7 @@ describe('Devices, Agents & Sessions REST API', () => {
           body: JSON.stringify({
             fingerprint: 'fp_duplicate',
             deviceName: 'Another machine',
-            deviceType: 'laptop',
+            deviceType: 'mobile',
           }),
         },
         env,
@@ -246,6 +246,28 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(second.status).toBe(409);
       const err = (await second.json()) as ErrorResponse;
       expect(err.code).toBe('DEVICE_EXISTS');
+    });
+
+    it('rejects an invalid deviceType with 400 VALIDATION_ERROR', async () => {
+      const res = await app.request(
+        '/api/devices',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            fingerprint: 'fp_bad_type',
+            deviceType: 'laptop',
+          }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('VALIDATION_ERROR');
     });
 
     it('deletes a device referenced by a session without a 500', async () => {

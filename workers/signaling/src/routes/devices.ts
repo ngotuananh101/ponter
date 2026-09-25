@@ -9,6 +9,9 @@ import { AppError } from '../middleware/error';
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
 
+/** Mirrors the `device_type` domain documented in `src/db/schema.ts`. */
+const ALLOWED_DEVICE_TYPES = ['desktop', 'mobile', 'web'];
+
 router.get('/', async (c) => {
   const user = c.get('user');
   const db = getDb(c.env.DB);
@@ -32,6 +35,14 @@ router.post('/', async (c) => {
   if (!body?.fingerprint || !body?.deviceType) {
     throw new AppError(
       'fingerprint and deviceType are required',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  if (!ALLOWED_DEVICE_TYPES.includes(body.deviceType)) {
+    throw new AppError(
+      'Invalid deviceType, must be desktop, mobile, or web',
       400,
       'VALIDATION_ERROR',
     );
