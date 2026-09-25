@@ -30,7 +30,7 @@ class WeriftDataChannel implements RTCDataChannelLike {
 
   send(data: string | ArrayBuffer | Uint8Array): void {
     if (typeof data === 'string') {
-      this.dc.send(Buffer.from(data));
+      this.dc.send(data);
     } else if (data instanceof ArrayBuffer) {
       this.dc.send(Buffer.from(data));
     } else {

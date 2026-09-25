@@ -155,8 +155,11 @@ describe('Real P2P Handshake (werift)', () => {
     expect(chB.readyState).toBe('open');
 
     // Verify bidirectional data transfer
+    let receivedTypeA: string | null = null;
+    let receivedTypeB: string | null = null;
     const echoPromise = new Promise<string>((resolve) => {
       chA.onMessage((data) => {
+        receivedTypeA = typeof data;
         const text =
           typeof data === 'string' ? data : Buffer.from(data).toString();
         resolve(text);
@@ -164,6 +167,7 @@ describe('Real P2P Handshake (werift)', () => {
     });
 
     chB.onMessage((data) => {
+      receivedTypeB = typeof data;
       const text =
         typeof data === 'string' ? data : Buffer.from(data).toString();
       chB.send(`echo:${text}`);
@@ -173,6 +177,8 @@ describe('Real P2P Handshake (werift)', () => {
     const echo = await echoPromise;
 
     expect(echo).toBe('echo:ping-p2p');
+    expect(receivedTypeA).toBe('string');
+    expect(receivedTypeB).toBe('string');
 
     // Verify stats return RTCStatsReport
     const statsA = await offererPC.getStats();
