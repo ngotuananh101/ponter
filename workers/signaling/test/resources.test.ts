@@ -496,6 +496,63 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(err.code).toBe('NOT_FOUND');
     });
 
+    it('rejects an empty-string deviceId with 404 (not 500)', async () => {
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ deviceId: '' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('NOT_FOUND');
+    });
+
+    it('rejects an empty-string agentId with 404 (not 500)', async () => {
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ agentId: '' }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('NOT_FOUND');
+    });
+
+    it('rejects a non-string deviceId with 404 (not 500)', async () => {
+      const res = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ deviceId: 12345 }),
+        },
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as ErrorResponse;
+      expect(err.code).toBe('NOT_FOUND');
+    });
+
     it('rejects a cross-tenant deviceId with 404 NOT_FOUND', async () => {
       // Register a second user and give them a device the first user must not
       // be able to attach to their own session.
