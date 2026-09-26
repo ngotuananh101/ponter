@@ -281,6 +281,67 @@ describe('RESTPollingTransport', () => {
     transport.close();
   });
 
+  it('includes the status and response body in the send() error message', async () => {
+    // R30: Week 4 spec §4.7 names this error path; only the fact of throwing
+    // was untested, and the message is what a caller debugs with.
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response('{"code":"SESSION_NOT_ACTIVE"}', { status: 409 }),
+    );
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    await expect(
+      transport.send({
+        type: 'ice-candidate',
+        data: {
+          sessionId: '',
+          candidate: 'candidate:1 1 UDP 2130706431 192.168.1.1 50000 typ host',
+          sdpMid: null,
+          sdpMLineIndex: null,
+        },
+      }),
+    ).rejects.toThrow(
+      'Failed to send signal ice-candidate: HTTP 409 {"code":"SESSION_NOT_ACTIVE"}',
+    );
+
+    transport.close();
+  });
+
+  it('backs off polling interval when fetch rejects', async () => {
+    // R30: src/transport.ts:170-174 catches a thrown fetch and backs off.
+    // Without it a Worker that is down turns into a hot retry loop.
+    const fetchSpy = vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    });
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      initialIntervalMs: 100,
+      maxIntervalMs: 400,
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    transport.subscribe(() => {});
+
+    await vi.advanceTimersByTimeAsync(110);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(139); // 249ms — not yet
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // 250ms — backed off to 150ms
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    transport.close();
+  });
+
   it('backs off polling interval on a non-2xx response', async () => {
     // Mutant #3 (Week 4 R24): deleting the `!res.ok` branch at
     // src/transport.ts:138-146 leaves the suite green against a body that is

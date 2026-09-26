@@ -432,10 +432,21 @@ Errors follow the existing shape (`AppError` → `{ error, code, details }`):
 | Condition | Status | Code |
 |---|---|---|
 | Missing/invalid token | 401 | `UNAUTHORIZED` |
-| Malformed JSON | 400 | `MALFORMED_JSON` (existing handler) |
+| Malformed JSON | 400 | `VALIDATION_ERROR` (see the note below) |
 | Missing/invalid field | 400 | `VALIDATION_ERROR` |
 | Session not found **or not owned by caller** | 404 | `NOT_FOUND` |
 | Session not in a signaling-permitting state | 409 | `SESSION_NOT_ACTIVE` |
+
+> **Errata (2026-09-26, Week 5 plan Task 2).** This row originally promised
+> `MALFORMED_JSON`. It is not reachable on these routes: each POST does
+> `await c.req.json().catch(() => null)` and then validates, so a `SyntaxError`
+> becomes `null` and then `VALIDATION_ERROR`. The `SyntaxError` branch in
+> `src/middleware/error.ts` remains in place for any route that does not
+> pre-catch. The observable contract is pinned by
+> `test/signal.test.ts` → *"rejects a non-JSON body with 400 VALIDATION_ERROR,
+> not MALFORMED_JSON"*. Changing the routes to surface `MALFORMED_JSON` would
+> contradict `routes/sessions.ts`, which chooses `VALIDATION_ERROR`
+> deliberately and has its own test.
 
 ### 5.2 Ownership Enforcement
 

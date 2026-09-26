@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WeriftAdapter } from '../src/adapters/werift';
-import { PeerConnection } from '../src/connection';
+import { PeerConnection, MAX_PENDING_CANDIDATES } from '../src/connection';
 import type {
   RTCPeerConnectionLike,
   RTCDataChannelLike,
@@ -37,6 +37,16 @@ class InProcessBus {
         this.handlers.delete(id);
       },
     };
+  }
+
+  /**
+   * Deliver a signal to a named transport without going through a sender.
+   * Used to drive the answerer with candidates whose offer never arrives.
+   */
+  deliverTo(id: string, msg: SignalMessage): void {
+    for (const handler of [...(this.handlers.get(id) ?? [])]) {
+      handler(msg);
+    }
   }
 }
 
@@ -290,4 +300,117 @@ describe('Real P2P Handshake (werift)', () => {
       'timeout waiting for channel "non_existent"',
     );
   });
+
+  it('bounds the pending ICE candidate buffer before remote description (R32)', async () => {
+    // R32: src/connection.ts:22 is unbounded. This drives the answerer with a
+    // hand-rolled transport that never delivers an offer, so nothing ever sets
+    // the remote description and every candidate is buffered.
+    const bus = new InProcessBus();
+    const tB = bus.createTransport('B', 'A');
+
+    const adapterB = new WeriftAdapter({ iceServers: [] });
+    answererPC = new PeerConnection(adapterB, tB, {
+      role: 'answerer',
+      channelLabels: [],
+    });
+
+    for (let i = 0; i < MAX_PENDING_CANDIDATES + 20; i += 1) {
+      bus.deliverTo('B', {
+        type: 'ice-candidate',
+        data: {
+          sessionId: 'sess_1',
+          candidate: `candidate:${i} 1 UDP 2130706431 192.168.1.1 ${50000 + i} typ host`,
+          sdpMid: null,
+          sdpMLineIndex: null,
+        },
+      });
+      // handleSignal is dispatched through a void'd promise chain; yield so the
+      // buffer actually receives each candidate before the next one is sent.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(answererPC.pendingCandidateCount).toBeLessThanOrEqual(
+      MAX_PENDING_CANDIDATES,
+    );
+  }, 20000);
+
+  it('flushes the remaining candidates when one is rejected (R32)', async () => {
+    // R32: src/connection.ts:170 splices the whole buffer out before the first
+    // await, so a rejection on candidate 2 of 3 discards candidate 3 — it is
+    // neither added nor still queued.
+    const bus = new InProcessBus();
+    const tB = bus.createTransport('B', 'A');
+
+    const added: string[] = [];
+    let remoteSet = false;
+
+    const inner = new WeriftAdapter({ iceServers: [] });
+    const recorder: RTCPeerConnectionLike = {
+      createOffer: () => inner.createOffer(),
+      createAnswer: () => inner.createAnswer(),
+      setLocalDescription: (d) => inner.setLocalDescription(d),
+      setRemoteDescription: async (d) => {
+        await inner.setRemoteDescription(d);
+        remoteSet = true;
+      },
+      addIceCandidate: async (c) => {
+        added.push(c.candidate ?? '');
+        if (c.candidate?.includes('cand_2')) {
+          throw new Error('bad candidate');
+        }
+        await inner.addIceCandidate(c);
+      },
+      createDataChannel: (label, options) =>
+        inner.createDataChannel(label, options),
+      onIceCandidate: (handler) => inner.onIceCandidate(handler),
+      onDataChannel: (handler) => inner.onDataChannel(handler),
+      onConnectionStateChange: (handler) =>
+        inner.onConnectionStateChange(handler),
+      getStats: () => inner.getStats(),
+      close: () => inner.close(),
+    };
+
+    answererPC = new PeerConnection(recorder, tB, {
+      role: 'answerer',
+      channelLabels: [],
+    });
+
+    for (const name of ['cand_1', 'cand_2', 'cand_3']) {
+      bus.deliverTo('B', {
+        type: 'ice-candidate',
+        data: {
+          sessionId: 'sess_1',
+          candidate: name,
+          sdpMid: null,
+          sdpMLineIndex: null,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    // Deliver an offer so the answerer sets its remote description and flushes.
+    // The offer is real enough to parse; werift's setRemoteDescription is the
+    // only part that has to succeed, and the answer it produces is discarded.
+    const offererAdapter = new WeriftAdapter({ iceServers: [] });
+    const tA = bus.createTransport('A', 'B');
+    offererPC = new PeerConnection(offererAdapter, tA, {
+      role: 'offerer',
+      channelLabels: ['terminal'],
+    });
+    const offer = await offererAdapter.createOffer();
+    bus.deliverTo('B', {
+      type: 'offer',
+      data: {
+        sessionId: 'sess_1',
+        sdp: offer.sdp ?? '',
+        capabilities: ['terminal'],
+      },
+    });
+
+    await vi.waitFor(() => expect(remoteSet).toBe(true));
+    await vi.waitFor(() => expect(added).toHaveLength(3));
+
+    // cand_2 threw, and cand_3 was still attempted: the tail was not dropped.
+    expect(added).toEqual(['cand_1', 'cand_2', 'cand_3']);
+  }, 20000);
 });

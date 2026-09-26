@@ -482,4 +482,27 @@ describe('Signaling REST API (/api/signal)', () => {
     const err = (await res.json()) as ErrorResponse;
     expect(err.code).toBe('VALIDATION_ERROR');
   });
+
+  it('rejects a non-JSON body with 400 VALIDATION_ERROR, not MALFORMED_JSON', async () => {
+    // R31: the routes do `await c.req.json().catch(() => null)` before
+    // validating, so a SyntaxError never reaches the MALFORMED_JSON branch in
+    // middleware/error.ts:28-40. This test pins the observable so a future edit
+    // that lets the SyntaxError through is a deliberate, visible change.
+    const res = await app.request(
+      '/api/signal/offer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: 'this is not json',
+      },
+      env,
+    );
+
+    expect(res.status).toBe(400);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('VALIDATION_ERROR');
+  });
 });

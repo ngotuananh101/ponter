@@ -14,12 +14,39 @@ import {
   createCandidateSignal,
 } from './signal-handler';
 
+/**
+ * Hard cap on ICE candidates buffered before the remote description is set.
+ *
+ * The buffer exists because `addIceCandidate` before `setRemoteDescription`
+ * is a protocol error (Week 4 F1). A peer that trickles candidates while never
+ * sending an offer would otherwise grow it without limit — the candidate count
+ * is attacker-influenced, and each entry is a small object retained for the
+ * life of the connection.
+ *
+ * 64 is chosen against the real shape of a loopback/single-STUN exchange: a
+ * browser emits a handful of host candidates plus one per STUN server, so 64 is
+ * far above any honest handshake and far below a useful memory-exhaustion
+ * vector. When the cap is reached the oldest entry is dropped rather than the
+ * newest: an ICE agent retries connectivity checks against its full candidate
+ * set, so a stale candidate is the cheaper one to lose.
+ */
+export const MAX_PENDING_CANDIDATES = 64;
+
 export class PeerConnection {
   public readonly dataChannels = new DataChannelManager();
 
   private remoteDescriptionSet = false;
   private isClosed = false;
   private readonly pendingCandidates: RTCIceCandidateInit[] = [];
+
+  /**
+   * Read-only view of the pre-remote-description candidate buffer, for tests
+   * and diagnostics. The buffer is a private detail; its *size* is not.
+   */
+  get pendingCandidateCount(): number {
+    return this.pendingCandidates.length;
+  }
+
   private readonly stateListeners: Array<(state: string) => void> = [];
   private readonly unsubscribeTransport: () => void;
 
@@ -131,7 +158,10 @@ export class PeerConnection {
         if (this.remoteDescriptionSet) {
           await this.peer.addIceCandidate(candInit);
         } else {
-          // F1 ICE candidate buffering
+          // F1 ICE candidate buffering, bounded (R32).
+          if (this.pendingCandidates.length >= MAX_PENDING_CANDIDATES) {
+            this.pendingCandidates.shift();
+          }
           this.pendingCandidates.push(candInit);
         }
         break;
@@ -169,7 +199,16 @@ export class PeerConnection {
   private async flushPendingCandidates(): Promise<void> {
     const queued = this.pendingCandidates.splice(0);
     for (const cand of queued) {
-      await this.peer.addIceCandidate(cand);
+      try {
+        await this.peer.addIceCandidate(cand);
+      } catch (error: unknown) {
+        // R32: one bad candidate must not discard the rest. The buffer was
+        // already emptied by splice(), so a bare `await` in the loop would
+        // leave every later candidate neither added nor queued. ICE recovers
+        // from a missing candidate as long as one pair succeeds, so dropping
+        // one and keeping the others is strictly better than dropping the tail.
+        console.error('[PeerConnection] failed to add ICE candidate', error);
+      }
     }
   }
 }
