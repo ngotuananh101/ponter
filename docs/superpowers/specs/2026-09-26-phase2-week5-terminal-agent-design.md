@@ -1368,7 +1368,7 @@ bounded queue's drain point is the place to batch.
 connection's ICE state is bound to the signaling exchange that created it.
 
 **Decision.** On an unexpected socket close, `signal.rs` reconnects with the mirrored backoff (§5.5.4)
-and re-sends `hello`. The **peer connection and PTY session are torn down** at that point; the agent
+and reconnects. The **peer connection and PTY session are torn down** at that point; the agent
 does not attempt to resume the old session. An in-place ICE restart (`create_offer` with
 `ice_restart`, renegotiation) is a follow-up.
 
@@ -1398,7 +1398,7 @@ ergonomic path for local development, and the spec says so rather than pretendin
 **Consequence.** The default deployment path is `AGENT_CREDENTIAL` in the service's environment (or a
 0600 file read by the unit). A `--credential-file` flag and OS-keyring storage are follow-ups. The
 agent also never trusts its own `--agent-id` for authorization: identity is derived server-side from
-the token, and `hello`'s `agentId` is a convenience the server must cross-check (§5.9.1).
+the token, and `--agent-id` is a display label the server does not consult (§5.9.1).
 
 ### ADR-14: One active session per agent process
 
@@ -1568,16 +1568,18 @@ The `#[serde(tag = "type", content = "data")]` shape is the whole interop contra
 what `RESTPollingTransport.parseSignalItem` produces and consumes
 (`packages/webrtc-core/src/transport.ts:182-218`). A round-trip test pins it (§5.10.1).
 
-Control frames are a **separate** enum, never merged into `SignalMessage`, so a malformed control
-frame cannot be mistaken for a signal:
-
-```rust
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum ClientFrame {
-    Hello { agent_id: String, version: String, platform: String },
-}
-```
+> **Errata (2026-09-26, Week 5 plan Task 9).** There is no `ClientFrame`. §4.5's `handleInbound` — the
+> authoritative worker contract — has no `hello` arm, so a `hello` would be answered
+> `{ "type": "error", "code": "VALIDATION_ERROR" }`, a frame no conforming client can send. Identity
+> comes from the credential in the handshake header (ADR-13), which is strictly stronger than a
+> self-declared agent id, so nothing is lost. The original enum also carried
+> `rename_all = "kebab-case"` on the *enum*, which renames variants, not fields — its payload would
+> have serialized `agent_id`, not `agentId` (D-4). The enum is moot either way.
+>
+> `signal.rs` defines no control frame. It has two enums instead: an inbound `InboundFrame`
+> (`Signal { data }`, `Pong`, `Error { code }`) and a single-variant outbound `Envelope::Signal`, both
+> `#[serde(tag = "type")]` so the wire shape matches `AgentSocketMessage` in `packages/shared`. The
+> `offer`/`answer`/`ice-candidate` rows below are the contract.
 
 #### 5.5.2 Handshake and authentication
 
@@ -1975,8 +1977,8 @@ struct Cli {
     #[arg(long, env = "AGENT_ID")]
     agent_id: String,
 
-    /// Signaling WebSocket URL, e.g. wss://host/ws/agent
-    #[arg(long, env = "AGENT_SERVER", default_value = "ws://localhost:8787/ws/agent")]
+    /// Signaling WebSocket URL, e.g. wss://host/api/ws/agent
+    #[arg(long, env = "AGENT_SERVER", default_value = "ws://localhost:8787/api/ws/agent")]
     server: String,
 
     /// Shell to spawn. Defaults to $SHELL (unix) or cmd.exe (windows).
@@ -2088,19 +2090,29 @@ WS with a `Close` frame, exit `0`. `tokio`'s `signal` feature is included by `fe
 
 | Direction | Frame | Body |
 |---|---|---|
-| agent → server | `hello` | `{ "type": "hello", "agentId": "…", "version": "0.1.0", "platform": "linux" }` — **first frame**, within 5 s of the handshake or the server closes |
 | server → agent | `offer` | `SignalMessage::Offer` — `{ "type": "offer", "data": { "sessionId", "sdp", "capabilities" } }` |
 | agent → server | `answer` | `SignalMessage::Answer` — `{ "type": "answer", "data": { "sessionId", "sdp", "approved" } }` |
 | either → either | `ice-candidate` | `SignalMessage::IceCandidate` — `{ "type": "ice-candidate", "data": { "sessionId", "candidate", "sdpMid", "sdpMLineIndex" } }` |
-| server → agent | `error` | `{ "type": "error", "code": "UNAUTHORIZED" \| "BAD_FRAME" \| "SESSION_NOT_FOUND", "message": "…" }` — control frame, not a `SignalMessage` |
+| server → agent | `error` | `{ "type": "error", "code": AgentErrorCode }` — control frame, not a `SignalMessage`. Codes: `MALFORMED_JSON`, `VALIDATION_ERROR`, `NOT_FOUND`, `INTERNAL_SERVER_ERROR`, `SESSION_NOT_ACTIVE`. There is no `message` field. |
 
 - **Transport:** WebSocket, `Authorization: Bearer ag_…` on the handshake. Text frames only.
 - **Liveness:** protocol-level `Ping`/`Pong` every 30 s (server may also ping; the client's automatic
   pong plus a periodic flush satisfies it — R15).
 - **Routing:** the server pushes offers for sessions whose `sessions.agentId` is this agent. The agent
   does not subscribe to a session id, so a session created after the socket opened still reaches it.
-- **Identity:** the server derives the owner from the token; a `hello.agentId` that does not match the
-  token's agent is rejected with `UNAUTHORIZED` (ADR-13).
+- **Identity:** the server derives the agent from the credential presented on the handshake. There is
+  no `hello` and therefore no `hello.agentId` to cross-check: `--agent-id` is a display label, never an
+  authorization input (ADR-13).
+
+> **Errata (2026-09-26, Week 5 plan Task 9).** The `hello` row is removed: §4.5's `handleInbound` has
+> no arm for it, so the frame it specifies is one the server rejects (D-2). The `Identity` bullet that
+> followed is rewritten for the same reason — there is no `hello.agentId` to cross-check. The `error`
+> row's code list (`UNAUTHORIZED | BAD_FRAME | SESSION_NOT_FOUND`) is replaced by §4.3.3's: §4.3.3 is
+> authoritative for error codes, and its set is the one the worker actually emits (D-3). The
+> `"message"` field never existed in any frame the worker sends; `UNAUTHORIZED` and `UPGRADE_REQUIRED`
+> are HTTP responses on the handshake, not frames. `SESSION_NOT_ACTIVE` is the terminated-session
+> refusal added in Week 5's session state machine. The observable contract is pinned by
+> `workers/signaling/test/ws.test.ts`.
 
 #### 5.9.2 Data channel
 
@@ -2120,7 +2132,7 @@ ignores any `channel` value other than `terminal`.
 R18 and R17 mean the agent has nothing to talk to until the Worker side lands. Week 5 therefore
 requires a **companion signaling change**, specified elsewhere but named here so it is not lost:
 
-1. A WebSocket route (`/ws/agent`) with `Upgrade` handling — a Durable Object per agent, or the
+1. A WebSocket route (`/api/ws/agent`) with `Upgrade` handling — a Durable Object per agent, or the
    Week 4 ADR-02 `SignalTransport` seam realised server-side.
 2. An `ag_` token verifier: prefix check, constant-time hash comparison, resolving to the owning
    `userId` so the existing ownership predicate (`routes/signal.ts:22-43`) works unchanged (R20).
@@ -2295,13 +2307,29 @@ template:
 ```env
 # apps/agent/.env.example — copy to .env (gitignored) and fill in.
 AGENT_CREDENTIAL=ag_replace_me
-AGENT_SERVER=ws://localhost:8787/ws/agent
+AGENT_SERVER=ws://localhost:8787/api/ws/agent
 AGENT_ID=my-laptop
 # AGENT_SHELL=/bin/bash
 # STUN_SERVER=stun:stun.l.google.com:19302
 ```
 
 No real credential is ever committed; `.env` is already ignored.
+
+> **Errata (2026-09-26, Week 5 plan Task 9).** The path is `/api/ws/agent`, not `/ws/agent` (D-10).
+> This document spells it both ways: §4.4, §4.13 and §8.1 mount the router at `/api/ws`, while the
+> three sites corrected above said `/ws/agent`. The worker is authoritative — it mounts
+> `app.route('/api/ws', ws)` with a `/agent` route, and every other route in the worker is under
+> `/api`. An agent built from the uncorrected spellings gets a 404 at the handshake.
+>
+> Separately, every narrative mention of the agent sending `hello` on connect or on reconnect is
+> superseded along with the row in §5.9.1: §5.5.2 (`:1599`, "the first frame sent is
+> `ClientFrame::Hello`"), §5.5.5 (`:1658`, "reconnects and re-sends `hello`"), §5.8.2's pipeline
+> diagram (`:2022`, "connect WS … send hello … wait for offer"), and §5.12's security bullet
+> (`:2318`, "rejects a `hello` mismatch" — note this is §5.12, not §5.11.4; §5.11.4 is the CI file).
+> The agent sends nothing on connect; the socket is authenticated by the handshake header, and the
+> first frame on the wire is the server's `offer`. On an unexpected close it reconnects with the
+> mirrored backoff and re-sends nothing — the peer connection and PTY are still torn down, which is
+> the part of §5.5.5 that holds.
 
 ---
 
@@ -2360,7 +2388,7 @@ No real credential is ever committed; `.env` is already ignored.
 | # | Task | Deliverable | Tests |
 |---|---|---|---|
 | 1 | **Crate scaffold** | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/main.rs` (CLI only), `.env.example`; versions re-confirmed on crates.io and pinned (ADR-08) | 0 |
-| 2 | **`signal.rs` types + framing** | `SignalMessage`, `ClientFrame`, JSON round-trip and rejection | 12 |
+| 2 | **`signal.rs` types + framing** | `SignalMessage`, `InboundFrame`, `Envelope`, JSON round-trip and rejection | 12 |
 | 3 | **`signal.rs` transport** | handshake with `Authorization`, inbound queue, outbound channel, 30 s ping + flush, mirrored backoff, reconnect | 3 |
 | 4 | **`pty.rs` framing** | `DataChannelMessage<TerminalDataMessage>`, base64 encode/decode, chunk bounds | 9 |
 | 5 | **`pty.rs` spawn + pump** | `PtySession::spawn`, both pump directions, bounded backpressure, `resize`, `close` | 4 (incl. PTY echo) |

@@ -21,7 +21,7 @@
 - **SQLite datetime format compatibility:** every D1 timestamp write and comparison this plan adds MUST use `datetime('now')` (space-separated `YYYY-MM-DD HH:MM:SS`, UTC). NEVER write `new Date().toISOString()` (`YYYY-MM-DDTHH:MM:SS.sssZ`) into a column that holds `datetime('now')` values: the `'T'` sorts after the `' '`, so an ISO value compares lexicographically greater than every SQLite timestamp and any `> datetime('now', '-90 seconds')` window silently becomes a no-op. When JS must produce this format, use `sqliteNow()` (Task 5).
   The rule is scoped to columns that participate in a `datetime()` comparison, which is why it does **not** reach `users.last_login_at`. That column is written as an ISO string (`routes/auth.ts:162`) and is never compared against a `datetime()` value anywhere in the Worker — it is only projected opaquely through `toPublicUser`. Converging it is a Week 4 cleanup with no observable effect and no test to pin it, so it is deliberately left alone rather than swept into this week's diff. `sessions.ended_at`/`updated_at` are the opposite case — they *are* compared — which is why D-6 converges them.
 - `packages/shared` MUST remain DOM-free: `sdp: string`, `candidate: string`, no `RTCSessionDescriptionInit`, no `RTCIceCandidateInit`. The existing `SignalMessage` union is **not modified** this week.
-- `packages/webrtc-core`'s public API MUST NOT change (ADR-03). The E2E harness consumes it; nothing in `src/` is edited except the two error-path guards Task 1 and Task 2 pin with tests, and `vitest.config.ts`'s `exclude`.
+- `packages/webrtc-core`'s public API MUST NOT change (ADR-03). The E2E harness consumes it; nothing in `src/` is edited except the two error-path guards Task 1 and Task 2 pin with tests — **plus** Task 2's added symbols `export const MAX_PENDING_CANDIDATES = 64;` (line 33 of `packages/webrtc-core/src/connection.ts`) and `get pendingCandidateCount()` (line 46) — and `vitest.config.ts`'s `exclude`.
 - No TypeScript `WebSocketTransport` is added to `packages/webrtc-core`. The browser keeps polling.
 - `apps/agent/target/` is already ignored by `.gitignore`, `.prettierignore` and `eslint.config.js` (`**/target/**`). `apps/agent/Cargo.lock` is NOT ignored and MUST be committed (ADR-08).
 - The E2E harness must not reach the network beyond `127.0.0.1`: `iceServers: []`, no STUN, no TURN. It is gated by `describe.skipIf(!isLinux)` — **not** `it.skipIf`, even though spec §7.3 spells it that way. `it.skipIf` skips the test but still runs `beforeAll`, which spawns `wrangler dev` and applies migrations; on macOS or Windows that fails rather than skips. Task 7 carries the full rationale.
@@ -35,7 +35,7 @@
   ```
 
   Use `git commit -m "subject" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"` (a second `-m` keeps it as a separate paragraph), or `git commit -F -` with the subject and trailer on their own lines. A PR description written from this plan ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- **Test baseline: 135 passing JS tests** at `264277f` (signaling 60, `webrtc-core` 24, `apps/web` 30, `api-client` 11, `crypto` 10). Target: **164 JS tests** — signaling **81**, `webrtc-core` **32**, the other three unchanged. Reported **separately** from the Rust suite (**11 test functions**, `cargo test`) and the E2E config (**2**), which run under different runners and do not enter the JS total. The Rust number is a function count, not a case count: §8.1 task 6's `+5` counts the R1–R5 cases the spec names, and several functions cover more than one. One of the 11 (`pty_echo_round_trip`) is `#[cfg(unix)]`, so a Windows run reports 10 — CI is Linux and sees all 11; Task 6 Step 10 says so.
+- **Test baseline: 135 passing JS tests** at `264277f` (signaling 60, `webrtc-core` 24, `apps/web` 30, `api-client` 11, `crypto` 10). Target: **165 JS tests** — signaling **82**, `webrtc-core` **32**, the other three unchanged. Reported **separately** from the Rust suite (**11 test functions**, `cargo test`) and the E2E config (**2**), which run under different runners and do not enter the JS total. The Rust number is a function count, not a case count: §8.1 task 6's `+5` counts the R1–R5 cases the spec names, and several functions cover more than one. One of the 11 (`pty_echo_round_trip`) is `#[cfg(unix)]`, so a Windows run reports 10 — CI is Linux and sees all 11; Task 6 Step 10 says so.
 - **Week 4 ledger residual — closed by Tasks 1, 2 and 9.** §8.3 names eight residual tests across four rulings, all now covered. `R24` (six reachable branches whose deletion left the suite green) is closed by Task 1's six tests. `R30` (the two `transport.ts` error paths spec §4.7 promises by name) and `R32` (the unbounded candidate buffer, and the flush that drops its tail when one candidate rejects) are closed by Task 2. `R31` (the unreachable `MALFORMED_JSON` path) is closed by Task 2, which pins the contract as `VALIDATION_ERROR` for a non-JSON body and corrects the Week 4 spec's row. `R26` (the `SignalMessage` union missing from `ARCHITECTURE.md` §6.2) is closed by Task 9 Step 2, which is the Week 5 documentation the ledger's own ruling deferred it to. The ledger itself is `.superpowers/sdd/2026-09-25-phase2-week4-webrtc-core/progress.md`, which is gitignored (`.gitignore:38`) and therefore not reviewable in a diff — this line, not a ledger edit, is the durable record (D-15).
 
 ### Spec deviations resolved in this plan
@@ -67,14 +67,14 @@ Two further spec statements are corrected rather than implemented:
 
   | Suite | Baseline | After | Per-file additions |
   |---|---|---|---|
-  | `workers/signaling` | 60 | **81** | `test/signal.test.ts` **+5** — 2 in Task 1 (mutants #5, #6), 1 in Task 2 (R31), 2 in Task 4 (the push cases); `test/resources.test.ts` **+4** — 2 in Task 3, 2 in Task 5; `test/db.test.ts` **+1** (Task 3); `test/ws.test.ts` **+11 (new file)** — 8 in Task 4, 3 in Task 5 |
+  | `workers/signaling` | 60 | **82** | `test/signal.test.ts` **+5** — 2 in Task 1 (mutants #5, #6), 1 in Task 2 (R31), 2 in Task 4 (the push cases); `test/resources.test.ts` **+5** — 2 in Task 3, 3 in Task 5; `test/db.test.ts` **+1** (Task 3); `test/ws.test.ts` **+11 (new file)** — 8 in Task 4, 3 in Task 5 |
   | `packages/webrtc-core` | 24 | **32** | `test/transport.test.ts` **+4** (2 in Task 1, 2 in Task 2); `test/data-channel.test.ts` **+2** (Task 1); `test/p2p.test.ts` **+2** (Task 2) |
   | `apps/web` | 30 | 30 | — |
   | `packages/api-client` | 11 | 11 | — |
   | `packages/crypto` | 10 | 10 | — |
-  | **Total** | **135** | **164** | |
+  | **Total** | **135** | **165** | |
 
-  Running total after each task: T1 +6 → **141**, T2 +5 → **146**, T3 +3 → **149**, T4 +10 → **159**, T5 +5 → **164**, T6–T9 **164**. Reported separately and NOT in that total: `cargo test` (**11 test functions**, Layer 2) and `vitest.e2e.config.ts` (**2**, Layer 3). §4.10's `ws.test.ts ≈ 16` and §4.12's per-task counts are a coverage checklist, not a count — every scenario they name is still covered, several folded into one test where they share a code path. The split above is what the tasks below deliver; it is 3 over §7.5's "≈161", which was itself an approximation.
+  Running total after each task: T1 +6 → **141**, T2 +5 → **146**, T3 +3 → **149**, T4 +10 → **159**, T5 +5 → **165**, T6–T9 **165**. Reported separately and NOT in that total: `cargo test` (**11 test functions**, Layer 2) and `vitest.e2e.config.ts` (**2**, Layer 3). §4.10's `ws.test.ts ≈ 16` and §4.12's per-task counts are a coverage checklist, not a count — every scenario they name is still covered, several folded into one test where they share a code path. The split above is what the tasks below deliver; it is 3 over §7.5's "≈161", which was itself an approximation.
 
 ---
 
@@ -153,18 +153,35 @@ Append to `packages/webrtc-core/test/transport.test.ts` (inside the existing `de
 
 - [ ] **Step 2: Pin mutant #3 — `poll()` backs off on a non-2xx response**
 
-`packages/webrtc-core/src/transport.ts:138-146` grows `currentIntervalMs` by 1.5× on `!res.ok`. Deleting that branch leaves 7/7 transport tests passing.
+`packages/webrtc-core/src/transport.ts:138-146` grows `currentIntervalMs` by 1.5× on `!res.ok`. Deleting that branch leaves 7/7 transport tests passing — unless the 500 body carries valid JSON with a signal, in which case the mutant is observable two independent ways: the interval resets from 250ms to 200ms, and the signal is delivered.
 
 Append to `packages/webrtc-core/test/transport.test.ts`:
 
 ```typescript
   it('backs off polling interval on a non-2xx response', async () => {
     // Mutant #3 (Week 4 R24): deleting the `!res.ok` branch at
-    // src/transport.ts:138-146 makes the transport retry at the base interval
-    // forever against a Worker that is returning 500, turning a transient
-    // outage into a request flood.
+    // src/transport.ts:138-146 leaves the suite green against a body that is
+    // not JSON, because the catch at :170-174 applies the identical 1.5x
+    // backoff. The branch is only observable when the error response carries
+    // a JSON body that a successful poll would act on: without the guard the
+    // 500 is parsed, the signal resets the interval to initialIntervalMs, and
+    // the next poll fires at 200ms instead of 250ms.
     const fetchSpy = vi.fn(
-      async () => new Response('boom', { status: 500 }),
+      async () =>
+        new Response(
+          JSON.stringify({
+            signals: [
+              {
+                id: 'sig_1',
+                sessionId: 'sess_1',
+                type: 'ice-candidate',
+                payload: { sessionId: 'sess_1', candidate: 'candidate:1' },
+              },
+            ],
+            cursor: null,
+          }),
+          { status: 500 },
+        ),
     );
 
     const transport = new RESTPollingTransport({
@@ -176,16 +193,21 @@ Append to `packages/webrtc-core/test/transport.test.ts`:
       fetch: fetchSpy as unknown as typeof fetch,
     });
 
-    transport.subscribe(() => {});
+    const received: string[] = [];
+    transport.subscribe((m) => received.push(m.type));
 
-    // Poll 1 at 100ms, then back off to 150ms scheduled from that instant.
+    // Poll 1 at 100ms -> 500 -> back off to 150ms, scheduled from t=100ms.
     await vi.advanceTimersByTimeAsync(110);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(139); // 249ms — not yet
+    await vi.advanceTimersByTimeAsync(139); // t=249ms — not yet
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1); // 250ms — second poll
+    await vi.advanceTimersByTimeAsync(1); // t=250ms — second poll
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // The signal in the 500 body must NOT have been delivered: the guard
+    // returns before parsing. Without the guard this is ['ice-candidate'].
+    expect(received).toEqual([]);
 
     transport.close();
   });
@@ -374,7 +396,7 @@ Task 1 closed the six mutants. Three Week 4 findings remain: **R30** (the two er
   /** Hard cap on ICE candidates buffered before the remote description lands. */
   export const MAX_PENDING_CANDIDATES = 64;
   ```
-  `MAX_PENDING_CANDIDATES` is the only new public symbol in `webrtc-core` this week. It is a named export from `connection.ts`; `src/index.ts` is unchanged, so the package's documented API surface is unaffected (ADR-03).
+  `MAX_PENDING_CANDIDATES` is one of two new public symbols in `webrtc-core` this week (`pendingCandidateCount` being the other). They are named exports from `connection.ts`; `src/index.ts` is unchanged, so the package's documented API surface is unaffected (ADR-03).
 
 **Why the R31 decision is "correct the spec", not "change the route".** `workers/signaling/src/middleware/error.ts:28-40` already implements `SyntaxError → 400 MALFORMED_JSON`, with a comment explaining that `instanceof SyntaxError` is the discriminator that fires. It is unreachable from the signal routes only because each route pre-empts it with `.catch(() => null)`. `workers/signaling/src/routes/sessions.ts:60` makes the opposite choice **deliberately**, with its own test (`rejects a null JSON body with 400 VALIDATION_ERROR`). Converging all four routes onto `MALFORMED_JSON` would be a behaviour change to shipped, tested routes in a commit whose stated purpose is closing test gaps. The `VALIDATION_ERROR` answer is also the more useful one for a client: "your payload is not a valid signal" is actionable, while "your JSON is malformed" tells a caller who sent `null` nothing. So the spec is corrected and the current behaviour is pinned.
 
@@ -3545,7 +3567,7 @@ Run:
 ```bash
 pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
 ```
-Expected: exit 0 with **164 passing JS tests** (signaling 81, `webrtc-core` 32, `apps/web` 30, `api-client` 11, `crypto` 10).
+Expected: exit 0 with **165 passing JS tests** (signaling 82, `webrtc-core` 32, `apps/web` 30, `api-client` 11, `crypto` 10).
 
 - [ ] **Step 20: Commit**
 
@@ -3588,11 +3610,11 @@ Four flat modules, no `lib.rs`, no `config.rs`, no `webrtc/` subdirectory (D-7).
   pub struct SignalOffer { pub session_id: String, pub sdp: String, pub capabilities: Vec<String> }
   pub struct SignalAnswer { pub session_id: String, pub sdp: String, pub approved: bool }
   pub struct IceCandidateSignal { pub session_id: String, pub candidate: String, pub sdp_mid: Option<String>, pub sdp_mline_index: Option<i32> }
-  pub struct SignalClient;
+  pub struct SignalClient { sink: mpsc::Sender<String>, stream: mpsc::Receiver<String>, inbound_tx: mpsc::Sender<SignalMessage>, outbound_rx: mpsc::Receiver<SignalMessage> }
   impl SignalClient {
-      pub async fn connect(url: &str, credential: &str, agent_id: &str)
+      pub async fn connect(url: &str, credential: &str, _agent_id: &str)
           -> Result<(Self, mpsc::Receiver<SignalMessage>, mpsc::Sender<SignalMessage>)>;
-      pub async fn run(self) -> Result<()>;
+      pub async fn run(mut self) -> Result<()>;
   }
   pub fn parse_inbound(raw: &str) -> Result<Option<SignalMessage>>;
   pub fn next_backoff(current: Duration) -> Duration;
@@ -3617,13 +3639,13 @@ Four flat modules, no `lib.rs`, no `config.rs`, no `webrtc/` subdirectory (D-7).
   // src/pty.rs
   pub const MAX_PTY_CHUNK: usize;            // 16 * 1024
   pub const MAX_FRAME_BYTES: usize;          // 64 * 1024
-  pub struct PtySession;
+  pub struct PtySession { master: Box<dyn MasterPty + Send>, child: Box<dyn Child + Send + Sync> }
   impl PtySession {
       /// `input` is caller-owned: the sending half must exist before the
       /// browser's channel reports `open`, or the first keystrokes are lost.
-      pub fn spawn(shell: &str, cols: u16, rows: u16, input: mpsc::Receiver<Vec<u8>>) -> Result<Self>;
+      pub fn spawn(shell: &str, cols: u16, rows: u16, mut input: mpsc::Receiver<Vec<u8>>) -> Result<Self>;
       pub fn start_reader(&self, terminal_id: String) -> Result<mpsc::Receiver<String>>;
-      pub async fn close(self) -> Result<()>;
+      pub async fn close(mut self) -> Result<()>;
   }
   pub struct TerminalDataMessage { pub terminal_id: String, pub data: String }
   pub struct DataChannelMessage<T> { pub r#type: String, pub channel: String, pub payload: T, pub timestamp: i64 }
@@ -3636,13 +3658,11 @@ Four flat modules, no `lib.rs`, no `config.rs`, no `webrtc/` subdirectory (D-7).
   fn resolve_shell(cli: &Cli) -> Result<String>;
   async fn shutdown_signal();
   async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<()>;
-  async fn supervise_sessions(inbound: mpsc::Receiver<SignalMessage>, outbound: mpsc::Sender<SignalMessage>, cli: &Cli, shell: &str) -> Result<()>;
+  async fn supervise_sessions(mut inbound: mpsc::Receiver<SignalMessage>, outbound: mpsc::Sender<SignalMessage>, cli: &Cli, shell: &str) -> Result<()>;
   async fn run_one_session(offer: &SignalOffer, inbound: &mut mpsc::Receiver<SignalMessage>, outbound: &mpsc::Sender<SignalMessage>, cli: &Cli, shell: &str) -> Result<()>;
   ```
 
-  Every signature above is the one the step that defines it actually writes. This
-  block is the contract Task 7's E2E harness and Task 8's CI build against, so it
-  is kept in step with the code blocks rather than transcribed from the spec.
+  This block is kept in step with the shipped code signatures in `apps/agent/src/signal.rs`, `rtc.rs`, `pty.rs`, and `main.rs`. Every signature above reflects the code at HEAD `98d37ad`, including the `mut self` bindings on `connect` and `close`, the `_agent_id` parameter name, and the `mut inbound` receiver in `supervise_sessions`.
 
 - **No `hello` frame (D-2).** §5.5.1 prints a `ClientFrame::Hello` and §5.5.2 says "the first frame sent is `ClientFrame::Hello`", but §4.5's `handleInbound` — which Task 4 implemented — has no arm for it and would answer `VALIDATION_ERROR`. Identity comes from the credential in the handshake header (ADR-13), which is strictly stronger than a self-declared id. **This task therefore defines no `ClientFrame` at all**, and §5.5.5's "reconnects and re-sends `hello`" becomes "reconnects and re-sends nothing". Recorded as D-2 and re-stated in Task 9's docs sync.
 
@@ -4229,7 +4249,14 @@ pub fn forward_candidates(
             let Some(candidate) = candidate else {
                 return; // gathering complete
             };
-            match candidate_to_wire(&session_id, candidate) {
+            let init = match candidate.to_json() {
+                Ok(init) => prepare_outbound_candidate(init),
+                Err(e) => {
+                    tracing::warn!(error = %e, "dropping an unmappable candidate");
+                    return;
+                }
+            };
+            match candidate_to_wire(&session_id, init) {
                 Ok(signal) => {
                     // Best-effort, like the Worker's push: a candidate that
                     // cannot be sent is a lost candidate, not a dead session —
@@ -5277,7 +5304,7 @@ Expected: **11 test functions** across the three modules, covering the five R1-R
 
 **On Windows you will see `10 passed, 1 filtered out`, and that is correct.** `pty_echo_round_trip` carries `#[cfg(unix)]` because it spawns a real `sh` through a real PTY — it compiles and runs on Linux and macOS, and is compiled out entirely on Windows. CI is `ubuntu-latest`, so the `rust` job sees all 11. If you are iterating locally on Windows, `cargo test -- --list` shows 11 names and the run reports 10; do not read the gap as a missing test or "fix" it by removing the gate. The other three `pty.rs` tests are pure byte-level and platform-independent.
 
-**This step is not covered by the JS gate.** `pnpm test` reaches `cargo test` through `apps/agent`'s `test` script (Step 12), but the plan's 164 JS tests are counted by Vitest and say nothing about the Rust suite — a green `pnpm test` with a failing `cargo test` is possible if Turbo skips the uncached task. Run `cargo test` directly here, and again in Step 13.
+**This step is not covered by the JS gate.** `pnpm test` reaches `cargo test` through `apps/agent`'s `test` script (Step 12), but the plan's 165 JS tests are counted by Vitest and say nothing about the Rust suite — a green `pnpm test` with a failing `cargo test` is possible if Turbo skips the uncached task. Run `cargo test` directly here, and again in Step 13.
 
 If `pty_echo_round_trip` fails with empty output, check `drop(pair.slave)` first — that is the single most common cause and the reason the spec calls it out.
 
@@ -5315,7 +5342,7 @@ Run:
 ```bash
 pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
 ```
-Expected: exit 0 with **164 passing JS tests** and the Rust suite green. Prettier does not parse `.rs` and does not error on it, `eslint` inside `apps/agent` matches no `.ts`/`.vue` files and lints nothing, and `target/` is already in both `.gitignore` and `.prettierignore` — so the Rust sources add no ignore churn (spec R21, verified there rather than assumed).
+Expected: exit 0 with **165 passing JS tests** and the Rust suite green. Prettier does not parse `.rs` and does not error on it, `eslint` inside `apps/agent` matches no `.ts`/`.vue` files and lints nothing, and `target/` is already in both `.gitignore` and `.prettierignore` — so the Rust sources add no ignore churn (spec R21, verified there rather than assumed).
 
 If `pnpm format:check` fails, the cause is almost certainly the generated `Cargo.lock` or a `Cargo.toml` Prettier wants to reflow — check `git status` for which file, and re-run with `pnpm format`.
 
@@ -5363,7 +5390,7 @@ grep -c '^| D-1[123] ' docs/superpowers/plans/2026-09-26-phase2-week5-terminal-a
 
 Expected: `3`.
 
-The table's Layer-3 row already reads **2** (`vitest.e2e.config.ts`), which is the count this task's two tests deliver, and line 30 already states that the E2E total is reported separately from the 164 JS tests. Neither needs editing; this step verifies rather than writes.
+The table's Layer-3 row already reads **2** (`vitest.e2e.config.ts`), which is the count this task's two tests deliver, and line 30 already states that the E2E total is reported separately from the 165 JS tests. Neither needs editing; this step verifies rather than writes.
 
 - [ ] **Step 2: Exclude `test/e2e/**` from the default config**
 
@@ -5976,7 +6003,7 @@ Run:
 pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
 ```
 
-Expected: exit 0, **164 passing JS tests**. `tsc --noEmit` type-checks `test/e2e/terminal.e2e.test.ts` because `packages/webrtc-core/tsconfig.json` includes `test/**/*.ts` — so a type error in the harness fails `pnpm typecheck` even though the file never runs under `pnpm test`.
+Expected: exit 0, **165 passing JS tests**. `tsc --noEmit` type-checks `test/e2e/terminal.e2e.test.ts` because `packages/webrtc-core/tsconfig.json` includes `test/**/*.ts` — so a type error in the harness fails `pnpm typecheck` even though the file never runs under `pnpm test`.
 
 - [ ] **Step 12: Commit**
 
@@ -6223,7 +6250,7 @@ Run:
 pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
 ```
 
-Expected: exit 0, **164 passing JS tests**, and the Rust suite green — `pnpm test` reaches `cargo test` through `apps/agent`'s `test` script, so this is the one command that exercises both languages locally. The Rust output is not counted in the 164.
+Expected: exit 0, **165 passing JS tests**, and the Rust suite green — `pnpm test` reaches `cargo test` through `apps/agent`'s `test` script, so this is the one command that exercises both languages locally. The Rust output is not counted in the 165.
 
 - [ ] **Step 8: Commit**
 
@@ -6758,7 +6785,7 @@ Expected: exactly three files — `docs/ARCHITECTURE.md`, the spec, and this pla
 pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
 ```
 
-Expected: exit 0, **164 passing JS tests**, Rust suite green. `docs` and `.superpowers` are both in `.prettierignore` (lines 7 and 10), so `format:check` does not read either document — this gate confirms that the plan file's own Step 11 edit disturbed nothing and that no code was accidentally touched.
+Expected: exit 0, **165 passing JS tests**, Rust suite green. `docs` and `.superpowers` are both in `.prettierignore` (lines 7 and 10), so `format:check` does not read either document — this gate confirms that the plan file's own Step 11 edit disturbed nothing and that no code was accidentally touched.
 
 - [ ] **Step 16: Commit**
 
