@@ -201,7 +201,7 @@ pub fn forward_candidates(
             // crate's bridge — it produces the `candidate:`-prefixed string and
             // the `sdpMid`/`sdpMLineIndex` pair the browser parses.
             let init = match candidate.to_json() {
-                Ok(init) => init,
+                Ok(init) => prepare_outbound_candidate(init),
                 Err(e) => {
                     tracing::warn!(error = %e, "dropping an unmappable candidate");
                     return;
@@ -256,6 +256,19 @@ pub async fn apply_candidate(
         .await
         .context("add_ice_candidate")?;
     Ok(true)
+}
+
+/// Fix up an outbound `RTCIceCandidateInit` for the wire.
+///
+/// webrtc 0.13's `to_json()` hardcodes `sdp_mid: Some("")` — a mid no m-line
+/// has. The agent is a data-channel-only answerer with a single m-line, so the
+/// candidate is addressed by `sdpMLineIndex` alone. Setting `sdp_mid` to
+/// `None` makes the browser take the index path instead of searching for a
+/// muxId of "". `sdpMLineIndex: Some(0)` (also from `to_json`) is correct
+/// here: it is the one m-line.
+fn prepare_outbound_candidate(mut init: RTCIceCandidateInit) -> RTCIceCandidateInit {
+    init.sdp_mid = None;
+    init
 }
 
 /// Convert an outbound crate candidate into the wire type.
@@ -314,5 +327,26 @@ mod tests {
         assert_eq!(json["data"]["sdpMid"], "0");
         assert_eq!(json["data"]["sdpMLineIndex"], 0);
         assert!(json["data"].get("sdp_mid").is_none(), "must be camelCase");
+    }
+
+    #[test]
+    fn outbound_candidate_has_no_empty_mid() {
+        // webrtc 0.13's `to_json` produces `sdp_mid: Some("")` and
+        // `sdp_mline_index: Some(0)` — the override in `prepare_outbound_candidate`
+        // must strip the empty mid so the browser falls through to the
+        // `sdpMLineIndex` path. This test pins that: remove the override and it
+        // goes red (`sdpMid` would be `""` instead of `null`).
+        let init = prepare_outbound_candidate(RTCIceCandidateInit {
+            candidate: "candidate:1 1 udp 2130706431 127.0.0.1 54321 typ host".to_string(),
+            sdp_mid: Some("".to_string()),
+            sdp_mline_index: Some(0),
+            ..Default::default()
+        });
+
+        let signal = candidate_to_wire("s1", init).unwrap();
+        let json = serde_json::to_value(SignalMessage::IceCandidate(signal)).unwrap();
+        // `sdp_mid` is `None` → JSON `null`, not `""`.
+        assert_eq!(json["data"]["sdpMid"], serde_json::Value::Null);
+        assert_eq!(json["data"]["sdpMLineIndex"], 0);
     }
 }

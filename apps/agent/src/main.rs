@@ -273,10 +273,6 @@ async fn supervise_sessions(
                 active = Some(offer.session_id.clone());
                 tracing::info!(session_id = %offer.session_id, "session starting");
 
-                // `active` is read by `active.is_some()` at the top of the next
-                // iteration; the assignment is visible across the call below.
-                let _ = active.is_some();
-
                 if let Err(e) = run_one_session(&offer, &mut inbound, &outbound, cli, shell).await {
                     tracing::warn!(
                         error = %e,
@@ -285,8 +281,15 @@ async fn supervise_sessions(
                     );
                 }
 
-                active = None;
-                tracing::info!(session_id = %offer.session_id, "session ended");
+                // `take()` consumes the `Some` so the assignment is visible to
+                // the compiler — the value tracks across `run_one_session` to
+                // the `active.is_some()` check at the top of the next loop.
+                let ended = active.take();
+                tracing::info!(
+                    session_id = %offer.session_id,
+                    ended = ended.is_some(),
+                    "session ended",
+                );
             }
         }
     }
