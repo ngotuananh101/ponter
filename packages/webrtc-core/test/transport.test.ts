@@ -254,4 +254,60 @@ describe('RESTPollingTransport', () => {
 
     transport.close();
   });
+
+  it('throws when send() receives a non-2xx response', async () => {
+    // Mutant #1 (Week 4 R24): deleting the `!res.ok` throw at
+    // src/transport.ts:82-87 leaves the suite green. A signal that D1 refused
+    // must not look like a delivered signal, or the peer negotiates against a
+    // description the other side never received.
+    const fetchSpy = vi.fn(
+      async () => new Response('session is terminated', { status: 409 }),
+    );
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    await expect(
+      transport.send({
+        type: 'offer',
+        data: { sessionId: '', sdp: 'v=0', capabilities: ['terminal'] },
+      }),
+    ).rejects.toThrow('Failed to send signal offer: HTTP 409');
+
+    transport.close();
+  });
+
+  it('backs off polling interval on a non-2xx response', async () => {
+    // Mutant #3 (Week 4 R24): deleting the `!res.ok` branch at
+    // src/transport.ts:138-146 makes the transport retry at the base interval
+    // forever against a Worker that is returning 500, turning a transient
+    // outage into a request flood.
+    const fetchSpy = vi.fn(async () => new Response('boom', { status: 500 }));
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      initialIntervalMs: 100,
+      maxIntervalMs: 400,
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    transport.subscribe(() => {});
+
+    // Poll 1 at 100ms, then back off to 150ms scheduled from that instant.
+    await vi.advanceTimersByTimeAsync(110);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(139); // 249ms — not yet
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // 250ms — second poll
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    transport.close();
+  });
 });

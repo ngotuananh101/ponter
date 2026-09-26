@@ -159,4 +159,46 @@ describe('DataChannelManager', () => {
     expect(ch1.readyState).toBe('closed');
     expect(ch2.readyState).toBe('closed');
   });
+
+  it('survives non-JSON data on a channel with a typed listener', () => {
+    // Mutant #2 (Week 4 R24): removing the try/catch around JSON.parse at
+    // src/data-channel.ts:35-44 lets a raw PTY byte frame throw out of the
+    // channel's message handler. A PTY stream is bytes, so this is the normal
+    // case, not an edge case.
+    const mgr = new DataChannelManager();
+    const ch = new MockDataChannel('terminal');
+    mgr.registerChannel(ch);
+
+    const received: string[] = [];
+    mgr.onMessage('terminal', (msg) => received.push(msg.type));
+
+    expect(() => ch.simulateMessage('not json at all')).not.toThrow();
+    expect(received).toEqual([]);
+
+    // The channel must still work: the guard swallows one bad frame, it does
+    // not tear the listener down.
+    ch.simulateMessage(
+      JSON.stringify({
+        channel: 'terminal',
+        type: 'terminal-data',
+        payload: { terminalId: 't1', data: '' },
+        timestamp: Date.now(),
+      }),
+    );
+    expect(received).toEqual(['terminal-data']);
+  });
+
+  it('throws when sending on an unregistered channel label', () => {
+    // Mutant #4 (Week 4 R24): replacing either throw at src/data-channel.ts:66
+    // or :74 with `return` makes a send to a label that does not exist a silent
+    // no-op — the caller believes the frame left the machine.
+    const mgr = new DataChannelManager();
+
+    expect(() => mgr.sendRaw('terminal', 'bytes')).toThrow(
+      'Data channel "terminal" is not registered',
+    );
+    expect(() => mgr.sendJson('terminal', 'terminal-data', {})).toThrow(
+      'Data channel "terminal" is not registered',
+    );
+  });
 });

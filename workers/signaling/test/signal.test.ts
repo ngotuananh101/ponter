@@ -425,4 +425,61 @@ describe('Signaling REST API (/api/signal)', () => {
     expect(data.signals.find((s) => s.id === 'sig_live')).toBeDefined();
     expect(data.signals.find((s) => s.id === 'sig_expired')).toBeUndefined();
   });
+
+  it('still returns signals for a terminated session (poll drain)', async () => {
+    // Mutant #5 (Week 4 R24): adding a status check to the poll route leaves
+    // the suite green. Week 5 makes the poll load-bearing — the browser must be
+    // able to read the final answer written before the agent's socket closed.
+    await app.request(
+      '/api/signal/answer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ sessionId: sessionIdA, sdp: 'final_answer' }),
+      },
+      env,
+    );
+
+    await app.request(
+      `/api/sessions/${sessionIdA}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${tokenUserA}` } },
+      env,
+    );
+
+    const res = await app.request(
+      `/api/signal/poll/${sessionIdA}`,
+      { headers: { Authorization: `Bearer ${tokenUserA}` } },
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as PollResponse;
+    expect(data.signals).toHaveLength(1);
+    expect(data.signals[0]?.payload.sdp).toBe('final_answer');
+  });
+
+  it('rejects a missing sdp on the answer route with 400 VALIDATION_ERROR', async () => {
+    // Mutant #6 (Week 4 R24): deleting the sdp check at
+    // src/routes/signal.ts:99-105 leaves the suite green because the existing
+    // coverage only posts to the offer route.
+    const res = await app.request(
+      '/api/signal/answer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ sessionId: sessionIdA }),
+      },
+      env,
+    );
+
+    expect(res.status).toBe(400);
+    const err = (await res.json()) as ErrorResponse;
+    expect(err.code).toBe('VALIDATION_ERROR');
+  });
 });
