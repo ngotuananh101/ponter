@@ -35,4 +35,6 @@ export type {
   SignalAnswer,
   IceCandidateSignal,
   SignalMessage,
+  AgentErrorCode,
+  AgentSocketMessage,
 } from './signaling';

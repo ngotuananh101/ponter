@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import app from '../src/index';
 import { RESET_STATEMENTS } from './helpers';
 
@@ -504,5 +504,146 @@ describe('Signaling REST API (/api/signal)', () => {
     expect(res.status).toBe(400);
     const err = (await res.json()) as ErrorResponse;
     expect(err.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('pushes an offer to a connected agent socket with the signal envelope', async () => {
+    // Review Focus #2: the push is a latency optimisation on top of D1, and it
+    // must use the same envelope as an inbound echo so the agent has one arm.
+    const agentRes = await app.request(
+      '/api/agents',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ id: 'agent_push', publicKey: 'pk_push' }),
+      },
+      env,
+    );
+    const { credential } = (await agentRes.json()) as { credential: string };
+
+    const sessRes = await app.request(
+      '/api/sessions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ agentId: 'agent_push' }),
+      },
+      env,
+    );
+    const bound = (await sessRes.json()) as { id: string };
+
+    const upgrade = await app.request(
+      '/api/ws/agent',
+      {
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          Upgrade: 'websocket',
+        },
+      },
+      env,
+    );
+    const ws = upgrade.webSocket;
+    ws?.accept();
+
+    const received: string[] = [];
+    ws?.addEventListener('message', (evt) => {
+      if (typeof evt.data === 'string') received.push(evt.data);
+    });
+
+    const post = await app.request(
+      '/api/signal/offer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({
+          sessionId: bound.id,
+          sdp: 'v=0 pushed',
+          capabilities: ['terminal'],
+        }),
+      },
+      env,
+    );
+    expect(post.status).toBe(201);
+
+    await vi.waitFor(() =>
+      expect(received.some((r) => r.includes('"offer"'))).toBe(true),
+    );
+
+    const pushed = JSON.parse(received[received.length - 1] ?? '{}') as {
+      type: string;
+      data: { type: string; data: { sessionId: string; sdp: string } };
+    };
+    expect(pushed.type).toBe('signal');
+    expect(pushed.data.type).toBe('offer');
+    expect(pushed.data.data.sessionId).toBe(bound.id);
+    expect(pushed.data.data.sdp).toBe('v=0 pushed');
+
+    ws?.close();
+  });
+
+  it('still returns 201 when the agent has no socket, and the row is pollable', async () => {
+    // Review Focus #2: a push miss is an ordinary outcome, not a request
+    // failure. D1 plus the poll is the delivery guarantee (W15).
+    const agentRes = await app.request(
+      '/api/agents',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ id: 'agent_offline', publicKey: 'pk_offline' }),
+      },
+      env,
+    );
+    expect(agentRes.status).toBe(201);
+
+    const sessRes = await app.request(
+      '/api/sessions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ agentId: 'agent_offline' }),
+      },
+      env,
+    );
+    const bound = (await sessRes.json()) as { id: string };
+
+    const post = await app.request(
+      '/api/signal/offer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUserA}`,
+        },
+        body: JSON.stringify({ sessionId: bound.id, sdp: 'v=0 offline' }),
+      },
+      env,
+    );
+
+    expect(post.status).toBe(201);
+    const body = (await post.json()) as SignalResponse;
+    expect(body.type).toBe('offer');
+
+    const poll = await app.request(
+      `/api/signal/poll/${bound.id}`,
+      { headers: { Authorization: `Bearer ${tokenUserA}` } },
+      env,
+    );
+    const polled = (await poll.json()) as PollResponse;
+    expect(polled.signals).toHaveLength(1);
+    expect(polled.signals[0]?.payload.sdp).toBe('v=0 offline');
   });
 });

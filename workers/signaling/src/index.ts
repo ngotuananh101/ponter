@@ -8,6 +8,7 @@ import devices from './routes/devices';
 import agents from './routes/agents';
 import sessions from './routes/sessions';
 import signal from './routes/signal';
+import ws from './routes/ws';
 
 const app = new Hono<AppContext>();
 
@@ -22,5 +23,6 @@ app.route('/api/devices', devices);
 app.route('/api/agents', agents);
 app.route('/api/sessions', sessions);
 app.route('/api/signal', signal);
+app.route('/api/ws', ws);
 
 export default app;
