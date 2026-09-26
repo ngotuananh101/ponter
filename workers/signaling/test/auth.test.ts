@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { RESET_STATEMENTS } from './helpers';
 import app from '../src/index';
 
 /**
@@ -36,36 +37,6 @@ type ErrorResponse = {
   code: string;
   details: unknown;
 };
-
-/**
- * `D1Database.exec()` splits its input on newlines, so a multi-line
- * `CREATE TABLE` is torn apart mid-statement. `D1Database.batch()` takes one
- * prepared statement per array entry, keeping each statement's exact
- * multi-line SQL while still running them sequentially and atomically.
- *
- * The `users` DDL mirrors the Drizzle schema in `src/db/schema.ts` — including
- * `last_login_at` and `metadata`, which the login/register routes write to.
- */
-const RESET_STATEMENTS = [
-  'DROP TABLE IF EXISTS signals',
-  'DROP TABLE IF EXISTS audit_logs',
-  'DROP TABLE IF EXISTS sessions',
-  'DROP TABLE IF EXISTS agents',
-  'DROP TABLE IF EXISTS devices',
-  'DROP TABLE IF EXISTS users',
-  `CREATE TABLE users (
-        id TEXT PRIMARY KEY,
-        username TEXT NOT NULL UNIQUE,
-        email TEXT UNIQUE,
-        public_key TEXT NOT NULL,
-        password_hash TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        last_login_at TEXT,
-        metadata TEXT
-      )`,
-];
 
 describe('Auth & Users REST API', () => {
   beforeEach(async () => {

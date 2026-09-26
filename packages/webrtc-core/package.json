@@ -3,8 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapters/werift": "./src/adapters/werift.ts"
+  },
   "scripts": {
-    "lint": "echo ok",
-    "typecheck": "echo ok"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@remote/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1",
+    "werift": "0.24.4"
   }
 }

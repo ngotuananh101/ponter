@@ -1,72 +1,9 @@
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { RESET_STATEMENTS } from './helpers';
 import { getDb } from '../src/db/client';
 import { users, devices, agents } from '../src/db/schema';
 import { eq } from 'drizzle-orm';
-
-/**
- * `D1Database.exec()` splits its input on newlines — the documented contract is
- * "one or multiple queries separated by `\n`" — so a multi-line `CREATE TABLE`
- * is torn apart mid-statement and fails with `incomplete input: SQLITE_ERROR`.
- *
- * `D1Database.batch()` instead takes one prepared statement per array entry, so
- * each statement below keeps its exact multi-line SQL while the statements still
- * run sequentially and atomically.
- */
-const RESET_STATEMENTS = [
-  'PRAGMA foreign_keys = ON',
-  'DROP TABLE IF EXISTS signals',
-  'DROP TABLE IF EXISTS audit_logs',
-  'DROP TABLE IF EXISTS sessions',
-  'DROP TABLE IF EXISTS agents',
-  'DROP TABLE IF EXISTS devices',
-  'DROP TABLE IF EXISTS users',
-  `CREATE TABLE users (
-        id TEXT PRIMARY KEY,
-        username TEXT NOT NULL UNIQUE,
-        email TEXT UNIQUE,
-        public_key TEXT NOT NULL,
-        password_hash TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        last_login_at TEXT,
-        metadata TEXT
-      )`,
-  `CREATE TABLE devices (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        device_name TEXT,
-        device_type TEXT NOT NULL,
-        fingerprint TEXT NOT NULL UNIQUE,
-        is_trusted INTEGER NOT NULL DEFAULT 0,
-        last_seen_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )`,
-  `CREATE TABLE agents (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        hostname TEXT,
-        platform TEXT,
-        os_version TEXT,
-        agent_version TEXT,
-        public_key TEXT NOT NULL,
-        is_online INTEGER NOT NULL DEFAULT 0,
-        last_ping_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )`,
-  `CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        device_id TEXT REFERENCES devices(id),
-        agent_id TEXT REFERENCES agents(id),
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        ended_at TEXT,
-        metadata TEXT
-      )`,
-];
 
 describe('D1 Database & Schema', () => {
   beforeEach(async () => {
