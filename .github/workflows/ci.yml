@@ -25,6 +25,22 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
+      # `apps/agent`'s scripts shell out to `cargo`, so `turbo run
+      # lint|typecheck|test` reaches a Rust toolchain from this job. The runner
+      # image happens to ship one, but its version is the image's, not the
+      # 1.98.1 apps/agent/rust-toolchain.toml pins — and `dtolnay/rust-toolchain`
+      # does not read that file. Pinning here removes the drift.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt,clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/agent -> apps/agent/target
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -39,3 +55,87 @@ jobs:
 
       - name: Run test suite
         run: pnpm test
+
+  rust:
+    name: Rust Agent (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agent
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # `toolchain` is a REQUIRED input and the action does not read
+      # rust-toolchain.toml, so this is the only thing that pins the version in
+      # CI. The value matches apps/agent/rust-toolchain.toml (1.98.1).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt,clippy
+
+      # Keyed on apps/agent's own Cargo.toml/Cargo.lock/rust-toolchain.toml
+      # (the action hashes those by default). `working-directory` is a step
+      # default, and the action's own default workspace is `. -> target` — which
+      # from the repo root would be the wrong directory, so it is set here.
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/agent -> apps/agent/target
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+  e2e:
+    name: Cross-language terminal E2E
+    # The week's done-criterion. Gated on both other jobs so a failure here is
+    # never the first thing reported about a broken workspace.
+    needs: [verify, rust]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.6.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: '1.98.1'
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/agent -> apps/agent/target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The harness spawns `apps/agent/target/debug/remote-agent`, and `cargo
+      # test` builds a test binary, not that one. Debug, not release: the E2E
+      # measures correctness of the wire contract, not throughput.
+      - name: Build the agent binary
+        run: cargo build --locked
+        working-directory: apps/agent
+
+      - name: Run the E2E suite
+        run: pnpm --filter @remote/webrtc-core test:e2e
