@@ -283,10 +283,29 @@ describe('RESTPollingTransport', () => {
 
   it('backs off polling interval on a non-2xx response', async () => {
     // Mutant #3 (Week 4 R24): deleting the `!res.ok` branch at
-    // src/transport.ts:138-146 makes the transport retry at the base interval
-    // forever against a Worker that is returning 500, turning a transient
-    // outage into a request flood.
-    const fetchSpy = vi.fn(async () => new Response('boom', { status: 500 }));
+    // src/transport.ts:138-146 leaves the suite green against a body that is
+    // not JSON, because the catch at :170-174 applies the identical 1.5x
+    // backoff. The branch is only observable when the error response carries
+    // a JSON body that a successful poll would act on: without the guard the
+    // 500 is parsed, the signal resets the interval to initialIntervalMs, and
+    // the next poll fires at 200ms instead of 250ms.
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            signals: [
+              {
+                id: 'sig_1',
+                sessionId: 'sess_1',
+                type: 'ice-candidate',
+                payload: { sessionId: 'sess_1', candidate: 'candidate:1' },
+              },
+            ],
+            cursor: null,
+          }),
+          { status: 500 },
+        ),
+    );
 
     const transport = new RESTPollingTransport({
       baseUrl: 'http://test',
@@ -297,16 +316,21 @@ describe('RESTPollingTransport', () => {
       fetch: fetchSpy as unknown as typeof fetch,
     });
 
-    transport.subscribe(() => {});
+    const received: string[] = [];
+    transport.subscribe((m) => received.push(m.type));
 
-    // Poll 1 at 100ms, then back off to 150ms scheduled from that instant.
+    // Poll 1 at 100ms -> 500 -> back off to 150ms, scheduled from t=100ms.
     await vi.advanceTimersByTimeAsync(110);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(139); // 249ms — not yet
+    await vi.advanceTimersByTimeAsync(139); // t=249ms — not yet
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1); // 250ms — second poll
+    await vi.advanceTimersByTimeAsync(1); // t=250ms — second poll
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // The signal in the 500 body must NOT have been delivered: the guard
+    // returns before parsing. Without the guard this is ['ice-candidate'].
+    expect(received).toEqual([]);
 
     transport.close();
   });
