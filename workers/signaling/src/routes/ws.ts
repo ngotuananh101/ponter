@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { AppContext } from '../types';
 import type { Database } from '../db/client';
 import { getDb } from '../db/client';
@@ -145,6 +145,7 @@ async function handleInbound(
       id: sessions.id,
       userId: sessions.userId,
       agentId: sessions.agentId,
+      status: sessions.status,
     })
     .from(sessions)
     .where(eq(sessions.id, message.data.sessionId))
@@ -160,6 +161,20 @@ async function handleInbound(
     session.agentId !== ctx.agentId
   ) {
     socket.send(JSON.stringify({ type: 'error', code: 'NOT_FOUND' }));
+    return;
+  }
+
+  // Review Focus #3: a session that has already ended is not reopened. This is
+  // the WS mirror of the REST `409 SESSION_NOT_ACTIVE` in
+  // `getOwnedActiveSession`; without it a late answer would resurrect a dead
+  // session and the browser would wait on a peer that is gone.
+  //
+  // Security: this check sits *after* the tenancy guard, so a non-owner still
+  // gets NOT_FOUND. Only a session the caller actually owns can reach here, and
+  // only then distinguish "terminated" from "not found" — which is fine because
+  // the owner already knows the session exists.
+  if (session.status !== 'pending' && session.status !== 'active') {
+    socket.send(JSON.stringify({ type: 'error', code: 'SESSION_NOT_ACTIVE' }));
     return;
   }
 
@@ -226,10 +241,29 @@ router.get('/agent', async (c) => {
     if (current?.socket !== server) return;
 
     agentConnections.delete(agentId);
+
     void db
       .update(agents)
       .set({ isOnline: false })
       .where(eq(agents.id, agentId))
+      .run();
+
+    // §6.1: the socket closing ends the sessions bound to this agent. The
+    // status guard makes this idempotent — a browser `DELETE` that already ran
+    // cannot have its `ended_at` moved forward by a later socket close.
+    //
+    // Over-broad by design for now: with one agent and one session in scope
+    // this is exact; with concurrent sessions it would end sessions that were
+    // not signaling on this socket (§6.5, Week 6 work).
+    void db
+      .update(sessions)
+      .set({ status: 'terminated', endedAt: NOW_SQL, updatedAt: NOW_SQL })
+      .where(
+        and(
+          eq(sessions.agentId, agentId),
+          inArray(sessions.status, ['pending', 'active']),
+        ),
+      )
       .run();
   });
 

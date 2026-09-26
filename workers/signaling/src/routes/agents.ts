@@ -6,6 +6,7 @@ import { agents } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { AppError } from '../middleware/error';
 import { generateAgentCredential, toPublicAgent } from '../utils/agent';
+import { agentConnections } from './ws';
 import { sha256Hex } from '../utils/crypto';
 
 const router = new Hono<AppContext>();
@@ -15,7 +16,9 @@ router.get('/', async (c) => {
   const user = c.get('user');
   const db = getDb(c.env.DB);
   const list = await db.select().from(agents).where(eq(agents.userId, user.id));
-  return c.json(list.map(toPublicAgent));
+  return c.json(
+    list.map((agent) => toPublicAgent(agent, agentConnections.has(agent.id))),
+  );
 });
 
 router.post('/', async (c) => {
@@ -86,7 +89,9 @@ router.post('/', async (c) => {
 
   // The credential is present exactly once, on this response. It is never
   // recoverable: only its hash is stored and there is no rotation endpoint.
-  return c.json({ agent: toPublicAgent(created), credential }, 201);
+  // A freshly registered agent has no socket yet, so this is always false — but
+  // it goes through the same predicate so the projection has one definition.
+  return c.json({ agent: toPublicAgent(created, false), credential }, 201);
 });
 
 router.get('/:id', async (c) => {
@@ -104,7 +109,7 @@ router.get('/:id', async (c) => {
     throw new AppError('Agent not found', 404, 'NOT_FOUND');
   }
 
-  return c.json(toPublicAgent(agent));
+  return c.json(toPublicAgent(agent, agentConnections.has(agent.id)));
 });
 
 export default router;

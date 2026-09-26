@@ -485,6 +485,247 @@ describe('Agent WebSocket (/api/ws/agent)', () => {
     });
   });
 
+  it('advances the session to active with a started_at when an answer is persisted', async () => {
+    // Step 1 (corrected per R-27/D-8): the transition keys on the signal type, and it is guarded by
+    // `WHERE status = 'pending'` so a second answer cannot reset started_at.
+    const { credential, sessionId } = await seed();
+
+    const before = await env.DB.prepare(
+      `SELECT status, started_at FROM sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ status: string; started_at: string | null }>();
+    expect(before?.status).toBe('pending');
+    expect(before?.started_at).toBeNull();
+
+    const upgrade = await app.request(
+      WS_URL,
+      {
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          Upgrade: 'websocket',
+        },
+      },
+      env,
+    );
+    const ws = upgrade.webSocket;
+    ws?.accept();
+
+    const received: string[] = [];
+    ws?.addEventListener('message', (evt) => {
+      if (typeof evt.data === 'string') received.push(evt.data);
+    });
+
+    const sendAnswer = (sdp: string) =>
+      ws?.send(
+        JSON.stringify({
+          type: 'signal',
+          data: {
+            type: 'answer',
+            data: { sessionId, sdp, approved: true },
+          },
+        }),
+      );
+
+    sendAnswer('first answer');
+    await vi.waitFor(async () => {
+      const row = await env.DB.prepare(
+        `SELECT status, started_at FROM sessions WHERE id = ?`,
+      )
+        .bind(sessionId)
+        .first<{ status: string; started_at: string | null }>();
+      expect(row?.status).toBe('active');
+    });
+
+    const afterFirst = await env.DB.prepare(
+      `SELECT started_at FROM sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ started_at: string }>();
+    // W10: the column must carry the SQLite shape, not ISO-8601.
+    expect(afterFirst?.started_at).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
+    expect(afterFirst?.started_at).not.toContain('T');
+
+    // A second answer is still persisted, but must not move started_at.
+    sendAnswer('second answer');
+    await vi.waitFor(async () => {
+      const rows = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM signals WHERE session_id = ?`,
+      )
+        .bind(sessionId)
+        .first<{ n: number }>();
+      expect(rows?.n).toBe(2);
+    });
+
+    const afterSecond = await env.DB.prepare(
+      `SELECT started_at FROM sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ started_at: string }>();
+    expect(afterSecond?.started_at).toBe(afterFirst?.started_at);
+
+    ws?.close();
+  });
+
+  it('terminates the session when the agent socket closes, and does not overwrite ended_at', async () => {
+    // §6.1 + W11: the close handler is the only thing that ends a session the
+    // browser did not end. The guard is what keeps a second close from moving
+    // `ended_at` forward.
+    const { credential, sessionId } = await seed();
+
+    const upgrade = await app.request(
+      WS_URL,
+      {
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          Upgrade: 'websocket',
+        },
+      },
+      env,
+    );
+    const ws = upgrade.webSocket;
+    ws?.accept();
+
+    // Advance it to `active` first, so the transition under test is
+    // `active -> terminated` rather than `pending -> terminated`.
+    ws?.send(
+      JSON.stringify({
+        type: 'signal',
+        data: {
+          type: 'answer',
+          data: { sessionId, sdp: 'v=0 active', approved: true },
+        },
+      }),
+    );
+    await vi.waitFor(async () => {
+      const row = await env.DB.prepare(
+        `SELECT status FROM sessions WHERE id = ?`,
+      )
+        .bind(sessionId)
+        .first<{ status: string }>();
+      expect(row?.status).toBe('active');
+    });
+
+    ws?.close();
+
+    await vi.waitFor(async () => {
+      const row = await env.DB.prepare(
+        `SELECT status, ended_at FROM sessions WHERE id = ?`,
+      )
+        .bind(sessionId)
+        .first<{ status: string; ended_at: string | null }>();
+      expect(row?.status).toBe('terminated');
+    });
+
+    const terminated = await env.DB.prepare(
+      `SELECT ended_at FROM sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ ended_at: string }>();
+    expect(terminated?.ended_at).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
+
+    // A second close (a superseded socket, or a duplicate event) must not move
+    // `ended_at`. The guard is `WHERE status IN ('pending','active')`.
+    await env.DB.prepare(
+      `UPDATE sessions SET ended_at = datetime('now', '+1 hour') WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .run();
+    const marker = await env.DB.prepare(
+      `SELECT ended_at FROM sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ ended_at: string }>();
+
+    const second = await app.request(
+      WS_URL,
+      {
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          Upgrade: 'websocket',
+        },
+      },
+      env,
+    );
+    const ws2 = second.webSocket;
+    ws2?.accept();
+    ws2?.close();
+
+    await vi.waitFor(() => expect(agentConnections.size).toBe(0));
+    const after = await env.DB.prepare(
+      `SELECT ended_at FROM sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ ended_at: string }>();
+    expect(after?.ended_at).toBe(marker?.ended_at);
+  });
+
+  it('refuses an answer for a terminated session with SESSION_NOT_ACTIVE and writes nothing', async () => {
+    // Review Focus #3: a late answer that reopens a dead session leaves the
+    // browser waiting on a peer that is gone.
+    const { credential, sessionId, token } = await seed();
+
+    // Terminate over REST first.
+    await app.request(
+      `/api/sessions/${sessionId}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+      env,
+    );
+
+    const upgrade = await app.request(
+      WS_URL,
+      {
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          Upgrade: 'websocket',
+        },
+      },
+      env,
+    );
+    const ws = upgrade.webSocket;
+    ws?.accept();
+
+    const received: string[] = [];
+    ws?.addEventListener('message', (evt) => {
+      if (typeof evt.data === 'string') received.push(evt.data);
+    });
+
+    ws?.send(
+      JSON.stringify({
+        type: 'signal',
+        data: {
+          type: 'answer',
+          data: { sessionId, sdp: 'v=0 too late', approved: true },
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(received.length).toBeGreaterThan(0));
+    const reply = JSON.parse(received[received.length - 1] ?? '{}') as {
+      type: string;
+      code: string;
+    };
+    expect(reply).toEqual({ type: 'error', code: 'SESSION_NOT_ACTIVE' });
+
+    const rows = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM signals WHERE session_id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(0);
+
+    const row = await env.DB.prepare(`SELECT status FROM sessions WHERE id = ?`)
+      .bind(sessionId)
+      .first<{ status: string }>();
+    expect(row?.status).toBe('terminated');
+
+    ws?.close();
+  });
+
   it('a ping refreshes last_ping_at in the space-separated format and returns pong', async () => {
     // W9/W10: `is_online` in D1 is a hint; `last_ping_at` is the truth. An
     // ISO-8601 write here would break every datetime() comparison over the

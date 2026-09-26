@@ -1,5 +1,5 @@
-import { sql } from 'drizzle-orm';
-import { signals } from '../db/schema';
+import { sql, and, eq } from 'drizzle-orm';
+import { signals, sessions } from '../db/schema';
 import type { SignalSelect } from '../db/schema';
 import type { Database } from '../db/client';
 import type { SignalMessage } from '@remote/shared';
@@ -108,6 +108,35 @@ export async function recordSignal(
       expiresAt: SIGNAL_TTL_SQL,
     })
     .returning();
+
+  // `pending -> active` lives here rather than in either caller, because the
+  // REST routes and the agent socket must not grow two copies of "insert the
+  // signal, then maybe advance the session" (D16).
+  //
+  // The guard is `= 'pending'`, NOT `IN ('pending','active')`. §6.1's guard
+  // paragraph states the blanket `IN` form for both transitions, but applied
+  // here it also matches an already-`active` session and overwrites
+  // `started_at` on every duplicate answer — the opposite of what §6.1
+  // promises two paragraphs later ("when `type === 'answer'` and the session is
+  // `pending`"). The `terminated` transition in `ws.ts` keeps the `IN` form,
+  // where it is correct: there it is what stops a socket close from moving
+  // `ended_at` after an explicit browser `DELETE`. See D-8.
+  //
+  // The transition keys on the signal *type*, not on which peer sent it: at the
+  // database level the browser and the agent of one user are the same principal
+  // for REST. In practice the browser is the offerer and never sends an
+  // `answer`, so "an answer was persisted" and "the agent answered" coincide.
+  if (message.type === 'answer') {
+    await db
+      .update(sessions)
+      .set({ status: 'active', startedAt: NOW_SQL, updatedAt: NOW_SQL })
+      .where(
+        and(
+          eq(sessions.id, message.data.sessionId),
+          eq(sessions.status, 'pending'),
+        ),
+      );
+  }
 
   return inserted ?? null;
 }

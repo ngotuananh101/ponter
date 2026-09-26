@@ -2,6 +2,12 @@ import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { RESET_STATEMENTS } from './helpers';
 import app from '../src/index';
+import { isAgentOnline } from '../src/utils/agent';
+
+/** Produce the space-separated UTC form `datetime('now')` writes, for test fixtures. */
+function formatSqlite(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ');
+}
 
 /**
  * Response shapes asserted by this suite. Kept as local types rather than
@@ -478,6 +484,82 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(fetched.capabilities).toEqual(['terminal']);
       expect(Object.keys(fetched)).not.toContain('credentialHash');
     });
+
+    it('reports isOnline false when is_online is 1 but the ping is outside the 90s window', async () => {
+      // §6.3/W9: `is_online` in D1 is a hint; the 90s window is the truth. A row
+      // can read is_online = 1 while the agent has been dark for two minutes,
+      // because nothing clears it. The list must not report that as online.
+      await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ id: 'agent_stale', publicKey: 'pk_stale' }),
+        },
+        env,
+      );
+
+      // A stale hint: online flag set, ping two minutes old, no socket.
+      await env.DB.prepare(
+        `UPDATE agents SET is_online = 1, last_ping_at = datetime('now', '-2 minutes') WHERE id = 'agent_stale'`,
+      ).run();
+
+      const listRes = await app.request(
+        '/api/agents',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      const list = (await listRes.json()) as AgentResponse[];
+      const stale = list.find((a) => a.id === 'agent_stale');
+
+      expect(stale?.isOnline).toBe(false);
+      expect(stale?.lastHeartbeat).not.toBeNull();
+
+      // A fresh ping with the same flag reads online only if a socket is present
+      // in this isolate. With no socket, the window alone is not sufficient —
+      // both conditions are required (§6.3 consequence 1).
+      await env.DB.prepare(
+        `UPDATE agents SET last_ping_at = datetime('now') WHERE id = 'agent_stale'`,
+      ).run();
+
+      const freshRes = await app.request(
+        '/api/agents',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      const fresh = (await freshRes.json()) as AgentResponse[];
+      expect(fresh.find((a) => a.id === 'agent_stale')?.isOnline).toBe(false);
+    });
+  });
+
+  describe('isAgentOnline boundary (unit)', () => {
+    // This test pins the 90s window using the `nowMs` injection point. The HTTP
+    // route cannot inject `nowMs`, so a direct unit test is the only way to
+    // control the boundary. The offsets are *fixed* at 89s and 91s so that
+    // changing ONLINE_WINDOW_SECONDS to a materially different value flips the
+    // "inside" assertion from true to false — that is the discriminating proof.
+    const baseAgent = { isOnline: true, lastPingAt: null as string | null };
+
+    it('reads online inside the window and offline outside it, pinning ONLINE_WINDOW_SECONDS', () => {
+      const nowMs = 1_700_000_000_000; // fixed epoch for reproducibility
+
+      // 89s ago: inside the 90s window → online.
+      const inside = {
+        ...baseAgent,
+        lastPingAt: formatSqlite(nowMs - 89_000),
+      };
+      expect(isAgentOnline(inside, true, nowMs)).toBe(true);
+
+      // 91s ago: outside the window → offline.
+      const outside = {
+        ...baseAgent,
+        lastPingAt: formatSqlite(nowMs - 91_000),
+      };
+      expect(isAgentOnline(outside, true, nowMs)).toBe(false);
+    });
   });
 
   describe('Sessions API (/api/sessions)', () => {
@@ -622,6 +704,57 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(res.status).toBe(404);
       const err = (await res.json()) as ErrorResponse;
       expect(err.code).toBe('NOT_FOUND');
+    });
+
+    it('writes ended_at in the same space-separated UTC format as created_at', async () => {
+      // D-6: the route wrote `new Date().toISOString()` here, contradicting
+      // §6.4's stated convention. An ISO value compares lexicographically greater
+      // than every SQLite timestamp, so any `ended_at > …` filter would match it
+      // regardless of when it happened. No prior test asserted this field.
+      const createRes = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({}),
+        },
+        env,
+      );
+      const created = (await createRes.json()) as { id: string };
+
+      await app.request(
+        `/api/sessions/${created.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+
+      const row = await env.DB.prepare(
+        `SELECT created_at, ended_at, updated_at, status FROM sessions WHERE id = ?`,
+      )
+        .bind(created.id)
+        .first<{
+          created_at: string;
+          ended_at: string;
+          updated_at: string;
+          status: string;
+        }>();
+
+      expect(row?.status).toBe('terminated');
+      const sqliteShape = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+      expect(row?.ended_at).toMatch(sqliteShape);
+      expect(row?.updated_at).toMatch(sqliteShape);
+      expect(row?.ended_at).not.toContain('T');
+
+      // The column is now comparable to the others with a plain SQL comparison.
+      const ordered = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM sessions WHERE id = ? AND ended_at >= created_at`,
+      )
+        .bind(created.id)
+        .first<{ n: number }>();
+      expect(ordered?.n).toBe(1);
     });
   });
 });
