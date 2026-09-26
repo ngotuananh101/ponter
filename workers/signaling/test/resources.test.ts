@@ -46,7 +46,8 @@ type AgentResponse = {
   agentVersion: string | null;
   publicKey: string;
   isOnline: boolean;
-  lastPingAt: string | null;
+  lastHeartbeat: string | null;
+  capabilities: string[];
   createdAt: string;
 };
 
@@ -350,6 +351,132 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(second.status).toBe(409);
       const err = (await second.json()) as ErrorResponse;
       expect(err.code).toBe('AGENT_EXISTS');
+    });
+
+    it('issues a credential once and stores only its SHA-256 hash', async () => {
+      // Week 5 W12/D19: the plaintext is returned exactly once and never stored.
+      const createRes = await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            id: 'agent_cred',
+            publicKey: 'pk_cred',
+            capabilities: ['terminal', 'files'],
+          }),
+        },
+        env,
+      );
+
+      expect(createRes.status).toBe(201);
+      const created = (await createRes.json()) as {
+        agent: AgentResponse;
+        credential: string;
+      };
+
+      expect(created.credential).toMatch(/^ag_[0-9a-f]{32}$/);
+      expect(created.agent.capabilities).toEqual(['terminal', 'files']);
+      expect(created.agent.lastHeartbeat).toBeNull();
+      expect(created.agent.isOnline).toBe(false);
+      // The projection must not carry the hash.
+      expect(Object.keys(created.agent)).not.toContain('credentialHash');
+
+      // D1 holds the digest, not the secret.
+      const stored = await env.DB.prepare(
+        `SELECT credential_hash FROM agents WHERE id = 'agent_cred'`,
+      ).first<{ credential_hash: string }>();
+      expect(stored?.credential_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(stored?.credential_hash).not.toBe(created.credential);
+
+      // The digest is of the full token, `ag_` prefix included (D7).
+      const expected = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(created.credential),
+      );
+      const expectedHex = [...new Uint8Array(expected)]
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      expect(stored?.credential_hash).toBe(expectedHex);
+
+      // A repeat registration is still 409 and mints no second credential.
+      // Resolve the same before/after from the database: a Response body is
+      // single-use, so a second `dupRes.json()` would be a vacuous assertion.
+      const before = await env.DB.prepare(
+        'SELECT credential_hash FROM agents WHERE id = ?',
+      )
+        .bind('agent_cred')
+        .first<{ credential_hash: string | null }>();
+
+      const dupRes = await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ id: 'agent_cred', publicKey: 'pk_cred_2' }),
+        },
+        env,
+      );
+      expect(dupRes.status).toBe(409);
+      const dupBody = (await dupRes.json()) as ErrorResponse;
+      expect(dupBody.code).toBe('AGENT_EXISTS');
+
+      const after = await env.DB.prepare(
+        'SELECT credential_hash FROM agents WHERE id = ?',
+      )
+        .bind('agent_cred')
+        .first<{ credential_hash: string | null }>();
+      expect(after).toEqual(before);
+    });
+
+    it('projects agents without leaking the credential hash (list and get)', async () => {
+      // Week 5 W12/D34: `credentialHash` must not reach any response body. A
+      // single un-projected route leaks the hash of every agent the user owns.
+      await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            id: 'agent_proj',
+            publicKey: 'pk_proj',
+            capabilities: ['terminal'],
+          }),
+        },
+        env,
+      );
+
+      const listRes = await app.request(
+        '/api/agents',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(listRes.status).toBe(200);
+      const list = (await listRes.json()) as AgentResponse[];
+      const listed = list.find((a) => a.id === 'agent_proj');
+      expect(listed).toBeDefined();
+      expect(listed?.capabilities).toEqual(['terminal']);
+      expect(listed?.lastHeartbeat).toBeNull();
+      expect(Object.keys(listed ?? {})).not.toContain('credentialHash');
+
+      const getRes = await app.request(
+        '/api/agents/agent_proj',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(getRes.status).toBe(200);
+      const fetched = (await getRes.json()) as AgentResponse;
+      expect(fetched.capabilities).toEqual(['terminal']);
+      expect(Object.keys(fetched)).not.toContain('credentialHash');
     });
   });
 

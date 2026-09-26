@@ -1,7 +1,7 @@
 const ITERATIONS = 100000;
 const KEY_LEN_BYTES = 32;
 
-function buf2hex(buffer: ArrayBuffer): string {
+export function buf2hex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)]
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
@@ -105,4 +105,21 @@ export async function verifyPassword(
   }
 
   return diff === 0;
+}
+
+/**
+ * SHA-256 of a UTF-8 string, lowercase hex.
+ *
+ * Used for the agent credential, and deliberately not for passwords. The
+ * credential is 128 bits of CSPRNG output, so there is no dictionary for a
+ * slow KDF to defend against and a per-connect PBKDF2 at 100k iterations would
+ * be a self-inflicted cost on every agent reconnect. Passwords keep
+ * `hashPassword`.
+ */
+export async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(input),
+  );
+  return buf2hex(digest);
 }
