@@ -34,6 +34,8 @@ export type AgentConnection = {
    * upgrade request's context performs the actual `send`.
    */
   push: (data: string) => void;
+  /** Stop the flush loop owned by the upgrade request (reconnect supersede). */
+  stop: () => void;
 };
 
 export const agentConnections = new Map<string, AgentConnection>();
@@ -240,25 +242,38 @@ router.get('/agent', async (c) => {
   const server = pair[1];
 
   const outboundQueue: string[] = [];
-  let signalPending: (() => void) | null = null;
   let isClosed = false;
 
   const push = (data: string) => {
     if (isClosed) return;
     // Bound the queue: a peer that stopped reading must not grow memory
     // without limit. D1 remains the delivery guarantee for dropped frames.
+    // No wake-up signal here: the flush loop polls, because resolving a
+    // promise owned by the upgrade request from a POST request is itself a
+    // cross-request settlement the hang detector cannot distinguish from a
+    // hang. Polling keeps every await in the upgrade request's own IoContext.
     if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) outboundQueue.shift();
     outboundQueue.push(data);
-    if (signalPending) {
-      const notify = signalPending;
-      signalPending = null;
-      notify();
-    }
+  };
+
+  const stop = () => {
+    isClosed = true;
   };
 
   // D2/W5: registered before the 101 is returned. A reconnect replaces the
-  // previous socket, so the map holds exactly one entry per agent.
-  agentConnections.set(agentId, { agentId, userId, socket: server, push });
+  // previous socket, so the map holds exactly one entry per agent. The
+  // superseded entry's flush loop is stopped first: its `close` handler would
+  // otherwise skip eviction (identity guard) while its loop kept polling an
+  // empty queue for the life of the isolate.
+  const previous = agentConnections.get(agentId);
+  agentConnections.set(agentId, {
+    agentId,
+    userId,
+    socket: server,
+    push,
+    stop,
+  });
+  previous?.stop();
 
   server.addEventListener('message', (evt) => {
     void handleInbound(evt.data, server, { db, agentId, userId });
@@ -266,11 +281,6 @@ router.get('/agent', async (c) => {
 
   server.addEventListener('close', () => {
     isClosed = true;
-    if (signalPending) {
-      const notify = signalPending;
-      signalPending = null;
-      notify();
-    }
 
     // D8/W8: a superseded socket may still fire close after a newer socket has
     // replaced it. Without this guard the stale close evicts the live socket
@@ -307,31 +317,33 @@ router.get('/agent', async (c) => {
 
   server.accept();
 
+  // Poll, never park on a cross-request promise. The previous version awaited a
+  // `signalPending` resolver that only `push` (called from a POST request)
+  // could resolve — a cross-request settlement the hang detector cannot
+  // distinguish from a hang, so the loop slept through every push. A 20 ms
+  // tick keeps every await in this request's own IoContext; worst-case added
+  // latency per signal is one tick, irrelevant against ICE round trips.
   const flushLoop = async () => {
     while (!isClosed) {
-      if (outboundQueue.length === 0 && !isClosed) {
-        await new Promise<void>((resolve) => {
-          if (outboundQueue.length > 0 || isClosed) {
-            resolve();
-          } else {
-            signalPending = resolve;
-          }
-        });
-      }
-      while (outboundQueue.length > 0) {
+      while (outboundQueue.length > 0 && !isClosed) {
         const item = outboundQueue.shift();
-        if (item && !isClosed) {
-          try {
-            server.send(item);
-          } catch {
-            // W7: the server socket throws on send() once closed. Drop the
-            // frame; the `close` handler evicts the entry and ends the loop.
-          }
+        if (!item) break;
+        try {
+          server.send(item);
+        } catch {
+          // W7: the server socket throws on send() once closed. Drop the
+          // frame; the `close` handler evicts the entry and ends the loop.
         }
+      }
+      if (!isClosed) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
       }
     }
   };
 
+  // `executionCtx` is absent under `app.request` in unit tests; fall back to a
+  // detached loop there. In real workerd/miniflare `waitUntil` keeps the loop
+  // alive past the 101 response.
   try {
     c.executionCtx.waitUntil(flushLoop());
   } catch {
