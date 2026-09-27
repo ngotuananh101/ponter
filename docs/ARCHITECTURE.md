@@ -345,43 +345,19 @@ remote-access-platform/
 │   │   │   └── tauri.conf.json
 │   │   └── package.json
 │   │
-│   └── agent/                        # Desktop Agent (Rust)
+│   └── agent/                        # Desktop Agent (Rust) — Tuần 5
 │       ├── src/
-│       │   ├── main.rs
-│       │   ├── config.rs
-│       │   ├── webrtc/
-│       │   │   ├── mod.rs
-│       │   │   ├── connection.rs
-│       │   │   ├── data_channel.rs
-│       │   │   ├── media_channel.rs
-│       │   │   └── signal_handler.rs
-│       │   ├── terminal/
-│       │   │   ├── mod.rs
-│       │   │   ├── pty.rs
-│       │   │   ├── process_manager.rs
-│       │   │   └── session.rs
-│       │   ├── capture/
-│       │   │   ├── mod.rs
-│       │   │   ├── screen.rs
-│       │   │   ├── encoder.rs
-│       │   │   ├── region.rs
-│       │   │   └── input.rs
-│       │   ├── files/
-│       │   │   ├── mod.rs
-│       │   │   ├── manager.rs
-│       │   │   ├── transfer.rs
-│       │   │   └── watcher.rs
-│       │   ├── security/
-│       │   │   ├── mod.rs
-│       │   │   ├── approval.rs
-│       │   │   ├── crypto.rs
-│       │   │   └── fingerprint.rs
-│       │   └── utils/
-│       │       ├── mod.rs
-│       │       ├── logging.rs
-│       │       └── system.rs
-│       ├── Cargo.toml
-│       └── agent.toml
+│       │   ├── main.rs               # CLI, reconnect loop, session supervision
+│       │   ├── signal.rs             # WS signaling client (tokio-tungstenite)
+│       │   ├── rtc.rs                # WebRTC answerer (webrtc-rs)
+│       │   └── pty.rs                # PTY bridge (portable-pty)
+│       ├── Cargo.toml                # nguồn sự thật cho dependency (§4.2)
+│       ├── Cargo.lock                # commit — ADR-08
+│       ├── rust-toolchain.toml       # 1.98.1 + rustfmt, clippy
+│       └── .env.example
+│
+│   # Chưa ship (Phase 3-4): config.rs, webrtc/ subdirectory, terminal/,
+│   # capture/, files/, security/, utils/, agent.toml — xem §4.2 và ADR-07.
 │
 ├── packages/                         # Shared packages
 │   ├── shared/                       # Shared types & utilities
@@ -520,7 +496,7 @@ remote-access-platform/
 │
 ├── .gitignore
 ├── .gitlab-ci.yml                    # If using GitLab
-├── ARCHITECTURE.md                   # This file
+├── docs/ARCHITECTURE.md              # This file
 ├── CONTRIBUTING.md
 ├── README.md
 ├── package.json                      # Root package.json (workspaces)
@@ -645,6 +621,16 @@ remote-access-platform/
 ```
 
 ### 4.2 Desktop Agent (Rust)
+
+> **Sketch — không phải nguồn sự thật.** Các phiên bản dưới đây (`webrtc = "0.10"`,
+> `tokio-tungstenite = "0.21"`, `portable-pty = "0.8"`) là bản phác thảo viết trước khi crate được
+> scaffold và đã lệch so với thực tế. Nguồn sự thật là **`apps/agent/Cargo.toml`**, khoá bởi
+> `Cargo.lock` được commit (ADR-08). Dependency thực tế của Tuần 5: `webrtc 0.13`,
+> `tokio-tungstenite 0.26`, `portable-pty 0.9`, `base64 0.23`, `clap 4`, `tokio`, `futures-util`,
+> `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `anyhow`. Phần còn lại của sketch dưới đây —
+> `vt100`, `scrap`, `x264`, `openh264`, `notify`, `walkdir`, `ring`, `rustls`, `bincode`, `sysinfo`,
+> `uuid`, `chrono` và các block `[target.'cfg(...)']` — **chưa được dùng ở Tuần 5**; chúng thuộc
+> Phase 3-4.
 
 **File:** `apps/agent/Cargo.toml`
 ```toml
@@ -950,9 +936,42 @@ export interface IceCandidateSignal {
   sdpMid: string | null;
   sdpMLineIndex: number | null;
 }
+
+export type SignalMessage =
+  | { type: 'offer'; data: SignalOffer }
+  | { type: 'answer'; data: SignalAnswer }
+  | { type: 'ice-candidate'; data: IceCandidateSignal };
+
+/**
+ * The WebSocket transport envelope for the agent socket (`GET /api/ws/agent`).
+ *
+ * A signal frame nests `{ type, data }` inside `{ type: 'signal', data }`: the
+ * outer `type` is the *transport* discriminator, the inner one is the *signal*
+ * discriminator. Flattening them would make a transport frame ambiguous with a
+ * bare `SignalMessage`.
+ *
+ * `SignalMessage` above is deliberately unchanged: `webrtc-core`'s
+ * `SignalTransport` and the REST bodies keep one definition.
+ */
+export type AgentErrorCode =
+  | 'MALFORMED_JSON'
+  | 'VALIDATION_ERROR'
+  | 'NOT_FOUND'
+  | 'INTERNAL_SERVER_ERROR'
+  | 'SESSION_NOT_ACTIVE';
+
+export type AgentSocketMessage =
+  | { type: 'ping' }
+  | { type: 'pong' }
+  | { type: 'signal'; data: SignalMessage }
+  | { type: 'error'; code: AgentErrorCode };
 ```
 
-> **Week 4 Security Boundary Note:** Authentication in Week 4 validates that the session is owned by the calling user. Differentiating the browser client from the desktop agent within the same user's account requires agent-scoped credentials, which are introduced in Week 5 alongside the Rust desktop agent.
+> **Week 5 Agent Credential Boundary.** The Week 4 note is superseded. Agent-scoped credentials now exist: `POST /api/agents` mints `ag_` + 32 lowercase hex characters (16 CSPRNG bytes, 128 bits) exactly once and stores only its SHA-256 hex digest (`agents.credential_hash`, `UNIQUE`), and the agent presents it in the `Authorization: Bearer` header of the WebSocket handshake at `GET /api/ws/agent` — never in a query string, because a URL is logged by every proxy and by Cloudflare's own request log.
+>
+> The WS path enforces a stricter tenancy predicate than REST: `session.userId == agent.userId` **and** `session.agentId == agent.id`, so an agent cannot speak for a session that is not bound to it even within its own user's account. Inbound failures are answered with `{ type: 'error', code }` using `AgentErrorCode`; the credential check runs *before* the `Upgrade` guard, so an unauthenticated request is `401` and never `426`.
+>
+> **Residual:** the REST `POST /api/signal/*` routes still authenticate as the owning *user*, not as the agent, so browser/agent separation holds on the WS path only. `agentConnections` is a module-scope `Map` and therefore per-isolate: a push reaches only an agent whose socket landed in the same isolate, and D1 + polling remains the delivery guarantee — the push is a latency optimisation. A second connection presenting a valid credential supersedes the first (one map entry per `agentId`). `is_online` in D1 is a hint; the authoritative online predicate is socket presence combined with a read-time window over `last_ping_at` (90 s).
 
 ### 6.3 REST API Routes
 
@@ -983,6 +1002,7 @@ POST   /api/signal/offer           # Send WebRTC offer
 POST   /api/signal/answer          # Send WebRTC answer
 POST   /api/signal/ice-candidate   # Send ICE candidate
 GET    /api/signal/poll/:sessionId # Poll for signals
+GET    /api/ws/agent               # Agent WebSocket relay (Upgrade; Bearer ag_…, not a JWT)
 
 # Devices
 GET    /api/devices                # List user devices
@@ -1191,11 +1211,21 @@ gantt
 - [ ] Test kết nối P2P
 
 #### Tuần 5: Desktop Agent - Terminal
-- [ ] Tạo Rust agent
-- [ ] Implement WebSocket signaling
-- [ ] Tích hợp portable-pty
-- [ ] Xử lý terminal I/O
-- [ ] Implement session management
+
+**Trạng thái: đã ship (2026-09-26).** Các mục dưới đây giữ nguyên dạng `[ ]` vì toàn bộ roadmap
+trong tài liệu này chưa từng được tick — kể cả Phase 1 và Tuần 4 đã hoàn thành — nên tick riêng
+Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay vì tick.
+
+- [ ] Tạo Rust agent — `apps/agent` (crate `remote-agent`), 4 module phẳng: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
+- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `workers/signaling`, xác thực bằng credential `ag_<32 hex>`
+- [ ] Tích hợp portable-pty — `portable-pty 0.9`, PTY thật, 1 session
+- [ ] Xử lý terminal I/O — base64 trong `DataChannelMessage<TerminalDataMessage>`, kênh `terminal`
+- [ ] Implement session management — state machine `pending → active → terminated`
+
+> **Kiến trúc hybrid có chủ đích:** signaling dùng **REST polling cho browser** (giữ nguyên từ Tuần 4,
+> ADR-03) và **WebSocket chỉ cho agent**. Cụm "Implement WebSocket signaling" ở trên *không* có nghĩa
+> là toàn bộ signaling đã chuyển sang WebSocket — `packages/webrtc-core` không có `WebSocketTransport`
+> nào, và client WebSocket duy nhất là Rust.
 
 #### Tuần 6: Terminal UI
 - [ ] Tích hợp xterm.js
@@ -1362,87 +1392,37 @@ VITE_WS_URL=ws://localhost:8787/ws
 ### 9.3 Testing Strategy
 
 ```bash
-# Unit tests
+# JS unit + integration tests (run from repo root)
 pnpm test
 
-# Specific package tests
+# Shared package tests
 pnpm --filter @remote/shared test
-pnpm --filter @remote/api-client test
 
-# E2E tests
-pnpm test:e2e
-
-# Integration tests
-pnpm test:integration
+# WebRTC core e2e tests
+pnpm --filter @remote/webrtc-core test:e2e
 ```
 
 ### 9.4 CI/CD Pipeline
 
 **File:** `.github/workflows/ci.yml`
-```yaml
-name: CI
 
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
+The workflow is the source of truth; it is not reproduced here, because a copy in this document
+drifted once already (this section described four jobs — `lint`, `test`, `build`, `deploy-workers`,
+on `node-version: '20'` with `pnpm/action-setup@v4` — while the real file had been a single `verify`
+job since Week 4).
 
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
+Three jobs, all on `ubuntu-latest`, all pinned to a full commit SHA with the version in a trailing
+comment (the convention the repository settled on in Week 4):
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+| Job | Runs | Purpose |
+|---|---|---|
+| `verify` | Node 24 + pnpm 12.6.0 + Rust 1.98.1 | `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, `pnpm test` |
+| `rust` | Rust 1.98.1 (`apps/agent` as the working directory) | `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --locked`, `cargo test --locked` |
+| `e2e` | Node 24 + pnpm + Rust, `needs: [verify, rust]` | builds `apps/agent/target/debug/remote-agent`, then `pnpm --filter @remote/webrtc-core test:e2e` |
 
-  build:
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: apps/*/dist
-
-  deploy-workers:
-    runs-on: ubuntu-latest
-    needs: [build]
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-      - run: pnpm install --frozen-lockfile
-      - name: Deploy Workers
-        run: |
-          cd workers/signaling
-          npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-```
+The `e2e` job is Week 5's done-criterion: the same wire contract implemented twice, meeting at a real
+DTLS/SCTP connection with real PTY bytes crossing it. It is Linux-only by construction (`iceServers:
+[]`, no STUN, no TURN, loopback only), so it never reaches the network.
 
 ---
 

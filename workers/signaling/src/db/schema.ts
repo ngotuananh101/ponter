@@ -51,6 +51,8 @@ export const agents = sqliteTable('agents', {
   publicKey: text('public_key').notNull(),
   isOnline: integer('is_online', { mode: 'boolean' }).notNull().default(false),
   lastPingAt: text('last_ping_at'),
+  credentialHash: text('credential_hash').unique(),
+  capabilities: text('capabilities'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -66,6 +68,7 @@ export const sessions = sqliteTable('sessions', {
   deviceId: text('device_id').references(() => devices.id),
   agentId: text('agent_id').references(() => agents.id),
   status: text('status').notNull().default('pending'),
+  startedAt: text('started_at'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -117,3 +120,4 @@ export type UserInsert = typeof users.$inferInsert;
 export type DeviceSelect = typeof devices.$inferSelect;
 export type AgentSelect = typeof agents.$inferSelect;
 export type SessionSelect = typeof sessions.$inferSelect;
+export type SignalSelect = typeof signals.$inferSelect;

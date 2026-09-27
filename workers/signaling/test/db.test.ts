@@ -69,4 +69,47 @@ describe('D1 Database & Schema', () => {
     expect(dev).toBeUndefined();
     expect(ag).toBeUndefined();
   });
+
+  it('applies migration 0002 on a populated agents table', async () => {
+    // Week 5 W3/W2: the three statements must be safe on real data, and the
+    // unique index must reject a duplicate hash while allowing many NULLs.
+    // A test against an empty table would pass for a migration that fails on
+    // production rows.
+    await env.DB.batch(RESET_STATEMENTS.map((s) => env.DB.prepare(s)));
+
+    await env.DB.prepare(
+      `INSERT INTO users (id, username, public_key) VALUES ('u1', 'user_a', 'pk_a')`,
+    ).run();
+
+    // A row shaped like one that predates the migration: no credential, no
+    // capabilities. It must survive and stay readable.
+    await env.DB.prepare(
+      `INSERT INTO agents (id, user_id, public_key) VALUES ('legacy', 'u1', 'pk_legacy')`,
+    ).run();
+
+    const legacy = await env.DB.prepare(
+      `SELECT credential_hash, capabilities FROM agents WHERE id = 'legacy'`,
+    ).first<{ credential_hash: string | null; capabilities: string | null }>();
+    expect(legacy).toEqual({ credential_hash: null, capabilities: null });
+
+    // sessions.started_at exists and defaults to NULL.
+    const sessionCols = await env.DB.prepare(
+      `SELECT name FROM pragma_table_info('sessions') WHERE name = 'started_at'`,
+    ).first<{ name: string }>();
+    expect(sessionCols?.name).toBe('started_at');
+
+    // NULL repeats under the unique index; a duplicate non-NULL hash does not.
+    await env.DB.prepare(
+      `INSERT INTO agents (id, user_id, public_key, credential_hash) VALUES ('a2', 'u1', 'pk2', NULL)`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO agents (id, user_id, public_key, credential_hash) VALUES ('a3', 'u1', 'pk3', 'hash_abc')`,
+    ).run();
+
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO agents (id, user_id, public_key, credential_hash) VALUES ('a4', 'u1', 'pk4', 'hash_abc')`,
+      ).run(),
+    ).rejects.toThrow(/UNIQUE/i);
+  });
 });

@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "echo ok",
-    "typecheck": "echo ok"
+    "build": "cargo build --locked",
+    "lint": "cargo fmt --check && cargo clippy --all-targets -- -D warnings",
+    "typecheck": "cargo check --all-targets",
+    "test": "cargo test"
   }
 }

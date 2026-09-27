@@ -3,7 +3,7 @@ import type { AppContext } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { getDb } from '../db/client';
 import { sessions, devices, agents } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { AppError } from '../middleware/error';
 
 const router = new Hono<AppContext>();
@@ -135,8 +135,13 @@ router.delete('/:id', async (c) => {
     .update(sessions)
     .set({
       status: 'terminated',
-      endedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      // D-6: `datetime('now')`, not `new Date().toISOString()`. These columns
+      // hold space-separated UTC everywhere else (`created_at` defaults to it),
+      // and an ISO string sorts after every SQLite timestamp — the `'T'` is
+      // greater than the `' '` — so mixing the two makes every `datetime()`
+      // comparison over this column wrong for half the rows.
+      endedAt: sql`datetime('now')`,
+      updatedAt: sql`datetime('now')`,
     })
     .where(eq(sessions.id, sessionId));
 

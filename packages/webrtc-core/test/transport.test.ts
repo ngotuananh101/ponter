@@ -254,4 +254,145 @@ describe('RESTPollingTransport', () => {
 
     transport.close();
   });
+
+  it('throws when send() receives a non-2xx response', async () => {
+    // Mutant #1 (Week 4 R24): deleting the `!res.ok` throw at
+    // src/transport.ts:82-87 leaves the suite green. A signal that D1 refused
+    // must not look like a delivered signal, or the peer negotiates against a
+    // description the other side never received.
+    const fetchSpy = vi.fn(
+      async () => new Response('session is terminated', { status: 409 }),
+    );
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    await expect(
+      transport.send({
+        type: 'offer',
+        data: { sessionId: '', sdp: 'v=0', capabilities: ['terminal'] },
+      }),
+    ).rejects.toThrow('Failed to send signal offer: HTTP 409');
+
+    transport.close();
+  });
+
+  it('includes the status and response body in the send() error message', async () => {
+    // R30: Week 4 spec §4.7 names this error path; only the fact of throwing
+    // was untested, and the message is what a caller debugs with.
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response('{"code":"SESSION_NOT_ACTIVE"}', { status: 409 }),
+    );
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    await expect(
+      transport.send({
+        type: 'ice-candidate',
+        data: {
+          sessionId: '',
+          candidate: 'candidate:1 1 UDP 2130706431 192.168.1.1 50000 typ host',
+          sdpMid: null,
+          sdpMLineIndex: null,
+        },
+      }),
+    ).rejects.toThrow(
+      'Failed to send signal ice-candidate: HTTP 409 {"code":"SESSION_NOT_ACTIVE"}',
+    );
+
+    transport.close();
+  });
+
+  it('backs off polling interval when fetch rejects', async () => {
+    // R30: src/transport.ts:170-174 catches a thrown fetch and backs off.
+    // Without it a Worker that is down turns into a hot retry loop.
+    const fetchSpy = vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    });
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      initialIntervalMs: 100,
+      maxIntervalMs: 400,
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    transport.subscribe(() => {});
+
+    await vi.advanceTimersByTimeAsync(110);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(139); // 249ms — not yet
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // 250ms — backed off to 150ms
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    transport.close();
+  });
+
+  it('backs off polling interval on a non-2xx response', async () => {
+    // Mutant #3 (Week 4 R24): deleting the `!res.ok` branch at
+    // src/transport.ts:138-146 leaves the suite green against a body that is
+    // not JSON, because the catch at :170-174 applies the identical 1.5x
+    // backoff. The branch is only observable when the error response carries
+    // a JSON body that a successful poll would act on: without the guard the
+    // 500 is parsed, the signal resets the interval to initialIntervalMs, and
+    // the next poll fires at 200ms instead of 250ms.
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            signals: [
+              {
+                id: 'sig_1',
+                sessionId: 'sess_1',
+                type: 'ice-candidate',
+                payload: { sessionId: 'sess_1', candidate: 'candidate:1' },
+              },
+            ],
+            cursor: null,
+          }),
+          { status: 500 },
+        ),
+    );
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'token_abc',
+      initialIntervalMs: 100,
+      maxIntervalMs: 400,
+      fetch: fetchSpy as unknown as typeof fetch,
+    });
+
+    const received: string[] = [];
+    transport.subscribe((m) => received.push(m.type));
+
+    // Poll 1 at 100ms -> 500 -> back off to 150ms, scheduled from t=100ms.
+    await vi.advanceTimersByTimeAsync(110);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(139); // t=249ms — not yet
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // t=250ms — second poll
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // The signal in the 500 body must NOT have been delivered: the guard
+    // returns before parsing. Without the guard this is ['ice-candidate'].
+    expect(received).toEqual([]);
+
+    transport.close();
+  });
 });

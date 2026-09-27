@@ -38,7 +38,10 @@ export const RESET_STATEMENTS = [
     last_seen_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
-  `CREATE TABLE agents (
+  `-- NOTE: inline UNIQUE is deliberate. The 0002 migration cannot use this form
+  -- (ALTER TABLE ADD COLUMN rejects it); it creates agents_credential_hash_unique
+  -- as a separate index instead. Both admit many NULLs. Do not "converge" them.
+  CREATE TABLE agents (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     hostname TEXT,
@@ -48,6 +51,8 @@ export const RESET_STATEMENTS = [
     public_key TEXT NOT NULL,
     is_online INTEGER NOT NULL DEFAULT 0,
     last_ping_at TEXT,
+    credential_hash TEXT UNIQUE,
+    capabilities TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE TABLE sessions (
@@ -56,6 +61,7 @@ export const RESET_STATEMENTS = [
     device_id TEXT REFERENCES devices(id),
     agent_id TEXT REFERENCES agents(id),
     status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     ended_at TEXT,

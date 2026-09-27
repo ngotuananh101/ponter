@@ -15,6 +15,13 @@
       "when": 1790352748913,
       "tag": "0001_signal_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790421152750,
+      "tag": "0002_agent_credentials",
+      "breakpoints": true
     }
   ]
 }

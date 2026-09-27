@@ -3,8 +3,11 @@ import { eq, and, sql } from 'drizzle-orm';
 import type { AppContext } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { getDb } from '../db/client';
-import { sessions, signals } from '../db/schema';
+import { sessions } from '../db/schema';
 import { AppError } from '../middleware/error';
+import { recordSignal } from '../utils/signals';
+import { pushToAgent } from './ws';
+import type { SignalMessage } from '@remote/shared';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
@@ -54,27 +57,26 @@ router.post('/offer', async (c) => {
   }
 
   const db = getDb(c.env.DB);
-  await getOwnedActiveSession(db, body.sessionId, user.id);
+  const session = await getOwnedActiveSession(db, body.sessionId, user.id);
 
-  const payload = JSON.stringify({
-    sessionId: body.sessionId,
-    sdp: body.sdp,
-    capabilities: body.capabilities ?? [],
-  });
-
-  const [inserted] = await db
-    .insert(signals)
-    .values({
+  const message: SignalMessage = {
+    type: 'offer',
+    data: {
       sessionId: body.sessionId,
-      type: 'offer',
-      payload,
-      expiresAt: sql`datetime('now', '+5 minutes')`,
-    })
-    .returning();
+      sdp: body.sdp,
+      capabilities: body.capabilities ?? [],
+    },
+  };
 
+  const inserted = await recordSignal(db, message);
   if (!inserted) {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
+
+  // Fire-and-forget, synchronous, never throws (D9/D25). `session.agentId`
+  // comes from the row `getOwnedActiveSession` already fetched, so no extra
+  // query (D24).
+  pushToAgent(session.agentId, message);
 
   return c.json(
     {
@@ -105,27 +107,23 @@ router.post('/answer', async (c) => {
   }
 
   const db = getDb(c.env.DB);
-  await getOwnedActiveSession(db, body.sessionId, user.id);
+  const session = await getOwnedActiveSession(db, body.sessionId, user.id);
 
-  const payload = JSON.stringify({
-    sessionId: body.sessionId,
-    sdp: body.sdp,
-    approved: body.approved !== false,
-  });
-
-  const [inserted] = await db
-    .insert(signals)
-    .values({
+  const message: SignalMessage = {
+    type: 'answer',
+    data: {
       sessionId: body.sessionId,
-      type: 'answer',
-      payload,
-      expiresAt: sql`datetime('now', '+5 minutes')`,
-    })
-    .returning();
+      sdp: body.sdp,
+      approved: body.approved !== false,
+    },
+  };
 
+  const inserted = await recordSignal(db, message);
   if (!inserted) {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
+
+  pushToAgent(session.agentId, message);
 
   return c.json(
     {
@@ -161,28 +159,24 @@ router.post('/ice-candidate', async (c) => {
   }
 
   const db = getDb(c.env.DB);
-  await getOwnedActiveSession(db, body.sessionId, user.id);
+  const session = await getOwnedActiveSession(db, body.sessionId, user.id);
 
-  const payload = JSON.stringify({
-    sessionId: body.sessionId,
-    candidate: body.candidate,
-    sdpMid: body.sdpMid ?? null,
-    sdpMLineIndex: body.sdpMLineIndex ?? null,
-  });
-
-  const [inserted] = await db
-    .insert(signals)
-    .values({
+  const message: SignalMessage = {
+    type: 'ice-candidate',
+    data: {
       sessionId: body.sessionId,
-      type: 'ice-candidate',
-      payload,
-      expiresAt: sql`datetime('now', '+5 minutes')`,
-    })
-    .returning();
+      candidate: body.candidate,
+      sdpMid: body.sdpMid ?? null,
+      sdpMLineIndex: body.sdpMLineIndex ?? null,
+    },
+  };
 
+  const inserted = await recordSignal(db, message);
   if (!inserted) {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
+
+  pushToAgent(session.agentId, message);
 
   return c.json(
     {

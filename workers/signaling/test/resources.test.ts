@@ -2,6 +2,12 @@ import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { RESET_STATEMENTS } from './helpers';
 import app from '../src/index';
+import { isAgentOnline } from '../src/utils/agent';
+
+/** Produce the space-separated UTC form `datetime('now')` writes, for test fixtures. */
+function formatSqlite(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ');
+}
 
 /**
  * Response shapes asserted by this suite. Kept as local types rather than
@@ -46,7 +52,8 @@ type AgentResponse = {
   agentVersion: string | null;
   publicKey: string;
   isOnline: boolean;
-  lastPingAt: string | null;
+  lastHeartbeat: string | null;
+  capabilities: string[];
   createdAt: string;
 };
 
@@ -351,6 +358,208 @@ describe('Devices, Agents & Sessions REST API', () => {
       const err = (await second.json()) as ErrorResponse;
       expect(err.code).toBe('AGENT_EXISTS');
     });
+
+    it('issues a credential once and stores only its SHA-256 hash', async () => {
+      // Week 5 W12/D19: the plaintext is returned exactly once and never stored.
+      const createRes = await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            id: 'agent_cred',
+            publicKey: 'pk_cred',
+            capabilities: ['terminal', 'files'],
+          }),
+        },
+        env,
+      );
+
+      expect(createRes.status).toBe(201);
+      const created = (await createRes.json()) as {
+        agent: AgentResponse;
+        credential: string;
+      };
+
+      expect(created.credential).toMatch(/^ag_[0-9a-f]{32}$/);
+      expect(created.agent.capabilities).toEqual(['terminal', 'files']);
+      expect(created.agent.lastHeartbeat).toBeNull();
+      expect(created.agent.isOnline).toBe(false);
+      // The projection must not carry the hash.
+      expect(Object.keys(created.agent)).not.toContain('credentialHash');
+
+      // D1 holds the digest, not the secret.
+      const stored = await env.DB.prepare(
+        `SELECT credential_hash FROM agents WHERE id = 'agent_cred'`,
+      ).first<{ credential_hash: string }>();
+      expect(stored?.credential_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(stored?.credential_hash).not.toBe(created.credential);
+
+      // The digest is of the full token, `ag_` prefix included (D7).
+      const expected = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(created.credential),
+      );
+      const expectedHex = [...new Uint8Array(expected)]
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      expect(stored?.credential_hash).toBe(expectedHex);
+
+      // A repeat registration is still 409 and mints no second credential.
+      // Resolve the same before/after from the database: a Response body is
+      // single-use, so a second `dupRes.json()` would be a vacuous assertion.
+      const before = await env.DB.prepare(
+        'SELECT credential_hash FROM agents WHERE id = ?',
+      )
+        .bind('agent_cred')
+        .first<{ credential_hash: string | null }>();
+
+      const dupRes = await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ id: 'agent_cred', publicKey: 'pk_cred_2' }),
+        },
+        env,
+      );
+      expect(dupRes.status).toBe(409);
+      const dupBody = (await dupRes.json()) as ErrorResponse;
+      expect(dupBody.code).toBe('AGENT_EXISTS');
+
+      const after = await env.DB.prepare(
+        'SELECT credential_hash FROM agents WHERE id = ?',
+      )
+        .bind('agent_cred')
+        .first<{ credential_hash: string | null }>();
+      expect(after).toEqual(before);
+    });
+
+    it('projects agents without leaking the credential hash (list and get)', async () => {
+      // Week 5 W12/D34: `credentialHash` must not reach any response body. A
+      // single un-projected route leaks the hash of every agent the user owns.
+      await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            id: 'agent_proj',
+            publicKey: 'pk_proj',
+            capabilities: ['terminal'],
+          }),
+        },
+        env,
+      );
+
+      const listRes = await app.request(
+        '/api/agents',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(listRes.status).toBe(200);
+      const list = (await listRes.json()) as AgentResponse[];
+      const listed = list.find((a) => a.id === 'agent_proj');
+      expect(listed).toBeDefined();
+      expect(listed?.capabilities).toEqual(['terminal']);
+      expect(listed?.lastHeartbeat).toBeNull();
+      expect(Object.keys(listed ?? {})).not.toContain('credentialHash');
+
+      const getRes = await app.request(
+        '/api/agents/agent_proj',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      expect(getRes.status).toBe(200);
+      const fetched = (await getRes.json()) as AgentResponse;
+      expect(fetched.capabilities).toEqual(['terminal']);
+      expect(Object.keys(fetched)).not.toContain('credentialHash');
+    });
+
+    it('reports isOnline false when is_online is 1 but the ping is outside the 90s window', async () => {
+      // §6.3/W9: `is_online` in D1 is a hint; the 90s window is the truth. A row
+      // can read is_online = 1 while the agent has been dark for two minutes,
+      // because nothing clears it. The list must not report that as online.
+      await app.request(
+        '/api/agents',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ id: 'agent_stale', publicKey: 'pk_stale' }),
+        },
+        env,
+      );
+
+      // A stale hint: online flag set, ping two minutes old, no socket.
+      await env.DB.prepare(
+        `UPDATE agents SET is_online = 1, last_ping_at = datetime('now', '-2 minutes') WHERE id = 'agent_stale'`,
+      ).run();
+
+      const listRes = await app.request(
+        '/api/agents',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      const list = (await listRes.json()) as AgentResponse[];
+      const stale = list.find((a) => a.id === 'agent_stale');
+
+      expect(stale?.isOnline).toBe(false);
+      expect(stale?.lastHeartbeat).not.toBeNull();
+
+      // A fresh ping with the same flag reads online only if a socket is present
+      // in this isolate. With no socket, the window alone is not sufficient —
+      // both conditions are required (§6.3 consequence 1).
+      await env.DB.prepare(
+        `UPDATE agents SET last_ping_at = datetime('now') WHERE id = 'agent_stale'`,
+      ).run();
+
+      const freshRes = await app.request(
+        '/api/agents',
+        { headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+      const fresh = (await freshRes.json()) as AgentResponse[];
+      expect(fresh.find((a) => a.id === 'agent_stale')?.isOnline).toBe(false);
+    });
+  });
+
+  describe('isAgentOnline boundary (unit)', () => {
+    // This test pins the 90s window using the `nowMs` injection point. The HTTP
+    // route cannot inject `nowMs`, so a direct unit test is the only way to
+    // control the boundary. The offsets are *fixed* at 89s and 91s so that
+    // changing ONLINE_WINDOW_SECONDS to a materially different value flips the
+    // "inside" assertion from true to false — that is the discriminating proof.
+    const baseAgent = { isOnline: true, lastPingAt: null as string | null };
+
+    it('reads online inside the window and offline outside it, pinning ONLINE_WINDOW_SECONDS', () => {
+      const nowMs = 1_700_000_000_000; // fixed epoch for reproducibility
+
+      // 89s ago: inside the 90s window → online.
+      const inside = {
+        ...baseAgent,
+        lastPingAt: formatSqlite(nowMs - 89_000),
+      };
+      expect(isAgentOnline(inside, true, nowMs)).toBe(true);
+
+      // 91s ago: outside the window → offline.
+      const outside = {
+        ...baseAgent,
+        lastPingAt: formatSqlite(nowMs - 91_000),
+      };
+      expect(isAgentOnline(outside, true, nowMs)).toBe(false);
+    });
   });
 
   describe('Sessions API (/api/sessions)', () => {
@@ -495,6 +704,57 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(res.status).toBe(404);
       const err = (await res.json()) as ErrorResponse;
       expect(err.code).toBe('NOT_FOUND');
+    });
+
+    it('writes ended_at in the same space-separated UTC format as created_at', async () => {
+      // D-6: the route wrote `new Date().toISOString()` here, contradicting
+      // §6.4's stated convention. An ISO value compares lexicographically greater
+      // than every SQLite timestamp, so any `ended_at > …` filter would match it
+      // regardless of when it happened. No prior test asserted this field.
+      const createRes = await app.request(
+        '/api/sessions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({}),
+        },
+        env,
+      );
+      const created = (await createRes.json()) as { id: string };
+
+      await app.request(
+        `/api/sessions/${created.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+        env,
+      );
+
+      const row = await env.DB.prepare(
+        `SELECT created_at, ended_at, updated_at, status FROM sessions WHERE id = ?`,
+      )
+        .bind(created.id)
+        .first<{
+          created_at: string;
+          ended_at: string;
+          updated_at: string;
+          status: string;
+        }>();
+
+      expect(row?.status).toBe('terminated');
+      const sqliteShape = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+      expect(row?.ended_at).toMatch(sqliteShape);
+      expect(row?.updated_at).toMatch(sqliteShape);
+      expect(row?.ended_at).not.toContain('T');
+
+      // The column is now comparable to the others with a plain SQL comparison.
+      const ordered = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM sessions WHERE id = ? AND ended_at >= created_at`,
+      )
+        .bind(created.id)
+        .first<{ n: number }>();
+      expect(ordered?.n).toBe(1);
     });
   });
 });
