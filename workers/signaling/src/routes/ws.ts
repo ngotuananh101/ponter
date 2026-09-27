@@ -22,9 +22,28 @@ export type AgentConnection = {
   agentId: string;
   userId: string;
   socket: WebSocket;
+  /**
+   * Enqueue an outbound frame for the flush loop owned by the upgrade request.
+   *
+   * A `WebSocket` created by `new WebSocketPair()` in `GET /api/ws/agent` is
+   * bound to that request's `IoContext`: calling `socket.send()` from a later
+   * `POST /api/signal/*` request throws `Cannot perform I/O on behalf of a
+   * different request` in workerd, and the catch-all then deletes a live
+   * socket. `push` only appends to a plain array (no I/O), so it is safe to
+   * call from any request; the flush loop running under `waitUntil` in the
+   * upgrade request's context performs the actual `send`.
+   */
+  push: (data: string) => void;
 };
 
 export const agentConnections = new Map<string, AgentConnection>();
+
+/**
+ * Cap on queued outbound frames per agent socket. Normal sessions push an
+ * offer plus a handful of candidates; a queue past this point means the peer
+ * stopped reading, and D1 remains the delivery guarantee.
+ */
+export const MAX_OUTBOUND_QUEUE = 256;
 
 /**
  * Refuse an inbound text frame larger than this before `JSON.parse` sees it.
@@ -54,16 +73,11 @@ export function pushToAgent(
   const connection = agentConnections.get(agentId);
   if (!connection) return;
 
-  try {
-    connection.socket.send(JSON.stringify({ type: 'signal', data: message }));
-  } catch {
-    // W7: a server-side socket throws on send() once it has closed. Drop it so
-    // the next push skips it. `close` also fires for this socket and is
-    // identity-guarded, so removing the entry here cannot evict a newer one.
-    if (agentConnections.get(agentId)?.socket === connection.socket) {
-      agentConnections.delete(agentId);
-    }
-  }
+  // Enqueue only — no I/O here. The flush loop owned by the upgrade request
+  // performs the actual `send` in its own `IoContext`. A `send` that throws
+  // (closed server socket, W7) drops the entry under the identity guard so a
+  // newer reconnect is never evicted.
+  connection.push(JSON.stringify({ type: 'signal', data: message }));
 }
 
 // `NOW_SQL` is deliberately NOT defined here: Task 3 defines it once in
@@ -225,15 +239,39 @@ router.get('/agent', async (c) => {
   const client = pair[0];
   const server = pair[1];
 
+  const outboundQueue: string[] = [];
+  let signalPending: (() => void) | null = null;
+  let isClosed = false;
+
+  const push = (data: string) => {
+    if (isClosed) return;
+    // Bound the queue: a peer that stopped reading must not grow memory
+    // without limit. D1 remains the delivery guarantee for dropped frames.
+    if (outboundQueue.length >= MAX_OUTBOUND_QUEUE) outboundQueue.shift();
+    outboundQueue.push(data);
+    if (signalPending) {
+      const notify = signalPending;
+      signalPending = null;
+      notify();
+    }
+  };
+
   // D2/W5: registered before the 101 is returned. A reconnect replaces the
   // previous socket, so the map holds exactly one entry per agent.
-  agentConnections.set(agentId, { agentId, userId, socket: server });
+  agentConnections.set(agentId, { agentId, userId, socket: server, push });
 
   server.addEventListener('message', (evt) => {
     void handleInbound(evt.data, server, { db, agentId, userId });
   });
 
   server.addEventListener('close', () => {
+    isClosed = true;
+    if (signalPending) {
+      const notify = signalPending;
+      signalPending = null;
+      notify();
+    }
+
     // D8/W8: a superseded socket may still fire close after a newer socket has
     // replaced it. Without this guard the stale close evicts the live socket
     // and clears `is_online` for a connected agent.
@@ -268,6 +306,37 @@ router.get('/agent', async (c) => {
   });
 
   server.accept();
+
+  const flushLoop = async () => {
+    while (!isClosed) {
+      if (outboundQueue.length === 0 && !isClosed) {
+        await new Promise<void>((resolve) => {
+          if (outboundQueue.length > 0 || isClosed) {
+            resolve();
+          } else {
+            signalPending = resolve;
+          }
+        });
+      }
+      while (outboundQueue.length > 0) {
+        const item = outboundQueue.shift();
+        if (item && !isClosed) {
+          try {
+            server.send(item);
+          } catch {
+            // W7: the server socket throws on send() once closed. Drop the
+            // frame; the `close` handler evicts the entry and ends the loop.
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    c.executionCtx.waitUntil(flushLoop());
+  } catch {
+    void flushLoop();
+  }
 
   // D11: set on connect, not only on the first ping, so a freshly connected
   // agent is not reported offline for up to one ping interval.

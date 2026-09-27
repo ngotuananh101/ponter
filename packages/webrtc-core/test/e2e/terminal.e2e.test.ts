@@ -33,7 +33,7 @@ const AGENT_BIN = join(
   'agent',
   'target',
   'debug',
-  'remote-agent',
+  process.platform === 'win32' ? 'remote-agent.exe' : 'remote-agent',
 );
 const SIGNALING_DIR = join(REPO_ROOT, 'workers', 'signaling');
 const PORT = 8787;
@@ -88,6 +88,7 @@ function spawnLogged(
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     stdio: ['ignore', 'pipe', 'pipe'],
+    shell: process.platform === 'win32' && command === 'pnpm',
   });
   const chunks: string[] = [];
   child.stdout?.on('data', (c: Buffer) => chunks.push(c.toString()));
@@ -350,11 +351,23 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       frames.push(msg);
     });
 
-    await offerer.start();
-    const channel = await offerer.waitForChannel('terminal', 20_000);
-    expect(channel.readyState).toBe('open');
+    try {
+      await offerer.start();
+      const channel = await offerer.waitForChannel('terminal', 20_000);
+      expect(channel.readyState).toBe('open');
 
-    return { offerer, frames };
+      return { offerer, frames };
+    } catch (err) {
+      const agentLogs = agents
+        .map((a, i) => `=== AGENT #${i} ===\n${a.output()}`)
+        .join('\n');
+      const wranglerLogs = wranglerOutput();
+      throw new Error(
+        `${err instanceof Error ? err.message : String(err)}\n` +
+          `--- AGENT LOGS ---\n${agentLogs}\n` +
+          `--- WRANGLER LOGS ---\n${wranglerLogs}`,
+      );
+    }
   }
 
   /** Decode a frame's `payload.data` back to raw bytes. */

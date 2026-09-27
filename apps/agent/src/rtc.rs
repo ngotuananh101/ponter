@@ -36,6 +36,7 @@ pub async fn build_peer(stun_url: &str) -> Result<Arc<RTCPeerConnection>> {
 
     let mut setting = SettingEngine::default();
     setting.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
+    setting.set_include_loopback_candidate(true);
 
     let api = APIBuilder::new()
         .with_media_engine(media)
