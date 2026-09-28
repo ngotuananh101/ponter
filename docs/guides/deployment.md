@@ -46,9 +46,9 @@ Before deploying, ensure you have:
 The platform production deployment consists of two cloud components:
 
 1. **Frontend Web Client (`apps/web`)**:
-   - **Hosting**: Cloudflare Pages (Global CDN with static asset caching).
+   - **Hosting**: Cloudflare Workers (Static Assets with global CDN caching).
    - **Framework**: Vue 3 SPA + Vite + Tailwind CSS + Pinia.
-   - **Routing**: HTML5 History mode with `public/_redirects` SPA fallback (`/* /index.html 200`).
+   - **Routing**: HTML5 History mode with Workers SPA fallback (`not_found_handling = "single-page-application"`).
    - **Backend Connection**: Configured via `VITE_API_URL` pointing to the deployed Worker.
 
 2. **Unified Backend Service (`workers/`)**:
