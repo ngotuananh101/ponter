@@ -238,6 +238,8 @@ impl SignalClient {
                 // (spec R15), so without a periodic flush the pong sits in the
                 // buffer and the peer sees a dead socket.
                 _ = ping.tick() => {
+                    self.sink.send(Message::Text(r#"{"type":"ping"}"#.into())).await
+                        .context("ping send failed")?;
                     self.sink.send(Message::Ping(Bytes::new())).await
                         .context("ping failed")?;
                     self.sink.flush().await.context("flush failed")?;

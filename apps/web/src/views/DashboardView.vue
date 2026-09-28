@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
@@ -41,8 +41,12 @@ const searchQuery = ref('');
 const statusFilter = ref<'all' | 'online' | 'offline'>('all');
 const showRegisterModal = ref(false);
 
-async function loadDashboardData() {
-  loading.value = true;
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+async function loadDashboardData(isBackground = false) {
+  if (!isBackground) {
+    loading.value = true;
+  }
   error.value = null;
   try {
     const [devs, agts] = await Promise.all([
@@ -52,10 +56,14 @@ async function loadDashboardData() {
     devices.value = devs;
     agents.value = agts;
   } catch (err) {
-    error.value =
-      err instanceof Error ? err.message : 'Failed to load dashboard data';
+    if (!isBackground) {
+      error.value =
+        err instanceof Error ? err.message : 'Failed to load dashboard data';
+    }
   } finally {
-    loading.value = false;
+    if (!isBackground) {
+      loading.value = false;
+    }
   }
 }
 
@@ -84,6 +92,16 @@ const filteredAgents = computed(() => {
 
 onMounted(() => {
   loadDashboardData();
+  pollInterval = setInterval(() => {
+    void loadDashboardData(true);
+  }, 10000);
+});
+
+onUnmounted(() => {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
 });
 </script>
 
