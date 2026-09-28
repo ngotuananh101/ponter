@@ -21,10 +21,36 @@ describe('Terminal Message Types', () => {
     expect(msg.shell).toBe('/bin/bash');
   });
 
+  it('instantiates valid TerminalDataMessage', () => {
+    const dataMsg: TerminalDataMessage = {
+      terminalId: 'term-1',
+      data: 'hello world',
+    };
+    expect(dataMsg.terminalId).toBe('term-1');
+    expect(dataMsg.data).toBe('hello world');
+  });
+
+  it('instantiates valid TerminalResizeMessage', () => {
+    const resizeMsg: TerminalResizeMessage = {
+      terminalId: 'term-1',
+      cols: 120,
+      rows: 40,
+    };
+    expect(resizeMsg.terminalId).toBe('term-1');
+    expect(resizeMsg.cols).toBe(120);
+    expect(resizeMsg.rows).toBe(40);
+  });
+
   it('instantiates valid TerminalCloseMessage and TerminalExitMessage', () => {
     const closeMsg: TerminalCloseMessage = { terminalId: 'term-1' };
     const exitMsg: TerminalExitMessage = { terminalId: 'term-1', exitCode: 0 };
     expect(closeMsg.terminalId).toBe('term-1');
     expect(exitMsg.exitCode).toBe(0);
+  });
+
+  it('TerminalExitMessage works without optional exitCode', () => {
+    const exitMsg: TerminalExitMessage = { terminalId: 'term-1' };
+    expect(exitMsg.terminalId).toBe('term-1');
+    expect(exitMsg.exitCode).toBeUndefined();
   });
 });
