@@ -67,7 +67,19 @@ describe('MobileAccessoryBar.vue', () => {
 
   it('renders all expected virtual keys', () => {
     const wrapper = mount(MobileAccessoryBar);
-    const keys = ['Escape', 'Tab', 'CtrlC', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Pipe', 'Slash', 'Tilde', 'Dash'];
+    const keys = [
+      'Escape',
+      'Tab',
+      'CtrlC',
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+      'Pipe',
+      'Slash',
+      'Tilde',
+      'Dash',
+    ];
     keys.forEach((k) => {
       expect(wrapper.find(`[data-key="${k}"]`).exists()).toBe(true);
     });

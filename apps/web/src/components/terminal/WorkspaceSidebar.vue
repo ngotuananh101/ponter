@@ -28,9 +28,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="w-64 bg-card border-r border-border flex flex-col h-full select-none">
+  <div
+    class="w-64 bg-card border-r border-border flex flex-col h-full select-none"
+  >
     <div class="p-3 border-b border-border flex items-center justify-between">
-      <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Agents</span>
+      <span
+        class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+        >Agents</span
+      >
       <button
         class="text-muted-foreground hover:text-foreground p-1 rounded"
         :class="{ 'animate-spin': loading }"

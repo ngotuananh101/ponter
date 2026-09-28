@@ -23,7 +23,7 @@ describe('TerminalClient', () => {
         terminalId: session.id,
         cols: 100,
         rows: 30,
-      })
+      }),
     );
   });
 
@@ -158,14 +158,14 @@ describe('TerminalClient', () => {
     expect(mockSendJson).not.toHaveBeenCalledWith(
       'terminal',
       'terminal-resize',
-      expect.anything()
+      expect.anything(),
     );
 
     vi.advanceTimersByTime(99);
     expect(mockSendJson).not.toHaveBeenCalledWith(
       'terminal',
       'terminal-resize',
-      expect.anything()
+      expect.anything(),
     );
 
     vi.advanceTimersByTime(1);
@@ -200,7 +200,7 @@ describe('TerminalClient', () => {
     expect(client.getSession(session2.id)).toBeUndefined();
     // Should send terminal-close for each session
     const closeCalls = mockSendJson.mock.calls.filter(
-      ([, type]) => type === 'terminal-close'
+      ([, type]) => type === 'terminal-close',
     );
     expect(closeCalls).toHaveLength(2);
   });
@@ -225,7 +225,7 @@ describe('TerminalClient', () => {
     // Advance past the debounce window - should not send resize
     vi.advanceTimersByTime(200);
     const resizeCalls = mockSendJson.mock.calls.filter(
-      ([, type]) => type === 'terminal-resize'
+      ([, type]) => type === 'terminal-resize',
     );
     expect(resizeCalls).toHaveLength(0);
 
@@ -279,7 +279,7 @@ describe('TerminalClient', () => {
       expect.objectContaining({
         cols: 80,
         rows: 24,
-      })
+      }),
     );
   });
 });

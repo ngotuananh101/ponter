@@ -14,7 +14,10 @@ const terminalStore = useTerminalStore();
 const sidebarOpen = ref(true);
 
 function handleConnect(agent: Agent) {
-  terminalStore.openTab(agent.id, agent.hostname || `Agent ${agent.id.slice(0, 6)}`);
+  terminalStore.openTab(
+    agent.id,
+    agent.hostname || `Agent ${agent.id.slice(0, 6)}`,
+  );
 }
 
 function handleSendKey(char: string) {
@@ -77,17 +80,25 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-background">
-    <WorkspaceSidebar
-      v-show="sidebarOpen"
-      @connect-agent="handleConnect"
-    />
+    <WorkspaceSidebar v-show="sidebarOpen" @connect-agent="handleConnect" />
     <button
       v-if="sidebarOpen"
       @click="sidebarOpen = false"
       class="absolute top-1/2 -translate-y-1/2 left-60 z-10 flex items-center justify-center w-6 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Hide sidebar"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground group-hover:text-foreground">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="text-muted-foreground group-hover:text-foreground"
+      >
         <line x1="19" y1="12" x2="5" y2="12"></line>
         <polyline points="12 19 5 12 12 5"></polyline>
       </svg>
@@ -98,7 +109,18 @@ onUnmounted(() => {
       class="fixed top-1/2 -translate-y-1/2 left-2 z-10 flex items-center justify-center w-6 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Show sidebar"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted-foreground group-hover:text-foreground">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="text-muted-foreground group-hover:text-foreground"
+      >
         <line x1="5" y1="12" x2="19" y2="12"></line>
         <polyline points="5" x2="12" y2="19" x1="12" y1="5"></polyline>
       </svg>

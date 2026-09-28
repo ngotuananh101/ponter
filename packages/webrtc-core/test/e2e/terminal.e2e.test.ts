@@ -40,7 +40,7 @@ const AGENT_BIN = join(
   'debug',
   process.platform === 'win32' ? 'remote-agent.exe' : 'remote-agent',
 );
-const SIGNALING_DIR = join(REPO_ROOT, 'workers', 'signaling');
+const SIGNALING_DIR = join(REPO_ROOT, 'workers');
 const PORT = 8787;
 
 /**
@@ -104,22 +104,26 @@ function spawnLogged(
 
 /** Kill a child and wait for it to actually exit, so no process leaks. */
 async function killAndWait(child: ChildProcess | null): Promise<void> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  if (child.pid && process.platform !== 'win32') {
+  if (!child) return;
+  const pid = child.pid;
+  if (pid && process.platform !== 'win32') {
     try {
-      process.kill(-child.pid, 'SIGKILL');
+      process.kill(-pid, 'SIGKILL');
     } catch {
-      // ignore if already exited
+      // ignore if process group already dead
     }
   }
-  child.kill('SIGKILL');
-  await new Promise<void>((resolvePromise) => {
-    child.once('exit', () => resolvePromise());
-    // A child that exited between the guard above and this listener would
-    // otherwise leave the promise pending forever — turning a passing test into
-    // a hung run.
-    if (child.exitCode !== null || child.signalCode !== null) resolvePromise();
-  });
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    await new Promise<void>((resolvePromise) => {
+      child.once('exit', () => resolvePromise());
+      // A child that exited between the guard above and this listener would
+      // otherwise leave the promise pending forever — turning a passing test into
+      // a hung run.
+      if (child.exitCode !== null || child.signalCode !== null)
+        resolvePromise();
+    });
+  }
 }
 
 let wrangler: ChildProcess | null = null;
@@ -233,6 +237,15 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     agents.length = 0;
     await killAndWait(wrangler);
     wrangler = null;
+    if (process.platform !== 'win32') {
+      try {
+        const { execSync } = await import('node:child_process');
+        execSync(`fuser -k -9 ${PORT}/tcp 2>/dev/null || true`);
+        execSync(
+          `pkill -9 -f "dev --local --port ${PORT}" 2>/dev/null || true`,
+        );
+      } catch {}
+    }
     if (tempDir) {
       rmSync(tempDir, { recursive: true, force: true });
       tempDir = '';
