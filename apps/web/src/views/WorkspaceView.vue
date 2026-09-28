@@ -8,6 +8,16 @@ import WorkspaceSidebar from '@/components/terminal/WorkspaceSidebar.vue';
 import TerminalTabBar from '@/components/terminal/TerminalTabBar.vue';
 import XtermTerminal from '@/components/terminal/XtermTerminal.vue';
 import MobileAccessoryBar from '@/components/terminal/MobileAccessoryBar.vue';
+import { Button } from '@/components/ui/button';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Terminal,
+  Server,
+  Radio,
+  ShieldCheck,
+  Keyboard,
+} from '@lucide/vue';
 
 const route = useRoute();
 const terminalStore = useTerminalStore();
@@ -80,52 +90,33 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-background">
+    <!-- Collapsible Agent Sidebar -->
     <WorkspaceSidebar v-show="sidebarOpen" @connect-agent="handleConnect" />
+
+    <!-- Toggle button -->
     <button
       v-if="sidebarOpen"
       @click="sidebarOpen = false"
-      class="absolute top-1/2 -translate-y-1/2 left-60 z-10 flex items-center justify-center w-6 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
+      class="absolute top-1/2 -translate-y-1/2 left-64 z-30 flex items-center justify-center w-5 h-10 bg-card border border-l-0 border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Hide sidebar"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        class="text-muted-foreground group-hover:text-foreground"
-      >
-        <line x1="19" y1="12" x2="5" y2="12"></line>
-        <polyline points="12 19 5 12 12 5"></polyline>
-      </svg>
+      <ChevronLeft
+        class="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground"
+      />
     </button>
     <button
       v-else
       @click="sidebarOpen = true"
-      class="fixed top-1/2 -translate-y-1/2 left-2 z-10 flex items-center justify-center w-6 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
+      class="fixed top-1/2 -translate-y-1/2 left-0 z-30 flex items-center justify-center w-5 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Show sidebar"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        class="text-muted-foreground group-hover:text-foreground"
-      >
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-        <polyline points="5" x2="12" y2="19" x1="12" y1="5"></polyline>
-      </svg>
+      <ChevronRight
+        class="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground"
+      />
     </button>
-    <div class="flex-1 flex flex-col h-full overflow-hidden">
+
+    <!-- Workspace Main Cockpit -->
+    <div class="flex-1 flex flex-col h-full overflow-hidden min-w-0">
       <TerminalTabBar
         :tabs="terminalStore.tabs"
         :active-tab-id="terminalStore.activeTabId"
@@ -133,6 +124,8 @@ onUnmounted(() => {
         @close-tab="terminalStore.closeTab"
         @new-tab="sidebarOpen = true"
       />
+
+      <!-- Terminal Body -->
       <div class="flex-1 relative overflow-hidden bg-[#090d16]">
         <template v-if="terminalStore.activeTab">
           <XtermTerminal
@@ -140,13 +133,105 @@ onUnmounted(() => {
             :session="toRaw(terminalStore.activeTab.session) as TerminalSession"
           />
         </template>
+
+        <!-- Empty State Cockpit -->
         <div
           v-else
-          class="flex items-center justify-center h-full text-muted-foreground text-sm"
+          class="flex flex-col items-center justify-center h-full p-6 text-center space-y-4"
         >
-          Select an agent from the sidebar to open a terminal session.
+          <div
+            class="w-14 h-14 rounded-2xl bg-card border border-border/80 flex items-center justify-center text-primary shadow-lg"
+          >
+            <Terminal class="w-7 h-7" />
+          </div>
+          <div class="space-y-1.5 max-w-md">
+            <h3 class="text-base font-semibold text-foreground tracking-tight">
+              No Active Terminal Session
+            </h3>
+            <p class="text-xs text-muted-foreground">
+              Select an agent from the fleet sidebar or click below to launch an
+              interactive PTY shell over WebRTC.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            class="text-xs flex items-center gap-2 border-border/80"
+            @click="sidebarOpen = true"
+          >
+            <Server class="w-3.5 h-3.5 text-primary" />
+            Browse Connected Agents
+          </Button>
+
+          <!-- Hotkey cheatsheet in empty state -->
+          <div
+            class="pt-6 grid grid-cols-2 gap-3 text-left font-mono text-[11px] text-muted-foreground max-w-sm"
+          >
+            <div class="flex items-center gap-1.5">
+              <span
+                class="px-1.5 py-0.5 rounded bg-muted text-foreground border border-border"
+                >Alt+1..9</span
+              >
+              <span>Switch tab</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span
+                class="px-1.5 py-0.5 rounded bg-muted text-foreground border border-border"
+                >Ctrl+Shift+T</span
+              >
+              <span>New shell</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span
+                class="px-1.5 py-0.5 rounded bg-muted text-foreground border border-border"
+                >Ctrl+W</span
+              >
+              <span>Close tab</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span
+                class="px-1.5 py-0.5 rounded bg-muted text-foreground border border-border"
+                >FitAddon</span
+              >
+              <span>Auto-resizing</span>
+            </div>
+          </div>
         </div>
       </div>
+
+      <!-- Telemetry Bottom Bar (when active tab exists) -->
+      <footer
+        v-if="terminalStore.activeTab"
+        class="h-6 bg-card border-t border-border px-3 hidden sm:flex items-center justify-between text-[11px] font-mono text-muted-foreground select-none flex-shrink-0"
+      >
+        <div class="flex items-center gap-3">
+          <span
+            class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400"
+          >
+            <span
+              class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"
+            ></span>
+            <span>P2P Direct</span>
+          </span>
+          <span class="text-border">|</span>
+          <span class="flex items-center gap-1">
+            <Radio class="w-3 h-3 text-primary" />
+            <span>Channel: terminal (64 KiB buffer)</span>
+          </span>
+          <span class="text-border">|</span>
+          <span class="flex items-center gap-1">
+            <ShieldCheck class="w-3 h-3 text-emerald-500" />
+            <span>DTLS 1.2 / SCTP</span>
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2 text-[10px]">
+          <Keyboard class="w-3 h-3 text-muted-foreground" />
+          <span>Alt+1..9 switch · Ctrl+W close</span>
+        </div>
+      </footer>
+
+      <!-- Mobile virtual keys -->
       <MobileAccessoryBar
         v-if="terminalStore.activeTab"
         class="md:hidden"

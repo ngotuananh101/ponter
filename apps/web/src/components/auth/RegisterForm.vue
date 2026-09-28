@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Shield, KeyRound, User, Mail, Lock } from '@lucide/vue';
 
 defineProps<{
   loading?: boolean;
@@ -32,9 +33,6 @@ const confirmPassword = ref('');
 const validationError = ref<string | null>(null);
 
 function validateEmail(val: string): boolean {
-  // Domain labels exclude `.` so there is exactly one way to match each dot;
-  // the original `[^\s@]+\.` had overlapping classes and backtracked
-  // super-linearly on adversarial input.
   return /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(val);
 }
 
@@ -72,25 +70,52 @@ function handleSubmit() {
 </script>
 
 <template>
-  <Card class="w-full max-w-md mx-auto shadow-md">
-    <CardHeader class="space-y-1">
-      <CardTitle class="text-2xl font-bold tracking-tight"
-        >Create an account</CardTitle
-      >
-      <CardDescription
-        >Enter your details to generate your secure identity</CardDescription
-      >
+  <Card
+    class="w-full max-w-md mx-auto border-border/80 bg-card/95 shadow-xl backdrop-blur-sm"
+  >
+    <CardHeader class="space-y-2 pb-4">
+      <div class="flex items-center justify-between">
+        <div
+          class="w-10 h-10 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary"
+        >
+          <KeyRound class="w-5 h-5" />
+        </div>
+        <div
+          class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary text-muted-foreground text-xs font-mono"
+        >
+          <Shield class="w-3.5 h-3.5 text-primary" />
+          <span>E2EE Keygen</span>
+        </div>
+      </div>
+      <div>
+        <CardTitle class="text-2xl font-bold tracking-tight"
+          >Create an account</CardTitle
+        >
+        <CardDescription class="text-sm text-muted-foreground mt-0.5">
+          Enter your details to generate your secure identity
+        </CardDescription>
+      </div>
     </CardHeader>
     <form @submit.prevent="handleSubmit">
       <CardContent class="space-y-4">
-        <Alert v-if="validationError || errorMessage" variant="destructive">
-          <AlertDescription>{{
+        <Alert
+          v-if="validationError || errorMessage"
+          variant="destructive"
+          class="border-destructive/30 bg-destructive/10"
+        >
+          <AlertDescription class="text-xs font-medium">{{
             validationError || errorMessage
           }}</AlertDescription>
         </Alert>
 
         <div class="space-y-2">
-          <Label for="reg-username">Username</Label>
+          <Label
+            for="reg-username"
+            class="text-xs font-medium text-foreground flex items-center gap-1.5"
+          >
+            <User class="w-3.5 h-3.5 text-muted-foreground" />
+            Username
+          </Label>
           <Input
             id="reg-username"
             v-model="username"
@@ -98,11 +123,18 @@ function handleSubmit() {
             placeholder="Username (min 3 chars)"
             autocomplete="username"
             :disabled="loading"
+            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
           />
         </div>
 
         <div class="space-y-2">
-          <Label for="reg-email">Email (optional)</Label>
+          <Label
+            for="reg-email"
+            class="text-xs font-medium text-foreground flex items-center gap-1.5"
+          >
+            <Mail class="w-3.5 h-3.5 text-muted-foreground" />
+            Email (optional)
+          </Label>
           <Input
             id="reg-email"
             v-model="email"
@@ -110,11 +142,18 @@ function handleSubmit() {
             placeholder="name@example.com"
             autocomplete="email"
             :disabled="loading"
+            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
           />
         </div>
 
         <div class="space-y-2">
-          <Label for="reg-password">Password</Label>
+          <Label
+            for="reg-password"
+            class="text-xs font-medium text-foreground flex items-center gap-1.5"
+          >
+            <Lock class="w-3.5 h-3.5 text-muted-foreground" />
+            Password
+          </Label>
           <Input
             id="reg-password"
             v-model="password"
@@ -122,11 +161,18 @@ function handleSubmit() {
             placeholder="Password (min 8 chars)"
             autocomplete="new-password"
             :disabled="loading"
+            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
           />
         </div>
 
         <div class="space-y-2">
-          <Label for="reg-confirm-password">Confirm Password</Label>
+          <Label
+            for="reg-confirm-password"
+            class="text-xs font-medium text-foreground flex items-center gap-1.5"
+          >
+            <Lock class="w-3.5 h-3.5 text-muted-foreground" />
+            Confirm Password
+          </Label>
           <Input
             id="reg-confirm-password"
             v-model="confirmPassword"
@@ -134,19 +180,25 @@ function handleSubmit() {
             placeholder="Repeat password"
             autocomplete="new-password"
             :disabled="loading"
+            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
           />
         </div>
       </CardContent>
-      <CardFooter class="flex flex-col space-y-3">
-        <Button type="submit" class="w-full" :disabled="loading">
-          <span v-if="loading">Generating Keys & Registering...</span>
+      <CardFooter class="flex flex-col space-y-3 pt-2">
+        <Button type="submit" class="w-full font-medium" :disabled="loading">
+          <span v-if="loading" class="flex items-center gap-2">
+            <span
+              class="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin"
+            ></span>
+            Generating Keys & Registering...
+          </span>
           <span v-else>Register</span>
         </Button>
-        <div class="text-center text-sm text-muted-foreground">
+        <div class="text-center text-xs text-muted-foreground">
           Already have an account?
           <router-link
             to="/login"
-            class="text-primary hover:underline font-medium"
+            class="text-primary hover:underline font-medium ml-1"
           >
             Sign In
           </router-link>

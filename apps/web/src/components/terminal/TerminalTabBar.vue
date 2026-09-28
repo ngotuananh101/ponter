@@ -15,33 +15,34 @@ defineEmits<{
 
 <template>
   <div
-    class="flex items-center bg-card border-b border-border px-2 h-10 overflow-x-auto select-none"
+    class="flex items-center bg-card/95 border-b border-border px-2 h-10 overflow-x-auto select-none"
   >
     <div class="flex items-center gap-1 flex-1 overflow-x-auto">
       <div
         v-for="tab in tabs"
         :key="tab.id"
-        class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-t border-t border-x cursor-pointer transition-colors"
+        class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-t border-t border-x cursor-pointer transition-colors group"
         :class="
           tab.id === activeTabId
             ? 'bg-[#090d16] border-border text-foreground font-medium'
-            : 'bg-muted/40 border-transparent text-muted-foreground hover:bg-muted'
+            : 'bg-muted/30 border-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground'
         "
         @click="$emit('selectTab', tab.id)"
       >
         <span
-          class="w-2 h-2 rounded-full"
+          class="w-2 h-2 rounded-full flex-shrink-0"
           :class="{
-            'bg-green-500': tab.status === 'active',
-            'bg-yellow-500 animate-pulse': tab.status === 'connecting',
-            'bg-gray-400': tab.status === 'exited',
-            'bg-red-500': tab.status === 'error',
+            'bg-emerald-500': tab.status === 'active',
+            'bg-amber-500 animate-pulse': tab.status === 'connecting',
+            'bg-muted-foreground/40': tab.status === 'exited',
+            'bg-destructive': tab.status === 'error',
           }"
         />
-        <span class="truncate max-w-[120px]">{{ tab.title }}</span>
+        <span class="truncate max-w-[130px] font-mono">{{ tab.title }}</span>
         <button
           :data-test="`close-tab-${tab.id}`"
-          class="hover:text-destructive rounded p-0.5"
+          class="hover:text-destructive hover:bg-destructive/10 rounded p-0.5 transition-colors opacity-70 group-hover:opacity-100"
+          title="Close tab"
           @click.stop="$emit('closeTab', tab.id)"
         >
           <X class="w-3.5 h-3.5" />
@@ -49,7 +50,7 @@ defineEmits<{
       </div>
     </div>
     <button
-      class="p-1.5 ml-2 hover:bg-muted text-muted-foreground hover:text-foreground rounded transition-colors"
+      class="p-1.5 ml-2 hover:bg-muted text-muted-foreground hover:text-foreground rounded-md transition-colors"
       title="Open new tab"
       @click="$emit('newTab')"
     >
