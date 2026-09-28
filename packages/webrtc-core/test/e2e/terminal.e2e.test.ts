@@ -7,7 +7,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PeerConnection } from '../../src/connection';
 import { WeriftAdapter } from '../../src/adapters/werift';
 import { RESTPollingTransport } from '../../src/transport';
-import type { DataChannelMessage, TerminalDataMessage } from '@remote/shared';
+import type {
+  DataChannelMessage,
+  TerminalCreateMessage,
+  TerminalDataMessage,
+} from '@remote/shared';
 
 /**
  * Layer 3: the whole week in one file — a Rust agent, a TypeScript offerer, a
@@ -378,15 +382,35 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   /** Send one `terminal-data` frame carrying `text` as UTF-8. */
   function sendKeystrokes(
     offerer: PeerConnection,
-    sessionId: string,
+    terminalId: string,
     text: string,
   ): void {
     offerer.dataChannels.sendJson<TerminalDataMessage>(
       'terminal',
       'terminal-data',
       {
-        terminalId: sessionId,
+        terminalId,
         data: Buffer.from(text, 'utf8').toString('base64'),
+      },
+    );
+  }
+
+  /** Send a `terminal-create` frame to spawn a new PTY session on the agent. */
+  function sendTerminalCreate(
+    offerer: PeerConnection,
+    terminalId: string,
+    cols = 80,
+    rows = 24,
+    shell?: string,
+  ): void {
+    offerer.dataChannels.sendJson<TerminalCreateMessage>(
+      'terminal',
+      'terminal-create',
+      {
+        terminalId,
+        cols,
+        rows,
+        ...(shell ? { shell } : {}),
       },
     );
   }
@@ -478,6 +502,110 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
           frames.map((f) => frameBytes(f).toString('hex')).join('\n') +
           `\n--- agent output ---\n${agents.map((a) => a.output()).join('\n')}`,
       ).toBe(true);
+    } finally {
+      await offerer.close();
+    }
+  }, 90_000);
+
+  // Week 6 multiplexing: two distinct terminalId values on the same DataChannel
+  // must produce independent PTY output, each routed back by terminalId. This is
+  // the cross-language proof that PtyManager's keyed dispatch works over a real
+  // DTLS/SCTP transport, not just in the Rust unit test.
+  it('multiplexes two terminal sessions over one DataChannel', async () => {
+    const { token, agentId, credential, sessionId } = await seed();
+
+    spawnAgent(agentId, credential);
+    await waitForAgentOnline(token, agentId);
+
+    const { offerer, frames } = await connectTerminal(sessionId, token);
+
+    // Two distinct terminal ids, each with a unique marker so we can verify
+    // output isolation rather than mere presence.
+    const terminalA = `term-a-${sessionId}`;
+    const terminalB = `term-b-${sessionId}`;
+
+    try {
+      // Explicitly create both sessions so spawn-on-demand is not the path under
+      // test. Each `terminal-create` is a distinct message with its own id.
+      sendTerminalCreate(offerer, terminalA);
+      sendTerminalCreate(offerer, terminalB);
+
+      // Give the agent a moment to process the create frames and spawn the PTYs.
+      await delay(500);
+
+      // Send a unique echo to each terminal via terminal-data.
+      sendKeystrokes(offerer, terminalA, 'echo MARKER-A-42\n');
+      sendKeystrokes(offerer, terminalB, 'echo MARKER-B-99\n');
+
+      // Collect output per terminalId, tracking which frames we've already seen
+      // so interleaved frames from both sessions don't get reprocessed.
+      const deadline = Date.now() + 20_000;
+      const processed = new Set<number>();
+      let foundA = false;
+      let foundB = false;
+      let decodedA = '';
+      let decodedB = '';
+
+      while (Date.now() < deadline && (!foundA || !foundB)) {
+        for (let i = 0; i < frames.length; i++) {
+          if (processed.has(i)) continue;
+          processed.add(i);
+
+          const frame = frames[i];
+          if (!frame) continue;
+          const bytes = frameBytes(frame);
+          const text = bytes.toString('utf8');
+          const tid = frame.payload.terminalId;
+
+          if (tid === terminalA) {
+            decodedA += text;
+            if (decodedA.includes('MARKER-A-42')) foundA = true;
+          } else if (tid === terminalB) {
+            decodedB += text;
+            if (decodedB.includes('MARKER-B-99')) foundB = true;
+          }
+        }
+
+        if (!foundA || !foundB) await delay(100);
+      }
+
+      expect(
+        foundA,
+        `terminal ${terminalA} never produced its marker\n` +
+          `--- decoded A ---\n${JSON.stringify(decodedA)}\n` +
+          `--- agent output ---\n${agents.map((a) => a.output()).join('\n')}`,
+      ).toBe(true);
+
+      expect(
+        foundB,
+        `terminal ${terminalB} never produced its marker\n` +
+          `--- decoded B ---\n${JSON.stringify(decodedB)}\n` +
+          `--- agent output ---\n${agents.map((a) => a.output()).join('\n')}`,
+      ).toBe(true);
+
+      // Verify output isolation: neither terminal received the other's marker.
+      expect(
+        decodedA,
+        'terminal A received terminal B output — multiplexing is leaking',
+      ).not.toContain('MARKER-B');
+      expect(
+        decodedB,
+        'terminal B received terminal A output — multiplexing is leaking',
+      ).not.toContain('MARKER-A');
+
+      // Every received output frame must carry a terminalId so the browser can
+      // demultiplex — no orphaned frames without a routing key.
+      const orphaned = frames.filter(
+        (f) =>
+          !f.payload.terminalId ||
+          (f.payload.terminalId !== terminalA &&
+            f.payload.terminalId !== terminalB),
+      );
+      expect(
+        orphaned,
+        `found output frames for unexpected terminal ids:\n` +
+          orphaned.map((f) => JSON.stringify(f.payload.terminalId)).join(', '),
+      ).toHaveLength(0);
     } finally {
       await offerer.close();
     }
