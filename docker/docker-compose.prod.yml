@@ -44,22 +44,22 @@ services:
     restart: always
     network_mode: host
     command:
-      - "-n"
-      - "--log-file=stdout"
-      - "--lt-cred-mech"
-      - "--use-auth-secret"
-      - "--static-auth-secret=${TURN_SECRET}"
-      - "--realm=${DOMAIN}"
-      - "--min-port=49152"
-      - "--max-port=49200"
+      - '-n'
+      - '--log-file=stdout'
+      - '--lt-cred-mech'
+      - '--use-auth-secret'
+      - '--static-auth-secret=${TURN_SECRET}'
+      - '--realm=${DOMAIN}'
+      - '--min-port=49152'
+      - '--max-port=49200'
 
   caddy:
     image: caddy:2-alpine
     container_name: caddy
     restart: always
     ports:
-      - "80:80"
-      - "443:443"
+      - '80:80'
+      - '443:443'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - ./caddy_data:/data

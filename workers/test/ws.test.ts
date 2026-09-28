@@ -612,7 +612,10 @@ describe('Agent WebSocket (/api/ws/agent)', () => {
 
     const frame = JSON.parse(received[0] ?? '{}') as {
       type: string;
-      data: { type: string; data: { sessionId: string; sdp: string; capabilities: string[] } };
+      data: {
+        type: string;
+        data: { sessionId: string; sdp: string; capabilities: string[] };
+      };
     };
     expect(frame.type).toBe('signal');
     expect(frame.data.type).toBe('offer');

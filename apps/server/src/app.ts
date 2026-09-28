@@ -17,7 +17,10 @@ export function createApp() {
   app.use(
     '*',
     cors({
-      origin: corsOrigin && corsOrigin !== '*' ? corsOrigin.split(',').map((o) => o.trim()) : '*',
+      origin:
+        corsOrigin && corsOrigin !== '*'
+          ? corsOrigin.split(',').map((o) => o.trim())
+          : '*',
       allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type', 'Authorization'],
     }),

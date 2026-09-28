@@ -65,10 +65,16 @@ export const sessions = sqliteTable('sessions', {
   userId: text('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  deviceId: text('device_id').references(() => devices.id, { onDelete: 'set null' }),
-  agentId: text('agent_id').references(() => agents.id, { onDelete: 'set null' }),
+  deviceId: text('device_id').references(() => devices.id, {
+    onDelete: 'set null',
+  }),
+  agentId: text('agent_id').references(() => agents.id, {
+    onDelete: 'set null',
+  }),
   status: text('status').notNull().default('pending'),
-  startedAt: text('started_at').notNull().default(sql`(datetime('now'))`),
+  startedAt: text('started_at')
+    .notNull()
+    .default(sql`(datetime('now'))`),
   endedAt: text('ended_at'),
   createdAt: text('created_at')
     .notNull()
@@ -101,15 +107,17 @@ export const signals = sqliteTable(
   ],
 );
 
-export const revokedTokens = sqliteTable('revoked_tokens', {
-  jti: text('jti').primaryKey(),
-  expiresAt: integer('expires_at').notNull(),
-  createdAt: text('created_at')
-    .notNull()
-    .default(sql`(datetime('now'))`),
-}, (table) => [
-  index('idx_revoked_tokens_expires').on(table.expiresAt),
-]);
+export const revokedTokens = sqliteTable(
+  'revoked_tokens',
+  {
+    jti: text('jti').primaryKey(),
+    expiresAt: integer('expires_at').notNull(),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [index('idx_revoked_tokens_expires').on(table.expiresAt)],
+);
 
 export type UserSelect = typeof users.$inferSelect;
 export type UserInsert = typeof users.$inferInsert;

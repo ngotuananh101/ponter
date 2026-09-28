@@ -16,7 +16,10 @@ function toBase64Url(data: ArrayBuffer | Uint8Array): string {
   for (let i = 0; i < bytes.length; i++) {
     binary += String.fromCharCode(bytes[i]!);
   }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 }
 
 /** Decode a base64url string (with or without padding) to a Uint8Array. */
@@ -79,9 +82,7 @@ export async function sign(
   );
 
   const headerPart = toBase64Url(TEXT_ENCODER.encode(JSON.stringify(header)));
-  const payloadPart = toBase64Url(
-    TEXT_ENCODER.encode(JSON.stringify(payload)),
-  );
+  const payloadPart = toBase64Url(TEXT_ENCODER.encode(JSON.stringify(payload)));
   const data = `${headerPart}.${payloadPart}`;
 
   const signature = await crypto.subtle.sign(

@@ -352,13 +352,11 @@ describe('Agents, Devices & Sessions REST API', () => {
       expect(Object.keys(created.agent)).not.toContain('credentialHash');
 
       // D1 (SQLite) holds the digest, not the secret.
-      const stored = (
-        await db
-          .select({ credentialHash: agents.credentialHash })
-          .from(agents)
-          .where(eq(agents.id, 'agent_cred'))
-          .get()
-      ) as { credentialHash: string | null } | undefined;
+      const stored = (await db
+        .select({ credentialHash: agents.credentialHash })
+        .from(agents)
+        .where(eq(agents.id, 'agent_cred'))
+        .get()) as { credentialHash: string | null } | undefined;
 
       expect(stored?.credentialHash).toMatch(/^[0-9a-f]{64}$/);
       expect(stored?.credentialHash).not.toBe(created.credential);
@@ -453,7 +451,10 @@ describe('Agents, Devices & Sessions REST API', () => {
         .update(agents)
         .set({
           isOnline: true,
-          lastPingAt: new Date(Date.now() - 120_000).toISOString().slice(0, 19).replace('T', ' '),
+          lastPingAt: new Date(Date.now() - 120_000)
+            .toISOString()
+            .slice(0, 19)
+            .replace('T', ' '),
         })
         .where(eq(agents.id, 'agent_stale'));
 
@@ -494,9 +495,11 @@ describe('Agents, Devices & Sessions REST API', () => {
       });
 
       // Confirm it exists
-      let list = (await app.request('/api/agents', {
-        headers: { Authorization: `Bearer ${token}` },
-      }).then((r) => r.json())) as AgentResponse[];
+      let list = (await app
+        .request('/api/agents', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        .then((r) => r.json())) as AgentResponse[];
       expect(list).toHaveLength(1);
 
       const delRes = await app.request('/api/agents/agent_delete', {
@@ -505,9 +508,11 @@ describe('Agents, Devices & Sessions REST API', () => {
       });
       expect(delRes.status).toBe(200);
 
-      list = (await app.request('/api/agents', {
-        headers: { Authorization: `Bearer ${token}` },
-      }).then((r) => r.json())) as AgentResponse[];
+      list = (await app
+        .request('/api/agents', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        .then((r) => r.json())) as AgentResponse[];
       expect(list).toHaveLength(0);
     });
 
@@ -532,7 +537,10 @@ describe('Agents, Devices & Sessions REST API', () => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${other.token}`,
         },
-        body: JSON.stringify({ id: 'agent_other', publicKey: 'pk_other_agent' }),
+        body: JSON.stringify({
+          id: 'agent_other',
+          publicKey: 'pk_other_agent',
+        }),
       });
 
       const res = await app.request('/api/agents/agent_other', {

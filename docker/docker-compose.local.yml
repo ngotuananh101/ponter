@@ -16,7 +16,7 @@ services:
     image: remote-server:local
     container_name: remote-server-local
     ports:
-      - "8787:8787"
+      - '8787:8787'
     environment:
       - PORT=8787
       - DATABASE_PATH=/app/data/remote.db

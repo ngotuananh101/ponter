@@ -4,14 +4,14 @@ This directory contains the multi-stage Dockerfile and three Docker Compose setu
 
 ## Files
 
-| File | Description |
-|---|---|
-| `Dockerfile.server` | Multi-stage build: `node:24-alpine` base → builder (full deps + native toolchain) → runner (production deps only, better-sqlite3 native bindings). |
-| `docker-compose.local.yml` | Local LAN testing. No TURN, Google public STUN only. |
-| `docker-compose.tunnel.yml` | Homelab behind a Cloudflare Tunnel. Public exposure via `cloudflared`. |
-| `docker-compose.prod.yml` | Production VPS. Caddy (Let's Encrypt) + Coturn (TURN/STUN) alongside the server. |
-| `Caddyfile` | Caddy reverse proxy config for the prod setup. |
-| `.env.example` | Template for required environment variables. |
+| File                        | Description                                                                                                                                        |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile.server`         | Multi-stage build: `node:24-alpine` base → builder (full deps + native toolchain) → runner (production deps only, better-sqlite3 native bindings). |
+| `docker-compose.local.yml`  | Local LAN testing. No TURN, Google public STUN only.                                                                                               |
+| `docker-compose.tunnel.yml` | Homelab behind a Cloudflare Tunnel. Public exposure via `cloudflared`.                                                                             |
+| `docker-compose.prod.yml`   | Production VPS. Caddy (Let's Encrypt) + Coturn (TURN/STUN) alongside the server.                                                                   |
+| `Caddyfile`                 | Caddy reverse proxy config for the prod setup.                                                                                                     |
+| `.env.example`              | Template for required environment variables.                                                                                                       |
 
 ## Quick Start
 
@@ -69,20 +69,20 @@ Caddy will automatically request Let's Encrypt certificates for `DOMAIN`. The Co
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `PORT` | No | `8787` | Server listen port (inside container). |
-| `DATABASE_PATH` | No | `/app/data/remote.db` | SQLite database file. |
-| `JWT_SECRET` | Yes | — | HS256 secret for access tokens. Min 32 chars. |
-| `REFRESH_TOKEN_SECRET` | Yes | — | HS256 secret for refresh tokens. Min 32 chars. |
-| `CORS_ORIGIN` | No | `*` | CORS allow-origin for the API. |
-| `JWT_EXPIRES_IN` | No | `900` (15m) | Access token TTL. |
-| `REFRESH_TOKEN_EXPIRES_IN` | No | `604800` (7d) | Refresh token TTL. |
-| `TURN_SECRET` | Prod only | — | Shared secret for Coturn long-term auth. |
-| `TURN_URL` | Prod only | `turn:${DOMAIN}:3478` | TURN URL advertised to clients. |
-| `STUN_URL` | Prod only | `stun:${DOMAIN}:3478` | STUN URL advertised to clients. |
-| `DOMAIN` | Prod only | — | Your public domain for Caddy TLS + TURN realm. |
-| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
+| Variable                   | Required    | Default               | Description                                    |
+| -------------------------- | ----------- | --------------------- | ---------------------------------------------- |
+| `PORT`                     | No          | `8787`                | Server listen port (inside container).         |
+| `DATABASE_PATH`            | No          | `/app/data/remote.db` | SQLite database file.                          |
+| `JWT_SECRET`               | Yes         | —                     | HS256 secret for access tokens. Min 32 chars.  |
+| `REFRESH_TOKEN_SECRET`     | Yes         | —                     | HS256 secret for refresh tokens. Min 32 chars. |
+| `CORS_ORIGIN`              | No          | `*`                   | CORS allow-origin for the API.                 |
+| `JWT_EXPIRES_IN`           | No          | `900` (15m)           | Access token TTL.                              |
+| `REFRESH_TOKEN_EXPIRES_IN` | No          | `604800` (7d)         | Refresh token TTL.                             |
+| `TURN_SECRET`              | Prod only   | —                     | Shared secret for Coturn long-term auth.       |
+| `TURN_URL`                 | Prod only   | `turn:${DOMAIN}:3478` | TURN URL advertised to clients.                |
+| `STUN_URL`                 | Prod only   | `stun:${DOMAIN}:3478` | STUN URL advertised to clients.                |
+| `DOMAIN`                   | Prod only   | —                     | Your public domain for Caddy TLS + TURN realm. |
+| `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only | —                     | Cloudflare Tunnel token.                       |
 
 ## Building Locally
 

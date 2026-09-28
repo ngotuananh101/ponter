@@ -7,6 +7,9 @@ import type * as schema from './schema.js';
  * Uses drizzle-orm/better-sqlite3/migrator which reads migration files
  * from the given migrations folder.
  */
-export function runMigrations(db: BetterSQLite3Database<typeof schema>, migrationsFolder: string): void {
+export function runMigrations(
+  db: BetterSQLite3Database<typeof schema>,
+  migrationsFolder: string,
+): void {
   migrate(db, { migrationsFolder });
 }

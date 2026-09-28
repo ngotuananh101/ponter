@@ -56,20 +56,20 @@ ponta-remote/
 
 ## 🛠️ Tech Stack
 
-| Layer                  | Technologies                                                              |
-| ---------------------- | ------------------------------------------------------------------------- |
-| **Backend Runtime**    | Node.js 24 LTS, Hono, TypeScript, `ws` (WebSocket)                       |
-| **Database**           | SQLite (better-sqlite3 + Drizzle ORM, WAL mode)                           |
-| **Token Revocation**   | SQLite `revoked_tokens` table (replaces Cloudflare KV blacklist)          |
-| **Authentication**     | PBKDF2-HMAC-SHA256, Stateless JWT (15m access / 7d refresh)               |
-| **Web Client**         | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`                          |
-| **Desktop Agent**      | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`  |
-| **WebRTC & Transport** | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP |
-| **TURN/STUN**          | Coturn (RFC 5766 shared secret), Google STUN (local dev)                    |
-| **Containerization**   | Docker (multi-stage), Docker Compose (3 setups)                           |
-| **Web Frontend Hosting** | Cloudflare Pages (static assets only)                                     |
-| **Testing**            | Vitest, Cargo test, Cross-language E2E                                    |
-| **Build & Toolchain**  | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt              |
+| Layer                    | Technologies                                                             |
+| ------------------------ | ------------------------------------------------------------------------ |
+| **Backend Runtime**      | Node.js 24 LTS, Hono, TypeScript, `ws` (WebSocket)                       |
+| **Database**             | SQLite (better-sqlite3 + Drizzle ORM, WAL mode)                          |
+| **Token Revocation**     | SQLite `revoked_tokens` table (replaces Cloudflare KV blacklist)         |
+| **Authentication**       | PBKDF2-HMAC-SHA256, Stateless JWT (15m access / 7d refresh)              |
+| **Web Client**           | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`                         |
+| **Desktop Agent**        | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`  |
+| **WebRTC & Transport**   | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP |
+| **TURN/STUN**            | Coturn (RFC 5766 shared secret), Google STUN (local dev)                 |
+| **Containerization**     | Docker (multi-stage), Docker Compose (3 setups)                          |
+| **Web Frontend Hosting** | Cloudflare Pages (static assets only)                                    |
+| **Testing**              | Vitest, Cargo test, Cross-language E2E                                   |
+| **Build & Toolchain**    | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt             |
 
 ---
 

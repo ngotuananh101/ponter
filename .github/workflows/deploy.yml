@@ -46,13 +46,8 @@ jobs:
         env:
           VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL || 'http://localhost:8787' }}
 
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
-        with:
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          projectName: ponta-remote-web
-          directory: apps/web/dist
-          # Git hubref is automatically set if not provided
-          # Only deploy on the main branch
-          branch: ${{ github.ref_name }}
+      - name: Deploy to Cloudflare (Static Assets)
+        run: pnpm --filter @remote/web exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

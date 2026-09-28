@@ -137,7 +137,7 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       }),
     );
 
-    const sessData = await sessRes.json() as SessionResponse;
+    const sessData = (await sessRes.json()) as SessionResponse;
     sessionId = sessData.id;
   });
 
@@ -154,11 +154,14 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       const result: number[] = [];
 
       await new Promise<void>((resolve) => {
-        ws.on('unexpected-response', (_req: unknown, res: { statusCode: number }) => {
-          result.push(res.statusCode);
-          ws.close();
-          resolve();
-        });
+        ws.on(
+          'unexpected-response',
+          (_req: unknown, res: { statusCode: number }) => {
+            result.push(res.statusCode);
+            ws.close();
+            resolve();
+          },
+        );
         ws.on('open', () => {
           ws.close();
           resolve();
@@ -177,7 +180,9 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
         headers: { Authorization: `Bearer ${credential}` },
       });
 
-      await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
+      await waitFor(() =>
+        ws.readyState === WebSocket.OPEN ? true : undefined,
+      );
       expect(ws.readyState).toBe(WebSocket.OPEN);
 
       // Collect messages
@@ -214,10 +219,14 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
         headers: { Authorization: `Bearer ${credential}` },
       });
 
-      await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
+      await waitFor(() =>
+        ws.readyState === WebSocket.OPEN ? true : undefined,
+      );
       ws.close();
 
-      await waitFor(() => (ws.readyState === WebSocket.CLOSED ? true : undefined));
+      await waitFor(() =>
+        ws.readyState === WebSocket.CLOSED ? true : undefined,
+      );
 
       // Allow the async close handler to persist isOnline=false to the DB.
       await wait(200);
@@ -243,7 +252,9 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
         headers: { Authorization: `Bearer ${credential}` },
       });
 
-      await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
+      await waitFor(() =>
+        ws.readyState === WebSocket.OPEN ? true : undefined,
+      );
 
       // Collect messages received by the agent
       const received: string[] = [];
@@ -254,21 +265,24 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       await wait(50);
 
       // Browser posts offer via the HTTP server (same Hono instance)
-      const offerRes = await fetch(`http://localhost:${port}/api/signal/offer`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+      const offerRes = await fetch(
+        `http://localhost:${port}/api/signal/offer`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            sessionId,
+            sdp: 'v=0-o=offer',
+            capabilities: ['terminal', 'files'],
+          }),
         },
-        body: JSON.stringify({
-          sessionId,
-          sdp: 'v=0-o=offer',
-          capabilities: ['terminal', 'files'],
-        }),
-      });
+      );
 
       expect(offerRes.status).toBe(201);
-      const offerBody = await offerRes.json() as { id: string };
+      const offerBody = (await offerRes.json()) as { id: string };
       expect(offerBody.id).toBeDefined();
 
       // Wait for the agent to receive the signal
@@ -290,7 +304,11 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       expect(msg.data.sessionId).toBe(sessionId);
 
       // Verify signal was recorded in DB
-      const signalRows = await db.select().from(signals).where(eq(signals.sessionId, sessionId)).all();
+      const signalRows = await db
+        .select()
+        .from(signals)
+        .where(eq(signals.sessionId, sessionId))
+        .all();
       expect(signalRows.length).toBeGreaterThanOrEqual(1);
 
       ws.close();
@@ -305,7 +323,9 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
         headers: { Authorization: `Bearer ${credential}` },
       });
 
-      await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
+      await waitFor(() =>
+        ws.readyState === WebSocket.OPEN ? true : undefined,
+      );
 
       const received: string[] = [];
       ws.on('message', (data: Buffer) => {
@@ -346,12 +366,17 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       expect(echoed?.data?.type).toBe('answer');
 
       // Browser polls for signals via the same app instance
-      const pollRes = await fetch(`http://localhost:${port}/api/signal/poll/${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const pollRes = await fetch(
+        `http://localhost:${port}/api/signal/poll/${sessionId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
 
       expect(pollRes.status).toBe(200);
-      const pollBody = await pollRes.json() as { signals: Array<{ type: string }> };
+      const pollBody = (await pollRes.json()) as {
+        signals: Array<{ type: string }>;
+      };
       expect(pollBody.signals).toHaveLength(1);
       expect(pollBody.signals[0]?.type).toBe('answer');
 
@@ -380,8 +405,12 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       );
 
       expect(res.status).toBe(200);
-      const body = await res.json() as {
-        iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }>;
+      const body = (await res.json()) as {
+        iceServers: Array<{
+          urls: string | string[];
+          username?: string;
+          credential?: string;
+        }>;
       };
 
       expect(body.iceServers).toHaveLength(2);
@@ -422,10 +451,14 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       );
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { iceServers: Array<{ urls: string | string[] }> };
+      const body = (await res.json()) as {
+        iceServers: Array<{ urls: string | string[] }>;
+      };
 
       expect(body.iceServers).toHaveLength(1);
-      expect(body.iceServers[0]?.urls).toEqual(['stun:stun.l.google.com:19302']);
+      expect(body.iceServers[0]?.urls).toEqual([
+        'stun:stun.l.google.com:19302',
+      ]);
     });
 
     it('rejects without auth with 401', async () => {
@@ -495,7 +528,7 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       );
 
       expect(res.status).toBe(200);
-      const body = await res.json() as { signals: Array<{ type: string }> };
+      const body = (await res.json()) as { signals: Array<{ type: string }> };
       expect(body.signals).toHaveLength(1);
       expect(body.signals[0]?.type).toBe('offer');
     });

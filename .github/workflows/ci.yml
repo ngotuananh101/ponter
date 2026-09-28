@@ -54,7 +54,7 @@ jobs:
 
       - name: Run web test suite
         run: pnpm --filter @remote/web test
-        continue-on-error: true  # UI tests may be flaky
+        continue-on-error: true # UI tests may be flaky
 
       - name: Run shared package tests
         run: pnpm --filter @remote/shared test
@@ -100,36 +100,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@0c45773b520087ac09547245b2388487c0015986 # v3
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: docker-buildx-local-yml-${{ github.sha }}
-          restore-keys: |
-            docker-buildx-local-yml-
-
       - name: Build server Docker image
-        uses: docker/build-push-action@534d8287a4b77469309e68324b29e79f8b7b5e91 # v6
-        with:
-          context: .
-          file: docker/Dockerfile.server
-          push: false
-          load: true
-          tags: remote-server:ci
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: Cache Docker layers (update)
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+        run: docker build -f docker/Dockerfile.server -t remote-server:ci .
 
       - name: Verify image exists
-        run: |
-          docker image inspect remote-server:ci
+        run: docker image inspect remote-server:ci
 
   e2e:
     name: Cross-language terminal E2E

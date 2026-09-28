@@ -21,7 +21,10 @@ export class AgentSignalingDO extends DurableObject<Bindings> {
       if (this.agentSocket) {
         try {
           const payload =
-            typeof body === 'object' && body !== null && 'type' in body && body.type === 'signal'
+            typeof body === 'object' &&
+            body !== null &&
+            'type' in body &&
+            body.type === 'signal'
               ? JSON.stringify(body)
               : JSON.stringify({ type: 'signal', data: body });
           this.agentSocket.send(payload);
@@ -165,17 +168,15 @@ export class AgentSignalingDO extends DurableObject<Bindings> {
       .where(eq(sessions.id, message.data.sessionId))
       .get();
 
-    if (
-      !session ||
-      session.userId !== userId ||
-      session.agentId !== agentId
-    ) {
+    if (!session || session.userId !== userId || session.agentId !== agentId) {
       socket.send(JSON.stringify({ type: 'error', code: 'NOT_FOUND' }));
       return;
     }
 
     if (session.status !== 'pending' && session.status !== 'active') {
-      socket.send(JSON.stringify({ type: 'error', code: 'SESSION_NOT_ACTIVE' }));
+      socket.send(
+        JSON.stringify({ type: 'error', code: 'SESSION_NOT_ACTIVE' }),
+      );
       return;
     }
 

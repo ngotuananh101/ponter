@@ -56,7 +56,9 @@ export async function handleAgentUpgrade(
 ): Promise<boolean> {
   const raw = extractAgentCredential(request.headers.authorization);
   if (!raw) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n');
+    socket.write(
+      'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n',
+    );
     socket.destroy();
     return false;
   }
@@ -71,7 +73,9 @@ export async function handleAgentUpgrade(
     .get();
 
   if (!agent) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n');
+    socket.write(
+      'HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n',
+    );
     socket.destroy();
     return false;
   }
@@ -94,64 +98,73 @@ export async function handleAgentUpgrade(
 export function createAgentWebSocketServer(): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
-  wss.on('connection', async (socket: WebSocket, _request: IncomingMessage, agentId?: string, userId?: string, db?: Database) => {
-    if (!agentId || !userId || !db) {
-      socket.close(4401, 'Unauthorized');
-      return;
-    }
+  wss.on(
+    'connection',
+    async (
+      socket: WebSocket,
+      _request: IncomingMessage,
+      agentId?: string,
+      userId?: string,
+      db?: Database,
+    ) => {
+      if (!agentId || !userId || !db) {
+        socket.close(4401, 'Unauthorized');
+        return;
+      }
 
-    // Evict any previous connection for this agent (reconnect supersedes).
-    const previous = agentConnections.get(agentId);
-    if (previous) {
-      previous.socket.close(4409, 'Replaced by new connection');
-    }
+      // Evict any previous connection for this agent (reconnect supersedes).
+      const previous = agentConnections.get(agentId);
+      if (previous) {
+        previous.socket.close(4409, 'Replaced by new connection');
+      }
 
-    const connection: AgentConnection = {
-      agentId,
-      userId,
-      socket,
-      send: (data: string) => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(data);
-        }
-      },
-    };
-    agentConnections.set(agentId, connection);
+      const connection: AgentConnection = {
+        agentId,
+        userId,
+        socket,
+        send: (data: string) => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(data);
+          }
+        },
+      };
+      agentConnections.set(agentId, connection);
 
-    // Mark online immediately so a freshly connected agent is not reported offline.
-    await db
-      .update(agents)
-      .set({ isOnline: true, lastPingAt: NOW_SQL })
-      .where(eq(agents.id, agentId));
-
-    socket.on('message', (rawMsg: unknown) => {
-      void handleInboundMessage(rawMsg, connection, db);
-    });
-
-    socket.on('close', async () => {
-      // Guard against stale close evicting a live socket (superseded reconnects).
-      const current = agentConnections.get(agentId);
-      if (current?.socket !== socket) return;
-
-      agentConnections.delete(agentId);
-
+      // Mark online immediately so a freshly connected agent is not reported offline.
       await db
         .update(agents)
-        .set({ isOnline: false })
+        .set({ isOnline: true, lastPingAt: NOW_SQL })
         .where(eq(agents.id, agentId));
 
-      // End sessions bound to this agent that are still active.
-      await db
-        .update(sessions)
-        .set({ status: 'terminated', endedAt: NOW_SQL, updatedAt: NOW_SQL })
-        .where(
-          and(
-            eq(sessions.agentId, agentId),
-            inArray(sessions.status, ['pending', 'active']),
-          ),
-        );
-    });
-  });
+      socket.on('message', (rawMsg: unknown) => {
+        void handleInboundMessage(rawMsg, connection, db);
+      });
+
+      socket.on('close', async () => {
+        // Guard against stale close evicting a live socket (superseded reconnects).
+        const current = agentConnections.get(agentId);
+        if (current?.socket !== socket) return;
+
+        agentConnections.delete(agentId);
+
+        await db
+          .update(agents)
+          .set({ isOnline: false })
+          .where(eq(agents.id, agentId));
+
+        // End sessions bound to this agent that are still active.
+        await db
+          .update(sessions)
+          .set({ status: 'terminated', endedAt: NOW_SQL, updatedAt: NOW_SQL })
+          .where(
+            and(
+              eq(sessions.agentId, agentId),
+              inArray(sessions.status, ['pending', 'active']),
+            ),
+          );
+      });
+    },
+  );
 
   wss.on('error', (err: Error) => {
     console.error('[WebSocketServer] error:', err);
@@ -178,7 +191,9 @@ async function handleInboundMessage(
 
   // Size is checked before parsing.
   if (data.length > MAX_INBOUND_FRAME_BYTES) {
-    connection.socket.send(JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }));
+    connection.socket.send(
+      JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }),
+    );
     return;
   }
 
@@ -186,12 +201,16 @@ async function handleInboundMessage(
   try {
     frame = JSON.parse(data);
   } catch {
-    connection.socket.send(JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }));
+    connection.socket.send(
+      JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }),
+    );
     return;
   }
 
   if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) {
-    connection.socket.send(JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }));
+    connection.socket.send(
+      JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }),
+    );
     return;
   }
 
@@ -238,7 +257,9 @@ async function handleInboundMessage(
     session.userId !== connection.userId ||
     session.agentId !== connection.agentId
   ) {
-    connection.socket.send(JSON.stringify({ type: 'error', code: 'NOT_FOUND' }));
+    connection.socket.send(
+      JSON.stringify({ type: 'error', code: 'NOT_FOUND' }),
+    );
     return;
   }
 
@@ -258,12 +279,12 @@ async function handleInboundMessage(
   }
 
   // Echo the accepted signal so the agent can correlate it with the DB row.
-  connection.socket.send(
-    JSON.stringify({ type: 'signal', data: message }),
-  );
+  connection.socket.send(JSON.stringify({ type: 'signal', data: message }));
 }
 
-function extractAgentCredential(header: string | string[] | undefined): string | null {
+function extractAgentCredential(
+  header: string | string[] | undefined,
+): string | null {
   if (!header || Array.isArray(header)) return null;
   if (!header.startsWith('Bearer ')) return null;
   const token = header.slice('Bearer '.length).trim();
@@ -272,12 +293,14 @@ function extractAgentCredential(header: string | string[] | undefined): string |
 }
 
 function parseSignalMessage(frame: unknown): SignalMessage | null {
-  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) return null;
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame))
+    return null;
   const data = frame as Record<string, unknown>;
 
   if (data.type === 'offer') {
     const inner = data.data as Record<string, unknown> | undefined;
-    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId) return null;
+    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
+      return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
     const capabilities = Array.isArray(inner.capabilities)
       ? inner.capabilities.filter((c): c is string => typeof c === 'string')
@@ -290,7 +313,8 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
 
   if (data.type === 'answer') {
     const inner = data.data as Record<string, unknown> | undefined;
-    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId) return null;
+    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
+      return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
     return {
       type: 'answer',
@@ -304,7 +328,8 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
 
   if (data.type === 'ice-candidate') {
     const inner = data.data as Record<string, unknown> | undefined;
-    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId) return null;
+    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
+      return null;
     if (typeof inner.candidate !== 'string' || !inner.candidate) return null;
     const sdpMid = typeof inner.sdpMid === 'string' ? inner.sdpMid : null;
     const sdpMLineIndex =
@@ -316,7 +341,12 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
         : null;
     return {
       type: 'ice-candidate',
-      data: { sessionId: inner.sessionId, candidate: inner.candidate, sdpMid, sdpMLineIndex },
+      data: {
+        sessionId: inner.sessionId,
+        candidate: inner.candidate,
+        sdpMid,
+        sdpMLineIndex,
+      },
     } as SignalMessage;
   }
 

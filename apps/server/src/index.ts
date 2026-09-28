@@ -42,7 +42,11 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
 
       // Read the body if present
       let body: Uint8Array | undefined;
-      if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+      if (
+        req.method === 'POST' ||
+        req.method === 'PUT' ||
+        req.method === 'PATCH'
+      ) {
         const chunks: Buffer[] = [];
         for await (const chunk of req) {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
