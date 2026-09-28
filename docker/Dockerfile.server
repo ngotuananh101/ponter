@@ -52,9 +52,6 @@ WORKDIR /app
 
 # Copy native deps needed at runtime (better-sqlite3 loads its prebuilt musl
 # binary, but we keep the toolchain for safety / any edge native modules).
-RUN apk add --no-cache python3 make g++ gcc
-
-# Copy only what's needed to install production deps.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/ ./packages/
 COPY apps/server/package.json ./apps/server/
@@ -69,6 +66,9 @@ COPY --from=builder /app/packages/ ./packages/
 # Create the data directory (VOLUME declares the mount point but does not
 # create the directory tree that SQLite's parent must exist).
 RUN mkdir -p /app/data && chown -R node:node /app/data
+
+# Run as non-root user for security hardening.
+USER node
 
 # Data directory for SQLite files.
 VOLUME /app/data

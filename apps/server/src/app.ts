@@ -13,7 +13,15 @@ import webrtcRoutes from './routes/webrtc.js';
 
 export function createApp() {
   const app = new Hono<AppContext>();
-  app.use('*', cors());
+  const corsOrigin = process.env.CORS_ORIGIN?.trim();
+  app.use(
+    '*',
+    cors({
+      origin: corsOrigin && corsOrigin !== '*' ? corsOrigin.split(',').map((o) => o.trim()) : '*',
+      allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'Authorization'],
+    }),
+  );
   app.onError(errorHandler);
 
   // Make the shared SQLite database instance available on every request so
