@@ -189,17 +189,22 @@ jobs:
 
       - name: Determine version
         id: version
-        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
           REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
             raw="$INPUT_VERSION"
-          else
+          elif [ "${REF_NAME#v}" != "$REF_NAME" ] || [ "${REF_NAME#agent-v}" != "$REF_NAME" ]; then
             raw="$REF_NAME"
+          else
+            cargo_ver=$(grep -m1 '^version = ' "${WORKSPACE}/Cargo.toml" | cut -d '"' -f2)
+            short_sha="${SHA:0:7}"
+            raw="${cargo_ver:-0.1.0}-${short_sha}"
           fi
           # Strip leading 'v' or 'agent-v'
           version="${raw#v}"
@@ -207,7 +212,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: 'Package (Unix: tar.gz)'
-        if: ${{ matrix.pkg_ext == 'tar.gz' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') }}
+        if: ${{ matrix.pkg_ext == 'tar.gz' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -225,7 +230,7 @@ jobs:
           fi
 
       - name: 'Package (Windows: zip)'
-        if: ${{ matrix.pkg_ext == 'zip' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') }}
+        if: ${{ matrix.pkg_ext == 'zip' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -237,10 +242,9 @@ jobs:
           $HASH = (Get-FileHash -Path $DEST -Algorithm SHA256).Hash.ToLower()
           "$HASH  $DEST" | Out-File -FilePath "$DEST.sha256" -Encoding ascii
 
-      # On PRs/branch pushes the matrix is build-check only: no artifacts are
-      # uploaded (the release job handles that for tags and manual dispatch).
+      # Upload build artifacts on tags, manual dispatch, and pushes to main.
       - name: Upload build artifact
-        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: remote-agent-${{ matrix.target }}
@@ -249,7 +253,7 @@ jobs:
             remote-agent-v*.zip
             remote-agent-v*.sha256
           if-no-files-found: error
-          retention-days: 2
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # Publish a GitHub Release with all platform artifacts attached.
