@@ -92,6 +92,9 @@ export const signals = sqliteTable(
     createdAt: text('created_at')
       .notNull()
       .default(sql`(datetime('now'))`),
+    // TTL column for signal expiry; nullable for backward compatibility with
+    // existing rows that have no expiry set.
+    expiresAt: text('expires_at'),
   },
   (table) => [
     index('signals_session_created_idx').on(table.sessionId, table.createdAt),

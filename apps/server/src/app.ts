@@ -8,6 +8,8 @@ import users from './routes/users.js';
 import agents from './routes/agents.js';
 import devices from './routes/devices.js';
 import sessions from './routes/sessions.js';
+import signalRoutes from './routes/signal.js';
+import webrtcRoutes from './routes/webrtc.js';
 
 export function createApp() {
   const app = new Hono<AppContext>();
@@ -31,6 +33,8 @@ export function createApp() {
   app.route('/api/agents', agents);
   app.route('/api/devices', devices);
   app.route('/api/sessions', sessions);
+  app.route('/api/signal', signalRoutes);
+  app.route('/api/webrtc', webrtcRoutes);
 
   return app;
 }

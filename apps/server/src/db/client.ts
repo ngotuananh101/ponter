@@ -73,6 +73,7 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
       type TEXT NOT NULL,
       payload TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
 
