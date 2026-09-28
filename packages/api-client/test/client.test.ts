@@ -126,4 +126,39 @@ describe('ApiClient general requests & resources', () => {
     });
     expect(storage.clearTokens).toHaveBeenCalled();
   });
+
+  it('7. agents.create sends POST /api/agents and returns { agent, credential }', async () => {
+    const storage = new MemoryStorage();
+    const mockCreated = {
+      agent: {
+        id: 'agent-1',
+        hostname: 'host-1',
+        platform: 'linux',
+        isOnline: false,
+      },
+      credential: 'ag_0123456789abcdef0123456789abcdef',
+    };
+    const mockFetch = vi.fn().mockResolvedValue(jsonResponse(mockCreated, 201));
+    const client = makeClient(storage, mockFetch);
+
+    const res = await client.agents.create({
+      id: 'agent-1',
+      hostname: 'host-1',
+      platform: 'linux',
+      publicKey: 'pub-key-1',
+      capabilities: ['terminal'],
+    });
+
+    expect(res).toEqual(mockCreated);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const callInit = mockFetch.mock.calls[0]![1] as RequestInit;
+    expect(callInit.method).toBe('POST');
+    expect(JSON.parse(callInit.body as string)).toEqual({
+      id: 'agent-1',
+      hostname: 'host-1',
+      platform: 'linux',
+      publicKey: 'pub-key-1',
+      capabilities: ['terminal'],
+    });
+  });
 });

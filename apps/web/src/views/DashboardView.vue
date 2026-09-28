@@ -27,7 +27,9 @@ import {
   Activity,
   CheckCircle2,
   Lock,
+  Plus,
 } from '@lucide/vue';
+import RegisterAgentDialog from '@/components/agent/RegisterAgentDialog.vue';
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -37,6 +39,7 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const searchQuery = ref('');
 const statusFilter = ref<'all' | 'online' | 'offline'>('all');
+const showRegisterModal = ref(false);
 
 async function loadDashboardData() {
   loading.value = true;
@@ -120,6 +123,15 @@ onMounted(() => {
         >
           <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loading }" />
           Refresh
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          class="flex items-center gap-1.5 flex-1 sm:flex-none text-xs"
+          @click="showRegisterModal = true"
+        >
+          <Plus class="w-3.5 h-3.5 text-primary" />
+          Register Agent
         </Button>
         <Button
           size="sm"
@@ -331,6 +343,16 @@ onMounted(() => {
                     : 'Try changing your search query or status filter.'
                 }}
               </p>
+              <div v-if="agents.length === 0" class="mt-4">
+                <Button
+                  size="sm"
+                  class="gap-1.5 text-xs"
+                  @click="showRegisterModal = true"
+                >
+                  <Plus class="w-3.5 h-3.5" />
+                  Register Your First Agent
+                </Button>
+              </div>
             </div>
 
             <!-- Agent List Cards -->
@@ -504,5 +526,11 @@ onMounted(() => {
         </Card>
       </div>
     </div>
+
+    <!-- Agent Registration Dialog -->
+    <RegisterAgentDialog
+      v-model:open="showRegisterModal"
+      @registered="loadDashboardData"
+    />
   </div>
 </template>
