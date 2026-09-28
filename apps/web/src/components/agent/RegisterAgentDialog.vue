@@ -19,7 +19,7 @@ import {
   Laptop,
 } from '@lucide/vue';
 
-const props = defineProps<{
+defineProps<{
   open: boolean;
 }>();
 
