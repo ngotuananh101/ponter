@@ -1,13 +1,13 @@
-export * from './terminal';
-export type { DeviceType, User, Device, Agent } from './user';
+export * from './terminal.js';
+export type { DeviceType, User, Device, Agent } from './user.js';
 
-export type { SessionStatus, Session } from './session';
+export type { SessionStatus, Session } from './session.js';
 
 export type {
   IceServerConfig,
   WebRTCChannelType,
   DataChannelMessage,
-} from './webrtc';
+} from './webrtc.js';
 
 export type {
   TransferDirection,
@@ -15,14 +15,14 @@ export type {
   RemoteFile,
   FileTransfer,
   FileChunkMessage,
-} from './files';
+} from './files.js';
 
 export type {
   LoginRequest,
   AuthTokens,
   LoginResponse,
   RegisterRequest,
-} from './auth';
+} from './auth.js';
 
 export type {
   SignalOffer,
@@ -31,4 +31,4 @@ export type {
   SignalMessage,
   AgentErrorCode,
   AgentSocketMessage,
-} from './signaling';
+} from './signaling.js';

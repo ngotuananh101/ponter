@@ -5,6 +5,9 @@ import { errorHandler } from './middleware/error.js';
 import { getDb } from './db/client.js';
 import auth from './routes/auth.js';
 import users from './routes/users.js';
+import agents from './routes/agents.js';
+import devices from './routes/devices.js';
+import sessions from './routes/sessions.js';
 
 export function createApp() {
   const app = new Hono<AppContext>();
@@ -25,6 +28,9 @@ export function createApp() {
 
   app.route('/api/auth', auth);
   app.route('/api/users', users);
+  app.route('/api/agents', agents);
+  app.route('/api/devices', devices);
+  app.route('/api/sessions', sessions);
 
   return app;
 }
