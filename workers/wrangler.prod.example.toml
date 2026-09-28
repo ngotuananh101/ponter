@@ -22,5 +22,14 @@ migrations_dir = "db/migrations"
 binding = "CACHE"
 id = "YOUR_REAL_KV_NAMESPACE_ID"
 
+[durable_objects]
+bindings = [
+  { name = "AGENT_SIGNALING", class_name = "AgentSignalingDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentSignalingDO"]
+
 [observability]
 enabled = true

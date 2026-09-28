@@ -20,5 +20,14 @@ migrations_dir = "db/migrations"
 binding = "CACHE"
 id = "local-cache-binding"
 
+[durable_objects]
+bindings = [
+  { name = "AGENT_SIGNALING", class_name = "AgentSignalingDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentSignalingDO"]
+
 [observability]
 enabled = true

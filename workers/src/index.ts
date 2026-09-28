@@ -25,4 +25,6 @@ app.route('/api/sessions', sessions);
 app.route('/api/signal', signal);
 app.route('/api/ws', ws);
 
+export { AgentSignalingDO } from './durable/agent-signaling';
+
 export default app;

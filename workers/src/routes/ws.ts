@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { and, eq, inArray } from 'drizzle-orm';
-import type { AppContext } from '../types';
+import type { AppContext, Bindings } from '../types';
 import type { Database } from '../db/client';
 import { getDb } from '../db/client';
 import { agents, sessions } from '../db/schema';
@@ -69,17 +69,30 @@ export const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
 export function pushToAgent(
   agentId: string | null,
   message: SignalMessage,
+  env?: Bindings,
 ): void {
   if (!agentId) return;
 
   const connection = agentConnections.get(agentId);
-  if (!connection) return;
+  if (connection) {
+    connection.push(JSON.stringify({ type: 'signal', data: message }));
+  }
 
-  // Enqueue only — no I/O here. The flush loop owned by the upgrade request
-  // performs the actual `send` in its own `IoContext`. A `send` that throws
-  // (closed server socket, W7) drops the entry under the identity guard so a
-  // newer reconnect is never evicted.
-  connection.push(JSON.stringify({ type: 'signal', data: message }));
+  if (env?.AGENT_SIGNALING) {
+    try {
+      const id = env.AGENT_SIGNALING.idFromName(agentId);
+      const stub = env.AGENT_SIGNALING.get(id);
+      void stub
+        .fetch('http://internal/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(message),
+        })
+        .catch(() => {});
+    } catch {
+      // Fire-and-forget, never throw
+    }
+  }
 }
 
 // `NOW_SQL` is deliberately NOT defined here: Task 3 defines it once in
@@ -236,6 +249,21 @@ router.get('/agent', async (c) => {
 
   const agentId = agent.id;
   const userId = agent.userId;
+
+  if (c.env.AGENT_SIGNALING) {
+    const id = c.env.AGENT_SIGNALING.idFromName(agentId);
+    const stub = c.env.AGENT_SIGNALING.get(id);
+    const headers = new Headers(c.req.raw.headers);
+    headers.set('X-Agent-Id', agentId);
+    headers.set('X-User-Id', userId);
+
+    return stub.fetch(
+      new Request(c.req.raw.url, {
+        method: 'GET',
+        headers,
+      }),
+    );
+  }
 
   const pair = new WebSocketPair();
   const client = pair[0];

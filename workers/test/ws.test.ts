@@ -569,6 +569,60 @@ describe('Agent WebSocket (/api/ws/agent)', () => {
     ws?.close();
   });
 
+  it('delivers an offer posted by the browser to the agent over the websocket', async () => {
+    const { credential, sessionId, token } = await seed();
+
+    const upgrade = await app.request(
+      WS_URL,
+      {
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          Upgrade: 'websocket',
+        },
+      },
+      env,
+    );
+    const ws = upgrade.webSocket;
+    ws?.accept();
+
+    const received: string[] = [];
+    ws?.addEventListener('message', (evt) => {
+      if (typeof evt.data === 'string') received.push(evt.data);
+    });
+
+    const offerRes = await app.request(
+      '/api/signal/offer',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          sessionId,
+          sdp: 'v=0 browser offer',
+          capabilities: ['terminal'],
+        }),
+      },
+      env,
+    );
+    expect(offerRes.status).toBe(201);
+
+    await vi.waitFor(() => expect(received.length).toBeGreaterThan(0));
+
+    const frame = JSON.parse(received[0] ?? '{}') as {
+      type: string;
+      data: { type: string; data: { sessionId: string; sdp: string; capabilities: string[] } };
+    };
+    expect(frame.type).toBe('signal');
+    expect(frame.data.type).toBe('offer');
+    expect(frame.data.data.sessionId).toBe(sessionId);
+    expect(frame.data.data.sdp).toBe('v=0 browser offer');
+    expect(frame.data.data.capabilities).toEqual(['terminal']);
+
+    ws?.close();
+  });
+
   it('terminates the session when the agent socket closes, and does not overwrite ended_at', async () => {
     // §6.1 + W11: the close handler is the only thing that ends a session the
     // browser did not end. The guard is what keeps a second close from moving

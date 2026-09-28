@@ -9,6 +9,7 @@ export type Bindings = {
   REFRESH_TOKEN_EXPIRES_IN: string;
   DB: D1Database;
   CACHE: KVNamespace;
+  AGENT_SIGNALING?: DurableObjectNamespace;
 };
 
 export type Variables = {

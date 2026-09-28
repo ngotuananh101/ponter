@@ -76,7 +76,7 @@ router.post('/offer', async (c) => {
   // Fire-and-forget, synchronous, never throws (D9/D25). `session.agentId`
   // comes from the row `getOwnedActiveSession` already fetched, so no extra
   // query (D24).
-  pushToAgent(session.agentId, message);
+  pushToAgent(session.agentId, message, c.env);
 
   return c.json(
     {
@@ -123,7 +123,7 @@ router.post('/answer', async (c) => {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
 
-  pushToAgent(session.agentId, message);
+  pushToAgent(session.agentId, message, c.env);
 
   return c.json(
     {
@@ -176,7 +176,7 @@ router.post('/ice-candidate', async (c) => {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
 
-  pushToAgent(session.agentId, message);
+  pushToAgent(session.agentId, message, c.env);
 
   return c.json(
     {
