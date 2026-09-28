@@ -1,25 +1,26 @@
 # Local Development Guide
 
-This guide walks you through setting up, running, testing, and developing across the entire Ponta Remote Access Platform monorepo locally.
+Hướng dẫn chi tiết cách thiết lập, chạy, test và phát triển trên toàn bộ monorepo Ponta Remote Access Platform.
 
 ---
 
 ## 1. Prerequisites
 
-Ensure the following tools are installed on your workstation:
+Cài đặt các công cụ sau:
 
-| Tool | Version Requirement | Purpose |
-|------|---------------------|---------|
-| **Node.js** | `>= 24.0.0` (LTS or current) | JavaScript/TypeScript runtime |
-| **pnpm** | `>= 12.0.0` | Monorepo package manager (`corepack enable pnpm`) |
-| **Rust & Cargo** | Stable (`>= 1.80.0`) | Native agent daemon & Tauri client development |
+| Tool | Yêu cầu phi bản | Mục đích |
+|------|-----------------|---------|
+| **Node.js** | `>= 24.0.0` (LTS) | JavaScript/TypeScript runtime |
+| **pnpm** | `>= 12.0.0` (`corepack enable pnpm`) | Monorepo package manager |
+| **Rust & Cargo** | Stable (`>= 1.80.0`) | Native agent daemon |
 | **Git** | Modern version | Version control |
+| **Docker** | `>= 25.0.0` | Containerization (optional, cho testing) |
 
-Verify your environment:
+Kiểm tra môi trường:
 
 ```bash
-node -v    # v24.x or later
-pnpm -v    # 12.x or later
+node -v    # v24.x trở lên
+pnpm -v    # 12.x trở lên
 cargo -V   # cargo 1.80+ (stable)
 ```
 
@@ -27,43 +28,39 @@ cargo -V   # cargo 1.80+ (stable)
 
 ## 2. Installation & Scaffolding
 
-Clone the repository and install all workspace dependencies:
-
 ```bash
 git clone https://github.com/ngotuananh101/ponta-remote.git
 cd ponta-remote
 
-# Install dependencies across all 11 packages and apps
+# Cài đặt dependencies cho toàn bộ workspace
 pnpm install
-```
 
-Build the native Rust agent binary in debug mode:
-
-```bash
+# Build native Rust agent (debug mode)
 cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-The compiled binary will be placed at `apps/agent/target/debug/remote-agent`.
+Binary được đặt tại `apps/agent/target/debug/remote-agent`.
 
 ---
 
 ## 3. Running Services Locally
 
-The platform consists of three core components running concurrently:
-1. **Signaling Server & REST API** (`workers/`)
-2. **Web Client Workspace** (`apps/web`)
-3. **Native Desktop Agent Daemon** (`apps/agent`)
+Nền tảng bao gồm ba thành phần chính chạy đồng thời:
+1. **Signaling Server & REST API** (`@remote/server` - Node.js + Hono + SQLite)
+2. **Web Client** (`@remote/web` - Vue 3 + Vite)
+3. **Native Desktop Agent Daemon** (`apps/agent` - Rust)
 
-### 3.1 Start the Backend (Signaling & REST API)
+### 3.1 Start the Backend (Node.js + Hono + SQLite)
 
-In Terminal 1:
+Trong Terminal 1:
 
 ```bash
-pnpm --filter @remote/signaling dev
+pnpm --filter @remote/server dev
 ```
 
 - **URL:** `http://127.0.0.1:8787`
-- Runs a local Cloudflare Worker instance via Wrangler Miniflare with in-memory/local SQLite (D1) and KV storage.
+- Chạy Node.js server với SQLite in-memory (hoặc file local)
+- WebSocket server lắng nghe tại `ws://127.0.0.1:8787/api/ws/agent`
 - Health check:
   ```bash
   curl http://127.0.0.1:8787/health
@@ -72,27 +69,26 @@ pnpm --filter @remote/signaling dev
 
 ### 3.2 Start the Web Application
 
-In Terminal 2:
+Trong Terminal 2:
 
 ```bash
 pnpm --filter @remote/web dev
 ```
 
 - **URL:** `http://127.0.0.1:5173`
-- Starts Vite dev server with Hot Module Replacement (HMR).
-- Accessible in any modern browser.
+- Khởi động Vite dev server với Hot Module Replacement (HMR)
+- Truy cập trong bất kỳ trình duyệt hiện đại nào
 
 ### 3.3 Register and Start the Desktop Agent
 
-To connect a local desktop agent to your development stack:
+Để kết nối một agent địa phương:
 
-1. **Register a User Account**:
-   Navigate to `http://127.0.0.1:5173/register` and create an account.
+1. **Đăng ký tài khoản**:
+   Điều hướng tới `http://127.0.0.1:5173/register` và tạo tài khoản.
 
-2. **Register an Agent**:
-   In the web dashboard, click **Add Agent** to register a new host, or use the REST API:
+2. **Đăng ký agent**:
+   Trong web dashboard, click **Add Agent** để đăng ký host mới, hoặc dùng REST API:
    ```bash
-   # Retrieve your auth token after login, then:
    curl -X POST http://127.0.0.1:8787/api/agents \
      -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>" \
      -H "Content-Type: application/json" \
@@ -102,10 +98,10 @@ To connect a local desktop agent to your development stack:
        "capabilities": ["terminal"]
      }'
    ```
-   Note the `credential` returned in the response (e.g., `ag_0123456789abcdef...`).
+   Lưu ý `credential` trả về trong response (ví dụ: `ag_0123456789abcdef...`).
 
-3. **Start the Agent Daemon**:
-   In Terminal 3:
+3. **Khởi động agent daemon**:
+   Trong Terminal 3:
    ```bash
    cargo run --manifest-path apps/agent/Cargo.toml -- \
      --agent-id agent-local-01 \
@@ -113,49 +109,56 @@ To connect a local desktop agent to your development stack:
      --credential <AGENT_CREDENTIAL> \
      --stun ""
    ```
-   *(Passing `--stun ""` restricts WebRTC to loopback candidates for local offline testing).*
+   *(Truyền `--stun ""` giới hạn WebRTC ở candidate loopback cho testing offline).*
 
-4. **Open Terminal in Web UI**:
-   Navigate to `http://127.0.0.1:5173/workspace/agent-local-01` or click **Open Terminal** on the dashboard. A live PTY terminal session multiplexed over WebRTC DataChannel will launch immediately.
+4. **Mở Terminal trong Web UI**:
+   Điều hướng tới `http://127.0.0.1:5173/workspace/agent-local-01` hoặc click **Open Terminal** trên dashboard. Phiên terminal PTY sống sẽ khởi động ngay lập tức qua WebRTC DataChannel.
 
 ---
 
 ## 4. Verification & Testing
 
-The monorepo uses Turborepo for task caching and orchestrates tests across TypeScript, Vue, and Rust.
+Monorepo sử dụng Turborepo để cache task và orchestrate tests.
 
 ### 4.1 Unit & Component Tests
 
-Run tests across all packages:
-
 ```bash
-# Run all unit tests
+# Chạy tất cả unit tests trên toàn bộ workspace
 pnpm -w test
 
-# Run Rust unit tests specifically
+# Chạy tests cho @remote/server cụ thể
+pnpm --filter @remote/server test
+
+# Rust unit tests
 cargo test --manifest-path apps/agent/Cargo.toml
 ```
 
 ### 4.2 Type Checking & Linting
 
 ```bash
-# Run TypeScript and Vue compiler checks across all packages
+# TypeScript & Vue compiler checks
 pnpm -w typecheck
 
-# Run ESLint across web and TypeScript packages
+# ESLint trên web và TypeScript packages
 pnpm -w lint
 
-# Run Rust Clippy checks (enforcing zero warnings)
+# Rust Clippy (zero warnings)
 cargo clippy --all-targets --manifest-path apps/agent/Cargo.toml -- -D warnings
+```
 
-# Check code formatting (Prettier & Rustfmt)
+### 4.3 Code Formatting
+
+```bash
+# Prettier (JS/TS)
 pnpm format:check
+
+# Rustfmt
 cargo fmt --check --manifest-path apps/agent/Cargo.toml
 ```
 
-### 4.3 Automated End-to-End (E2E) Integration Tests
+### 4.4 Automated End-to-End (E2E) Integration Tests
 
-The cross-language E2E test spins up a real Wrangler dev worker, spawns the native Rust agent binary, initiates DTLS/SCTP handshakes via Node.js (`werift`), and verifies bidirectional PTY data and window resizing:
+Cross-language E2E test khởi động một Node.js server thực, spawn native Rust agent binary, thực hiện DTLS/SCTP handshake qua `werift`, và xác minh PTY data bidirection:
 
 ```bash
 pnpm --filter @remote/webrtc-core test:e2e
@@ -165,25 +168,97 @@ pnpm --filter @remote/webrtc-core test:e2e
 
 ## 5. Development Workflows
 
-### 5.1 Database Migrations (D1 & Drizzle)
+### 5.1 Database Schema (SQLite)
 
-The SQLite schema lives in `workers/src/db/schema.ts`. When making schema changes:
+Database schema được định nghĩa inline trong `apps/server/src/db/client.ts` thông qua hàm `runMigrations()`. Khi thay đổi schema:
 
-1. Update table definitions in `workers/src/db/schema.ts`.
-2. Generate migration SQL files:
+1. Cập nhật định nghĩa bảng trong `apps/server/src/db/client.ts` (hoặc `apps/server/src/db/schema.ts` nếu sử dụng Drizzle ORM).
+2. Chạy migration:
    ```bash
-   pnpm --filter @remote/signaling db:generate
+   pnpm --filter @remote/server db:generate
    ```
-3. Apply migration to local D1 instance:
+3. Áp dụng migration:
    ```bash
-   pnpm --filter @remote/signaling exec wrangler d1 migrations apply remote-access --local
+   # SQLite tự động migrate trên startup nên không cần bước thủ công
+   # Để kiểm tra schema:
+   sqlite3 data/remote.db ".schema"
    ```
 
-### 5.2 Adding Shared Message Types
+### 5.2 Thêm Shared Message Types
 
-All wire protocol types and data envelope definitions reside in `packages/shared/src/types/`:
-- `signaling.ts`: Signaling payloads (`offer`, `answer`, `candidate`).
-- `terminal.ts`: Terminal wire framing (`terminal-create`, `terminal-data`, `terminal-resize`, `terminal-close`, `terminal-exit`).
-- `agent.ts`: Agent status and credential definitions.
+Tất cả wire protocol types và data envelope definitions nằm trong `packages/shared/src/types/`:
+- `signaling.ts`: Signal payloads (`offer`, `answer`, `candidate`)
+- `terminal.ts`: Terminal framing (`terminal-create`, `terminal-data`, `terminal-resize`, `terminal-close`, `terminal-exit`)
+- `agent.ts`: Agent status và credential definitions
 
-After modifying `@remote/shared`, packages automatically resolve updated types via pnpm workspace references. Run `pnpm -w typecheck` to verify consistency.
+Sau khi sửa `@remote/shared`, các packages tự động resolve updated types qua pnpm workspace references. Chạy `pnpm -w typecheck` để kiểm tra độ nhất quán.
+
+### 5.3 Server Development Scripts
+
+| Script | Mô tả |
+|--------|-------|
+| `pnpm --filter @remote/server dev` | Chạy server ở chế độ watch (tsx) |
+| `pnpm --filter @remote/server build` | Compile TypeScript thành JS (dist/) |
+| `pnpm --filter @remote/server start` | Chạy server từ dist/ đã build |
+| `pnpm --filter @remote/server test` | Chạy vitest test suite |
+| `pnpm --filter @remote/server lint` | ESLint check |
+| `pnpm --filter @remote/server typecheck` | TypeScript type check |
+
+### 5.4 Docker Development
+
+Để chạy server trong container cho testing:
+
+```bash
+# Local
+cd docker
+docker compose -f docker-compose.local.yml up --build
+```
+
+---
+
+## 6. Debugging Tips
+
+### WebSocket Connection Debug
+
+Sử dụng `wscat` để kiểm tra kết nối WebSocket:
+
+```bash
+npx wscat -c ws://127.0.0.1:8787/api/ws/agent
+# Gửi: {"type":"ping"}
+# Nhận: {"type":"pong"}
+```
+
+### SQLite Debug
+
+```bash
+# Mở database để query trực tiếp
+sqlite3 data/remote.db
+
+# Xem bảng agents
+SELECT id, user_id, is_online, last_ping_at FROM agents;
+
+# Xem sessions
+SELECT id, user_id, agent_id, status FROM sessions;
+
+# Xem signals
+SELECT session_id, type, created_at FROM signals ORDER BY created_at DESC LIMIT 10;
+
+# Xem revoked tokens
+SELECT jti, expires_at FROM revoked_tokens;
+```
+
+### Server Logs
+
+Server log với độ chi tiết cao:
+
+```bash
+# Chạy với DEBUG=1 để xem log chi tiết
+DEBUG=1 pnpm --filter @remote/server dev
+```
+
+Log bao gồm:
+- HTTP requests
+- WebSocket upgrade events
+- Signal dispatch (`pushToAgent`)
+- Database operations
+- Authentication failures

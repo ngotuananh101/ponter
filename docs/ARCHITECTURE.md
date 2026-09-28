@@ -12,6 +12,7 @@
 8. [Lộ trình Triển khai](#8-lộ-trình-triển-khai)
 9. [Development Workflow](#9-development-workflow)
 10. [Deployment](#10-deployment)
+11. [Performance Targets](#11-performance-targets)
 
 ---
 
@@ -32,7 +33,7 @@ Xây dựng nền tảng remote access toàn diện cung cấp:
 | **Speed First** | Tối ưu mọi layer cho độ trễ thấp nhất |
 | **Security by Default** | Zero-trust, E2EE mọi data channel |
 | **Cross-Platform** | Web + Desktop + Mobile từ một codebase |
-| **Scalable** | Serverless backend, P2P data transfer |
+| **Scalable** | Self-hosted Node.js, P2P data transfer |
 | **Developer Friendly** | Monorepo, TypeScript-first, clear docs |
 
 ### 1.3 Công nghệ Chọn
@@ -53,16 +54,20 @@ mindmap
         iOS/Android
     Backend
       Runtime
-        Cloudflare Workers
+        Node.js 24 LTS
         TypeScript
+      Framework
+        Hono
       Database
-        Cloudflare D1
-        SQLite
+        SQLite (better-sqlite3 + Drizzle ORM)
+        WAL Mode
+      WebSocket
+        ws library
       Cache
-        Cloudflare KV
+        In-memory (revoked_tokens table)
       Auth
         WebAuthn
-        JWT
+        JWT (PBKDF2-HMAC-SHA256)
     Data Transfer
       Protocol
         WebRTC P2P
@@ -76,12 +81,12 @@ mindmap
     DevOps
       CI/CD
         GitHub Actions
-        Wrangler CLI
       Testing
         Vitest
         Playwright
-      Docs
-        VitePress
+      Containerization
+        Docker
+        Docker Compose
 ```
 
 ---
@@ -90,111 +95,134 @@ mindmap
 
 ### 2.1 Kiến trúc Tổng thể
 
-```mermaid
-flowchart TB
-    subgraph "Client Layer"
-        A[VueJS Web App]
-        B[Tauri Desktop]
-        C[Tauri Mobile]
-    end
-    
-    subgraph "Cloudflare Edge"
-        D[Workers<br/>Signaling + API]
-        E[D1 Database]
-        F[KV Cache]
-        G[WebSocket Relay]
-    end
-    
-    subgraph "Host Layer"
-        H[Desktop Agent<br/>Rust]
-        I[Terminal Daemon<br/>PTY]
-        J[Screen Capture<br/>H.265]
-        K[File Manager]
-    end
-    
-    subgraph "Security"
-        L[Zero-Trust Gateway]
-        M[E2EE DTLS-SRTP]
-        N[Physical Approval]
-    end
-    
-    A --> D
-    B --> D
-    C --> D
-    
-    D --> E
-    D --> F
-    D --> G
-    
-    G -.->|WebSocket Signaling| H
-    A <-.->|WebRTC P2P| H
-    B <-.->|WebRTC P2P| H
-    C <-.->|WebRTC P2P| H
-    
-    H --> I
-    H --> J
-    H --> K
-    
-    L -.-> A
-    L -.-> B
-    L -.-> C
-    L -.-> H
+Nền tảng Remote Access sử dụng kiến trúc **self-hosted stateful server** với SQLite cục bộ và WebSocket in-memory dispatch. Frontend Vue 3 SPA vẫn được triển khai trên Cloudflare Pages (static hosting only).
+
+```text
+                               ┌────────────────────────────────────────┐
+                               │       Client (Web Browser)             │
+                               │  (Vue 3 SPA hosted on Cloudflare CDN)   │
+                               └──────────────────┬─────────────────────┘
+                                                  │ HTTPS REST API
+                                                  ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ Docker Host / VPS                                                                      │
+│                                                                                        │
+│   ┌────────────────────────────────────────────────────────────────────────────────┐   │
+│   │ apps/server (@remote/server)                                                   │   │
+│   │                                                                                │   │
+│   │   • Runtime: Node.js 24 LTS + @hono/node-server + ws                           │   │
+│   │   • In-Memory WebSocket Registry: Map<agentId, AgentConnection> (RAM)          │   │
+│   │   • Instantaneous Signal Dispatch (< 1ms cross-session forwarding)             │   │
+│   │   • Database: SQLite (/app/data/remote.db via better-sqlite3 + Drizzle ORM)    │   │
+│   │   • WAL Mode: PRAGMA journal_mode = WAL (high concurrency)                     │   │
+│   │   • Token Revocation: SQLite table `revoked_tokens`                            │   │
+│   │   • ICE Servers Endpoint: GET /api/webrtc/ice-servers                          │   │
+│   └───────────────────────▲────────────────────────────────▲───────────────────────┘   │
+│                           │                                │                           │
+│     WSS /api/ws/agent     │                                │ STUN/TURN Allocation      │
+│                           │                                │ (RFC 5766 Shared Secret)  │
+│   ┌───────────────────────┴───────────────┐    ┌───────────┴───────────────────────┐   │
+│   │ remote-agent (Rust Daemon)            │    │ coturn (Dockerized STUN/TURN)     │   │
+│   │ (Windows / Linux / macOS)             │    │ Port 3478, Relays: 49152-49200    │   │
+│   └───────────────────────────────────────┘    └───────────────────────────────────┘   │
+│                                                                                        │
+│   WebRTC Peer Connection (DataChannel: "terminal" / PTY)                               │
+│   Browser <=======================================================> Agent              │
+│               (Direct P2P or Relayed through Coturn TURN)                              │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Sơ đồ Kết nối
+### 2.2 Cơ chế WebSocket In-Memory Dispatch
+
+Do Node.js chạy như một quá trình duy nhất và bền vững, `agentConnections` trong `apps/server/src/routes/ws.ts` lưu trữ tham chiếu WebSocket hoạt động trực tiếp trong bộ nhớ RAM:
+
+```typescript
+export interface AgentConnection {
+  agentId: string;
+  userId: string;
+  socket: WebSocket;
+  send: (data: string) => void;
+}
+
+export const agentConnections = new Map<string, AgentConnection>();
+
+export function pushToAgent(agentId: string, message: SignalMessage): boolean {
+  const conn = agentConnections.get(agentId);
+  if (!conn) return false;
+  try {
+    conn.send(JSON.stringify({ type: 'signal', data: message }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+```
+
+Khi trình duyệt gửi offer (`POST /api/signal/offer`), `pushToAgent` sẽ ngay lập tức gửi tin nhắn tới WebSocket mở mà không cần qua các isolate, Durable Objects, hay giới hạn subrequest. Nếu không có socket nào kết nối, tín hiệu vẫn được lưu trong SQLite và agent có thể lấy thông qua polling.
+
+**Reconnect logic**: Khi một agent kết nối mới với credential hợp lệ, kết nối cũ sẽ bị đóng với mã 4409 ("Replaced by new connection"). Bảng `agent_connections` luôn duy trì một entry duy nhất cho mỗi `agentId`. Khi socket đóng, entry bị xóa và trạng thái `is_online` trong database được cập nhật thành `false`.
+
+### 2.3 SQLite Persistence với better-sqlite3
+
+- **Đường dẫn database**: Cấu hình qua biến môi trường `DATABASE_PATH` (mặc định `/app/data/remote.db`).
+- **WAL Mode**: `PRAGMA journal_mode = WAL` cho độ trù mật cao và khả năng đọc đồng thời.
+- **Tự động migration**: Sử dụng `drizzle-orm/better-sqlite3` với inline schema creation trong `apps/server/src/db/client.ts`.
+- **Token revocation**: Bảng `revoked_tokens` lưu `jti` (JWT ID) với `expires_at` để thu hẹp danh sách bị thu hồi.
+
+### 2.4 Dynamic STUN/TURN Credentials (`GET /api/webrtc/ice-servers`)
+
+Để vượt qua firewall và NAT đối xứng:
+- Trong môi trường production, coturn sử dụng thông tin xác thực RFC 5766 thời gian giới hạn:
+  - `username = "<expiry_unix_timestamp>:<user_id>"`
+  - `credential = base64(HMAC-SHA1(TURN_SECRET, username))`
+- Endpoint `GET /api/webrtc/ice-servers` trả về cấu hình ICE server động.
+- Trong local mode, trả về STUN công cộng mặc định (`stun:stun.l.google.com:19302`).
+
+### 2.5 Sơ đồ Kết nối
 
 ```mermaid
 sequenceDiagram
-    participant C as Client (VueJS/Tauri)
-    participant W as Cloudflare Worker
-    participant D1 as D1 Database
-    participant KV as KV Cache
-    participant H as Desktop Agent
+    participant C as Client (VueJS)
+    participant S as Self-hosted Server (Node.js)
+    participant DB as SQLite
+    participant H as Desktop Agent (Rust)
     participant U as Host User
-    
-    Note over C,W: Phase 1: Authentication
-    C->>W: POST /api/auth/login
-    W->>D1: Verify credentials
-    D1-->>W: User data
-    W-->>C: JWT + Session token
-    
-    Note over C,H: Phase 2: Signaling
-    C->>W: POST /api/signal/offer
-    W->>D1: Create session
-    W->>KV: Cache offer (TTL 5min)
-    W->>H: Notify via WebSocket
-    
-    Note over H,U: Phase 3: Physical Approval
-    H->>U: Show approval dialog
-    U-->>H: Approve connection
-    H->>W: POST /api/signal/answer
-    W->>KV: Cache answer
-    
-    Note over C,H: Phase 4: P2P Connection
-    W-->>C: Forward answer
-    C->>H: ICE candidates
-    H->>C: ICE candidates
+
+    Note over C,S: Phase 1: Authentication
+    C->>S: POST /api/auth/login
+    S->>DB: Verify credentials
+    DB-->>S: User data
+    S-->>C: JWT + Refresh token
+
+    Note over C,H: Phase 2: Session & Signaling
+    C->>S: POST /api/sessions
+    S->>DB: Create session record
+    S-->>C: sessionId
+
+    C->>S: POST /api/signal/offer
+    S->>DB: Persist offer in signals table
+    S->>H: WebSocket pushToAgent (in-memory, <1ms)
+
+    Note over H,U: Phase 3: Agent Receives Offer
+    H->>H: Generate SDP answer
+    H->>S: WebSocket signal (answer)
+    S->>DB: Persist answer in signals table
+    S-->>C: Forward answer via polling or WebSocket
+
+    Note over C,H: Phase 4: ICE & P2P
+    C->>H: ICE candidates (via server relay)
+    H->>C: ICE candidates (via server relay)
     C->>H: DTLS handshake
     H-->>C: Connection established
-    
+
     Note over C,H: Phase 5: Data Transfer
     loop Terminal Session
-        C->>H: Input (DataChannel)
-        H->>C: Output (DataChannel)
-    end
-    
-    loop Desktop Stream
-        H->>C: H.265 frames (MediaChannel)
-        C->>H: Mouse/Keyboard input
-    end
-    
-    loop File Transfer
-        C->>H: File chunks
-        H->>C: Ack + progress
+        C->>H: Input (WebRTC DataChannel)
+        H->>C: Output (WebRTC DataChannel)
     end
 ```
 
-### 2.3 Kiến trúc Bảo mật
+### 2.6 Kiến trúc Bảo mật
 
 ```mermaid
 flowchart TD
@@ -205,40 +233,32 @@ flowchart TD
     C -->|Fail| X2[Blocked - TLS/Cert]
     D -->|Pass| E{Layer 4: Session}
     D -->|Fail| X3[Blocked - JWT/Scope]
-    E -->|Pass| F{Layer 5: Host Approval}
-    E -->|Fail| X4[Blocked - Expired]
-    F -->|Approve| G[Access Granted]
-    F -->|Deny| X5[Blocked - User Reject]
-    
+    E -->|Pass| F[Access Granted]
+    E -->|Fail| X4[Blocked - Expired/Revoked]
+
     subgraph "Layer 1: Network"
-        B1[IP Whitelisting]
+        B1[IP Whitelisting - Docker/Caddy]
         B2[Rate Limiting]
         B3[Geo-Blocking]
         B4[Bot Detection]
     end
-    
+
     subgraph "Layer 2: Transport"
-        C1[TLS 1.3+]
+        C1[TLS 1.3+ - Caddy managed]
         C2[Certificate Pinning]
         C3[HSTS]
     end
-    
+
     subgraph "Layer 3: Application"
         D1[JWT Validation]
         D2[Scope Check]
         D3[API Rate Limit]
     end
-    
+
     subgraph "Layer 4: Session"
         E1[Session Validity]
         E2[Device Match]
         E3[Concurrent Limit]
-    end
-    
-    subgraph "Layer 5: Host"
-        F1[Physical Approval]
-        F2[Device Fingerprint]
-        F3[Time Window]
     end
 ```
 
@@ -249,329 +269,65 @@ flowchart TD
 ### 3.1 Tổng quan
 
 ```
-remote-access-platform/
+ponta-remote/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                    # CI pipeline
-│       ├── deploy-workers.yml        # Deploy Cloudflare Workers
-│       └── release.yml               # Build & release apps
+│       ├── deploy.yml                # Deploy frontend to Cloudflare Pages
+│       └── build-agent.yml           # Build Rust agent binary for releases
 │
-├── apps/                             # Deployable applications
-│   ├── web/                          # VueJS Web App
-│   │   ├── src/
-│   │   │   ├── components/
-│   │   │   │   ├── Terminal/
-│   │   │   │   │   ├── TerminalView.vue
-│   │   │   │   │   ├── TerminalTabs.vue
-│   │   │   │   │   └── TerminalSettings.vue
-│   │   │   │   ├── Desktop/
-│   │   │   │   │   ├── DesktopViewer.vue
-│   │   │   │   │   ├── DesktopControls.vue
-│   │   │   │   │   └── DesktopToolbar.vue
-│   │   │   │   ├── Files/
-│   │   │   │   │   ├── FileExplorer.vue
-│   │   │   │   │   ├── FileUpload.vue
-│   │   │   │   │   ├── FileDownload.vue
-│   │   │   │   │   └── FilePreview.vue
-│   │   │   │   ├── Connection/
-│   │   │   │   │   ├── ConnectionManager.vue
-│   │   │   │   │   ├── DeviceApproval.vue
-│   │   │   │   │   └── SessionInfo.vue
-│   │   │   │   └── Layout/
-│   │   │   │       ├── AppHeader.vue
-│   │   │   │       ├── AppSidebar.vue
-│   │   │   │       └── AppLayout.vue
-│   │   │   ├── composables/
-│   │   │   │   ├── useWebRTC.ts
-│   │   │   │   ├── useTerminal.ts
-│   │   │   │   ├── useDesktop.ts
-│   │   │   │   ├── useFiles.ts
-│   │   │   │   └── useConnection.ts
-│   │   │   ├── stores/
-│   │   │   │   ├── auth.ts
-│   │   │   │   ├── connection.ts
-│   │   │   │   ├── terminal.ts
-│   │   │   │   └── files.ts
-│   │   │   ├── services/
-│   │   │   │   ├── api.ts
-│   │   │   │   ├── webrtc.ts
-│   │   │   │   └── signal.ts
-│   │   │   ├── utils/
-│   │   │   │   ├── crypto.ts
-│   │   │   │   ├── format.ts
-│   │   │   │   └── logger.ts
-│   │   │   ├── App.vue
-│   │   │   └── main.ts
-│   │   ├── public/
-│   │   ├── package.json
-│   │   ├── vite.config.ts
-│   │   └── tsconfig.json
-│   │
+├── apps/
+│   ├── web/                          # VueJS Web App (Cloudflare Pages)
 │   ├── desktop/                      # Tauri Desktop App
-│   │   ├── src/                      # VueJS frontend (shares web components)
-│   │   │   ├── main.ts
-│   │   │   └── App.vue
-│   │   ├── src-tauri/
-│   │   │   ├── src/
-│   │   │   │   ├── main.rs
-│   │   │   │   ├── lib.rs
-│   │   │   │   ├── commands/
-│   │   │   │   │   ├── mod.rs
-│   │   │   │   │   ├── connection.rs
-│   │   │   │   │   ├── terminal.rs
-│   │   │   │   │   └── files.rs
-│   │   │   │   ├── webrtc/
-│   │   │   │   │   ├── mod.rs
-│   │   │   │   │   ├── connection.rs
-│   │   │   │   │   └── channels.rs
-│   │   │   │   └── utils/
-│   │   │   │       ├── mod.rs
-│   │   │   │       └── logging.rs
-│   │   │   ├── Cargo.toml
-│   │   │   ├── tauri.conf.json
-│   │   │   └── capabilities/
-│   │   │       └── default.json
-│   │   ├── package.json
-│   │   └── vite.config.ts
-│   │
-│   ├── mobile/                       # Tauri Mobile App (iOS/Android)
-│   │   ├── src/                      # VueJS frontend
-│   │   ├── src-tauri/
-│   │   │   ├── src/
-│   │   │   ├── gen/                   # Generated platform code
-│   │   │   │   ├── android/
-│   │   │   │   └── apple/
-│   │   │   ├── Cargo.toml
-│   │   │   └── tauri.conf.json
-│   │   └── package.json
-│   │
-│   └── agent/                        # Desktop Agent (Rust) — Tuần 5
-│       ├── src/
-│       │   ├── main.rs               # CLI, reconnect loop, session supervision
-│       │   ├── signal.rs             # WS signaling client (tokio-tungstenite)
-│       │   ├── rtc.rs                # WebRTC answerer (webrtc-rs)
-│       │   └── pty.rs                # PTY bridge (portable-pty)
-│       ├── Cargo.toml                # nguồn sự thật cho dependency (§4.2)
-│       ├── Cargo.lock                # commit — ADR-08
-│       ├── rust-toolchain.toml       # 1.98.1 + rustfmt, clippy
-│       └── .env.example
+│   ├── mobile/                       # Tauri Mobile App
+│   ├── agent/                        # Native Rust agent daemon
+│   └── server/                       # Self-hosted Node.js backend (@remote/server)
 │
-│   # Chưa ship (Phase 3-4): config.rs, webrtc/ subdirectory, terminal/,
-│   # capture/, files/, security/, utils/, agent.toml — xem §4.2 và ADR-07.
+├── packages/
+│   ├── shared/                       # Shared TypeScript types, schemas
+│   ├── api-client/                   # API client SDK
+│   ├── crypto/                       # Crypto utilities
+│   ├── terminal-core/                # Terminal manager
+│   ├── webrtc-core/                  # WebRTC abstraction
+│   └── ui-components/                # Shared Vue components
 │
-├── packages/                         # Shared packages
-│   ├── shared/                       # Shared types & utilities
-│   │   ├── src/
-│   │   │   ├── types/
-│   │   │   │   ├── index.ts
-│   │   │   │   ├── user.ts
-│   │   │   │   ├── session.ts
-│   │   │   │   ├── webrtc.ts
-│   │   │   │   ├── terminal.ts
-│   │   │   │   └── files.ts
-│   │   │   ├── utils/
-│   │   │   │   ├── crypto.ts
-│   │   │   │   ├── validation.ts
-│   │   │   │   └── helpers.ts
-│   │   │   └── index.ts
-│   │   ├── package.json
-│   │   └── tsconfig.json
-│   │
-│   ├── api-client/                   # API client for all apps
-│   │   ├── src/
-│   │   │   ├── client.ts
-│   │   │   ├── auth.ts
-│   │   │   ├── signaling.ts
-│   │   │   ├── sessions.ts
-│   │   │   └── index.ts
-│   │   ├── package.json
-│   │   └── tsconfig.json
-│   │
-│   ├── webrtc-core/                  # WebRTC abstraction layer
-│   │   ├── src/
-│   │   │   ├── connection.ts
-│   │   │   ├── data-channel.ts
-│   │   │   ├── media-channel.ts
-│   │   │   ├── signal-handler.ts
-│   │   │   └── index.ts
-│   │   ├── package.json
-│   │   └── tsconfig.json
-│   │
-│   ├── terminal-core/                # Terminal logic (shared)
-│   │   ├── src/
-│   │   │   ├── terminal-manager.ts
-│   │   │   ├── pty-handler.ts
-│   │   │   ├── buffer.ts
-│   │   │   └── index.ts
-│   │   ├── package.json
-│   │   └── tsconfig.json
-│   │
-│   ├── ui-components/                # Shared Vue components
-│   │   ├── src/
-│   │   │   ├── components/
-│   │   │   │   ├── Terminal/
-│   │   │   │   ├── FileBrowser/
-│   │   │   │   ├── Connection/
-│   │   │   │   └── Common/
-│   │   │   ├── composables/
-│   │   │   └── index.ts
-│   │   ├── package.json
-│   │   └── vite.config.ts
-│   │
-│   └── crypto/                       # Crypto utilities
-│       ├── src/
-│       │   ├── encrypt.ts
-│       │   ├── decrypt.ts
-│       │   ├── keys.ts
-│       │   └── index.ts
-│       ├── package.json
-│       └── tsconfig.json
+├── docker/                           # Docker packaging for @remote/server
+│   ├── Dockerfile.server
+│   ├── docker-compose.local.yml
+│   ├── docker-compose.tunnel.yml
+│   ├── docker-compose.prod.yml
+│   ├── Caddyfile
+│   ├── .env.example
+│   └── README.md
 │
-├── workers/                          # Cloudflare Workers
-│   ├── signaling/                    # Signaling worker
-│   │   ├── src/
-│   │   │   ├── index.ts
-│   │   │   ├── handlers/
-│   │   │   │   ├── auth.ts
-│   │   │   │   ├── signal.ts
-│   │   │   │   ├── session.ts
-│   │   │   │   └── device.ts
-│   │   │   ├── middleware/
-│   │   │   │   ├── cors.ts
-│   │   │   │   ├── auth.ts
-│   │   │   │   └── rate-limit.ts
-│   │   │   ├── db/
-│   │   │   │   ├── schema.ts
-│   │   │   │   ├── queries.ts
-│   │   │   │   └── migrations.ts
-│   │   │   └── utils/
-│   │   │       ├── jwt.ts
-│   │   │       ├── validation.ts
-│   │   │       └── helpers.ts
-│   │   ├── wrangler.toml
-│   │   ├── package.json
-│   │   └── tsconfig.json
-│   │
-│   └── api/                          # Main API worker
-│       ├── src/
-│       │   ├── index.ts
-│       │   ├── routes/
-│       │   │   ├── auth.ts
-│       │   │   ├── sessions.ts
-│       │   │   ├── devices.ts
-│       │   │   └── files.ts
-│       │   ├── db/
-│       │   └── utils/
-│       ├── wrangler.toml
-│       └── package.json
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── README.md
+│   └── guides/
+│       ├── development.md
+│       ├── deployment.md
+│       ├── agent-setup.md
+│       └── terminal-protocol.md
 │
-├── docs/                             # Documentation
-│   ├── .vitepress/
-│   │   └── config.ts
-│   ├── api/
-│   ├── guides/
-│   │   ├── getting-started.md
-│   │   ├── installation.md
-│   │   ├── configuration.md
-│   │   └── troubleshooting.md
-│   ├── architecture/
-│   │   ├── overview.md
-│   │   ├── security.md
-│   │   └── webrtc.md
-│   └── index.md
-│
-├── scripts/                          # Build & deploy scripts
-│   ├── build-all.sh
-│   ├── deploy-workers.sh
-│   ├── dev-setup.sh
-│   └── generate-keys.sh
-│
-├── tests/                            # E2E tests
-│   ├── e2e/
-│   │   ├── terminal.spec.ts
-│   │   ├── desktop.spec.ts
-│   │   └── files.spec.ts
-│   ├── unit/
-│   └── integration/
-│
-├── .gitignore
-├── .gitlab-ci.yml                    # If using GitLab
-├── docs/ARCHITECTURE.md              # This file
-├── CONTRIBUTING.md
-├── README.md
-├── package.json                      # Root package.json (workspaces)
-├── pnpm-workspace.yaml              # pnpm workspace config
-├── turbo.json                       # Turborepo config
-└── tsconfig.base.json               # Base TS config
+├── package.json
+├── pnpm-workspace.yaml
+├── turbo.json
+└── tsconfig.base.json
 ```
 
-### 3.2 Package.json Root
+### 3.2 pnpm-workspace.yaml
 
-```json
-{
-  "name": "remote-access-platform",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": [
-    "apps/*",
-    "packages/*",
-    "workers/*"
-  ],
-  "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "lint": "turbo run lint",
-    "typecheck": "turbo run typecheck",
-    "dev:web": "pnpm --filter web dev",
-    "dev:desktop": "pnpm --filter desktop dev",
-    "dev:mobile": "pnpm --filter mobile dev",
-    "dev:agent": "cd apps/agent && cargo run",
-    "dev:workers": "pnpm --filter signaling wrangler dev",
-    "build:all": "turbo run build",
-    "deploy:workers": "./scripts/deploy-workers.sh",
-    "db:migrate": "wrangler d1 migrations apply signaling --local",
-    "db:migrate:prod": "wrangler d1 migrations apply signaling --remote"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "turbo": "^2.0.0",
-    "typescript": "^5.4.0",
-    "prettier": "^3.2.0",
-    "eslint": "^8.57.0"
-  },
-  "packageManager": "pnpm@9.0.0",
-  "engines": {
-    "node": ">=20.0.0",
-    "pnpm": ">=9.0.0"
-  }
-}
-```
+```yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'workers'
+  # apps/server is self-hosted Node.js + Hono backend, not a Cloudflare Worker.
 
-### 3.3 Turborepo Config
-
-```json
-{
-  "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": [".env"],
-  "tasks": {
-    "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
-    },
-    "dev": {
-      "cache": false,
-      "persistent": true
-    },
-    "test": {
-      "dependsOn": ["build"],
-      "outputs": []
-    },
-    "lint": {
-      "outputs": []
-    }
-  }
-}
+allowBuilds:
+  esbuild: true
+  workerd: true
+  better-sqlite3: true
 ```
 
 ---
@@ -591,7 +347,8 @@ remote-access-platform/
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
     "@remote/shared": "workspace:*",
@@ -604,33 +361,84 @@ remote-access-platform/
     "pinia": "^2.1.0",
     "@vueuse/core": "^10.9.0",
     "xterm": "^5.3.0",
-    "xterm-addon-fit": "^0.8.0",
-    "xterm-addon-webgl": "^0.16.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-vue": "^5.0.0",
-    "typescript": "^5.4.0",
-    "vite": "^5.2.0",
-    "vue-tsc": "^2.0.0",
-    "vitest": "^1.4.0",
-    "tailwindcss": "^3.4.0",
-    "autoprefixer": "^10.4.0",
-    "postcss": "^8.4.0"
+    "xterm-addon-fit": "^0.8.0"
   }
 }
 ```
 
-### 4.2 Desktop Agent (Rust)
+### 4.2 Self-Hosted Backend (`@remote/server`)
 
-> **Sketch — không phải nguồn sự thật.** Các phiên bản dưới đây (`webrtc = "0.10"`,
-> `tokio-tungstenite = "0.21"`, `portable-pty = "0.8"`) là bản phác thảo viết trước khi crate được
-> scaffold và đã lệch so với thực tế. Nguồn sự thật là **`apps/agent/Cargo.toml`**, khoá bởi
-> `Cargo.lock` được commit (ADR-08). Dependency thực tế của Tuần 5: `webrtc 0.13`,
-> `tokio-tungstenite 0.26`, `portable-pty 0.9`, `base64 0.23`, `clap 4`, `tokio`, `futures-util`,
-> `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `anyhow`. Phần còn lại của sketch dưới đây —
-> `vt100`, `scrap`, `x264`, `openh264`, `notify`, `walkdir`, `ring`, `rustls`, `bincode`, `sysinfo`,
-> `uuid`, `chrono` và các block `[target.'cfg(...)']` — **chưa được dùng ở Tuần 5**; chúng thuộc
-> Phase 3-4.
+**File:** `apps/server/package.json`
+```json
+{
+  "name": "@remote/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "@remote/shared": "workspace:*",
+    "better-sqlite3": "^11.8.1",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.13.9",
+    "ws": "^8.18.0"
+  }
+}
+```
+
+**Cấu trúc thư mục:**
+```
+apps/server/
+├── package.json
+├── tsconfig.json
+├── src/
+│   ├── index.ts          # Entrypoint: Node.js HTTP server + WebSocket upgrade
+│   ├── app.ts            # Hono app with all REST routes
+│   ├── types.ts          # AppEnv & Variables types
+│   ├── db/
+│   │   ├── client.ts     # better-sqlite3 + Drizzle ORM singleton
+│   │   └── schema.ts     # Drizzle SQLite schema
+│   ├── middleware/
+│   │   ├── auth.ts       # Bearer JWT verification
+│   │   ├── cors.ts       # CORS headers
+│   │   └── error.ts      # Unified error handling
+│   ├── routes/
+│   │   ├── auth.ts       # Login, register, refresh, logout
+│   │   ├── users.ts      # Profile management
+│   │   ├── agents.ts     # Agent registration & tokens
+│   │   ├── devices.ts    # Device authorization
+│   │   ├── sessions.ts   # Session lifecycle
+│   │   ├── signal.ts     # WebRTC offer, answer, ice-candidate endpoints
+│   │   ├── webrtc.ts     # Dynamic ICE servers endpoint
+│   │   └── ws.ts         # Agent WebSocket handler & dispatcher
+│   └── utils/
+│       ├── crypto.ts     # PBKDF2, SHA-256 helpers
+│       ├── jwt.ts        # JWT sign & verify
+│       └── signals.ts    # Signal persistence & helpers
+└── test/                 # Vitest suite
+```
+
+### 4.3 Docker Packaging (`docker/`)
+
+**Dockerfile.server** — Multi-stage build:
+- **Stage 1 (`base`)**: `node:24-alpine` với Corepack/pnpm
+- **Stage 2 (`builder`)**: Cài đặt dependencies + biên dịch `@remote/server`
+- **Stage 3 (`runner`)**: Chỉ production deps, `better-sqlite3` native bindings
+
+**Three Compose Setups:**
+1. `docker-compose.local.yml` — Local LAN testing (Google STUN, no TURN)
+2. `docker-compose.tunnel.yml` — Homelab với Cloudflare Tunnel
+3. `docker-compose.prod.yml` — Production VPS với Caddy + Coturn
+
+### 4.4 Desktop Agent (Rust)
 
 **File:** `apps/agent/Cargo.toml`
 ```toml
@@ -640,159 +448,54 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# WebRTC
-webrtc = "0.10"
+webrtc = "0.13"
 tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = "0.21"
-
-# Terminal
-portable-pty = "0.8"
-vt100 = "0.15"
-
-# Screen Capture
-scrap = "0.5"
-x264 = { version = "0.4", optional = true }
-openh264 = { version = "0.6", optional = true }
-
-# File System
-notify = "6.0"
-walkdir = "2.5"
-
-# Crypto
-ring = "0.17"
-rustls = "0.23"
-
-# Serialization
+tokio-tungstenite = "0.26"
+portable-pty = "0.9"
+base64 = "0.23"
+clap = { version = "4.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = "1.3"
-
-# Utils
-clap = { version = "4.0", features = ["derive"] }
-log = "0.4"
-env_logger = "0.11"
-dirs = "5.0"
-sysinfo = "0.30"
-uuid = { version = "1.0", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-
-# Platform-specific
-[target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "wingdi"] }
-windows = { version = "0.54", features = [
-    "Graphics_Capture",
-    "Graphics_DirectX",
-    "Graphics_DirectX_Direct3D11",
-] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-screencapturekit = "0.3"
-core-graphics = "0.24"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-x11 = "2.21"
-gstreamer = "0.21"
-
-[features]
-default = ["h264"]
-h264 = ["dep:x264"]
-openh264 = ["dep:openh264"]
-
-[[bin]]
-name = "remote-agent"
-path = "src/main.rs"
-```
-
-### 4.3 Cloudflare Worker
-
-**File:** `workers/wrangler.toml`
-```toml
-name = "ponta-remote"
-main = "src/index.ts"
-compatibility_date = "2024-09-01"
-compatibility_flags = ["nodejs_compat"]
-
-[vars]
-ENVIRONMENT = "production"
-JWT_SECRET = ""
-TURN_URL = ""
-TURN_USERNAME = ""
-TURN_CREDENTIAL = ""
-
-[[d1_databases]]
-binding = "DB"
-database_name = "remote-access"
-database_id = ""
-
-[[kv_namespaces]]
-binding = "CACHE"
-id = ""
-
-[env.development]
-name = "ponta-remote-dev"
-vars = { ENVIRONMENT = "development" }
-
-[env.staging]
-name = "ponta-remote-staging"
-
-[observability]
-enabled = true
+tracing = "0.1"
+tracing-subscriber = "0.1"
+anyhow = "1.0"
+futures-util = "0.7"
 ```
 
 ---
 
 ## 5. Database Schema
 
-### 5.1 D1 Migrations
+### 5.1 SQLite Schema (`apps/server/src/db/client.ts`)
 
-**File:** `workers/db/migrations/0001_initial.sql`
+Database được tạo tự động qua inline SQL trong hàm `runMigrations()`:
+
 ```sql
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-    username TEXT UNIQUE NOT NULL,
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
     email TEXT UNIQUE,
     public_key TEXT NOT NULL,
     password_hash TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_login_at TEXT,
-    is_active BOOLEAN DEFAULT 1,
-    metadata TEXT -- JSON
+    metadata TEXT
 );
 
 -- User devices
 CREATE TABLE IF NOT EXISTS devices (
-    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-    user_id TEXT NOT NULL,
-    device_name TEXT,
-    device_type TEXT, -- 'desktop', 'mobile', 'web'
-    fingerprint TEXT UNIQUE NOT NULL,
-    platform TEXT,
-    browser TEXT,
-    ip_address TEXT,
-    approved_at TEXT,
-    last_seen_at TEXT,
-    is_trusted BOOLEAN DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- Sessions
-CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
-    device_id TEXT,
-    agent_id TEXT,
-    status TEXT DEFAULT 'pending', -- 'pending', 'awaiting_approval', 'active', 'terminated', 'expired'
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now')),
-    started_at TEXT,
-    ended_at TEXT,
-    expires_at TEXT,
-    metadata TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (device_id) REFERENCES devices(id)
+    device_name TEXT,
+    device_type TEXT NOT NULL,
+    fingerprint TEXT NOT NULL UNIQUE,
+    is_trusted INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Agents (remote hosts)
@@ -804,83 +507,61 @@ CREATE TABLE IF NOT EXISTS agents (
     os_version TEXT,
     agent_version TEXT,
     public_key TEXT NOT NULL,
-    is_online BOOLEAN DEFAULT 0,
-    last_heartbeat TEXT,
-    capabilities TEXT, -- JSON: ['terminal', 'desktop', 'files']
-    created_at TEXT DEFAULT (datetime('now')),
+    is_online INTEGER NOT NULL DEFAULT 0,
+    last_ping_at TEXT,
+    credential_hash TEXT UNIQUE,
+    capabilities TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- WebRTC Signals
+-- Sessions
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    device_id TEXT,
+    agent_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    ended_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE SET NULL,
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL
+);
+
+-- WebRTC Signals (polling fallback)
 CREATE TABLE IF NOT EXISTS signals (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    type TEXT NOT NULL, -- 'offer', 'answer', 'ice-candidate'
+    type TEXT NOT NULL,
     payload TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
--- Connection logs
-CREATE TABLE IF NOT EXISTS connection_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT,
-    user_id TEXT,
-    agent_id TEXT,
-    event_type TEXT NOT NULL,
-    event_data TEXT,
-    ip_address TEXT,
-    user_agent TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (session_id) REFERENCES sessions(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
+-- Token Revocation (replaces Cloudflare KV blacklist)
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+    jti TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- File transfers
-CREATE TABLE IF NOT EXISTS file_transfers (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    file_name TEXT NOT NULL,
-    file_size INTEGER,
-    file_hash TEXT,
-    direction TEXT, -- 'upload', 'download'
-    status TEXT DEFAULT 'pending',
-    started_at TEXT,
-    completed_at TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (session_id) REFERENCES sessions(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-);
+-- Indexes
+CREATE INDEX IF NOT EXISTS signals_session_created_idx ON signals(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
+```
 
--- Audit log
-CREATE TABLE IF NOT EXISTS audit_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
-    action TEXT NOT NULL,
-    resource_type TEXT,
-    resource_id TEXT,
-    details TEXT,
-    ip_address TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-);
+### 5.2 WAL Mode & Connection Management
 
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
-CREATE INDEX IF NOT EXISTS idx_devices_fingerprint ON devices(fingerprint);
-CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_agents_user_id ON agents(user_id);
-CREATE INDEX IF NOT EXISTS idx_signals_session_id ON signals(session_id);
-CREATE INDEX IF NOT EXISTS idx_signals_expires ON signals(expires_at);
-CREATE INDEX IF NOT EXISTS idx_logs_session_id ON connection_logs(session_id);
-CREATE INDEX IF NOT EXISTS idx_logs_user_id ON connection_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id);
+```typescript
+// apps/server/src/db/client.ts
+const sqlite = new BetterSqlite3(dbPath);
+sqlite.exec('PRAGMA journal_mode = WAL;');
+sqlite.exec('PRAGMA foreign_keys = ON;');
+sqlite.exec('PRAGMA busy_timeout = 5000;');
 ```
 
 ---
@@ -893,7 +574,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id);
 // packages/shared/src/types/auth.ts
 export interface LoginRequest {
   username: string;
-  password?: string; // Optional if using WebAuthn
+  password?: string;
   webauthnCredential?: Credential;
 }
 
@@ -912,84 +593,19 @@ export interface RegisterRequest {
 }
 ```
 
-### 6.2 Signaling Endpoints
-
-```typescript
-// packages/shared/src/types/signaling.ts
-// Wire types cross JSON network boundaries and Cloudflare Workers (which lack DOM libs).
-// Conversion to RTCSessionDescriptionInit / RTCIceCandidateInit occurs inside packages/webrtc-core.
-export interface SignalOffer {
-  sessionId: string;
-  sdp: string;
-  capabilities: string[];
-}
-
-export interface SignalAnswer {
-  sessionId: string;
-  sdp: string;
-  approved: boolean;
-}
-
-export interface IceCandidateSignal {
-  sessionId: string;
-  candidate: string;
-  sdpMid: string | null;
-  sdpMLineIndex: number | null;
-}
-
-export type SignalMessage =
-  | { type: 'offer'; data: SignalOffer }
-  | { type: 'answer'; data: SignalAnswer }
-  | { type: 'ice-candidate'; data: IceCandidateSignal };
-
-/**
- * The WebSocket transport envelope for the agent socket (`GET /api/ws/agent`).
- *
- * A signal frame nests `{ type, data }` inside `{ type: 'signal', data }`: the
- * outer `type` is the *transport* discriminator, the inner one is the *signal*
- * discriminator. Flattening them would make a transport frame ambiguous with a
- * bare `SignalMessage`.
- *
- * `SignalMessage` above is deliberately unchanged: `webrtc-core`'s
- * `SignalTransport` and the REST bodies keep one definition.
- */
-export type AgentErrorCode =
-  | 'MALFORMED_JSON'
-  | 'VALIDATION_ERROR'
-  | 'NOT_FOUND'
-  | 'INTERNAL_SERVER_ERROR'
-  | 'SESSION_NOT_ACTIVE';
-
-export type AgentSocketMessage =
-  | { type: 'ping' }
-  | { type: 'pong' }
-  | { type: 'signal'; data: SignalMessage }
-  | { type: 'error'; code: AgentErrorCode };
-```
-
-> **Week 5 Agent Credential Boundary.** The Week 4 note is superseded. Agent-scoped credentials now exist: `POST /api/agents` mints `ag_` + 32 lowercase hex characters (16 CSPRNG bytes, 128 bits) exactly once and stores only its SHA-256 hex digest (`agents.credential_hash`, `UNIQUE`), and the agent presents it in the `Authorization: Bearer` header of the WebSocket handshake at `GET /api/ws/agent` — never in a query string, because a URL is logged by every proxy and by Cloudflare's own request log.
->
-> The WS path enforces a stricter tenancy predicate than REST: `session.userId == agent.userId` **and** `session.agentId == agent.id`, so an agent cannot speak for a session that is not bound to it even within its own user's account. Inbound failures are answered with `{ type: 'error', code }` using `AgentErrorCode`; the credential check runs *before* the `Upgrade` guard, so an unauthenticated request is `401` and never `426`.
->
-> **Residual:** the REST `POST /api/signal/*` routes still authenticate as the owning *user*, not as the agent, so browser/agent separation holds on the WS path only. `agentConnections` is a module-scope `Map` and therefore per-isolate: a push reaches only an agent whose socket landed in the same isolate, and D1 + polling remains the delivery guarantee — the push is a latency optimisation. A second connection presenting a valid credential supersedes the first (one map entry per `agentId`). `is_online` in D1 is a hint; the authoritative online predicate is socket presence combined with a read-time window over `last_ping_at` (90 s).
-
-### 6.3 REST API Routes
+### 6.2 REST API Routes
 
 ```
 # Authentication
 POST   /api/auth/register          # Register new user
 POST   /api/auth/login             # Login
 POST   /api/auth/refresh           # Refresh token
-POST   /api/auth/logout            # Logout
-POST   /api/auth/webauthn/options  # Get WebAuthn options
-POST   /api/auth/webauthn/verify   # Verify WebAuthn
+POST   /api/auth/logout            # Logout (revoke token in SQLite)
 
 # Agents
 GET    /api/agents                 # List user's agents
-POST   /api/agents                 # Register new agent
+POST   /api/agents                 # Register new agent (mints ag_ credential)
 GET    /api/agents/:id             # Get agent details
-PUT    /api/agents/:id             # Update agent
-DELETE /api/agents/:id             # Remove agent
 
 # Sessions
 POST   /api/sessions               # Create new session
@@ -998,21 +614,50 @@ GET    /api/sessions/:id           # Get session details
 DELETE /api/sessions/:id           # Terminate session
 
 # Signaling
-POST   /api/signal/offer           # Send WebRTC offer
+POST   /api/signal/offer           # Send WebRTC offer (persisted + WebSocket push)
 POST   /api/signal/answer          # Send WebRTC answer
 POST   /api/signal/ice-candidate   # Send ICE candidate
-GET    /api/signal/poll/:sessionId # Poll for signals
-GET    /api/ws/agent               # Agent WebSocket relay (Upgrade; Bearer ag_…, not a JWT)
+GET    /api/signal/poll/:sessionId # Poll for signals (browser fallback)
 
-# Devices
-GET    /api/devices                # List user devices
-DELETE /api/devices/:id            # Remove device
-PUT    /api/devices/:id/trust      # Mark device as trusted
+# WebRTC
+GET    /api/webrtc/ice-servers     # Dynamic ICE server config (TURN credentials)
 
-# Files
-GET    /api/files/list             # List files (via API, not P2P)
-POST   /api/files/upload-url       # Get presigned upload URL
+# Agent WebSocket
+GET    /api/ws/agent               # Agent WebSocket (Bearer ag_ credential, not JWT)
 ```
+
+### 6.3 Agent WebSocket Protocol
+
+```typescript
+// packages/shared/src/types/signaling.ts
+
+export type AgentSocketMessage =
+  | { type: 'ping' }
+  | { type: 'pong' }
+  | { type: 'signal'; data: SignalMessage }
+  | { type: 'error'; code: AgentErrorCode };
+
+export type AgentErrorCode =
+  | 'MALFORMED_JSON'
+  | 'VALIDATION_ERROR'
+  | 'NOT_FOUND'
+  | 'INTERNAL_SERVER_ERROR'
+  | 'SESSION_NOT_ACTIVE';
+```
+
+**Handshake flow:**
+1. Agent opens WebSocket to `ws://localhost:8787/api/ws/agent`
+2. Agent sends `Authorization: Bearer ag_<32hex>` header (credential, not JWT)
+3. Server verifies credential hash against `agents.credential_hash` in SQLite
+4. On success, server upgrades connection and registers in `agentConnections` map
+5. Agent sends `ping` frames every 30s; server updates `last_ping_at`
+6. Server pushes signals via `pushToAgent()` for sub-1ms delivery
+
+**Week 5 Agent Credential Boundary:**
+- `POST /api/agents` mints `ag_` + 32 lowercase hex characters (128 bits of CSPRNG entropy)
+- Credential stored as SHA-256 hex digest in `agents.credential_hash`
+- WebSocket handshake enforces tenancy: `session.userId == agent.userId` AND `session.agentId == agent.id`
+- Unauthenticated requests receive HTTP 401 before upgrade completes
 
 ---
 
@@ -1020,62 +665,44 @@ POST   /api/files/upload-url       # Get presigned upload URL
 
 ### 7.1 Zero-Trust Implementation
 
+Tự động hóa xác thực thông qua JWT (truy cập 15 phút, làm mới 7 ngày). Bảng `revoked_tokens` trong SQLite thay thế cho Cloudflare KV blacklist:
+
 ```typescript
-// workers/src/middleware/auth.ts
-import { Context, Next } from 'hono';
-import { verifyJWT } from '../utils/jwt';
+// apps/server/src/middleware/auth.ts
+import type { Context, Next } from 'hono';
+import { verifyJWT } from '../utils/jwt.js';
+import { eq } from 'drizzle-orm/expressions';
+import { revokedTokens } from '../db/schema.js';
+import { getDb } from '../db/client.js';
 
 export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header('Authorization');
-  
   if (!authHeader?.startsWith('Bearer ')) {
     return c.json({ error: 'Missing token' }, 401);
   }
-  
+
   const token = authHeader.slice(7);
-  
+
   try {
     const payload = await verifyJWT(token, c.env.JWT_SECRET);
-    
-    // Check if user is active
-    const user = await c.env.DB.prepare(
-      'SELECT * FROM users WHERE id = ? AND is_active = 1'
-    ).bind(payload.sub).first();
-    
-    if (!user) {
-      return c.json({ error: 'User not found or inactive' }, 401);
+
+    // Check if token is revoked in SQLite
+    const db = getDb();
+    const revoked = await db
+      .select()
+      .from(revokedTokens)
+      .where(eq(revokedTokens.jti, payload.jti))
+      .get();
+
+    if (revoked) {
+      return c.json({ error: 'Token has been revoked' }, 401);
     }
-    
-    // Add user to context
-    c.set('user', user);
-    
+
+    c.set('user', payload);
     await next();
   } catch (error) {
     return c.json({ error: 'Invalid token' }, 401);
   }
-}
-
-// Rate limiting
-export async function rateLimitMiddleware(c: Context, next: Next) {
-  const ip = c.req.header('CF-Connecting-IP');
-  const userId = c.get('user')?.id;
-  
-  const key = `rate:${userId || ip}`;
-  const limit = 100; // requests per minute
-  const window = 60; // seconds
-  
-  const current = await c.env.CACHE.get(key);
-  const count = current ? parseInt(current) : 0;
-  
-  if (count >= limit) {
-    return c.json({ error: 'Rate limit exceeded' }, 429);
-  }
-  
-  await c.env.CACHE.put(key, String(count + 1), {
-    expirationTtl: window
-  });
-  
-  await next();
 }
 ```
 
@@ -1086,9 +713,8 @@ export async function rateLimitMiddleware(c: Context, next: Next) {
 export class EncryptionManager {
   private keyPair: CryptoKeyPair;
   private sharedKey: CryptoKey;
-  
+
   async initialize(privateKeyJwk: JsonWebKey, peerPublicKeyJwk: JsonWebKey) {
-    // Import keys
     const privateKey = await crypto.subtle.importKey(
       'jwk',
       privateKeyJwk,
@@ -1096,7 +722,7 @@ export class EncryptionManager {
       false,
       ['deriveKey']
     );
-    
+
     const peerPublicKey = await crypto.subtle.importKey(
       'jwk',
       peerPublicKeyJwk,
@@ -1104,8 +730,7 @@ export class EncryptionManager {
       false,
       []
     );
-    
-    // Derive shared key
+
     this.sharedKey = await crypto.subtle.deriveKey(
       { name: 'ECDH', public: peerPublicKey },
       privateKey,
@@ -1114,30 +739,28 @@ export class EncryptionManager {
       ['encrypt', 'decrypt']
     );
   }
-  
+
   async encrypt(data: ArrayBuffer): Promise<ArrayBuffer> {
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    
     const encrypted = await crypto.subtle.encrypt(
       { name: 'AES-GCM', iv },
       this.sharedKey,
       data
     );
-    
-    // Combine IV + encrypted data
+
     const result = new ArrayBuffer(12 + encrypted.byteLength);
     const view = new Uint8Array(result);
     view.set(iv, 0);
     view.set(new Uint8Array(encrypted), 12);
-    
+
     return result;
   }
-  
+
   async decrypt(data: ArrayBuffer): Promise<ArrayBuffer> {
     const view = new Uint8Array(data);
     const iv = view.slice(0, 12);
     const encrypted = view.slice(12);
-    
+
     return await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv },
       this.sharedKey,
@@ -1147,13 +770,44 @@ export class EncryptionManager {
 }
 ```
 
+### 7.3 Password Hashing
+
+Sử dụng PBKDF2-HMAC-SHA256 với Web Crypto API:
+
+```typescript
+// apps/server/src/utils/crypto.ts
+export async function hashPassword(password: string, salt?: string): Promise<string> {
+  const actualSalt = salt ?? crypto.randomUUID();
+  const encoded = new TextEncoder().encode(password);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    encoded,
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: new TextEncoder().encode(actualSalt),
+      iterations: 100_000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256
+  );
+
+  const hash = Buffer.from(derivedBits).toString('hex');
+  return `${actualSalt}:${hash}`;
+}
+```
+
 ---
 
 ## 8. Lộ trình Triển khai
 
 ### Phase 1: Foundation (Tuần 1-3)
-
-**Mục tiêu:** Thiết lập monorepo, infrastructure cơ bản, authentication
 
 ```mermaid
 gantt
@@ -1165,43 +819,40 @@ gantt
     Setup TypeScript configs :a3, after a2, 1d
     Create shared packages   :a4, after a3, 1d
     section Week 2
-    Setup Cloudflare Workers :b1, after a4, 2d
-    Create D1 database       :b2, after b1, 1d
+    Setup Node.js backend   :b1, after a4, 2d
+    Create SQLite schema    :b2, after b1, 1d
     Implement auth endpoints :b3, after b2, 2d
     section Week 3
-    Create VueJS app         :c1, after b3, 2d
-    Setup routing & stores   :c2, after c1, 1d
-    Implement login UI       :c3, after c2, 2d
+    Create VueJS app        :c1, after b3, 2d
+    Setup routing & stores  :c2, after c1, 1d
+    Implement login UI      :c3, after c2, 2d
 ```
 
 #### Tuần 1: Monorepo Setup
-- [ ] Khởi tạo pnpm workspace
-- [ ] Cấu hình Turborepo
-- [ ] Tạo cấu trúc folders
-- [ ] Setup TypeScript base config
-- [ ] Tạo packages/shared với types
-- [ ] Setup ESLint + Prettier
-- [ ] Tạo GitHub Actions CI
+- [x] Khởi tạo pnpm workspace
+- [x] Cấu hình Turborepo
+- [x] Tạo cấu trúc folders
+- [x] Setup TypeScript base config
+- [x] Tạo packages/shared với types
+- [x] Setup ESLint + Prettier
+- [x] Tạo GitHub Actions CI
 
 #### Tuần 2: Backend Foundation
-- [ ] Tạo Cloudflare Worker signaling
-- [ ] Setup D1 database + migrations
-- [ ] Implement JWT authentication
-- [ ] Tạo API endpoints cơ bản
-- [ ] Setup KV cache
-- [ ] Viết unit tests
+- [x] Tạo self-hosted Node.js backend (`apps/server`)
+- [x] Setup SQLite + migrations (better-sqlite3 + Drizzle ORM)
+- [x] Implement JWT authentication
+- [x] Tạo API endpoints cơ bản
+- [x] Token revocation via SQLite `revoked_tokens` table
+- [x] Viết unit tests
 
 #### Tuần 3: Frontend Foundation
-- [ ] Tạo VueJS app với Vite
-- [ ] Setup TailwindCSS + theme
-- [ ] Implement routing (vue-router)
-- [ ] Tạo auth pages (login/register)
-- [ ] Setup Pinia stores
-- [ ] Kết nối với API
+- [x] Tạo VueJS app với Vite
+- [x] Setup TailwindCSS + theme
+- [x] Implement routing (vue-router)
+- [x] Tạo auth pages (login/register)
+- [x] Setup Pinia stores
 
 ### Phase 2: WebRTC & Terminal (Tuần 4-6)
-
-**Mục tiêu:** Kết nối WebRTC hoạt động, terminal cơ bản
 
 #### Tuần 4: WebRTC Core
 - [ ] Tạo packages/webrtc-core
@@ -1211,115 +862,17 @@ gantt
 - [ ] Test kết nối P2P
 
 #### Tuần 5: Desktop Agent - Terminal
-
-**Trạng thái: đã ship (2026-09-26).** Các mục dưới đây giữ nguyên dạng `[ ]` vì toàn bộ roadmap
-trong tài liệu này chưa từng được tick — kể cả Phase 1 và Tuần 4 đã hoàn thành — nên tick riêng
-Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay vì tick.
-
-- [ ] Tạo Rust agent — `apps/agent` (crate `remote-agent`), 4 module phẳng: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
-- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `workers`, xác thực bằng credential `ag_<32 hex>`
-- [ ] Tích hợp portable-pty — `portable-pty 0.9`, PTY thật, 1 session
-- [ ] Xử lý terminal I/O — base64 trong `DataChannelMessage<TerminalDataMessage>`, kênh `terminal`
-- [ ] Implement session management — state machine `pending → active → terminated`
-
-> **Kiến trúc hybrid có chủ đích:** signaling dùng **REST polling cho browser** (giữ nguyên từ Tuần 4,
-> ADR-03) và **WebSocket chỉ cho agent**. Cụm "Implement WebSocket signaling" ở trên *không* có nghĩa
-> là toàn bộ signaling đã chuyển sang WebSocket — `packages/webrtc-core` không có `WebSocketTransport`
-> nào, và client WebSocket duy nhất là Rust.
+- [ ] Tạo Rust agent — `apps/agent` (crate `remote-agent`)
+- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `@remote/server`
+- [ ] Tích hợp portable-pty — PTY thật, 1 session
+- [ ] Xử lý terminal I/O — kênh `terminal`
+- [ ] Implement session management
 
 #### Tuần 6: Terminal UI
 - [ ] Tích hợp xterm.js
 - [ ] Kết nối data channel với terminal
 - [ ] Implement multi-tab terminal
 - [ ] Handle resize events
-- [ ] Mobile keyboard support
-
-### Phase 3: Desktop Streaming (Tuần 7-9)
-
-**Mục tiêu:** Remote desktop hoạt động với 60fps
-
-#### Tuần 7: Screen Capture
-- [ ] Implement screen capture per platform
-- [ ] Windows: DXGI Desktop Duplication
-- [ ] macOS: ScreenCaptureKit
-- [ ] Linux: X11/GStreamer
-- [ ] Region of interest tracking
-
-#### Tuần 8: Video Encoding
-- [ ] Tích hợp hardware encoder
-- [ ] H.264/H.265 encoding
-- [ ] Adaptive bitrate control
-- [ ] Frame rate management
-- [ ] Latency optimization
-
-#### Tuần 9: Desktop Viewer UI
-- [ ] Tạo desktop viewer component
-- [ ] Implement canvas rendering
-- [ ] Handle mouse/keyboard input
-- [ ] Multi-monitor support
-- [ ] Fullscreen mode
-
-### Phase 4: File Manager (Tuần 10-11)
-
-**Mục tiêu:** File transfer đầy đủ tính năng
-
-#### Tuần 10: File System Core
-- [ ] Implement file listing
-- [ ] File upload (chunked)
-- [ ] File download
-- [ ] Resume/pause support
-- [ ] Progress tracking
-
-#### Tuần 11: File Manager UI
-- [ ] Tạo file explorer component
-- [ ] Drag & drop support
-- [ ] File preview
-- [ ] Search functionality
-- [ ] Context menu
-
-### Phase 5: Security & Polish (Tuần 12-14)
-
-**Mục tiêu:** Zero-trust hoàn chỉnh, performance optimization
-
-#### Tuần 12: Security
-- [ ] Implement physical approval
-- [ ] Device fingerprinting
-- [ ] Session revocation
-- [ ] Audit logging
-- [ ] Rate limiting
-
-#### Tuần 13: Performance
-- [ ] Profile & optimize bottlenecks
-- [ ] Memory optimization
-- [ ] Network optimization
-- [ ] Startup time reduction
-- [ ] Bundle size optimization
-
-#### Tuần 14: UI/UX Polish
-- [ ] Responsive design
-- [ ] Dark/light theme
-- [ ] Keyboard shortcuts
-- [ ] Accessibility
-- [ ] Error handling
-
-### Phase 6: Mobile & Release (Tuần 15-16)
-
-**Mục tiêu:** Mobile apps, production release
-
-#### Tuần 15: Tauri Apps
-- [ ] Build desktop app (Tauri)
-- [ ] Build mobile app (Tauri)
-- [ ] Platform-specific optimizations
-- [ ] Auto-update mechanism
-- [ ] Code signing
-
-#### Tuần 16: Release
-- [ ] Documentation hoàn chỉnh
-- [ ] E2E tests
-- [ ] Security audit
-- [ ] Performance benchmarks
-- [ ] Production deployment
-- [ ] v0.1.0 release
 
 ---
 
@@ -1329,120 +882,98 @@ Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay
 
 ```bash
 # Clone repository
-git clone https://github.com/yourorg/remote-access-platform.git
-cd remote-access-platform
+git clone https://github.com/ngotuananh101/ponta-remote.git
+cd ponta-remote
 
 # Install dependencies
 pnpm install
 
-# Copy environment files
-cp .env.example .env
-cp apps/agent/.env.example apps/agent/.env
-
-# Setup database (local)
-pnpm db:migrate
-
-# Start development
-pnpm dev  # Start all services in parallel
-
-# Or start specific services
-pnpm dev:web      # Web app only
-pnpm dev:desktop  # Desktop app only
-pnpm dev:agent    # Desktop agent only
-pnpm dev:workers  # Cloudflare Workers only
+# Build the native Rust agent
+cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-### 9.2 Environment Variables
+### 9.2 Running Services Locally
+
+Chạy từng thành phần trong terminal riêng:
+
+```bash
+# Terminal 1: Start the Backend (Node.js + Hono + SQLite)
+pnpm --filter @remote/server dev
+
+# Terminal 2: Start the Web Client (Vite on http://127.0.0.1:5173)
+pnpm --filter @remote/web dev
+
+# Terminal 3: Run the Native Agent Daemon
+cargo run --manifest-path apps/agent/Cargo.toml -- \
+  --agent-id agent-local-01 \
+  --server ws://127.0.0.1:8787/api/ws/agent \
+  --credential <AGENT_CREDENTIAL> \
+  --stun ""
+```
+
+**Health check:**
+```bash
+curl http://127.0.0.1:8787/health
+# {"status":"ok"}
+```
+
+### 9.3 Environment Variables
 
 **File:** `.env.example`
 ```env
-# Cloudflare
-CLOUDFLARE_ACCOUNT_ID=your_account_id
-CLOUDFLARE_API_TOKEN=your_api_token
+# Backend
+DATABASE_PATH=./data/remote.db
+PORT=8787
+JWT_SECRET=local-dev-jwt-secret-key-32-chars-min
+REFRESH_TOKEN_SECRET=local-dev-refresh-secret-key-32-chars
+CORS_ORIGIN=*
 
-# Database
-D1_DATABASE_ID=your_database_id
-
-# JWT
-JWT_SECRET=your_jwt_secret_min_32_chars
-JWT_EXPIRES_IN=15m
-REFRESH_TOKEN_SECRET=your_refresh_secret
-REFRESH_TOKEN_EXPIRES_IN=7d
-
-# WebRTC
-STUN_SERVER=stun:stun.l.google.com:19302
-TURN_URL=turn:your-turn-server.com:3478
-TURN_USERNAME=turn_user
-TURN_CREDENTIAL=turn_password
-
-# API
-API_URL=http://localhost:8787
-WS_URL=ws://localhost:8787/ws
-
-# Agent
-AGENT_ID=unique_agent_id
-AGENT_HOSTNAME=my-computer
-AGENT_PORT=9090
+# TURN (production only)
+TURN_SECRET=
+TURN_URL=turn:your-domain.com:3478
+STUN_URL=stun:your-domain.com:3478
 
 # Web App
 VITE_API_URL=http://localhost:8787
-VITE_WS_URL=ws://localhost:8787/ws
 ```
 
-### 9.3 Testing Strategy
+### 9.4 Testing Strategy
 
 ```bash
-# JS unit + integration tests (run from repo root)
+# JS unit + integration tests
 pnpm test
 
-# Shared package tests
-pnpm --filter @remote/shared test
+# Server-specific tests
+pnpm --filter @remote/server test
 
-# WebRTC core e2e tests
-pnpm --filter @remote/webrtc-core test:e2e
+# Rust unit tests
+cargo test --manifest-path apps/agent/Cargo.toml
 ```
-
-### 9.4 CI/CD Pipeline
-
-**File:** `.github/workflows/ci.yml`
-
-The workflow is the source of truth; it is not reproduced here, because a copy in this document
-drifted once already (this section described four jobs — `lint`, `test`, `build`, `deploy-workers`,
-on `node-version: '20'` with `pnpm/action-setup@v4` — while the real file had been a single `verify`
-job since Week 4).
-
-Three jobs, all on `ubuntu-latest`, all pinned to a full commit SHA with the version in a trailing
-comment (the convention the repository settled on in Week 4):
-
-| Job | Runs | Purpose |
-|---|---|---|
-| `verify` | Node 24 + pnpm 12.6.0 + Rust 1.98.1 | `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, `pnpm test` |
-| `rust` | Rust 1.98.1 (`apps/agent` as the working directory) | `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --locked`, `cargo test --locked` |
-| `e2e` | Node 24 + pnpm + Rust, `needs: [verify, rust]` | builds `apps/agent/target/debug/remote-agent`, then `pnpm --filter @remote/webrtc-core test:e2e` |
-
-The `e2e` job is Week 5's done-criterion: the same wire contract implemented twice, meeting at a real
-DTLS/SCTP connection with real PTY bytes crossing it. It is Linux-only by construction (`iceServers:
-[]`, no STUN, no TURN, loopback only), so it never reaches the network.
 
 ---
 
 ## 10. Deployment
 
-### 10.1 Cloudflare Workers
+### 10.1 Self-Hosted Backend (Docker Compose)
+
+Xem [Deployment Guide](guides/deployment.md) để hướng dẫn chi tiết cho ba môi trường:
+- **Local LAN**: `docker-compose.local.yml`
+- **Homelab**: `docker-compose.tunnel.yml` (Cloudflare Tunnel)
+- **Production VPS**: `docker-compose.prod.yml` (Caddy + Coturn)
+
+### 10.2 Web Frontend (Cloudflare Pages)
+
+Web client (`apps/web`) được triển khai như static assets trên Cloudflare Pages:
 
 ```bash
-# Deploy signaling worker
-cd workers
-npx wrangler deploy
+# Build
+pnpm --filter @remote/web build
 
-# Run migrations on production
-npx wrangler d1 migrations apply signaling --remote
-
-# Check deployment
-npx wrangler tail
+# Deploy to Cloudflare Pages
+pnpm --filter @remote/web exec wrangler deploy
 ```
 
-### 10.2 Desktop Agent
+### 10.3 Desktop Agent
 
 ```bash
 # Build for current platform
@@ -1456,46 +987,9 @@ cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-unknown-linux-gnu
 ```
 
-### 10.3 Desktop/Mobile Apps
-
-```bash
-# Build desktop app
-cd apps/desktop
-pnpm tauri build
-
-# Build mobile apps
-cd apps/mobile
-pnpm tauri android build
-pnpm tauri ios build
-```
-
-### 10.4 Docker Deployment
-
-**File:** `apps/agent/Dockerfile`
-```dockerfile
-FROM rust:latest as builder
-
-WORKDIR /app
-COPY . .
-
-RUN cargo build --release
-
-FROM ubuntu:22.04
-
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/target/release/remote-agent /usr/local/bin/
-
-EXPOSE 9090
-
-CMD ["remote-agent"]
-```
-
 ---
 
-## 📊 Performance Targets
+## 11. Performance Targets
 
 | Metric | Target | Method |
 |--------|--------|--------|

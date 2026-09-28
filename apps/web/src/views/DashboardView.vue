@@ -529,7 +529,7 @@ onUnmounted(() => {
             <div class="space-y-1.5 pt-1 text-[11px] font-mono">
               <div class="flex items-center gap-2">
                 <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
-                <span>Signaling: Cloudflare Workers Edge</span>
+                <span>Signaling: Self-hosted Node.js Server</span>
               </div>
               <div class="flex items-center gap-2">
                 <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />

@@ -1,530 +1,229 @@
-# Cloudflare Deployment Guide
+# Deployment Guide
 
-This guide covers step-by-step instructions to deploy both the frontend web client (`apps/web`) to Cloudflare Pages and the backend services (`workers/`) of the Remote Access Platform to Cloudflare Workers, Cloudflare D1 (SQLite database), and Cloudflare Workers KV.
+Hướng dẫn triển khai nền tảng Remote Access. Backend (`@remote/server`) là một ứng dụng Node.js self-hosted chạy trong Docker. Frontend web (`apps/web`) là Vue 3 SPA được triển khai lên Cloudflare Pages.
 
 ---
 
 ## Table of Contents
+
 1. [Prerequisites](#1-prerequisites)
 2. [Architecture Overview](#2-architecture-overview)
-3. [Cloudflare Account & Authentication](#3-cloudflare-account--authentication)
-4. [Provision Cloudflare Resources](#4-provision-cloudflare-resources)
-   - [Create D1 Database](#41-create-d1-database)
-   - [Create KV Namespace](#42-create-kv-namespace)
-5. [Configure Production Settings (`wrangler.prod.toml`)](#5-configure-production-settings-wranglerprodtoml)
-6. [Apply Database Migrations](#6-apply-database-migrations)
-7. [Deploy the Backend Worker](#7-deploy-the-backend-worker)
-8. [Configure Production Secrets](#8-configure-production-secrets)
-9. [Verify Backend Deployment](#9-verify-backend-deployment)
-10. [Deploy Web Client to Cloudflare Pages](#10-deploy-web-client-to-cloudflare-pages)
-   - [Configure Environment Variables](#101-configure-environment-variables)
-   - [SPA Routing Fallback](#102-spa-routing-fallback)
-   - [Create Pages Project & Deploy](#103-create-pages-project--deploy)
-   - [Verify Web Deployment](#104-verify-web-deployment)
-11. [Cloudflare Workers Builds (Git Integration) — Important Distinction](#11-cloudflare-workers-builds-git-integration--important-distinction)
-12. [Automate Deployment with GitHub Actions (CI/CD)](#12-automate-deployment-with-github-actions-cicd)
-13. [Free Tier Quotas & Monitoring](#13-free-tier-quotas--monitoring)
-14. [Troubleshooting & FAQ](#14-troubleshooting--faq)
+3. [Docker Deployment (Backend Server)](#3-docker-deployment-backend-server)
+   - [Scenario 1: Local LAN](#scenario-1-local-lan)
+   - [Scenario 2: Homelab (Cloudflare Tunnel)](#scenario-2-homelab-cloudflare-tunnel)
+   - [Scenario 3: Production VPS (Caddy + Coturn)](#scenario-3-production-vps-caddy--coturn)
+4. [Deploying the Web Frontend to Cloudflare Pages](#4-deploying-the-web-frontend-to-cloudflare-pages)
+   - [Configure Environment Variables](#41-configure-environment-variables)
+   - [Build and Deploy](#42-build-and-deploy)
+   - [Verify Web Deployment](#43-verify-web-deployment)
+5. [Environment Variables Reference](#5-environment-variables-reference)
+6. [Troubleshooting](#6-troubleshooting)
 
 ---
 
 ## 1. Prerequisites
 
-Before deploying, ensure you have:
-- **Node.js**: `>= 24.0.0`
-- **pnpm**: `>= 12.0.0`
-- **Cloudflare Account**: [Sign up for free](https://dash.cloudflare.com/sign-up)
-- Repository dependencies installed:
-  ```bash
-  pnpm install
-  ```
+Trước khi triển khai, hãy đảm bảo bạn có:
+
+- **Docker**: `>= 25.0.0` ([cài đặt](https://docs.docker.com/get-docker/))
+- **Docker Compose**: `>= 2.20.0` (đi kèm với Docker Desktop; dùng `docker compose` trên Linux)
+- **Cloudflare Account**: [Đăng ký](https://dash.cloudflare.com/sign-up) (chỉ cần thiết cho deployment frontend)
+- **pnpm**: `>= 12.0.0` (chỉ cần thiết cho deployment frontend)
+- **Node.js**: `>= 24.0.0` (chỉ cần thiết cho deployment frontend)
 
 ---
 
 ## 2. Architecture Overview
 
-The platform production deployment consists of two cloud components:
+Production deployment bao gồm các thành phần sau:
 
 1. **Frontend Web Client (`apps/web`)**:
-   - **Hosting**: Cloudflare Workers (Static Assets with global CDN caching).
-   - **Framework**: Vue 3 SPA + Vite + Tailwind CSS + Pinia.
-   - **Routing**: HTML5 History mode with Workers SPA fallback (`not_found_handling = "single-page-application"`).
-   - **Backend Connection**: Configured via `VITE_API_URL` pointing to the deployed Worker.
+   - **Hosting**: Cloudflare Pages (static CDN hosting, không chạy backend logic)
+   - **Framework**: Vue 3 SPA + Vite + Tailwind CSS + Pinia
+   - **Kết nối backend**: Cấu hình qua `VITE_API_URL` trỏ tới self-hosted server
 
-2. **Unified Backend Service (`workers/`)**:
-   - **Runtime**: Cloudflare Workers with Hono (`hono/quick-start`).
-   - **Database**: Cloudflare D1 (Serverless SQLite) with Drizzle ORM.
-   - **Cache**: Cloudflare Workers KV (`CACHE` namespace) for token revocation blacklist.
-   - **Auth**: PBKDF2-HMAC-SHA256 password hashing + stateless JWT access (15m) & refresh (7d) tokens.
+2. **Backend Server (`@remote/server`)**:
+   - **Runtime**: Node.js 24 LTS + @hono/node-server + `ws` library
+   - **Database**: SQLite (better-sqlite3 + Drizzle ORM) với WAL mode
+   - **WebSocket**: In-memory `Map<agentId, AgentConnection>` dispatcher
+   - **Token Revocation**: SQLite table `revoked_tokens` (thay thế Cloudflare KV)
+   - **ICE Servers**: Dynamic STUN/TURN credentials qua `GET /api/webrtc/ice-servers`
+   - **Containerization**: Docker multi-stage image
 
----
-
-## 3. Cloudflare Account & Authentication
-
-Authenticate Wrangler CLI with your Cloudflare account:
-
-```bash
-pnpm --filter @remote/signaling exec wrangler login
-```
-
-A browser window will open asking you to authorize Wrangler. Once approved, verify your authentication status:
-
-```bash
-pnpm --filter @remote/signaling exec wrangler whoami
-```
-
-You should see your account name and Account ID.
+3. **TURN Server (Production)**: Coturn cho WebRTC NAT traversal (symmetric NAT)
 
 ---
 
-## 4. Provision Cloudflare Resources
+## 3. Docker Deployment (Backend Server)
 
-### 4.1 Create D1 Database
+Tất cả các tệp Docker nằm trong thư mục `docker/`.
 
-Run the following command to create the remote D1 SQLite database named `remote-access`:
+### Scenario 1: Local LAN
 
-```bash
-pnpm --filter @remote/signaling exec wrangler d1 create remote-access
-```
-
-**Output example:**
-```
-✅ Successfully created DB 'remote-access'!
-
-[[d1_databases]]
-binding = "DB"
-database_name = "remote-access"
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-```
-
-Save the `database_id` value for the next step.
-
-### 4.2 Create KV Namespace
-
-Run the following command to create the KV namespace for the token blacklist cache:
+Dành cho testing trong mạng LAN cục bộ. Server lắng nghe trên `http://localhost:8787` với SQLite tạm thời và STUN công cộng Google. Không có TURN relay.
 
 ```bash
-pnpm --filter @remote/signaling exec wrangler kv namespace create CACHE
+cd docker
+docker compose -f docker-compose.local.yml up --build
 ```
 
-**Output example:**
-```
-✨ Success!
-Add the following to your configuration file:
-[[kv_namespaces]]
-binding = "CACHE"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+Server sẽ chạy tại `http://localhost:8787`. 
+
+**Health check:**
+```bash
+curl http://localhost:8787/health
+# {"status":"ok"}
 ```
 
-Save the `id` value for the next step.
+### Scenario 2: Homelab (Cloudflare Tunnel)
+
+Phơi bày server tới internet thông qua Cloudflare Tunnel. Phù hợp cho máy tính ở nhà muốn truy cập từ bên ngoài mà không cần mở port hoặc cấu hình DNS.
+
+**Bước 1:** Tạo Cloudflare Tunnel:
+```bash
+cloudflared tunnel create my-tunnel
+cloudflared tunnel token my-tunnel
+```
+
+**Bước 2:** Cấu hình `.env`:
+```bash
+cd docker
+cp .env.example .env
+# Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, CLOUDFLARE_TUNNEL_TOKEN, CORS_ORIGIN
+```
+
+**Bước 3:** Khởi động:
+```bash
+docker compose -f docker-compose.tunnel.yml up --build
+```
+
+### Scenario 3: Production VPS (Caddy + Coturn)
+
+Triển khai đầy đủ trên VPS với HTTPS tự động (Caddy + Let's Encrypt) và máy chủ TURN (Coturn) cho WebRTC NAT traversal.
+
+**Bước 1:** Trỏ domain của bạn (`A`/`CNAME`) tới VPS.
+
+**Bước 2:** Cấu hình `.env`:
+```bash
+cd docker
+cp .env.example .env
+# Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, TURN_SECRET
+```
+
+**Bước 3:** Khởi động:
+```bash
+docker compose -f docker-compose.prod.yml up --build -d
+```
+
+Caddy sẽ tự động yêu cầu chứng chỉ Let's Encrypt cho `DOMAIN`. Máy chủ Coturn sử dụng `TURN_SECRET` làm shared secret RFC 5766; endpoint `GET /api/webrtc/ice-servers` trên server sẽ tạo thông tin xác thực HMAC-SHA1 thời gian giới hạn cho mỗi người dùng.
 
 ---
 
-## 5. Configure Production Settings (`wrangler.prod.toml`)
+## 4. Deploying the Web Frontend to Cloudflare Pages
 
-To deploy from your personal machine without committing your real Cloudflare IDs to Git:
+Frontend `apps/web` là Vue 3 SPA được triển khai như static assets trên Cloudflare Pages. Đây là phần duy nhất của hệ thống sử dụng Cloudflare.
 
-1. Copy the production template file:
+### 4.1 Configure Environment Variables
+
+Web frontend giao tiếp với self-hosted backend thông qua biến môi trường `VITE_API_URL`.
+
+1. Copy template:
    ```bash
-   cp workers/wrangler.prod.example.toml workers/wrangler.prod.toml
+   pnpm --filter @remote/web exec cp .env.production.example .env.production
    ```
-   *(Note: `wrangler.prod.toml` is ignored in `.gitignore`, so your real IDs will never be committed).*
+   (`.env.production` được gitignored để cấu hình địa phương luôn riêng tư)
 
-2. Open `workers/wrangler.prod.toml` and fill in your real `database_id` and KV `id`:
-
-```toml
-name = "ponta-remote"
-main = "src/index.ts"
-compatibility_date = "2024-09-01"
-compatibility_flags = ["nodejs_compat"]
-
-[vars]
-ENVIRONMENT = "production"
-JWT_EXPIRES_IN = "15m"
-REFRESH_TOKEN_EXPIRES_IN = "7d"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "remote-access"
-database_id = "YOUR_REAL_D1_DATABASE_ID"
-migrations_dir = "db/migrations"
-
-[[kv_namespaces]]
-binding = "CACHE"
-id = "YOUR_REAL_KV_NAMESPACE_ID"
-
-[observability]
-enabled = true
-```
-
-> **Security Note:** In production, do **not** put `JWT_SECRET` and `REFRESH_TOKEN_SECRET` in `[vars]`. We will set them as encrypted Cloudflare Secrets in Step 8.
-
----
-
-## 6. Apply Database Migrations
-
-Apply the database schema (6 tables: `users`, `devices`, `agents`, `sessions`, `signals`, `audit_logs`) to your remote Cloudflare D1 database:
-
-```bash
-# From root using wrangler.prod.toml
-pnpm db:migrate:prod
-
-# Or directly in workers:
-pnpm --filter @remote/signaling run db:migrate:prod
-```
-
-*This executes `wrangler d1 migrations apply remote-access --remote --config wrangler.prod.toml` using migrations from `workers/db/migrations/`.*
-
-Verify migrations by inspecting the remote database tables:
-```bash
-pnpm --filter @remote/signaling exec wrangler d1 execute remote-access --remote --config wrangler.prod.toml --command "SELECT name FROM sqlite_master WHERE type='table';"
-```
-
----
-
-## 7. Deploy the Backend Worker
-
-Deploy the Worker package to Cloudflare edge from your machine:
-
-```bash
-# From root using wrangler.prod.toml
-pnpm deploy:workers
-
-# Or directly in workers:
-pnpm --filter @remote/signaling run deploy:prod
-```
-
-*This executes `wrangler deploy --config wrangler.prod.toml`.*
-
-Upon completion, Wrangler outputs the deployed URL:
-```
-Uploaded ponta-remote (x.xx sec)
-Deployed ponta-remote triggers (x.xx sec)
-  https://ponta-remote.<your-subdomain>.workers.dev
-Current Version ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
----
-
-## 8. Configure Production Secrets
-
-> **Important:** Cloudflare requires the Worker (`ponta-remote`) to be deployed at least once (Step 7) before secrets can be attached to it. Running `wrangler secret put` on a non-existent worker will fail with an error.
-> When you run `wrangler secret put`, Cloudflare securely encrypts the secret and immediately applies it to the active Worker deployment without requiring a manual redeployment.
-
-Store your production secrets securely using Wrangler:
-
-```bash
-# Set JWT Access Token secret (minimum 32 characters)
-pnpm --filter @remote/signaling exec wrangler secret put JWT_SECRET --config wrangler.prod.toml
-
-# Set Refresh Token secret (minimum 32 characters)
-pnpm --filter @remote/signaling exec wrangler secret put REFRESH_TOKEN_SECRET --config wrangler.prod.toml
-```
-
-When prompted in the terminal, paste your strong random secret strings (e.g., generated with `openssl rand -base64 32`).
-
----
-
-## 9. Verify Backend Deployment
-
-### 9.1 Health Check
-Test the public health endpoint:
-```bash
-curl https://ponta-remote.<your-subdomain>.workers.dev/health
-```
-**Expected response:**
-```json
-{"status":"ok"}
-```
-
-### 9.2 Registration & Authentication Flow
-Test user registration:
-```bash
-curl -X POST https://ponta-remote.<your-subdomain>.workers.dev/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "admin",
-    "password": "SuperSecretPassword123!",
-    "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExamplePublicKey"
-  }'
-```
-**Expected response (HTTP 201):**
-```json
-{
-  "user": {
-    "id": "...",
-    "username": "admin",
-    "publicKey": "...",
-    "isActive": true
-  },
-  "token": "eyJhbGciOi...",
-  "refreshToken": "eyJhbGciOi...",
-  "expiresIn": 900
-}
-```
-
-### 9.3 Stream Real-time Logs
-To monitor live requests and error logs:
-```bash
-pnpm --filter @remote/signaling exec wrangler tail
-```
-
----
-
-## 10. Deploy Web Client to Cloudflare Workers (Static Assets)
-
-The web application (`apps/web`) is a Vue 3 Single Page Application (SPA) hosted on Cloudflare using **Workers Static Assets** (defined in `apps/web/wrangler.toml`).
-
-### 10.1 Configure Environment Variables
-
-The web frontend communicates with the backend Worker using the `VITE_API_URL` environment variable.
-
-1. Copy the production template:
-   ```bash
-   cp apps/web/.env.production.example apps/web/.env.production
-   ```
-   *(Note: `.env.production` is gitignored so local configurations stay private).*
-
-2. Update `VITE_API_URL` with your deployed backend Worker URL:
+2. Cập nhật `VITE_API_URL` với URL của self-hosted server:
    ```env
-   VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev
+   VITE_API_URL=https://your-domain.com
    ```
 
-### 10.2 SPA Routing (`not_found_handling`)
-
-In `apps/web/wrangler.toml`, the static assets configuration includes:
-```toml
-name = "ponta-remote-web"
-compatibility_date = "2024-09-01"
-
-[assets]
-directory = "./dist"
-not_found_handling = "single-page-application"
-```
-Because `vue-router` runs in HTML5 history mode (`createWebHistory()`), navigating directly or refreshing URLs like `/dashboard` or `/workspace/:agentId` requires the server to return `index.html`. The `not_found_handling = "single-page-application"` directive automatically handles this at Cloudflare edge with HTTP 200 without requiring custom rewrite functions.
-
-### 10.3 Build and Deploy via CLI / Workers Builds
-
-Deploy directly to Cloudflare edge:
+### 4.2 Build and Deploy
 
 ```bash
-# From repository root:
-pnpm deploy:web
+# Build web application
+pnpm --filter @remote/web build
 
-# Or specify VITE_API_URL inline:
-VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev pnpm deploy:web
+# Deploy to Cloudflare Pages
+pnpm --filter @remote/web exec wrangler deploy
 ```
 
-*This compiles the Vue 3 bundle into `apps/web/dist` and deploys it via `wrangler deploy`.*
+### 4.3 Verify Web Deployment
 
-**Output example**:
-```
-✨ Read 18 files from the assets directory /.../apps/web/dist
-Total Upload: xx KiB / gzip: xx KiB
-Uploaded ponta-remote-web (x.xx sec)
-Deployed ponta-remote-web triggers (x.xx sec)
-  https://ponta-remote-web.<your-subdomain>.workers.dev
-```
-
-### 10.4 Verify Web Deployment
-
-1. Open `https://ponta-remote-web.<your-subdomain>.workers.dev` in your browser.
-2. Register a new user account or log in.
-3. Test SPA reloading: navigate to `/dashboard` and press `F5` / Refresh in the browser. The page must reload smoothly without returning a 404 error.
-4. Open the Developer Tools Console (`F12`) to verify network requests are successfully dispatched to your backend Worker.
+1. Mở `https://<your-pages-project>.pages.dev` trong trình duyệt
+2. Đăng ký tài khoản hoặc đăng nhập
+3. Test SPA reload: điều hướng tới `/dashboard` và nhấn `F5`. Trang phải tải lại mượt mà mà không lỗi 404.
+4. Mở Developer Tools (`F12`) để kiểm tra network requests được gửi tới backend server.
 
 ---
 
-## 11. Cloudflare Workers Builds (Git Integration) — Important Distinction
+## 5. Environment Variables Reference
 
-If you ever connect this repository to **Cloudflare Workers Builds** (Workers & Pages → your Worker → Settings → Builds → Connect to Git), you must understand that Cloudflare creates **two independent objects**:
-
-| | **Workers Builds project** | **Worker service** |
-|---|---|---|
-| What it is | The Git-connected CI configuration | A deployed script running on Cloudflare's edge |
-| Created when | The moment you connect the repository in the Dashboard | Only after a **successful** `wrangler deploy` |
-| Owns the GitHub check run | Yes — via the `cloudflare-workers-and-pages` GitHub App | No |
-
-**Consequences you should expect:**
-
-1. **Check runs appear even with no Worker service.** The GitHub App creates a `Workers Builds: <project name>` check run on every push while the build project exists — including when no Worker of that name exists at all. In that case the build fails with a message like:
-   ```
-   Preview creation failed: This Worker does not exist on your account.
-   ```
-2. **The check run name does NOT come from `wrangler.toml`.** It comes from the build project's name, which Cloudflare derives from the repository slug / Dashboard project name. Renaming `name` in `wrangler.toml` will not rename the check run — only renaming the project in the Dashboard will.
-3. **Preview builds fire on every push by default.** The **"Enable Preview Builds"** option in *Settings → Builds → Branch control* triggers a preview build for every push to a non-production branch. Disable it to stop preview builds (and their check runs) on feature branches.
-4. **A failing build does not block merges** unless you explicitly add it as a required status check in GitHub branch protection.
-
-**Why a monorepo build fails at the repository root:** the build project defaults to the **repository root** as its build root, where no Wrangler configuration exists. Also note `workers/wrangler.toml` intentionally carries *placeholder* bindings (`local-db-binding`, `local-cache-binding`) for local development and tests, so it cannot deploy to the cloud as-is.
-
-### Resolving it
-
-**Option A — Disconnect (recommended if you deploy via CLI):**
-Dashboard → Workers & Pages → select the project → **Settings** → **Builds** → **Disconnect**. The check runs stop appearing on subsequent pushes.
-
-**Option B — Configure it correctly for the monorepo:**
-In **Settings → Builds**:
-- **Root directory:** `workers`
-- **Deploy command:** `npx wrangler deploy`
-- Then provide cloud-appropriate bindings for the build environment (a real D1 `database_id` and KV `id`, plus the `JWT_SECRET` / `REFRESH_TOKEN_SECRET` secrets). Without real bindings the build will still fail.
-
-> **Warning:** Never point the build's deploy command at `wrangler.prod.example.toml` — it contains placeholder values (`YOUR_REAL_D1_DATABASE_ID`) and the deploy will fail.
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PORT` | No | `8787` | Server listen port (trong container). |
+| `DATABASE_PATH` | No | `/app/data/remote.db` | Đường dẫn file SQLite. |
+| `JWT_SECRET` | Yes | — | HMAC secret cho access tokens. Tối thiểu 32 ký tự. |
+| `REFRESH_TOKEN_SECRET` | Yes | — | HMAC secret cho refresh tokens. Tối thiểu 32 ký tự. |
+| `CORS_ORIGIN` | No | `*` | CORS allow-origin cho API. |
+| `JWT_EXPIRES_IN` | No | `900` (15m) | Access token TTL (giây). |
+| `REFRESH_TOKEN_EXPIRES_IN` | No | `604800` (7d) | Refresh token TTL (giây). |
+| `TURN_SECRET` | Prod only | — | Shared secret cho Coturn long-term auth. |
+| `TURN_URL` | Prod only | `turn:${DOMAIN}:3478` | TURN URL quảng bá cho clients. |
+| `STUN_URL` | Prod only | `stun:${DOMAIN}:3478` | STUN URL quảng bá cho clients. |
+| `DOMAIN` | Prod only | — | Domain công cộng cho Caddy TLS + TURN realm. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
+| `VITE_API_URL` | Web only | `http://localhost:8787` | API URL cho web frontend. |
 
 ---
 
-## 12. Automate Deployment with GitHub Actions (CI/CD)
+## 6. Troubleshooting
 
-To automatically deploy both backend Workers and the frontend Web Pages when merging to `main`:
+### Issue: Container fails to start with "permission denied" on SQLite file
 
-### 12.1 Create Cloudflare API Token
-1. Go to [Cloudflare Dashboard > My Profile > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
-2. Click **Create Token** > use the **Edit Cloudflare Workers** template.
-3. Grant permissions:
-   - Account: `Cloudflare Pages:Edit`, `Workers KV Storage:Edit`, `Workers D1:Edit`, `Workers Scripts:Edit`
-4. Copy the generated API token.
-5. Copy your **Account ID** from the Cloudflare Dashboard Workers overview page.
+**Cause**: Volume mount quá chặt chẽ hoặc thư mục `data` chưa tồn tại.
 
-### 12.2 Add GitHub Repository Secrets & Variables
-Go to your GitHub repository > **Settings > Secrets and variables > Actions**:
-
-**Repository Secrets:**
-- `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token
-- `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID
-- `CLOUDFLARE_D1_DATABASE_ID`: Production D1 Database UUID
-- `CLOUDFLARE_KV_NAMESPACE_ID`: Production KV Namespace ID
-
-**Repository Variables:**
-- `VITE_API_URL`: Backend URL, e.g. `https://ponta-remote.<your-subdomain>.workers.dev`
-
-### 12.3 GitHub Actions Workflow
-Create `.github/workflows/deploy.yml`:
-
-```yaml
-name: Deploy Fullstack to Cloudflare
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'workers/**'
-      - 'apps/web/**'
-      - 'packages/**'
-      - '.github/workflows/deploy.yml'
-
-jobs:
-  deploy-backend:
-    name: Deploy Backend Worker
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run Tests
-        run: pnpm test
-
-      # wrangler.prod.toml is gitignored, so CI materializes it from secrets.
-      - name: Generate production Wrangler config
-        run: |
-          cp workers/wrangler.prod.example.toml workers/wrangler.prod.toml
-          sed -i "s|YOUR_REAL_D1_DATABASE_ID|${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}|" workers/wrangler.prod.toml
-          sed -i "s|YOUR_REAL_KV_NAMESPACE_ID|${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}|" workers/wrangler.prod.toml
-
-      - name: Apply D1 Migrations
-        run: pnpm --filter @remote/signaling run db:migrate:prod
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Deploy Worker
-        run: pnpm --filter @remote/signaling run deploy:prod
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-  deploy-frontend:
-    name: Deploy Web Client (Pages)
-    needs: deploy-backend
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Web Application
-        run: pnpm --filter @remote/web build
-        env:
-          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://ponta-remote.workers.dev' }}
-
-      - name: Deploy to Cloudflare Workers (Static Assets)
-        run: pnpm --filter @remote/web exec wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
-
----
-
-## 13. Free Tier Quotas & Monitoring
-
-Cloudflare provides a generous Free tier suitable for testing and personal setups:
-
-| Resource | Free Tier Daily Quota | Notes |
-|---|---|---|
-| **Cloudflare Pages** | **Unlimited** requests & bandwidth | 500 builds / month via Git/CI |
-| **Cloudflare Workers** | 100,000 requests / day | 10ms CPU time per request |
-| **Cloudflare D1 (Reads)** | 5,000,000 rows read / day | Resets at 00:00 UTC |
-| **Cloudflare D1 (Writes)** | 100,000 rows written / day | Resets at 00:00 UTC |
-| **Cloudflare D1 (Storage)** | 5 GB total storage | Up to 500 MB per database |
-| **Workers KV (Reads)** | 100,000 reads / day | Matches Workers requests |
-| **Workers KV (Writes)** | 1,000 writes / day | Only consumed upon user Logout |
-| **Data Egress** | 100% Free | No egress bandwidth charges |
-
----
-
-## 14. Troubleshooting & FAQ
-
-### Issue: `Cannot find module 'cloudflare:test'`
-**Solution**: Make sure `tsconfig.json` specifies `"types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"]` (with subpath `/types`).
-
-### Issue: `D1_ERROR: no such table: users`
-**Solution**: Migrations have not been applied to the remote database. Run:
+**Solution**: Đảm bảo thư mục `data` tồn tại và có quyền ghi:
 ```bash
-pnpm db:migrate:prod
+mkdir -p docker/data
+chmod 755 docker/data
 ```
 
-### Issue: `Token has been revoked` error on valid login
-**Solution**: Ensure your system clocks are synchronized. The JWT payload uses UNIX timestamps (`exp`), and KV stores revoked JTIs with TTL matching token expiration.
+### Issue: CORS error when web app calls API
 
-### Issue: Malformed JSON or 400 Bad Request
-**Solution**: Ensure requests send headers `Content-Type: application/json` and valid non-empty JSON bodies.
+**Cause**: `CORS_ORIGIN` không khớp với domain web app.
 
-### Issue: GitHub check run `Workers Builds: <name>` fails with "This Worker does not exist on your account"
-**Cause**: A Workers Builds project (Git integration) exists for this repository, but no Worker service with that name has ever been deployed successfully. The build project creates the check run regardless of whether the Worker exists.
-**Solution**: See [Section 10](#10-cloudflare-workers-builds-git-integration--important-distinction). Either disconnect the Git integration (Dashboard → the project → Settings → Builds → Disconnect), or configure the build root as `workers` with real D1/KV bindings. Deploying once from the CLI with a matching `name` in `wrangler.toml` also resolves the "does not exist" error.
+**Solution**: Cập nhật `CORS_ORIGIN` trong `.env` để khớp với production domain:
+```env
+CORS_ORIGIN=https://your-app.pages.dev
+```
 
-### Issue: Worker deployed but the Dashboard shows a different service name than `wrangler.toml`
-**Cause**: A Workers Builds project created from a Git connection takes its name from the repository slug / Dashboard project name, not from `wrangler.toml`. If the two diverge, `wrangler deploy` creates a second, separate Worker.
-**Solution**: Keep `name` in `wrangler.toml` identical to the Dashboard project name. This repository standardizes on `ponta-remote` (see ADR-06 in the Phase 1 Week 2 design spec).
+### Issue: WebRTC connection fails in production
+
+**Cause**: TURN server chưa cấu hình đúng hoặc firewall chặn port UDP.
+
+**Solution**:
+1. Đảm bảo `TURN_SECRET` được cài đặt trong `.env`
+2. Mở port UDP 3478 và range 49152-49200 trên firewall
+3. Kiểm tra endpoint ICE servers:
+   ```bash
+   curl -H "Authorization: Bearer <jwt>" https://your-domain.com/api/webrtc/ice-servers
+   ```
+
+### Issue: Agent cannot connect to WebSocket
+
+**Cause**: Agent đang kết nối tới URL sai hoặc credential không hợp lệ.
+
+**Solution**:
+1. Đảm bảo agent kết nối tới `ws://<host>:8787/api/ws/agent` (hoặc `wss://` qua tunnel/Caddy)
+2. Kiểm tra credential agent hợp lệ trong database:
+   ```bash
+   sqlite3 data/remote.db "SELECT id, user_id FROM agents;"
+   ```
+3. Xem log server để tìm lỗi xác thực.
+
+### Issue: GitHub Actions deploy fails with "This Worker does not exist"
+
+**Cause**: Lỗi này chỉ áp dụng cho Cloudflare Workers backend cũ. Với kiến trúc self-hosted Docker, backend không còn deploy lên Cloudflare Workers nữa.
+
+**Solution**: Chỉ cần triển khai frontend lên Cloudflare Pages và backend qua Docker Compose. Xem [GitHub Actions workflow](../.github/workflows/deploy.yml) để cấu hình CI/CD.
