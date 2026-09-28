@@ -1,3 +1,4 @@
+export * from './terminal';
 export type { DeviceType, User, Device, Agent } from './user';
 
 export type { SessionStatus, Session } from './session';
@@ -7,13 +8,6 @@ export type {
   WebRTCChannelType,
   DataChannelMessage,
 } from './webrtc';
-
-export type {
-  TerminalSize,
-  TerminalSession,
-  TerminalDataMessage,
-  TerminalResizeMessage,
-} from './terminal';
 
 export type {
   TransferDirection,

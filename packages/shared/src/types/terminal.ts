@@ -13,6 +13,13 @@ export interface TerminalSession {
   createdAt: string;
 }
 
+export interface TerminalCreateMessage {
+  terminalId: string;
+  cols: number;
+  rows: number;
+  shell?: string;
+}
+
 export interface TerminalDataMessage {
   terminalId: string;
   data: string;
@@ -22,4 +29,13 @@ export interface TerminalResizeMessage {
   terminalId: string;
   cols: number;
   rows: number;
+}
+
+export interface TerminalCloseMessage {
+  terminalId: string;
+}
+
+export interface TerminalExitMessage {
+  terminalId: string;
+  exitCode?: number;
 }
