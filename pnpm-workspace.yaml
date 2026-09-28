@@ -2,6 +2,7 @@ packages:
   - 'apps/*'
   - 'packages/*'
   - 'workers'
+  # apps/server is self-hosted Node.js + Hono backend, not a Cloudflare Worker.
 
 allowBuilds:
   esbuild: true
@@ -9,6 +10,7 @@ allowBuilds:
   # reka-ui -> @floating-ui/vue -> vue-demi has a postinstall script.
   # Without this, `shadcn-vue init` fails with ERR_PNPM_IGNORED_BUILDS.
   vue-demi: true
+  better-sqlite3: true
 
 minimumReleaseAgeExclude:
   - miniflare@5.20260923.0-alpha

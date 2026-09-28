@@ -17,7 +17,9 @@
     "deploy:workers": "pnpm --filter @remote/signaling deploy:prod",
     "deploy:web": "pnpm --filter @remote/web deploy",
     "db:migrate:prod": "pnpm --filter @remote/signaling db:migrate:prod",
-    "dev:web": "pnpm --filter @remote/web dev"
+    "dev:web": "pnpm --filter @remote/web dev",
+    "dev:server": "pnpm --filter @remote/server dev",
+    "test:server": "pnpm --filter @remote/server test"
   },
   "devDependencies": {
     "@types/node": "24.13.6",
