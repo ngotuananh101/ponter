@@ -89,7 +89,7 @@ jobs:
       - name: Build Web Application
         run: pnpm --filter @remote/web build
         env:
-          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://ponta-remote.workers.dev' }}
+          VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL || 'https://ponta-remote.workers.dev' }}
 
       - name: Deploy to Cloudflare Workers (Static Assets)
         run: pnpm --filter @remote/web exec wrangler deploy
