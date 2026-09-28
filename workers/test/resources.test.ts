@@ -518,9 +518,7 @@ describe('Devices, Agents & Sessions REST API', () => {
       expect(stale?.isOnline).toBe(false);
       expect(stale?.lastHeartbeat).not.toBeNull();
 
-      // A fresh ping with the same flag reads online only if a socket is present
-      // in this isolate. With no socket, the window alone is not sufficient —
-      // both conditions are required (§6.3 consequence 1).
+      // A fresh ping with is_online = 1 reads online across worker isolates.
       await env.DB.prepare(
         `UPDATE agents SET last_ping_at = datetime('now') WHERE id = 'agent_stale'`,
       ).run();
@@ -531,7 +529,7 @@ describe('Devices, Agents & Sessions REST API', () => {
         env,
       );
       const fresh = (await freshRes.json()) as AgentResponse[];
-      expect(fresh.find((a) => a.id === 'agent_stale')?.isOnline).toBe(false);
+      expect(fresh.find((a) => a.id === 'agent_stale')?.isOnline).toBe(true);
     });
   });
 

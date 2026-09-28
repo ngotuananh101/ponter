@@ -23,26 +23,26 @@ function sqliteNow(nowMs: number): string {
 }
 
 /**
- * The only definition of "online" in the codebase.
+ * The definition of "online" in the codebase.
  *
- * Two conditions, not one. A live socket in the in-memory map is not sufficient
- * — a half-open TCP connection keeps the entry while the agent is gone. A fresh
- * `last_ping_at` is not sufficient either — the socket is what a push needs.
+ * In serverless environments like Cloudflare Workers, WebSocket connections and
+ * HTTP requests (e.g. GET /api/agents) run in separate worker isolates across edge
+ * nodes. In-memory socket maps (agentConnections) are strictly isolate-local, so
+ * HTTP list/get routes cannot require socket presence in their local isolate.
  *
- * `socketPresent` is passed in rather than read here because `ws.ts` imports
- * this module; reading `agentConnections` from here would close the cycle.
- * `nowMs` is injectable so the window is testable without faking timers.
+ * An agent is online if:
+ * 1. `isOnline` is true (set on socket open and refreshed on ping; set to false on clean close)
+ * 2. `lastPingAt` is fresh within the 90 s window (ONLINE_WINDOW_SECONDS)
  *
- * `is_online` in D1 is only a hint: nothing clears it when an agent goes dark,
- * so every consumer must come through this function and never read the column
- * alone.
+ * If an agent dies abruptly without a clean close, its pings stop and within 90s it
+ * automatically reads as offline.
  */
 export function isAgentOnline(
   agent: { isOnline: boolean; lastPingAt: string | null },
-  socketPresent: boolean,
+  _socketPresent?: boolean,
   nowMs: number = Date.now(),
 ): boolean {
-  if (!socketPresent || agent.isOnline !== true || !agent.lastPingAt) {
+  if (agent.isOnline !== true || !agent.lastPingAt) {
     return false;
   }
 
