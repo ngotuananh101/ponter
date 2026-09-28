@@ -1,0 +1,68 @@
+# Production VPS compose setup with Caddy reverse proxy and a native Coturn TURN server.
+#
+# Services:
+#   - server   : @remote/server, persistent SQLite on ./data.
+#   - coturn   : STUN/TURN on host networking, RFC 5766 long-term auth with a
+#                 shared secret so the server can mint time-limited credentials.
+#   - caddy    : automatic HTTPS via Let's Encrypt, reverse proxy to `server`.
+#
+# Usage:
+#   cd docker
+#   cp .env.example .env
+#   # edit .env with your real secrets and DOMAIN
+#   docker compose -f docker-compose.prod.yml up --build
+#
+# Notes:
+#   - coturn uses `network_mode: host` so it can bind the full 49152-49200 UDP
+#     relay range without NAT/port-mapping complications.
+#   - Caddy terminates TLS and proxies to the server on port 8787 (internal only).
+#   - The server generates TURN credentials on demand via
+#     `GET /api/webrtc/ice-servers` using TURN_SECRET + TURN_URL + STUN_URL.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    image: remote-server:prod
+    container_name: remote-server-prod
+    restart: always
+    environment:
+      - PORT=8787
+      - DATABASE_PATH=/app/data/remote.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
+      - CORS_ORIGIN=https://${DOMAIN}
+      - TURN_SECRET=${TURN_SECRET}
+      - TURN_URL=turn:${DOMAIN}:3478
+      - STUN_URL=stun:${DOMAIN}:3478
+    volumes:
+      - ./data:/app/data
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: coturn
+    restart: always
+    network_mode: host
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--lt-cred-mech"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET}"
+      - "--realm=${DOMAIN}"
+      - "--min-port=49152"
+      - "--max-port=49200"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    depends_on:
+      - server

@@ -1,0 +1,27 @@
+# Local development compose setup.
+#
+# Spins up the @remote/server container with an ephemeral SQLite database
+# (bind-mounted to ./data) and the Google public STUN server as the only ICE
+# candidate. No TURN relay, no reverse proxy — ideal for LAN testing.
+#
+# Usage:
+#   cd docker
+#   docker compose -f docker-compose.local.yml up --build
+#
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    image: remote-server:local
+    container_name: remote-server-local
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - DATABASE_PATH=/app/data/remote.db
+      - JWT_SECRET=local-dev-jwt-secret-key-32-chars-min
+      - REFRESH_TOKEN_SECRET=local-dev-refresh-secret-key-32-chars
+      - CORS_ORIGIN=*
+    volumes:
+      - ./data:/app/data

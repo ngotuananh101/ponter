@@ -1,0 +1,42 @@
+# Homelab / self-host compose setup with Cloudflare Tunnel.
+#
+# Runs the @remote/server container with a bind-mounted SQLite volume and exposes
+# it to the public internet via a Cloudflare Tunnel. A single TUNNEL_TOKEN
+# (created with `cloudflared tunnel create`) is the only external secret.
+#
+# Usage:
+#   cd docker
+#   cp .env.example .env
+#   # edit .env with your JWT_SECRET, TUNNEL_TOKEN, etc.
+#   docker compose -f docker-compose.tunnel.yml up --build
+#
+# Prerequisites:
+#   - A Cloudflare Tunnel created with `cloudflared tunnel create <name>`
+#     Run `cloudflared tunnel token <name>` to retrieve the token.
+#   - DNS record pointing your domain to the tunnel.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    image: remote-server:tunnel
+    container_name: remote-server-tunnel
+    restart: unless-stopped
+    environment:
+      - PORT=8787
+      - DATABASE_PATH=/app/data/remote.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
+      - CORS_ORIGIN=${CORS_ORIGIN}
+    volumes:
+      - ./data:/app/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - server

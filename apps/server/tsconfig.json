@@ -10,7 +10,8 @@
     "rootDir": "./src",
     "types": ["node"],
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmit": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test", "node_modules", "dist"]

@@ -1,0 +1,20 @@
+# Caddyfile — reverse proxy for the @remote/server backend.
+#
+# Assumes this file is mounted at /etc/caddy/Caddyfile (see docker-compose.prod.yml).
+# Caddy automatically provisions Let's Encrypt TLS certificates for the domain
+# specified in ${DOMAIN} (resolved at Caddyfile load time).
+#
+# The web frontend (apps/web) is typically served separately on Cloudflare Pages;
+# this Caddyfile terminates TLS and reverse-proxies all API / WebSocket traffic
+# to the server container.
+
+{
+	# Global options: ACME account email for Let's Encrypt.
+	# Override via the CADDY_ACMEEMAIL environment variable if needed.
+	email you@example.com
+}
+
+# Catch-all: terminate TLS and forward everything to the server container.
+{
+	reverse_proxy server:8787
+}

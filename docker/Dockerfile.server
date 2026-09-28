@@ -1,0 +1,81 @@
+# Multi-stage build for the @remote/server self-hosted backend.
+#
+# Stage layout:
+#   base    - node:24-alpine with Corepack/pnpm boot-strapped.
+#   builder - installs all deps (incl. dev) and compiles @remote/server.
+#   runner  - production runtime image; native deps pre-installed, dev deps stripped.
+
+###############################################################################
+# Stage 1: base — shared foundation for builder and runner
+###############################################################################
+FROM node:24-alpine AS base
+
+# Make `pnpm` available globally via Corepack.
+# COREPACK_ENABLE_DOWNLOAD_PROMPT=0 silences the first-run download prompt.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+ENV NODE_ENV=production
+
+RUN corepack enable
+
+###############################################################################
+# Stage 2: builder — compile @remote/server (needs full dep tree + native toolchain)
+###############################################################################
+FROM base AS builder
+
+# Native build toolchain required to compile better-sqlite3 against the
+# alpine musl libc. These are NOT carried into the runner stage.
+RUN apk add --no-cache python3 make g++ gcc
+
+WORKDIR /app
+
+# Install dependencies. We copy the workspace manifest, lockfile, root
+# tsconfig, and the shared + server packages so pnpm can resolve the workspace.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY packages/ ./packages/
+COPY apps/server/ ./apps/server/
+
+# `--offline` is omitted so pnpm can fetch any missing registry packages.
+RUN pnpm install --frozen-lockfile
+
+# Build @remote/server. @remote/shared is a pure type package (no build script)
+# that ships source directly via "main": "./src/index.ts", so it needs no build step.
+RUN pnpm --filter @remote/server build
+
+###############################################################################
+# Stage 3: runner — production image
+###############################################################################
+FROM base AS runner
+
+WORKDIR /app
+
+# Copy native deps needed at runtime (better-sqlite3 loads its prebuilt musl
+# binary, but we keep the toolchain for safety / any edge native modules).
+RUN apk add --no-cache python3 make g++ gcc
+
+# Copy only what's needed to install production deps.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/ ./packages/
+COPY apps/server/package.json ./apps/server/
+
+# Install only production deps (skip devDependencies, scripts, etc.).
+RUN pnpm install --prod --frozen-lockfile
+
+# Pull compiled output from the builder stage.
+COPY --from=builder /app/apps/server/dist ./apps/server/dist
+COPY --from=builder /app/packages/ ./packages/
+
+# Create the data directory (VOLUME declares the mount point but does not
+# create the directory tree that SQLite's parent must exist).
+RUN mkdir -p /app/data && chown -R node:node /app/data
+
+# Data directory for SQLite files.
+VOLUME /app/data
+ENV DATABASE_PATH=/app/data/remote.db
+ENV PORT=8787
+
+EXPOSE 8787
+
+# The server entrypoint — starts the Node.js HTTP/WebSocket server.
+CMD ["node", "apps/server/dist/index.js"]
