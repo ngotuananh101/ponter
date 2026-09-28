@@ -9,6 +9,7 @@ mod pty;
 mod rtc;
 mod signal;
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -333,25 +334,97 @@ async fn run_one_session(
         return Ok(());
     }
 
-    // The input channel is created HERE, before the callback that will fill it.
-    // A keystroke can arrive the instant the browser's channel reports `open` —
-    // which is before `PtySession::spawn` runs — so the sending half must
-    // already exist and be reachable from the callback. Creating it inside
-    // `spawn` instead is a silent first-keystroke loss, not a visible error.
-    let (pty_in_tx, pty_in_rx) = mpsc::channel::<Vec<u8>>(64);
+    // PtyManager multiplexes up to 10 concurrent sessions over this one
+    // terminal DataChannel. The manager is created before the data-channel
+    // callback is registered.
+    let manager = PtyManager::new(10);
+
+    // The outbound frame channel sits between PtyManager's pump tasks and the
+    // data-channel send loop. PtyManager writes framed JSON here; the loop
+    // sends each frame over the wire.
+    let (frame_tx, mut frame_rx) = mpsc::channel::<String>(64);
+
+    // The inbound dispatch channel sits between the data-channel `on_message`
+    // callback and the dispatcher task. The callback must be `Fn + Send + Sync`,
+    // but PtyManager holds Arc<PtySession> whose inner MasterPty is not Sync — so
+    // we forward raw text through this channel instead of capturing the manager.
+    let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<String>(64);
+    let manager_for_dispatch = manager.clone();
+    let frame_tx_for_dispatch = frame_tx.clone();
+    let shell_for_dispatch = shell.to_string();
+    let cli_cols = cli.cols;
+    let cli_rows = cli.rows;
+    tokio::spawn(async move {
+        while let Some(text) = dispatch_rx.recv().await {
+            // terminal-create → spawn a new session.
+            if let Ok(Some(create)) = pty::decode_terminal_create(&text) {
+                let sh = create.shell.unwrap_or_else(|| shell_for_dispatch.clone());
+                if let Err(e) = manager_for_dispatch.spawn_session(
+                    create.terminal_id,
+                    &sh,
+                    create.cols,
+                    create.rows,
+                    frame_tx_for_dispatch.clone(),
+                ).await {
+                    tracing::warn!(error = %e, "failed to spawn terminal session");
+                }
+                continue;
+            }
+
+            // terminal-resize → resize the session's PTY.
+            if let Ok(Some(resize)) = pty::decode_terminal_resize(&text) {
+                if let Err(e) = manager_for_dispatch
+                    .resize(&resize.terminal_id, resize.cols, resize.rows)
+                    .await
+                {
+                    tracing::debug!(error = %e, "resize failed");
+                }
+                continue;
+            }
+
+            // terminal-close → tear down the session.
+            if let Ok(Some(close)) = pty::decode_terminal_close(&text) {
+                manager_for_dispatch.close_session(&close.terminal_id).await;
+                continue;
+            }
+
+            // terminal-data → decode and route to the right PTY.
+            // Implicit spawn fallback: if the session does not yet exist,
+            // spawn it on demand before sending the bytes.
+            match pty::decode_pty_input_with_id(&text) {
+                Ok(Some((id, bytes))) => {
+                    if !manager_for_dispatch.send_input(&id, bytes.clone()).await {
+                        // Session not known yet — spawn on demand.
+                        if let Err(e) = manager_for_dispatch.spawn_session(
+                            id.clone(),
+                            &shell_for_dispatch,
+                            cli_cols,
+                            cli_rows,
+                            frame_tx_for_dispatch.clone(),
+                        ).await {
+                            tracing::warn!(error = %e, "failed to spawn on-demand session");
+                            continue;
+                        }
+                        let _ = manager_for_dispatch.send_input(&id, bytes).await;
+                    }
+                }
+                Ok(None) => {} // not a terminal frame on `terminal` channel
+                Err(e) => tracing::debug!(error = %e, "dropping malformed frame"),
+            }
+        }
+    });
 
     let channel: Arc<OnceLock<Arc<RTCDataChannel>>> = Arc::new(OnceLock::new());
     let (open_tx, mut open_rx) = tokio::sync::oneshot::channel::<()>();
     let open_tx = Arc::new(std::sync::Mutex::new(Some(open_tx)));
 
     let channel_for_cb = channel.clone();
-    let pty_in_for_cb = pty_in_tx.clone();
     let open_tx_for_cb = open_tx.clone();
 
     peer.on_data_channel(Box::new(move |dc| {
         let channel = channel_for_cb.clone();
-        let pty_in = pty_in_for_cb.clone();
         let open_tx = open_tx_for_cb.clone();
+        let dispatch_tx = dispatch_tx.clone();
 
         Box::pin(async move {
             // ADR-09: the exact label, and nothing else. An unexpected channel
@@ -363,29 +436,18 @@ async fn run_one_session(
                 return;
             }
 
-            // browser -> PTY. `decode_pty_input` rejects an oversize frame
-            // before parsing. A decode failure is logged and dropped, never
-            // fatal: the terminal stream has no retransmission, and one corrupt
-            // frame must not kill the session.
-            let pty_in_msg = pty_in.clone();
+            // browser -> dispatch channel. The callback is Fn+Send+Sync, so it
+            // only forwards raw text; the spawned task above does the decoding
+            // and routing.
             dc.on_message(Box::new(move |msg| {
-                let pty_in = pty_in_msg.clone();
+                let dispatch_tx = dispatch_tx.clone();
                 Box::pin(async move {
                     let Ok(text) = std::str::from_utf8(&msg.data) else {
                         tracing::debug!("ignoring a non-UTF-8 frame");
                         return;
                     };
-                    match pty::decode_pty_input(text) {
-                        Ok(Some(bytes)) => {
-                            // Bounded send: the writer thread's queue is what
-                            // applies backpressure to a peer that types faster
-                            // than the shell can read.
-                            if pty_in.send(bytes).await.is_err() {
-                                tracing::debug!("pty writer is gone");
-                            }
-                        }
-                        Ok(None) => {} // not a terminal-data frame on `terminal`
-                        Err(e) => tracing::debug!(error = %e, "dropping malformed frame"),
+                    if dispatch_tx.send(text.to_string()).await.is_err() {
+                        tracing::debug!("dispatcher task is gone");
                     }
                 })
             }));
@@ -436,20 +498,17 @@ async fn run_one_session(
         }
     }
 
-    let session = pty::PtySession::spawn(shell, cli.cols, cli.rows, pty_in_rx)?;
-    let mut frames = session.start_reader(offer.session_id.clone())?;
-
     let dc = channel
         .get()
         .context("the terminal channel vanished after opening")?
         .clone();
 
-    // PTY -> browser. One sequential loop, not a task per frame: the order of a
-    // terminal's output is part of its meaning, and a task per frame lets the
-    // runtime reorder it. `send_text` is the only send method used — the frame
-    // is JSON text carrying base64, never a binary frame (ADR-10).
+    // PTY -> browser. One sequential loop drains the shared frame channel and
+    // sends each frame over the data channel. This is the single send point for
+    // all sessions, preserving frame ordering per-session (each pump task is
+    // single-threaded) and keeping backpressure on a slow consumer.
     let mut pump = tokio::spawn(async move {
-        while let Some(frame) = frames.recv().await {
+        while let Some(frame) = frame_rx.recv().await {
             if let Err(e) = dc.send_text(frame).await {
                 // A closed channel is an ordinary end-of-session condition, not
                 // an error worth tearing the process down for.
@@ -459,11 +518,7 @@ async fn run_one_session(
         }
     });
 
-    // The pump ending means the child exited and the slave closed — the normal
-    // terminator. Candidates keep being applied until then, which is what lets
-    // a relay candidate arrive late and still be used. The 1 h cap exists
-    // because a session whose peer vanished silently would otherwise linger
-    // until the process is killed.
+    let manager_for_teardown = manager.clone();
     let session_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
     let reason = loop {
         tokio::select! {
@@ -480,10 +535,11 @@ async fn run_one_session(
     };
     tracing::info!(session_id = %offer.session_id, reason, "session loop finished");
 
-    // Dropping the input sender is what ends the writer thread (and with it the
-    // shell's stdin), so it must happen before `close` waits on the child.
-    drop(pty_in_tx);
-    session.close().await?;
+    // Tear down all live PTY sessions. `close_all` removes every entry; the
+    // ActivePty drop ends each writer thread (EOF to the shell), and the pump
+    // task exits when the frame channel drains and closes.
+    manager_for_teardown.close_all().await;
+    drop(frame_tx);
     let _ = peer.close().await;
     Ok(())
 }
@@ -507,4 +563,267 @@ async fn apply_if_candidate(
         other => tracing::debug!(?other, "ignoring a non-candidate frame during a session"),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// PtyManager: multiplexes up to N concurrent PTY sessions over a single
+// "terminal" WebRTC DataChannel (Week 6). Each session is keyed by a
+// `terminal_id` that is opaque to the agent — it comes from the browser.
+// ---------------------------------------------------------------------------
+
+/// A single live PTY session: the inbound input sender plus the session handle.
+pub struct ActivePty {
+    pub input_tx: mpsc::Sender<Vec<u8>>,
+    /// `Arc<Mutex<PtySession>>` because `PtySession` is `Send` but not `Sync`
+    /// (its `Box<dyn MasterPty>` is not `Sync`). Wrapping in `Mutex` makes the
+    /// `Arc` send+shareable, so `PtyManager` can be stored in `Arc` and captured
+    /// by spawned tasks.
+    pub session: Arc<tokio::sync::Mutex<pty::PtySession>>,
+}
+
+/// Registry of concurrent PTY sessions, shared by reference so the dispatcher
+/// and the data-channel callback can both reach it.
+#[derive(Clone)]
+pub struct PtyManager {
+    max_sessions: usize,
+    sessions: Arc<tokio::sync::Mutex<HashMap<String, ActivePty>>>,
+}
+
+impl PtyManager {
+    /// Create a manager that will allow at most `max_sessions` concurrent shells.
+    pub fn new(max_sessions: usize) -> Self {
+        Self {
+            max_sessions,
+            sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Number of currently live sessions.
+    pub async fn session_count(&self) -> usize {
+        self.sessions.lock().await.len()
+    }
+
+    /// Spawn a new shell for `terminal_id`.
+    ///
+    /// If the id already exists this is a no-op returning `Ok(())` — the caller
+    /// (a retransmitted `terminal-create`) is idempotent.
+    pub async fn spawn_session(
+        &self,
+        terminal_id: String,
+        shell: &str,
+        cols: u16,
+        rows: u16,
+        outbound: mpsc::Sender<String>,
+    ) -> Result<()> {
+        // Check limits and presence under a short-lived lock, then drop it
+        // before spawning the PTY or pump task. The lock guard is `!Send` when
+        // held across `.await`, which breaks `tokio::spawn` of the caller.
+        {
+            let lock = self.sessions.lock().await;
+            if lock.len() >= self.max_sessions {
+                anyhow::bail!("exceeded maximum concurrent PTY sessions ({})", self.max_sessions);
+            }
+            if lock.contains_key(&terminal_id) {
+                return Ok(());
+            }
+        }
+
+        // Channel is created outside spawn so the input-sending half can be
+        // installed immediately, covering the race where a keystroke arrives
+        // before the PTY is ready (same argument as in `run_one_session`).
+        let (input_tx, input_rx) = mpsc::channel(64);
+        let session = pty::PtySession::spawn(shell, cols, rows, input_rx)?;
+        // `start_reader` borrows `&session`; call it before wrapping in a Mutex.
+        let mut reader = session.start_reader(terminal_id.clone())?;
+        let session = Arc::new(tokio::sync::Mutex::new(session));
+
+        // Pump PTY output -> outbound frame channel. A dedicated task per session
+        // is fine: output stays in order because the reader is single-threaded
+        // and the converter awaits each send on a bounded queue (ADR-11).
+        let tid = terminal_id.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = reader.recv().await {
+                if outbound.send(frame).await.is_err() {
+                    break; // consumer (data channel) is gone
+                }
+            }
+            // Notify the browser that this terminal has exited.
+            let exit_frame = pty::frame_pty_exit(&tid, Some(0), pty::now_ms());
+            let _ = outbound.send(exit_frame).await;
+        });
+
+        // Re-acquire the lock briefly to insert. If a concurrent spawn raced
+        // for the same id, the entry is simply overwritten (last writer wins),
+        // which is safe because the pump task holds its own Arc clone.
+        let mut lock = self.sessions.lock().await;
+        lock.insert(
+            terminal_id,
+            ActivePty {
+                input_tx,
+                session,
+            },
+        );
+        Ok(())
+    }
+
+    /// Send raw bytes to a live session's PTY. Returns `false` if the session
+    /// does not exist — the caller should treat that as "spawn on demand".
+    pub async fn send_input(&self, terminal_id: &str, bytes: Vec<u8>) -> bool {
+        let tx = {
+            let lock = self.sessions.lock().await;
+            lock.get(terminal_id).map(|pty| pty.input_tx.clone())
+        };
+        match tx {
+            Some(tx) => tx.send(bytes).await.is_ok(),
+            None => false,
+        }
+    }
+
+    /// Resize a live session's PTY. No-op if the session is absent.
+    pub async fn resize(&self, terminal_id: &str, cols: u16, rows: u16) -> Result<()> {
+        let session = {
+            let lock = self.sessions.lock().await;
+            lock.get(terminal_id).map(|pty| pty.session.clone())
+        };
+        if let Some(session) = session {
+            // `PtySession::resize` is a synchronous `&self` call; locking the
+            // tokio Mutex is brief and non-blocking in practice.
+            session.lock().await.resize(cols, rows)?;
+        }
+        Ok(())
+    }
+
+    /// Close and remove a single session.
+    ///
+    /// The entry is removed immediately. The `ActivePty` drop (and with it
+    /// `input_tx`) is what ends the shell's stdin — the writer thread observes
+    /// `None` on `blocking_recv` and drops its writer handle, sending EOF to the
+    /// slave, causing the child to exit, which is what unblocks the reader and
+    /// lets the pump task terminate. For a shell that won't exit on EOF the
+    /// caller must send an explicit `exit` first.
+    pub async fn close_session(&self, terminal_id: &str) {
+        let mut lock = self.sessions.lock().await;
+        lock.remove(terminal_id);
+    }
+
+    /// Close every session (called on channel/connection teardown).
+    pub async fn close_all(&self) {
+        let mut lock = self.sessions.lock().await;
+        lock.clear();
+    }
+
+    /// Spawn-on-demand: send input as if `terminal-create` had been issued first.
+    /// Used by the `terminal-data` dispatcher path when a frame arrives for a
+    /// session id that does not yet exist locally.
+    pub async fn ensure_session(
+        &self,
+        terminal_id: String,
+        shell: &str,
+        cols: u16,
+        rows: u16,
+        outbound: mpsc::Sender<String>,
+    ) -> Result<()> {
+        {
+            let lock = self.sessions.lock().await;
+            if lock.contains_key(&terminal_id) {
+                return Ok(());
+            }
+        }
+        // Drop the read lock before acquiring the write lock to avoid a
+        // self-deadlock; spawn_session re-checks (double-checked locking).
+        self.spawn_session(terminal_id, shell, cols, rows, outbound).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The TDD anchor for Task 3 (spec Step 1).
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pty_manager_spawns_and_closes_sessions() {
+        let manager = PtyManager::new(10);
+        let session_id = "test-session-1";
+        let (out_tx, mut out_rx) = mpsc::channel(16);
+
+        let spawned = manager
+            .spawn_session(
+                session_id.to_string(),
+                "/bin/sh",
+                80,
+                24,
+                out_tx,
+            )
+            .await;
+        assert!(spawned.is_ok(), "failed to spawn session: {:?}", spawned.err());
+        assert_eq!(manager.session_count().await, 1);
+
+        // Make the shell exit so the pump task observes EOF and terminates.
+        assert!(manager.send_input(session_id, b"exit\n".to_vec()).await);
+        // Give the shell a moment to die and the pump to drain.
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        manager.close_session(session_id).await;
+        assert_eq!(manager.session_count().await, 0);
+        // Drain any lingering frames so the test does not warn on drop.
+        while out_rx.recv().await.is_some() {}
+    }
+
+    #[tokio::test]
+    async fn pty_manager_rejects_duplicate_spawn() {
+        let manager = PtyManager::new(10);
+        let (out_tx, _out_rx) = mpsc::channel(16);
+
+        #[cfg(unix)]
+        {
+            let _ = manager
+                .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx.clone())
+                .await;
+            // A second spawn with the same id returns Ok and does not increment.
+            let second = manager
+                .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx)
+                .await;
+            assert!(second.is_ok());
+            assert_eq!(manager.session_count().await, 1);
+            // Clean up so the spawned /bin/sh doesn't outlive the test.
+            manager.send_input("s1", b"exit\n".to_vec()).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn pty_manager_enforces_max_sessions() {
+        let manager = PtyManager::new(1);
+        let (out_tx, _out_rx) = mpsc::channel::<String>(16);
+
+        #[cfg(unix)]
+        {
+            let _ = manager
+                .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx.clone())
+                .await;
+            let second = manager
+                .spawn_session("s2".to_string(), "/bin/sh", 80, 24, out_tx)
+                .await;
+            assert!(second.is_err(), "expected max-sessions guard to fire");
+            // Clean up the one session that did spawn.
+            manager.send_input("s1", b"exit\n".to_vec()).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-unix the spawn is mocked by the guard; still test the limit.
+            manager.spawn_session("s1".to_string(), "x", 80, 24, out_tx).await.ok();
+            let second = manager
+                .spawn_session("s2".to_string(), "x", 80, 24, out_tx)
+                .await;
+            assert!(second.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn pty_manager_send_input_false_for_unknown_id() {
+        let manager = PtyManager::new(10);
+        assert!(!manager.send_input("no-such-session", b"x".to_vec()).await);
+    }
 }

@@ -85,9 +85,90 @@ pub fn decode_pty_input(raw: &str) -> Result<Option<Vec<u8>>> {
 
     let bytes = STANDARD
         .decode(payload.data.as_bytes())
-        .context("payload.data is not valid base64")?;
+        .context("payload.data is not valid standard-base64")?;
 
     Ok(Some(bytes))
+}
+
+/// Decode an inbound `terminal-data` frame, returning the terminal id and bytes.
+///
+/// Like `decode_pty_input` but also returns the `terminal_id` so the dispatcher
+/// can route the bytes to the right PTY session. Returns `Ok(None)` for any
+/// frame that is not a `terminal-data` frame on the `terminal` channel.
+pub fn decode_pty_input_with_id(raw: &str) -> Result<Option<(String, Vec<u8>)>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<TerminalDataMessage> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-data" {
+        return Ok(None);
+    }
+
+    let bytes = STANDARD
+        .decode(envelope.payload.data.as_bytes())
+        .context("payload.data is not valid standard-base64")?;
+
+    Ok(Some((envelope.payload.terminal_id, bytes)))
+}
+
+/// Decode an inbound `terminal-create` frame.
+pub fn decode_terminal_create(raw: &str) -> Result<Option<TerminalCreateMessage>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-create" {
+        return Ok(None);
+    }
+
+    let payload: TerminalCreateMessage =
+        serde_json::from_value(envelope.payload).context("payload is not a TerminalCreateMessage")?;
+
+    Ok(Some(payload))
+}
+
+/// Decode an inbound `terminal-resize` frame.
+pub fn decode_terminal_resize(raw: &str) -> Result<Option<TerminalResizeMessage>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-resize" {
+        return Ok(None);
+    }
+
+    let payload: TerminalResizeMessage =
+        serde_json::from_value(envelope.payload).context("payload is not a TerminalResizeMessage")?;
+
+    Ok(Some(payload))
+}
+
+/// Decode an inbound `terminal-close` frame.
+pub fn decode_terminal_close(raw: &str) -> Result<Option<TerminalCloseMessage>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-close" {
+        return Ok(None);
+    }
+
+    let payload: TerminalCloseMessage =
+        serde_json::from_value(envelope.payload).context("payload is not a TerminalCloseMessage")?;
+
+    Ok(Some(payload))
 }
 
 /// Resize a PTY session.
