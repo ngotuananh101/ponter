@@ -705,7 +705,7 @@ path = "src/main.rs"
 
 ### 4.3 Cloudflare Worker
 
-**File:** `workers/signaling/wrangler.toml`
+**File:** `workers/wrangler.toml`
 ```toml
 name = "ponta-remote"
 main = "src/index.ts"
@@ -745,7 +745,7 @@ enabled = true
 
 ### 5.1 D1 Migrations
 
-**File:** `workers/signaling/db/migrations/0001_initial.sql`
+**File:** `workers/db/migrations/0001_initial.sql`
 ```sql
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
@@ -1021,7 +1021,7 @@ POST   /api/files/upload-url       # Get presigned upload URL
 ### 7.1 Zero-Trust Implementation
 
 ```typescript
-// workers/signaling/src/middleware/auth.ts
+// workers/src/middleware/auth.ts
 import { Context, Next } from 'hono';
 import { verifyJWT } from '../utils/jwt';
 
@@ -1217,7 +1217,7 @@ trong tài liệu này chưa từng được tick — kể cả Phase 1 và Tu�
 Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay vì tick.
 
 - [ ] Tạo Rust agent — `apps/agent` (crate `remote-agent`), 4 module phẳng: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
-- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `workers/signaling`, xác thực bằng credential `ag_<32 hex>`
+- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `workers`, xác thực bằng credential `ag_<32 hex>`
 - [ ] Tích hợp portable-pty — `portable-pty 0.9`, PTY thật, 1 session
 - [ ] Xử lý terminal I/O — base64 trong `DataChannelMessage<TerminalDataMessage>`, kênh `terminal`
 - [ ] Implement session management — state machine `pending → active → terminated`
@@ -1432,7 +1432,7 @@ DTLS/SCTP connection with real PTY bytes crossing it. It is Linux-only by constr
 
 ```bash
 # Deploy signaling worker
-cd workers/signaling
+cd workers
 npx wrangler deploy
 
 # Run migrations on production

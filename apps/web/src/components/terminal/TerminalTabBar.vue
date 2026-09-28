@@ -14,7 +14,9 @@ defineEmits<{
 </script>
 
 <template>
-  <div class="flex items-center bg-card border-b border-border px-2 h-10 overflow-x-auto select-none">
+  <div
+    class="flex items-center bg-card border-b border-border px-2 h-10 overflow-x-auto select-none"
+  >
     <div class="flex items-center gap-1 flex-1 overflow-x-auto">
       <div
         v-for="tab in tabs"

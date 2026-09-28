@@ -1,9 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import {
-  TerminalClient,
-  type TerminalSession,
-} from '@remote/terminal-core';
+import { TerminalClient, type TerminalSession } from '@remote/terminal-core';
 import {
   PeerConnection,
   createBrowserAdapter,

@@ -1,65 +1,67 @@
-# Remote Access Platform
+# Ponta Remote Access Platform
 
 [![CI](https://github.com/ngotuananh101/ponta-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/ngotuananh101/ponta-remote/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Turborepo](https://img.shields.io/badge/monorepo-Turborepo-ef4444.svg)](https://turbo.build)
 [![Cloudflare Workers](https://img.shields.io/badge/backend-Cloudflare%20Workers-f38020.svg)](https://workers.cloudflare.com)
 [![Hono](https://img.shields.io/badge/framework-Hono-E36002.svg)](https://hono.dev)
+[![Rust](https://img.shields.io/badge/agent-Rust-DEA584.svg)](https://www.rust-lang.org)
+[![Vue 3](https://img.shields.io/badge/frontend-Vue%203-4FC08D.svg)](https://vuejs.org)
 
-A comprehensive, low-latency, zero-trust remote access platform featuring **Remote Terminal** (< 10ms latency), **Remote Desktop** (60fps streaming), and **Remote File Manager** with end-to-end encryption (E2EE).
+A high-performance, low-latency, zero-trust remote access platform featuring **Multi-Shell Remote Terminal** (< 10ms latency, PTY virtualization), **Remote Desktop**, and **Remote File Manager** with end-to-end encryption (E2EE).
 
 ---
 
-## 🚀 Key Features & Principles
+## 🚀 Key Architectural Highlights
 
-- **Zero-Trust & E2EE**: Secure by default with end-to-end cryptographic verification, PBKDF2-HMAC-SHA256 password hashing (constant-time XOR comparison against timing attacks), and KV-backed instant token revocation.
-- **Edge-First Backend**: Unified backend service running on Cloudflare Workers and Hono with zero cold-start latency.
-- **Serverless SQLite**: Cloudflare D1 with Drizzle ORM for type-safe schema definitions and migration management.
-- **Cross-Platform**: Web (Vue 3 + Vite), Desktop (Tauri 2.0 + Rust), Mobile (Tauri Mobile for iOS/Android), and Native Desktop Agent (Rust).
-- **Fast P2P Data Channels**: Direct WebRTC connections via STUN/TURN for high throughput and sub-10ms interactive latency.
+- **Zero-Trust & E2EE**: Secure by default with client-side public-key verification, PBKDF2-HMAC-SHA256 password hashing (with constant-time XOR comparison against timing attacks), and Cloudflare KV-backed instant token revocation.
+- **Edge-First Backend**: Unified backend service running on Cloudflare Workers and Hono with zero cold-start latency, integrating D1 serverless SQLite and Drizzle ORM.
+- **Direct P2P WebRTC DataChannels**: Peer-to-peer data transport over DTLS/SCTP via STUN/TURN, delivering sub-10ms interactive shell performance without relay bottleneck.
+- **Multi-Shell Multiplexing (ADR-09, ADR-10)**: Multiplexes multiple independent shell instances across a single ordered WebRTC DataChannel (`"terminal"`), preserving binary byte sequences and scrollback history via a headless 64 KiB `RingBuffer`.
+- **Native Rust Agent Daemon**: High-efficiency background agent (`apps/agent`) built with `tokio`, `webrtc-rs`, and `portable-pty`, featuring automatic child process lifecycle management and zombie process reaping.
+- **Modern Responsive Workspace**: Tabbed Vue 3 terminal UI with `@xterm/xterm`, dynamic viewport auto-fitting (`ResizeObserver` + FitAddon), collapsible sidebar, desktop keyboard shortcuts, and touch-optimized mobile accessory keys.
 
 ---
 
 ## 📦 Monorepo Architecture
 
-Managed via **Turborepo** and **pnpm workspaces**:
+Managed with **Turborepo** and **pnpm workspaces**:
 
 ```
-remote-access-platform/
+ponta-remote/
 ├── apps/
-│   ├── web/               # Vue 3 web client
-│   ├── desktop/           # Tauri 2.0 desktop application (Linux, macOS, Windows)
-│   ├── mobile/            # Tauri mobile client (iOS, Android)
-│   └── agent/             # High-performance native desktop agent (Rust)
+│   ├── web/               # Vue 3 + Vite + Pinia workspace (Xterm.js, TabBar, Sidebar)
+│   ├── desktop/           # Tauri 2.0 cross-platform desktop shell (Linux, macOS, Windows)
+│   ├── mobile/            # Tauri mobile client shell (iOS, Android)
+│   └── agent/             # Native Rust desktop agent daemon (portable-pty, webrtc-rs, tokio)
 ├── packages/
-│   ├── shared/            # Shared TypeScript types, schemas, and constants
-│   ├── api/               # API contract types and router definitions
-│   ├── api-client/        # HTTP & WebSocket client SDK
-│   ├── crypto/            # Client-side cryptographic primitives (E2EE, keys)
-│   ├── terminal-core/     # Terminal emulation and state management
-│   ├── webrtc-core/       # WebRTC connection orchestration and DataChannel management
+│   ├── shared/            # Shared TypeScript types, schemas, and wire protocol definitions
+│   ├── api-client/        # Type-safe HTTP & WebSocket client SDK with token auto-refresh
+│   ├── crypto/            # Client-side cryptographic primitives (Web Crypto, E2EE)
+│   ├── terminal-core/     # Headless pure TypeScript terminal manager (RingBuffer, TerminalClient)
+│   ├── webrtc-core/       # WebRTC connection orchestration & DataChannel management
 │   └── ui-components/     # Shared Vue 3 UI component library
-├── workers/
-│   └── signaling/         # Unified Cloudflare Worker (REST API, Auth, D1, KV cache, Signaling)
+├── workers/               # Unified Cloudflare Worker (REST API, Auth, D1 SQLite, KV, Signaling)
 └── docs/
     ├── ARCHITECTURE.md    # Master architecture specification
-    └── guides/
-        └── deployment.md  # Complete Cloudflare deployment guide
+    ├── README.md          # Documentation index
+    └── guides/            # Developer, deployment, and protocol guides
 ```
 
 ---
 
 ## 🛠️ Tech Stack
 
-| Layer                 | Technologies                                                             |
-| --------------------- | ------------------------------------------------------------------------ |
-| **Backend Runtime**   | Cloudflare Workers, Hono, TypeScript                                     |
-| **Database & Cache**  | Cloudflare D1 (SQLite), Drizzle ORM, Cloudflare Workers KV               |
-| **Authentication**    | Web Crypto PBKDF2, JWT (access + refresh), KV Token Revocation Blacklist |
-| **Frontend Clients**  | Vue 3, Vite, Pinia, TailwindCSS, Tauri 2.0 (Rust)                        |
-| **Desktop Agent**     | Rust (tokio, webrtc-rs, portable-pty)                                    |
-| **Testing**           | Vitest, `@cloudflare/vitest-pool-workers` (native `workerd` isolate)     |
-| **Build & Toolchain** | Turborepo, pnpm, Biome / Prettier, ESLint                                |
+| Layer                  | Technologies                                                              |
+| ---------------------- | ------------------------------------------------------------------------- |
+| **Backend Runtime**    | Cloudflare Workers, Hono, TypeScript                                      |
+| **Database & Cache**   | Cloudflare D1 (SQLite), Drizzle ORM, Cloudflare Workers KV                |
+| **Authentication**     | Web Crypto PBKDF2, Stateless JWT (15m access / 7d refresh), KV Blacklist  |
+| **Web Client**         | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`, `@xterm/addon-fit`      |
+| **Desktop Agent**      | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`   |
+| **WebRTC & Transport** | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP  |
+| **Testing**            | Vitest, `@cloudflare/vitest-pool-workers`, Cargo test, Cross-language E2E |
+| **Build & Toolchain**  | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt              |
 
 ---
 
@@ -68,99 +70,100 @@ remote-access-platform/
 ### 1. Prerequisites
 
 - **Node.js**: `>= 24.0.0`
-- **pnpm**: `>= 12.0.0`
-- **Rust toolchain** (optional, for native agent/Tauri development): `rustup default stable`
+- **pnpm**: `>= 12.0.0` (`corepack enable pnpm`)
+- **Rust Toolchain**: Stable (`>= 1.80.0`)
 
-### 2. Install Dependencies
+### 2. Install Dependencies & Build Agent
 
 ```bash
+# Install all JS/TS workspace packages
 pnpm install
+
+# Build the native Rust agent
+cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-### 3. Run Checks & Tests
+### 3. Start Local Development Services
+
+Run each component in a separate terminal:
 
 ```bash
-# Run code formatting check
-pnpm format:check
-
-# Run linting across all packages
-pnpm lint
-
-# Run typechecking across all packages
-pnpm typecheck
-
-# Run full test suite (including workerd-isolated Worker tests)
-pnpm test
-```
-
-### 4. Start Local Backend
-
-To run the signaling and REST API worker locally using Wrangler and local D1/KV simulators:
-
-```bash
+# Terminal 1: Start the Backend (Cloudflare Worker on http://127.0.0.1:8787)
 pnpm --filter @remote/signaling dev
+
+# Terminal 2: Start the Web Client (Vite on http://127.0.0.1:5173)
+pnpm --filter @remote/web dev
+
+# Terminal 3: Run the Native Agent Daemon
+cargo run --manifest-path apps/agent/Cargo.toml -- \
+  --agent-id agent-local-01 \
+  --server ws://127.0.0.1:8787/api/ws/agent \
+  --credential <AGENT_CREDENTIAL> \
+  --stun ""
 ```
 
-The worker starts at `http://127.0.0.1:8787`. You can test the health endpoint:
+_For detailed instructions on registering an agent and obtaining credentials, see the [Local Development Guide](docs/guides/development.md)._
+
+---
+
+## 🧪 Verification & Testing Suite
 
 ```bash
-curl http://127.0.0.1:8787/health
-# {"status":"ok"}
+# Run all unit & component tests across the monorepo
+pnpm -w test
+
+# Run Rust unit tests (PTY multiplexing, framing, limits)
+cargo test --manifest-path apps/agent/Cargo.toml
+
+# Run TypeScript & Vue compiler checks
+pnpm -w typecheck
+
+# Run linters (ESLint & Cargo Clippy with zero warnings)
+pnpm -w lint
+cargo clippy --all-targets --manifest-path apps/agent/Cargo.toml -- -D warnings
+
+# Check code formatting (Prettier & rustfmt)
+pnpm format:check
+cargo fmt --check --manifest-path apps/agent/Cargo.toml
+
+# Run cross-language automated E2E integration test (Rust Agent + Worker + werift)
+pnpm --filter @remote/webrtc-core test:e2e
 ```
 
 ---
 
-## 🌐 API Overview
+## 🌐 API & Protocol Overview
 
-The unified worker mounts the following REST endpoints under `/api`:
+### REST API Endpoints (`workers`)
 
-### Authentication (`/api/auth`)
+- **Authentication**: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`.
+- **Agents**: `GET /api/agents` (list online status), `POST /api/agents` (register/mint credentials), `GET /api/agents/:id`.
+- **Sessions & WebRTC Signaling**:
+  - `POST /api/sessions` — Initiate remote session.
+  - `POST /api/sessions/:id/signal` — Send SDP offer/answer or ICE candidate.
+  - `GET /api/sessions/:id/signals?cursor=<id>` — Long-polling signaling cursor for browser clients.
+- **Agent WebSocket**: `GET /api/ws/agent` — Persistent bi-directional WebSocket connection for desktop agents.
 
-- `POST /api/auth/register` — Register new user with username, password, and public key.
-- `POST /api/auth/login` — Authenticate and receive 15m access token + 7d refresh token.
-- `POST /api/auth/refresh` — Issue a new access token using a valid refresh token.
-- `POST /api/auth/logout` — Revoke token immediately via KV blacklist.
-- `POST /api/auth/webauthn/options` — WebAuthn challenge options (Phase 2 stub, 501).
-- `POST /api/auth/webauthn/verify` — WebAuthn verification (Phase 2 stub, 501).
+### Terminal Wire Protocol (`"terminal"` DataChannel)
 
-### User Profile (`/api/users`)
+- `terminal-create` — Spawn pseudo-terminal session with requested columns, rows, and shell binary.
+- `terminal-data` — Bi-directional base64-encoded binary chunk transport for keystrokes and PTY output.
+- `terminal-resize` — Debounced viewport resizing payload (`cols`, `rows`).
+- `terminal-close` — Gracefully terminate a specific terminal session.
+- `terminal-exit` — Agent notification carrying child process exit code.
 
-- `GET /api/users/me` — Retrieve the authenticated user's profile.
-
-### Devices (`/api/devices`)
-
-- `GET /api/devices` — List user's registered devices.
-- `POST /api/devices` — Register new device (`desktop` | `mobile` | `web`).
-- `DELETE /api/devices/:id` — Remove device and detach referencing sessions.
-
-### Agents (`/api/agents`)
-
-- `GET /api/agents` — List user's registered desktop agents.
-- `POST /api/agents` — Register or update desktop agent status.
-- `GET /api/agents/:id` — Get detailed agent information.
-
-### Sessions (`/api/sessions`)
-
-- `GET /api/sessions` — List user's active/pending remote sessions.
-- `POST /api/sessions` — Initiate connection session between device and agent.
-- `GET /api/sessions/:id` — Retrieve session details and status.
-- `DELETE /api/sessions/:id` — Terminate session.
+_Full specification available in the [Terminal Multiplexing & Wire Protocol Guide](docs/guides/terminal-protocol.md)._
 
 ---
 
-## 🚀 Deployment Guide
+## 📚 Documentation & Guides
 
-Detailed step-by-step instructions for provisioning Cloudflare D1 databases, creating KV namespaces, managing production secrets, running migrations, and setting up GitHub Actions CI/CD can be found in:
-
-👉 **[Cloudflare Deployment Guide](docs/guides/deployment.md)**
-
----
-
-## 📜 Documentation
-
-- **[Master Architecture Document](docs/ARCHITECTURE.md)**: System design, security model, and implementation roadmap.
-- **[Phase 1 Week 2 Design Spec](docs/superpowers/specs/2026-09-25-phase1-week2-backend-design.md)**: Backend foundation specification and ADRs.
-- **[Cloudflare Deployment Guide](docs/guides/deployment.md)**: Complete production deployment runbook.
+- **[Documentation Index](docs/README.md)**
+- **[Master Architecture Document](docs/ARCHITECTURE.md)**: Full system architecture, security models, and roadmap.
+- **[Local Development Guide](docs/guides/development.md)**: Comprehensive local setup, testing, and debugging.
+- **[Cloudflare Deployment Guide](docs/guides/deployment.md)**: Production deployment to Cloudflare Pages (web frontend) and Workers (backend, D1, KV).
+- **[Desktop Agent Setup Guide](docs/guides/agent-setup.md)**: Building and configuring the Rust daemon as a systemd service.
+- **[Terminal Multiplexing Protocol](docs/guides/terminal-protocol.md)**: Detailed wire specification for WebRTC DataChannels.
 
 ---
 

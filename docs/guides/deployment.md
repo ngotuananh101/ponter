@@ -1,6 +1,6 @@
 # Cloudflare Deployment Guide
 
-This guide covers step-by-step instructions to deploy the backend services (`@remote/signaling`) of the Remote Access Platform to Cloudflare Workers, Cloudflare D1 (SQLite database), and Cloudflare Workers KV.
+This guide covers step-by-step instructions to deploy both the frontend web client (`apps/web`) to Cloudflare Pages and the backend services (`workers/`) of the Remote Access Platform to Cloudflare Workers, Cloudflare D1 (SQLite database), and Cloudflare Workers KV.
 
 ---
 
@@ -13,13 +13,18 @@ This guide covers step-by-step instructions to deploy the backend services (`@re
    - [Create KV Namespace](#42-create-kv-namespace)
 5. [Configure Production Settings (`wrangler.prod.toml`)](#5-configure-production-settings-wranglerprodtoml)
 6. [Apply Database Migrations](#6-apply-database-migrations)
-7. [Deploy the Worker](#7-deploy-the-worker)
+7. [Deploy the Backend Worker](#7-deploy-the-backend-worker)
 8. [Configure Production Secrets](#8-configure-production-secrets)
-9. [Verify Deployment](#9-verify-deployment)
-10. [Cloudflare Workers Builds (Git Integration) — Important Distinction](#10-cloudflare-workers-builds-git-integration--important-distinction)
-11. [Automate Deployment with GitHub Actions (CI/CD)](#11-automate-deployment-with-github-actions-cicd)
-12. [Free Tier Quotas & Monitoring](#12-free-tier-quotas--monitoring)
-13. [Troubleshooting & FAQ](#13-troubleshooting--faq)
+9. [Verify Backend Deployment](#9-verify-backend-deployment)
+10. [Deploy Web Client to Cloudflare Pages](#10-deploy-web-client-to-cloudflare-pages)
+   - [Configure Environment Variables](#101-configure-environment-variables)
+   - [SPA Routing Fallback](#102-spa-routing-fallback)
+   - [Create Pages Project & Deploy](#103-create-pages-project--deploy)
+   - [Verify Web Deployment](#104-verify-web-deployment)
+11. [Cloudflare Workers Builds (Git Integration) — Important Distinction](#11-cloudflare-workers-builds-git-integration--important-distinction)
+12. [Automate Deployment with GitHub Actions (CI/CD)](#12-automate-deployment-with-github-actions-cicd)
+13. [Free Tier Quotas & Monitoring](#13-free-tier-quotas--monitoring)
+14. [Troubleshooting & FAQ](#14-troubleshooting--faq)
 
 ---
 
@@ -38,11 +43,19 @@ Before deploying, ensure you have:
 
 ## 2. Architecture Overview
 
-The backend is built as a unified Cloudflare Worker located at `workers/signaling/`:
-- **Framework**: Hono (`hono/quick-start`)
-- **Database**: Cloudflare D1 (Serverless SQLite) with Drizzle ORM
-- **Cache**: Cloudflare Workers KV (`CACHE` namespace) for token revocation blacklist
-- **Auth**: PBKDF2-HMAC-SHA256 password hashing + stateless JWT access (15m) & refresh (7d) tokens
+The platform production deployment consists of two cloud components:
+
+1. **Frontend Web Client (`apps/web`)**:
+   - **Hosting**: Cloudflare Pages (Global CDN with static asset caching).
+   - **Framework**: Vue 3 SPA + Vite + Tailwind CSS + Pinia.
+   - **Routing**: HTML5 History mode with `public/_redirects` SPA fallback (`/* /index.html 200`).
+   - **Backend Connection**: Configured via `VITE_API_URL` pointing to the deployed Worker.
+
+2. **Unified Backend Service (`workers/`)**:
+   - **Runtime**: Cloudflare Workers with Hono (`hono/quick-start`).
+   - **Database**: Cloudflare D1 (Serverless SQLite) with Drizzle ORM.
+   - **Cache**: Cloudflare Workers KV (`CACHE` namespace) for token revocation blacklist.
+   - **Auth**: PBKDF2-HMAC-SHA256 password hashing + stateless JWT access (15m) & refresh (7d) tokens.
 
 ---
 
@@ -113,11 +126,11 @@ To deploy from your personal machine without committing your real Cloudflare IDs
 
 1. Copy the production template file:
    ```bash
-   cp workers/signaling/wrangler.prod.example.toml workers/signaling/wrangler.prod.toml
+   cp workers/wrangler.prod.example.toml workers/wrangler.prod.toml
    ```
    *(Note: `wrangler.prod.toml` is ignored in `.gitignore`, so your real IDs will never be committed).*
 
-2. Open `workers/signaling/wrangler.prod.toml` and fill in your real `database_id` and KV `id`:
+2. Open `workers/wrangler.prod.toml` and fill in your real `database_id` and KV `id`:
 
 ```toml
 name = "ponta-remote"
@@ -156,11 +169,11 @@ Apply the database schema (6 tables: `users`, `devices`, `agents`, `sessions`, `
 # From root using wrangler.prod.toml
 pnpm db:migrate:prod
 
-# Or directly in workers/signaling:
+# Or directly in workers:
 pnpm --filter @remote/signaling run db:migrate:prod
 ```
 
-*This executes `wrangler d1 migrations apply remote-access --remote --config wrangler.prod.toml` using migrations from `workers/signaling/db/migrations/`.*
+*This executes `wrangler d1 migrations apply remote-access --remote --config wrangler.prod.toml` using migrations from `workers/db/migrations/`.*
 
 Verify migrations by inspecting the remote database tables:
 ```bash
@@ -169,7 +182,7 @@ pnpm --filter @remote/signaling exec wrangler d1 execute remote-access --remote 
 
 ---
 
-## 7. Deploy the Worker
+## 7. Deploy the Backend Worker
 
 Deploy the Worker package to Cloudflare edge from your machine:
 
@@ -177,7 +190,7 @@ Deploy the Worker package to Cloudflare edge from your machine:
 # From root using wrangler.prod.toml
 pnpm deploy:workers
 
-# Or directly in workers/signaling:
+# Or directly in workers:
 pnpm --filter @remote/signaling run deploy:prod
 ```
 
@@ -212,7 +225,7 @@ When prompted in the terminal, paste your strong random secret strings (e.g., ge
 
 ---
 
-## 9. Verify Deployment
+## 9. Verify Backend Deployment
 
 ### 9.1 Health Check
 Test the public health endpoint:
@@ -258,7 +271,69 @@ pnpm --filter @remote/signaling exec wrangler tail
 
 ---
 
-## 10. Cloudflare Workers Builds (Git Integration) — Important Distinction
+## 10. Deploy Web Client to Cloudflare Pages
+
+The web application (`apps/web`) is a Vue 3 Single Page Application (SPA) designed to be hosted globally via **Cloudflare Pages**.
+
+### 10.1 Configure Environment Variables
+
+The web frontend communicates with the backend Worker using the `VITE_API_URL` environment variable.
+
+1. Copy the production template:
+   ```bash
+   cp apps/web/.env.production.example apps/web/.env.production
+   ```
+   *(Note: `.env.production` is gitignored so local configurations stay private).*
+
+2. Update `VITE_API_URL` with your deployed backend Worker URL:
+   ```env
+   VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev
+   ```
+
+### 10.2 SPA Routing Fallback (`_redirects`)
+
+Because `vue-router` runs in HTML5 history mode (`createWebHistory()`), navigating directly or refreshing URLs like `/dashboard` or `/workspace/:agentId` requires the web server to rewrite requests to `index.html`.
+
+The file `apps/web/public/_redirects` contains:
+```
+/* /index.html 200
+```
+During `pnpm build`, Vite automatically copies this file into `apps/web/dist/_redirects`, instructing Cloudflare Pages to serve `index.html` with HTTP 200 for all client-side routes.
+
+### 10.3 Create Pages Project & Deploy via CLI
+
+1. **Create the Pages Project (one-time setup)**:
+   ```bash
+   pnpm --filter @remote/web exec wrangler pages project create ponta-remote-web --production-branch main
+   ```
+
+2. **Build and Deploy**:
+   ```bash
+   # From repository root:
+   pnpm deploy:web
+
+   # Or specify VITE_API_URL inline:
+   VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev pnpm deploy:web
+   ```
+
+   *This compiles the Vue 3 bundle into `apps/web/dist` and uploads it via `wrangler pages deploy dist --project-name ponta-remote-web`.*
+
+3. **Output example**:
+   ```
+   ✨ Success! Uploaded x files
+   ✨ Deployment complete! Take a peek over at https://ponta-remote-web.pages.dev
+   ```
+
+### 10.4 Verify Web Deployment
+
+1. Open `https://ponta-remote-web.pages.dev` in your browser.
+2. Register a new user account or log in.
+3. Test SPA reloading: navigate to `/dashboard` and press `F5` / Refresh in the browser. The page must reload smoothly without returning a 404 error.
+4. Open the Developer Tools Console (`F12`) to verify network requests are successfully dispatched to your backend Worker.
+
+---
+
+## 11. Cloudflare Workers Builds (Git Integration) — Important Distinction
 
 If you ever connect this repository to **Cloudflare Workers Builds** (Workers & Pages → your Worker → Settings → Builds → Connect to Git), you must understand that Cloudflare creates **two independent objects**:
 
@@ -278,7 +353,7 @@ If you ever connect this repository to **Cloudflare Workers Builds** (Workers & 
 3. **Preview builds fire on every push by default.** The **"Enable Preview Builds"** option in *Settings → Builds → Branch control* triggers a preview build for every push to a non-production branch. Disable it to stop preview builds (and their check runs) on feature branches.
 4. **A failing build does not block merges** unless you explicitly add it as a required status check in GitHub branch protection.
 
-**Why a monorepo build fails at the repository root:** the build project defaults to the **repository root** as its build root, where no Wrangler configuration exists. Also note `workers/signaling/wrangler.toml` intentionally carries *placeholder* bindings (`local-db-binding`, `local-cache-binding`) for local development and tests, so it cannot deploy to the cloud as-is.
+**Why a monorepo build fails at the repository root:** the build project defaults to the **repository root** as its build root, where no Wrangler configuration exists. Also note `workers/wrangler.toml` intentionally carries *placeholder* bindings (`local-db-binding`, `local-cache-binding`) for local development and tests, so it cannot deploy to the cloud as-is.
 
 ### Resolving it
 
@@ -287,7 +362,7 @@ Dashboard → Workers & Pages → select the project → **Settings** → **Buil
 
 **Option B — Configure it correctly for the monorepo:**
 In **Settings → Builds**:
-- **Root directory:** `workers/signaling`
+- **Root directory:** `workers`
 - **Deploy command:** `npx wrangler deploy`
 - Then provide cloud-appropriate bindings for the build environment (a real D1 `database_id` and KV `id`, plus the `JWT_SECRET` / `REFRESH_TOKEN_SECRET` secrets). Without real bindings the build will still fail.
 
@@ -295,11 +370,11 @@ In **Settings → Builds**:
 
 ---
 
-## 11. Automate Deployment with GitHub Actions (CI/CD)
+## 12. Automate Deployment with GitHub Actions (CI/CD)
 
-To automatically deploy when merging to `main`:
+To automatically deploy both backend Workers and the frontend Web Pages when merging to `main`:
 
-### 11.1 Create Cloudflare API Token
+### 12.1 Create Cloudflare API Token
 1. Go to [Cloudflare Dashboard > My Profile > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 2. Click **Create Token** > use the **Edit Cloudflare Workers** template.
 3. Grant permissions:
@@ -307,27 +382,36 @@ To automatically deploy when merging to `main`:
 4. Copy the generated API token.
 5. Copy your **Account ID** from the Cloudflare Dashboard Workers overview page.
 
-### 11.2 Add GitHub Repository Secrets
-Go to your GitHub repository > **Settings > Secrets and variables > Actions** and add:
+### 12.2 Add GitHub Repository Secrets & Variables
+Go to your GitHub repository > **Settings > Secrets and variables > Actions**:
+
+**Repository Secrets:**
 - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API Token
 - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID
+- `CLOUDFLARE_D1_DATABASE_ID`: Production D1 Database UUID
+- `CLOUDFLARE_KV_NAMESPACE_ID`: Production KV Namespace ID
 
-### 11.3 GitHub Actions Workflow
-Create `.github/workflows/deploy-workers.yml`:
+**Repository Variables:**
+- `VITE_API_URL`: Backend URL, e.g. `https://ponta-remote.<your-subdomain>.workers.dev`
+
+### 12.3 GitHub Actions Workflow
+Create `.github/workflows/deploy.yml`:
 
 ```yaml
-name: Deploy Workers
+name: Deploy Fullstack to Cloudflare
 
 on:
   push:
     branches: [main]
     paths:
-      - 'workers/signaling/**'
-      - 'packages/shared/**'
-      - '.github/workflows/deploy-workers.yml'
+      - 'workers/**'
+      - 'apps/web/**'
+      - 'packages/**'
+      - '.github/workflows/deploy.yml'
 
 jobs:
-  deploy:
+  deploy-backend:
+    name: Deploy Backend Worker
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -348,12 +432,12 @@ jobs:
       - name: Run Tests
         run: pnpm test
 
-      # wrangler.prod.toml is gitignored, so CI must materialize it from secrets.
+      # wrangler.prod.toml is gitignored, so CI materializes it from secrets.
       - name: Generate production Wrangler config
         run: |
-          cp workers/signaling/wrangler.prod.example.toml workers/signaling/wrangler.prod.toml
-          sed -i "s|YOUR_REAL_D1_DATABASE_ID|${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}|" workers/signaling/wrangler.prod.toml
-          sed -i "s|YOUR_REAL_KV_NAMESPACE_ID|${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}|" workers/signaling/wrangler.prod.toml
+          cp workers/wrangler.prod.example.toml workers/wrangler.prod.toml
+          sed -i "s|YOUR_REAL_D1_DATABASE_ID|${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}|" workers/wrangler.prod.toml
+          sed -i "s|YOUR_REAL_KV_NAMESPACE_ID|${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}|" workers/wrangler.prod.toml
 
       - name: Apply D1 Migrations
         run: pnpm --filter @remote/signaling run db:migrate:prod
@@ -366,18 +450,48 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
 
-> **Note:** This workflow needs three additional repository secrets beyond the two in §11.2: `CLOUDFLARE_D1_DATABASE_ID` and `CLOUDFLARE_KV_NAMESPACE_ID`. If you would rather not maintain a generated config in CI, deploy from your local machine with `pnpm deploy:workers` instead — that is the workflow this guide's Steps 5–8 describe.
+  deploy-frontend:
+    name: Deploy Web Client (Pages)
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Web Application
+        run: pnpm --filter @remote/web build
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://ponta-remote.workers.dev' }}
+
+      - name: Deploy to Cloudflare Pages
+        run: pnpm --filter @remote/web exec wrangler pages deploy dist --project-name ponta-remote-web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
 
 ---
 
-## 12. Free Tier Quotas & Monitoring
+## 13. Free Tier Quotas & Monitoring
 
 Cloudflare provides a generous Free tier suitable for testing and personal setups:
 
 | Resource | Free Tier Daily Quota | Notes |
 |---|---|---|
+| **Cloudflare Pages** | **Unlimited** requests & bandwidth | 500 builds / month via Git/CI |
 | **Cloudflare Workers** | 100,000 requests / day | 10ms CPU time per request |
 | **Cloudflare D1 (Reads)** | 5,000,000 rows read / day | Resets at 00:00 UTC |
 | **Cloudflare D1 (Writes)** | 100,000 rows written / day | Resets at 00:00 UTC |
@@ -388,7 +502,7 @@ Cloudflare provides a generous Free tier suitable for testing and personal setup
 
 ---
 
-## 13. Troubleshooting & FAQ
+## 14. Troubleshooting & FAQ
 
 ### Issue: `Cannot find module 'cloudflare:test'`
 **Solution**: Make sure `tsconfig.json` specifies `"types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"]` (with subpath `/types`).
@@ -407,7 +521,7 @@ pnpm db:migrate:prod
 
 ### Issue: GitHub check run `Workers Builds: <name>` fails with "This Worker does not exist on your account"
 **Cause**: A Workers Builds project (Git integration) exists for this repository, but no Worker service with that name has ever been deployed successfully. The build project creates the check run regardless of whether the Worker exists.
-**Solution**: See [Section 10](#10-cloudflare-workers-builds-git-integration--important-distinction). Either disconnect the Git integration (Dashboard → the project → Settings → Builds → Disconnect), or configure the build root as `workers/signaling` with real D1/KV bindings. Deploying once from the CLI with a matching `name` in `wrangler.toml` also resolves the "does not exist" error.
+**Solution**: See [Section 10](#10-cloudflare-workers-builds-git-integration--important-distinction). Either disconnect the Git integration (Dashboard → the project → Settings → Builds → Disconnect), or configure the build root as `workers` with real D1/KV bindings. Deploying once from the CLI with a matching `name` in `wrangler.toml` also resolves the "does not exist" error.
 
 ### Issue: Worker deployed but the Dashboard shows a different service name than `wrangler.toml`
 **Cause**: A Workers Builds project created from a Git connection takes its name from the repository slug / Dashboard project name, not from `wrangler.toml`. If the two diverge, `wrangler deploy` creates a second, separate Worker.

@@ -36,7 +36,10 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 export class TerminalClient {
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly unsubscribeMessage: () => void;
-  private resizeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private resizeDebounceTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
 
   constructor(
     public readonly agentId: string,
@@ -75,7 +78,11 @@ export class TerminalClient {
       shell: options?.shell,
     };
 
-    this.dataChannelManager.sendJson('terminal', 'terminal-create', createPayload);
+    this.dataChannelManager.sendJson(
+      'terminal',
+      'terminal-create',
+      createPayload,
+    );
     return session;
   }
 
@@ -84,7 +91,8 @@ export class TerminalClient {
   }
 
   sendInput(terminalId: string, data: Uint8Array | string): void {
-    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    const bytes =
+      typeof data === 'string' ? new TextEncoder().encode(data) : data;
     const payload: TerminalDataMessage = {
       terminalId,
       data: uint8ArrayToBase64(bytes),
@@ -92,7 +100,11 @@ export class TerminalClient {
     this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
   }
 
-  private debouncedResize(terminalId: string, cols: number, rows: number): void {
+  private debouncedResize(
+    terminalId: string,
+    cols: number,
+    rows: number,
+  ): void {
     if (cols < 1 || rows < 1) return;
 
     const existing = this.resizeDebounceTimers.get(terminalId);
@@ -106,7 +118,11 @@ export class TerminalClient {
         rows,
       };
       try {
-        this.dataChannelManager.sendJson('terminal', 'terminal-resize', payload);
+        this.dataChannelManager.sendJson(
+          'terminal',
+          'terminal-resize',
+          payload,
+        );
       } catch (err) {
         console.error('[TerminalClient] resize failed', err);
       }

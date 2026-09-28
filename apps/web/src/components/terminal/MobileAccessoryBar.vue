@@ -24,7 +24,9 @@ function handlePress(e: PointerEvent, char: string) {
 </script>
 
 <template>
-  <div class="flex items-center gap-1 p-1 bg-card border-t border-border overflow-x-auto select-none touch-none">
+  <div
+    class="flex items-center gap-1 p-1 bg-card border-t border-border overflow-x-auto select-none touch-none"
+  >
     <button
       v-for="k in keys"
       :key="k.key"

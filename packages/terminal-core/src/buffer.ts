@@ -16,7 +16,7 @@ export class RingBuffer {
     }
 
     for (let i = 0; i < chunk.length; i++) {
-      this.buffer[(this.head + this.size) % this.capacity] = chunk[i]!
+      this.buffer[(this.head + this.size) % this.capacity] = chunk[i]!;
       if (this.size < this.capacity) {
         this.size++;
       } else {
@@ -28,7 +28,7 @@ export class RingBuffer {
   getAll(): Uint8Array {
     const out = new Uint8Array(this.size);
     for (let i = 0; i < this.size; i++) {
-      out[i] = this.buffer[(this.head + i) % this.capacity]!
+      out[i] = this.buffer[(this.head + i) % this.capacity]!;
     }
     return out;
   }

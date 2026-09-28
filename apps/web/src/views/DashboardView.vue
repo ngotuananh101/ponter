@@ -168,7 +168,12 @@ onMounted(() => {
                   v-if="a.isOnline"
                   variant="ghost"
                   size="sm"
-                  @click.stop="router.push({ name: 'workspace', params: { agentId: a.id } })"
+                  @click.stop="
+                    router.push({
+                      name: 'workspace',
+                      params: { agentId: a.id },
+                    })
+                  "
                 >
                   Open Terminal
                 </Button>
