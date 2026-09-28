@@ -11,6 +11,7 @@ import type {
   DataChannelMessage,
   TerminalCreateMessage,
   TerminalDataMessage,
+  TerminalResizeMessage,
 } from '@remote/shared';
 
 /**
@@ -93,6 +94,7 @@ function spawnLogged(
     env: { ...process.env, ...options.env },
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: process.platform === 'win32' && command === 'pnpm',
+    detached: process.platform !== 'win32',
   });
   const chunks: string[] = [];
   child.stdout?.on('data', (c: Buffer) => chunks.push(c.toString()));
@@ -103,6 +105,13 @@ function spawnLogged(
 /** Kill a child and wait for it to actually exit, so no process leaks. */
 async function killAndWait(child: ChildProcess | null): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (child.pid && process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // ignore if already exited
+    }
+  }
   child.kill('SIGKILL');
   await new Promise<void>((resolvePromise) => {
     child.once('exit', () => resolvePromise());
@@ -415,6 +424,24 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     );
   }
 
+  /** Send a `terminal-resize` frame to change the PTY window size. */
+  function sendTerminalResize(
+    offerer: PeerConnection,
+    terminalId: string,
+    cols: number,
+    rows: number,
+  ): void {
+    offerer.dataChannels.sendJson<TerminalResizeMessage>(
+      'terminal',
+      'terminal-resize',
+      {
+        terminalId,
+        cols,
+        rows,
+      },
+    );
+  }
+
   it('runs real PTY output over a real DTLS/SCTP connection', async () => {
     const { token, agentId, credential, sessionId } = await seed();
 
@@ -606,6 +633,44 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
         `found output frames for unexpected terminal ids:\n` +
           orphaned.map((f) => JSON.stringify(f.payload.terminalId)).join(', '),
       ).toHaveLength(0);
+    } finally {
+      await offerer.close();
+    }
+  }, 90_000);
+
+  // Spec §6.3: terminal-resize must change the PTY window size. Verified by
+  // running `stty size` in the shell, which prints "rows cols" from the PTY.
+  it('applies terminal-resize and verifies via stty size', async () => {
+    const { token, agentId, credential, sessionId } = await seed();
+
+    spawnAgent(agentId, credential);
+    await waitForAgentOnline(token, agentId);
+
+    const { offerer, frames } = await connectTerminal(sessionId, token);
+
+    try {
+      sendTerminalCreate(offerer, sessionId, 80, 24);
+      await delay(500);
+
+      sendTerminalResize(offerer, sessionId, 120, 40);
+      await delay(500);
+
+      sendKeystrokes(offerer, sessionId, 'stty size\n');
+
+      const deadline = Date.now() + 20_000;
+      let decoded = '';
+      while (Date.now() < deadline) {
+        decoded = frames.map((f) => frameBytes(f).toString('utf8')).join('');
+        if (decoded.includes('40 120')) break;
+        await delay(100);
+      }
+
+      expect(
+        decoded,
+        `no "40 120" in PTY output after 20s (${frames.length} frames)\n` +
+          `--- decoded ---\n${JSON.stringify(decoded)}\n` +
+          `--- agent output ---\n${agents.map((a) => a.output()).join('\n')}`,
+      ).toContain('40 120');
     } finally {
       await offerer.close();
     }

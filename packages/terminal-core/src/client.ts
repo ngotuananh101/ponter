@@ -93,6 +93,8 @@ export class TerminalClient {
   }
 
   private debouncedResize(terminalId: string, cols: number, rows: number): void {
+    if (cols < 1 || rows < 1) return;
+
     const existing = this.resizeDebounceTimers.get(terminalId);
     if (existing) clearTimeout(existing);
 
@@ -122,6 +124,12 @@ export class TerminalClient {
     if (timer) clearTimeout(timer);
     this.resizeDebounceTimers.delete(terminalId);
 
+    try {
+      session.close();
+    } catch {
+      // ignore if session already closed
+    }
+
     const payload: TerminalCloseMessage = { terminalId };
     try {
       this.dataChannelManager.sendJson('terminal', 'terminal-close', payload);
@@ -137,9 +145,14 @@ export class TerminalClient {
     }
     this.resizeDebounceTimers.clear();
 
-    for (const id of [...this.sessions.keys()]) {
-      this.closeSession(id);
+    for (const [, session] of this.sessions) {
+      try {
+        session.close();
+      } catch {
+        // ignore if session already closed
+      }
     }
+    this.sessions.clear();
   }
 
   private handleMessage(msg: DataChannelMessage): void {

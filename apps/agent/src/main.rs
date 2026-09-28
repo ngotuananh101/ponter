@@ -14,6 +14,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use base64::engine::general_purpose::STANDARD as STANDARD_ENGINE;
+use base64::Engine;
 use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
@@ -356,60 +358,116 @@ async fn run_one_session(
     let cli_rows = cli.rows;
     tokio::spawn(async move {
         while let Some(text) = dispatch_rx.recv().await {
-            // terminal-create → spawn a new session.
-            if let Ok(Some(create)) = pty::decode_terminal_create(&text) {
-                let sh = create.shell.unwrap_or_else(|| shell_for_dispatch.clone());
-                if let Err(e) = manager_for_dispatch.spawn_session(
-                    create.terminal_id,
-                    &sh,
-                    create.cols,
-                    create.rows,
-                    frame_tx_for_dispatch.clone(),
-                ).await {
-                    tracing::warn!(error = %e, "failed to spawn terminal session");
-                }
+            let envelope: pty::DataChannelMessage<serde_json::Value> =
+                match serde_json::from_str(&text) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "dropping malformed frame");
+                        continue;
+                    }
+                };
+
+            if envelope.channel != "terminal" {
                 continue;
             }
 
-            // terminal-resize → resize the session's PTY.
-            if let Ok(Some(resize)) = pty::decode_terminal_resize(&text) {
-                if let Err(e) = manager_for_dispatch
-                    .resize(&resize.terminal_id, resize.cols, resize.rows)
-                    .await
-                {
-                    tracing::debug!(error = %e, "resize failed");
-                }
-                continue;
-            }
-
-            // terminal-close → tear down the session.
-            if let Ok(Some(close)) = pty::decode_terminal_close(&text) {
-                manager_for_dispatch.close_session(&close.terminal_id).await;
-                continue;
-            }
-
-            // terminal-data → decode and route to the right PTY.
-            // Implicit spawn fallback: if the session does not yet exist,
-            // spawn it on demand before sending the bytes.
-            match pty::decode_pty_input_with_id(&text) {
-                Ok(Some((id, bytes))) => {
-                    if !manager_for_dispatch.send_input(&id, bytes.clone()).await {
-                        // Session not known yet — spawn on demand.
-                        if let Err(e) = manager_for_dispatch.spawn_session(
-                            id.clone(),
-                            &shell_for_dispatch,
-                            cli_cols,
-                            cli_rows,
+            match envelope.r#type.as_str() {
+                "terminal-create" => {
+                    let create: pty::TerminalCreateMessage =
+                        match serde_json::from_value(envelope.payload) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "bad terminal-create payload");
+                                continue;
+                            }
+                        };
+                    let sh = create.shell.unwrap_or_else(|| shell_for_dispatch.clone());
+                    if let Err(e) = manager_for_dispatch
+                        .spawn_session(
+                            create.terminal_id,
+                            &sh,
+                            create.cols,
+                            create.rows,
                             frame_tx_for_dispatch.clone(),
-                        ).await {
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to spawn terminal session");
+                    }
+                }
+                "terminal-resize" => {
+                    let resize: pty::TerminalResizeMessage =
+                        match serde_json::from_value(envelope.payload) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "bad terminal-resize payload");
+                                continue;
+                            }
+                        };
+                    if let Err(e) = manager_for_dispatch
+                        .resize(&resize.terminal_id, resize.cols, resize.rows)
+                        .await
+                    {
+                        tracing::debug!(error = %e, "resize failed");
+                    }
+                }
+                "terminal-close" => {
+                    let close: pty::TerminalCloseMessage =
+                        match serde_json::from_value(envelope.payload) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "bad terminal-close payload");
+                                continue;
+                            }
+                        };
+                    manager_for_dispatch.close_session(&close.terminal_id).await;
+                }
+                "terminal-data" => {
+                    let payload: pty::TerminalDataMessage =
+                        match serde_json::from_value(envelope.payload) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "bad terminal-data payload");
+                                continue;
+                            }
+                        };
+
+                    // Decode the base64 data payload.
+                    let bytes = match STANDARD_ENGINE.decode(payload.data.as_bytes()) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::debug!(error = %e, "payload.data is not valid base64");
+                            continue;
+                        }
+                    };
+
+                    // Implicit spawn fallback: if the session does not yet exist,
+                    // spawn it on demand before sending the bytes.
+                    if !manager_for_dispatch
+                        .send_input(&payload.terminal_id, bytes.clone())
+                        .await
+                    {
+                        if let Err(e) = manager_for_dispatch
+                            .spawn_session(
+                                payload.terminal_id.clone(),
+                                &shell_for_dispatch,
+                                cli_cols,
+                                cli_rows,
+                                frame_tx_for_dispatch.clone(),
+                            )
+                            .await
+                        {
                             tracing::warn!(error = %e, "failed to spawn on-demand session");
                             continue;
                         }
-                        let _ = manager_for_dispatch.send_input(&id, bytes).await;
+                        let _ = manager_for_dispatch
+                            .send_input(&payload.terminal_id, bytes)
+                            .await;
                     }
                 }
-                Ok(None) => {} // not a terminal frame on `terminal` channel
-                Err(e) => tracing::debug!(error = %e, "dropping malformed frame"),
+                _ => {
+                    // Unknown or non-terminal frame type on the terminal channel.
+                }
             }
         }
     });
@@ -621,7 +679,10 @@ impl PtyManager {
         {
             let lock = self.sessions.lock().await;
             if lock.len() >= self.max_sessions {
-                anyhow::bail!("exceeded maximum concurrent PTY sessions ({})", self.max_sessions);
+                anyhow::bail!(
+                    "exceeded maximum concurrent PTY sessions ({})",
+                    self.max_sessions
+                );
             }
             if lock.contains_key(&terminal_id) {
                 return Ok(());
@@ -637,6 +698,11 @@ impl PtyManager {
         let mut reader = session.start_reader(terminal_id.clone())?;
         let session = Arc::new(tokio::sync::Mutex::new(session));
 
+        // Clone the sessions map Arc so the pump task can remove itself
+        // when the PTY reader reaches EOF (child exited). This frees the slot
+        // immediately and lets us reap the child process to avoid zombies.
+        let sessions_for_pump = Arc::clone(&self.sessions);
+
         // Pump PTY output -> outbound frame channel. A dedicated task per session
         // is fine: output stays in order because the reader is single-threaded
         // and the converter awaits each send on a bounded queue (ADR-11).
@@ -647,8 +713,18 @@ impl PtyManager {
                     break; // consumer (data channel) is gone
                 }
             }
-            // Notify the browser that this terminal has exited.
-            let exit_frame = pty::frame_pty_exit(&tid, Some(0), pty::now_ms());
+            // Remove from sessions to free slot immediately and reap child process:
+            let active = {
+                let mut lock = sessions_for_pump.lock().await;
+                lock.remove(&tid)
+            };
+            let exit_code = if let Some(active) = active {
+                let mut sess = active.session.lock().await;
+                sess.wait_child()
+            } else {
+                None
+            };
+            let exit_frame = pty::frame_pty_exit(&tid, exit_code, pty::now_ms());
             let _ = outbound.send(exit_frame).await;
         });
 
@@ -656,13 +732,7 @@ impl PtyManager {
         // for the same id, the entry is simply overwritten (last writer wins),
         // which is safe because the pump task holds its own Arc clone.
         let mut lock = self.sessions.lock().await;
-        lock.insert(
-            terminal_id,
-            ActivePty {
-                input_tx,
-                session,
-            },
-        );
+        lock.insert(terminal_id, ActivePty { input_tx, session });
         Ok(())
     }
 
@@ -701,9 +771,18 @@ impl PtyManager {
     /// slave, causing the child to exit, which is what unblocks the reader and
     /// lets the pump task terminate. For a shell that won't exit on EOF the
     /// caller must send an explicit `exit` first.
+    ///
+    /// After removing the entry from `sessions`, `wait_child` is called on the
+    /// session to reap the child process and prevent zombies.
     pub async fn close_session(&self, terminal_id: &str) {
-        let mut lock = self.sessions.lock().await;
-        lock.remove(terminal_id);
+        let active = {
+            let mut lock = self.sessions.lock().await;
+            lock.remove(terminal_id)
+        };
+        if let Some(active) = active {
+            let mut sess = active.session.lock().await;
+            let _ = sess.wait_child();
+        }
     }
 
     /// Close every session (called on channel/connection teardown).
@@ -715,6 +794,7 @@ impl PtyManager {
     /// Spawn-on-demand: send input as if `terminal-create` had been issued first.
     /// Used by the `terminal-data` dispatcher path when a frame arrives for a
     /// session id that does not yet exist locally.
+    #[allow(dead_code)]
     pub async fn ensure_session(
         &self,
         terminal_id: String,
@@ -731,7 +811,8 @@ impl PtyManager {
         }
         // Drop the read lock before acquiring the write lock to avoid a
         // self-deadlock; spawn_session re-checks (double-checked locking).
-        self.spawn_session(terminal_id, shell, cols, rows, outbound).await
+        self.spawn_session(terminal_id, shell, cols, rows, outbound)
+            .await
     }
 }
 
@@ -748,15 +829,13 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(16);
 
         let spawned = manager
-            .spawn_session(
-                session_id.to_string(),
-                "/bin/sh",
-                80,
-                24,
-                out_tx,
-            )
+            .spawn_session(session_id.to_string(), "/bin/sh", 80, 24, out_tx)
             .await;
-        assert!(spawned.is_ok(), "failed to spawn session: {:?}", spawned.err());
+        assert!(
+            spawned.is_ok(),
+            "failed to spawn session: {:?}",
+            spawned.err()
+        );
         assert_eq!(manager.session_count().await, 1);
 
         // Make the shell exit so the pump task observes EOF and terminates.
@@ -813,7 +892,10 @@ mod tests {
         #[cfg(not(unix))]
         {
             // On non-unix the spawn is mocked by the guard; still test the limit.
-            manager.spawn_session("s1".to_string(), "x", 80, 24, out_tx).await.ok();
+            manager
+                .spawn_session("s1".to_string(), "x", 80, 24, out_tx)
+                .await
+                .ok();
             let second = manager
                 .spawn_session("s2".to_string(), "x", 80, 24, out_tx)
                 .await;

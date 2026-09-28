@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
+import type { TerminalSession } from '@remote/terminal-core';
 
 describe('useTerminalStore', () => {
   beforeEach(() => {
@@ -21,7 +22,7 @@ describe('useTerminalStore', () => {
       terminalId: 'term-1',
       title: 'Host 1',
       status: 'active',
-      session: {} as any,
+      session: {} as unknown as TerminalSession,
     });
     store.setActiveTab('tab-1');
     expect(store.activeTabId).toBe('tab-1');

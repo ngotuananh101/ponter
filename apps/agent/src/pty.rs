@@ -68,6 +68,7 @@ pub fn frame_pty_output(terminal_id: &str, bytes: &[u8], timestamp_ms: i64) -> S
 /// `Err` when it is but cannot be decoded. Strict, padded standard alphabet
 /// (spec R16): a lenient decode would silently accept a frame the browser
 /// never meant to send.
+#[allow(dead_code)]
 pub fn decode_pty_input(raw: &str) -> Result<Option<Vec<u8>>> {
     if raw.len() > MAX_FRAME_BYTES {
         anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
@@ -95,6 +96,7 @@ pub fn decode_pty_input(raw: &str) -> Result<Option<Vec<u8>>> {
 /// Like `decode_pty_input` but also returns the `terminal_id` so the dispatcher
 /// can route the bytes to the right PTY session. Returns `Ok(None)` for any
 /// frame that is not a `terminal-data` frame on the `terminal` channel.
+#[allow(dead_code)]
 pub fn decode_pty_input_with_id(raw: &str) -> Result<Option<(String, Vec<u8>)>> {
     if raw.len() > MAX_FRAME_BYTES {
         anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
@@ -115,6 +117,7 @@ pub fn decode_pty_input_with_id(raw: &str) -> Result<Option<(String, Vec<u8>)>> 
 }
 
 /// Decode an inbound `terminal-create` frame.
+#[allow(dead_code)]
 pub fn decode_terminal_create(raw: &str) -> Result<Option<TerminalCreateMessage>> {
     if raw.len() > MAX_FRAME_BYTES {
         anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
@@ -127,13 +130,14 @@ pub fn decode_terminal_create(raw: &str) -> Result<Option<TerminalCreateMessage>
         return Ok(None);
     }
 
-    let payload: TerminalCreateMessage =
-        serde_json::from_value(envelope.payload).context("payload is not a TerminalCreateMessage")?;
+    let payload: TerminalCreateMessage = serde_json::from_value(envelope.payload)
+        .context("payload is not a TerminalCreateMessage")?;
 
     Ok(Some(payload))
 }
 
 /// Decode an inbound `terminal-resize` frame.
+#[allow(dead_code)]
 pub fn decode_terminal_resize(raw: &str) -> Result<Option<TerminalResizeMessage>> {
     if raw.len() > MAX_FRAME_BYTES {
         anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
@@ -146,13 +150,14 @@ pub fn decode_terminal_resize(raw: &str) -> Result<Option<TerminalResizeMessage>
         return Ok(None);
     }
 
-    let payload: TerminalResizeMessage =
-        serde_json::from_value(envelope.payload).context("payload is not a TerminalResizeMessage")?;
+    let payload: TerminalResizeMessage = serde_json::from_value(envelope.payload)
+        .context("payload is not a TerminalResizeMessage")?;
 
     Ok(Some(payload))
 }
 
 /// Decode an inbound `terminal-close` frame.
+#[allow(dead_code)]
 pub fn decode_terminal_close(raw: &str) -> Result<Option<TerminalCloseMessage>> {
     if raw.len() > MAX_FRAME_BYTES {
         anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
@@ -165,8 +170,8 @@ pub fn decode_terminal_close(raw: &str) -> Result<Option<TerminalCloseMessage>> 
         return Ok(None);
     }
 
-    let payload: TerminalCloseMessage =
-        serde_json::from_value(envelope.payload).context("payload is not a TerminalCloseMessage")?;
+    let payload: TerminalCloseMessage = serde_json::from_value(envelope.payload)
+        .context("payload is not a TerminalCloseMessage")?;
 
     Ok(Some(payload))
 }
@@ -343,6 +348,17 @@ impl PtySession {
                 pixel_height: 0,
             })
             .context("resize pty")
+    }
+
+    /// Wait for the child process to exit, returning its exit code.
+    ///
+    /// Calls `self.child.wait()` — a blocking call — to reap the child process
+    /// and obtain its exit code. In practice the child has already exited by the
+    /// time this is called (the reader loop reached EOF), so `wait()` returns
+    /// immediately. Used by `PtyManager` to report the real exit code to the
+    /// browser instead of a hardcoded `Some(0)` and to prevent zombies.
+    pub fn wait_child(&mut self) -> Option<u32> {
+        self.child.wait().ok().map(|s| s.exit_code())
     }
 
     /// Drop the writer, signal, then wait **with a timeout**.

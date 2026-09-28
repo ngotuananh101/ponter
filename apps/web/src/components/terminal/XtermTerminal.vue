@@ -75,7 +75,9 @@ function initTerminal() {
     if (!fitAddon || !terminal) return;
     try {
       fitAddon.fit();
-      props.session.resize(terminal.cols, terminal.rows);
+      if (terminal.cols >= 1 && terminal.rows >= 1) {
+        props.session.resize(terminal.cols, terminal.rows);
+      }
     } catch {
       // ignore fit calculation errors when container is hidden
     }

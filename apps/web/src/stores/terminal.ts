@@ -29,6 +29,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     string,
     { peer: PeerConnection; client: TerminalClient }
   >();
+  const pendingConnections = new Map<string, Promise<TerminalClient>>();
 
   const activeTab = computed(() =>
     tabs.value.find((t) => t.id === activeTabId.value),
@@ -38,28 +39,41 @@ export const useTerminalStore = defineStore('terminal', () => {
     const existing = connections.get(agentId);
     if (existing) return existing.client;
 
-    const token = await tokenStorage.getAccessToken();
+    const pending = pendingConnections.get(agentId);
+    if (pending) return pending;
 
-    const sessionResp = await apiClient.sessions.create({ agentId });
+    const connectionPromise = (async () => {
+      const token = await tokenStorage.getAccessToken();
 
-    const transport = new RESTPollingTransport({
-      baseUrl: apiClient.http.baseUrl,
-      sessionId: sessionResp.id,
-      token: token ?? '',
-    });
+      const sessionResp = await apiClient.sessions.create({ agentId });
 
-    const rtcPeer = createBrowserAdapter();
+      const transport = new RESTPollingTransport({
+        baseUrl: apiClient.http.baseUrl,
+        sessionId: sessionResp.id,
+        token: token ?? '',
+      });
 
-    const peer = new PeerConnection(rtcPeer, transport, {
-      role: 'offerer',
-      channelLabels: ['terminal'],
-    });
+      const rtcPeer = createBrowserAdapter();
 
-    await peer.start();
+      const peer = new PeerConnection(rtcPeer, transport, {
+        role: 'offerer',
+        channelLabels: ['terminal'],
+      });
 
-    const client = new TerminalClient(agentId, peer.dataChannels);
-    connections.set(agentId, { peer, client });
-    return client;
+      await peer.start();
+      await peer.waitForChannel('terminal');
+
+      const client = new TerminalClient(agentId, peer.dataChannels);
+      connections.set(agentId, { peer, client });
+      return client;
+    })();
+
+    pendingConnections.set(agentId, connectionPromise);
+    try {
+      return await connectionPromise;
+    } finally {
+      pendingConnections.delete(agentId);
+    }
   }
 
   async function openTab(
