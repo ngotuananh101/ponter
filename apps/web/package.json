@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
-    "deploy": "pnpm build && wrangler pages deploy dist --project-name ponta-remote-web"
+    "deploy": "pnpm build && wrangler deploy"
   },
   "dependencies": {
     "@lucide/vue": "^1.48.0",

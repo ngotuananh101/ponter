@@ -271,9 +271,9 @@ pnpm --filter @remote/signaling exec wrangler tail
 
 ---
 
-## 10. Deploy Web Client to Cloudflare Pages
+## 10. Deploy Web Client to Cloudflare Workers (Static Assets)
 
-The web application (`apps/web`) is a Vue 3 Single Page Application (SPA) designed to be hosted globally via **Cloudflare Pages**.
+The web application (`apps/web`) is a Vue 3 Single Page Application (SPA) hosted on Cloudflare using **Workers Static Assets** (defined in `apps/web/wrangler.toml`).
 
 ### 10.1 Configure Environment Variables
 
@@ -290,43 +290,45 @@ The web frontend communicates with the backend Worker using the `VITE_API_URL` e
    VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev
    ```
 
-### 10.2 SPA Routing Fallback (`_redirects`)
+### 10.2 SPA Routing (`not_found_handling`)
 
-Because `vue-router` runs in HTML5 history mode (`createWebHistory()`), navigating directly or refreshing URLs like `/dashboard` or `/workspace/:agentId` requires the web server to rewrite requests to `index.html`.
+In `apps/web/wrangler.toml`, the static assets configuration includes:
+```toml
+name = "ponta-remote-web"
+compatibility_date = "2024-09-01"
 
-The file `apps/web/public/_redirects` contains:
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
 ```
-/* /index.html 200
+Because `vue-router` runs in HTML5 history mode (`createWebHistory()`), navigating directly or refreshing URLs like `/dashboard` or `/workspace/:agentId` requires the server to return `index.html`. The `not_found_handling = "single-page-application"` directive automatically handles this at Cloudflare edge with HTTP 200 without requiring custom rewrite functions.
+
+### 10.3 Build and Deploy via CLI / Workers Builds
+
+Deploy directly to Cloudflare edge:
+
+```bash
+# From repository root:
+pnpm deploy:web
+
+# Or specify VITE_API_URL inline:
+VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev pnpm deploy:web
 ```
-During `pnpm build`, Vite automatically copies this file into `apps/web/dist/_redirects`, instructing Cloudflare Pages to serve `index.html` with HTTP 200 for all client-side routes.
 
-### 10.3 Create Pages Project & Deploy via CLI
+*This compiles the Vue 3 bundle into `apps/web/dist` and deploys it via `wrangler deploy`.*
 
-1. **Create the Pages Project (one-time setup)**:
-   ```bash
-   pnpm --filter @remote/web exec wrangler pages project create ponta-remote-web --production-branch main
-   ```
-
-2. **Build and Deploy**:
-   ```bash
-   # From repository root:
-   pnpm deploy:web
-
-   # Or specify VITE_API_URL inline:
-   VITE_API_URL=https://ponta-remote.<your-subdomain>.workers.dev pnpm deploy:web
-   ```
-
-   *This compiles the Vue 3 bundle into `apps/web/dist` and uploads it via `wrangler pages deploy dist --project-name ponta-remote-web`.*
-
-3. **Output example**:
-   ```
-   ✨ Success! Uploaded x files
-   ✨ Deployment complete! Take a peek over at https://ponta-remote-web.pages.dev
-   ```
+**Output example**:
+```
+✨ Read 18 files from the assets directory /.../apps/web/dist
+Total Upload: xx KiB / gzip: xx KiB
+Uploaded ponta-remote-web (x.xx sec)
+Deployed ponta-remote-web triggers (x.xx sec)
+  https://ponta-remote-web.<your-subdomain>.workers.dev
+```
 
 ### 10.4 Verify Web Deployment
 
-1. Open `https://ponta-remote-web.pages.dev` in your browser.
+1. Open `https://ponta-remote-web.<your-subdomain>.workers.dev` in your browser.
 2. Register a new user account or log in.
 3. Test SPA reloading: navigate to `/dashboard` and press `F5` / Refresh in the browser. The page must reload smoothly without returning a 404 error.
 4. Open the Developer Tools Console (`F12`) to verify network requests are successfully dispatched to your backend Worker.
@@ -476,8 +478,8 @@ jobs:
         env:
           VITE_API_URL: ${{ vars.VITE_API_URL || 'https://ponta-remote.workers.dev' }}
 
-      - name: Deploy to Cloudflare Pages
-        run: pnpm --filter @remote/web exec wrangler pages deploy dist --project-name ponta-remote-web
+      - name: Deploy to Cloudflare Workers (Static Assets)
+        run: pnpm --filter @remote/web exec wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
