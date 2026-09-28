@@ -50,8 +50,11 @@ FROM base AS runner
 
 WORKDIR /app
 
-# Copy native deps needed at runtime (better-sqlite3 loads its prebuilt musl
-# binary, but we keep the toolchain for safety / any edge native modules).
+# Native build toolchain required to compile better-sqlite3 in pnpm install --prod
+# (Node.js 24 on Alpine musl has no prebuilt binary available upstream).
+RUN apk add --no-cache python3 make g++ gcc
+
+# Copy native deps needed at runtime.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/ ./packages/
 COPY apps/server/package.json ./apps/server/
