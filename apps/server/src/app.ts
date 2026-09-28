@@ -1,10 +1,30 @@
 import { Hono } from 'hono';
 import type { AppContext } from './types.js';
 import { cors } from 'hono/cors';
+import { errorHandler } from './middleware/error.js';
+import { getDb } from './db/client.js';
+import auth from './routes/auth.js';
+import users from './routes/users.js';
 
 export function createApp() {
   const app = new Hono<AppContext>();
   app.use('*', cors());
+  app.onError(errorHandler);
+
+  // Make the shared SQLite database instance available on every request so
+  // that middleware and routes never need to call `getDb()` more than once.
+  // `getDb()` is a singleton: the first call (here, or in a test fixture) wins
+  // the database path, so `DATABASE_PATH` only takes effect before the first
+  // request or when `closeDb()` has not yet been called.
+  app.use('*', async (c, next) => {
+    c.set('db', getDb(process.env.DATABASE_PATH));
+    await next();
+  });
+
   app.get('/health', (c) => c.json({ status: 'ok' }));
+
+  app.route('/api/auth', auth);
+  app.route('/api/users', users);
+
   return app;
 }

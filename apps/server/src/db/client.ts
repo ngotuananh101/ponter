@@ -90,6 +90,13 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
 }
 
 export function getDb(dbPath: string = ':memory:'): Database {
+  // Singleton: if a database instance already exists (e.g. set up by a test
+  // fixture or the app bootstrap), reuse it so every request shares the same
+  // connection. Pass a different path or call `closeDb()` first to force a new one.
+  if (currentDb) {
+    return currentDb;
+  }
+
   const sqlite = new BetterSqlite3(dbPath);
 
   // Configure connection pragmas

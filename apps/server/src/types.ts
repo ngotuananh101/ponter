@@ -16,7 +16,13 @@ export interface AppEnv {
 
 export type Variables = {
   user: UserSelect;
-  tokenPayload: { sub: string; username?: string; jti: string; type: string };
+  tokenPayload: {
+    sub: string;
+    username?: string;
+    jti: string;
+    type: string;
+    exp: number;
+  };
   db: Database;
 };
 
