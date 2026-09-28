@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
 import type { Device, Agent } from '@remote/shared';
@@ -15,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
 const authStore = useAuthStore();
+const router = useRouter();
 const devices = ref<Device[]>([]);
 const agents = ref<Agent[]>([]);
 const loading = ref(true);
@@ -158,9 +160,19 @@ onMounted(() => {
                   {{ a.platform || 'Unknown OS' }}
                 </p>
               </div>
-              <Badge :variant="a.isOnline ? 'default' : 'secondary'">
-                {{ a.isOnline ? 'Online' : 'Offline' }}
-              </Badge>
+              <div class="flex items-center gap-2">
+                <Badge :variant="a.isOnline ? 'default' : 'secondary'">
+                  {{ a.isOnline ? 'Online' : 'Offline' }}
+                </Badge>
+                <Button
+                  v-if="a.isOnline"
+                  variant="ghost"
+                  size="sm"
+                  @click.stop="router.push({ name: 'workspace', params: { agentId: a.id } })"
+                >
+                  Open Terminal
+                </Button>
+              </div>
             </div>
           </div>
         </CardContent>

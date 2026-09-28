@@ -39,7 +39,7 @@ describe('TerminalTabBar.vue', () => {
     // should emit selectTab with its id.
     const tabElements = wrapper.findAll('div.cursor-pointer');
     expect(tabElements).toHaveLength(2);
-    await tabElements[1].trigger('click');
+    await tabElements[1]!.trigger('click');
     expect(wrapper.emitted('selectTab')?.[0]).toEqual(['t2']);
   });
 
