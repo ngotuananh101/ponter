@@ -1,6 +1,6 @@
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import * as schema from './schema.js';
+import type * as schema from './schema.js';
 
 /**
  * Run Drizzle migrations against the database.
