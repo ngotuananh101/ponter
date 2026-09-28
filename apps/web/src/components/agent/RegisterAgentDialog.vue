@@ -100,7 +100,9 @@ async function handleRegister() {
     step.value = 'success';
   } catch (err: unknown) {
     error.value =
-      err instanceof Error ? err.message : 'Failed to register agent. ID may already exist.';
+      err instanceof Error
+        ? err.message
+        : 'Failed to register agent. ID may already exist.';
   } finally {
     loading.value = false;
   }
@@ -135,7 +137,9 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
         class="relative w-full max-w-lg rounded-xl border border-border bg-card text-card-foreground shadow-2xl z-10 overflow-hidden flex flex-col max-h-[90vh]"
       >
         <!-- Modal Header -->
-        <div class="flex items-center justify-between border-b border-border/80 px-6 py-4">
+        <div
+          class="flex items-center justify-between border-b border-border/80 px-6 py-4"
+        >
           <div class="flex items-center gap-3">
             <div
               class="w-9 h-9 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary"
@@ -143,7 +147,9 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
               <Server class="w-4 h-4" />
             </div>
             <div>
-              <h3 class="text-base font-bold tracking-tight">Register Remote Agent</h3>
+              <h3 class="text-base font-bold tracking-tight">
+                Register Remote Agent
+              </h3>
               <p class="text-xs text-muted-foreground font-mono">
                 Provision daemon identity & credentials
               </p>
@@ -188,7 +194,8 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
           <!-- Hostname -->
           <div class="space-y-1.5">
             <Label for="agent-hostname" class="text-xs font-semibold">
-              Hostname <span class="text-muted-foreground font-normal">(Optional)</span>
+              Hostname
+              <span class="text-muted-foreground font-normal">(Optional)</span>
             </Label>
             <Input
               id="agent-hostname"
@@ -251,7 +258,12 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
 
           <!-- Submit Actions -->
           <div class="pt-3 flex justify-end gap-2 border-t border-border/80">
-            <Button variant="outline" size="sm" :disabled="loading" @click="handleClose">
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="loading"
+              @click="handleClose"
+            >
               Cancel
             </Button>
             <Button
@@ -268,41 +280,58 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
 
         <!-- Success Step: Credential & Runbook -->
         <div v-else class="p-6 space-y-4 overflow-y-auto">
-          <div class="flex items-center gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+          <div
+            class="flex items-center gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+          >
             <Shield class="w-4 h-4 flex-shrink-0" />
             <div class="text-xs">
               <span class="font-semibold">Agent Provisioned:</span>
-              <span class="font-mono ml-1 font-bold">{{ registeredAgentId }}</span>
+              <span class="font-mono ml-1 font-bold">{{
+                registeredAgentId
+              }}</span>
             </div>
           </div>
 
           <!-- Credential Warning Box -->
           <div class="space-y-1.5">
             <div class="flex items-center justify-between">
-              <Label class="text-xs font-semibold flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+              <Label
+                class="text-xs font-semibold flex items-center gap-1.5 text-amber-600 dark:text-amber-400"
+              >
                 <AlertTriangle class="w-3.5 h-3.5" />
                 Agent Credential Token
               </Label>
-              <Badge variant="outline" class="font-mono text-[10px] text-amber-600 border-amber-500/30">
+              <Badge
+                variant="outline"
+                class="font-mono text-[10px] text-amber-600 border-amber-500/30"
+              >
                 Issued Once
               </Badge>
             </div>
 
-            <div class="flex items-center gap-2 p-2 rounded-lg bg-muted/60 border border-border font-mono text-xs">
-              <span class="truncate flex-1 select-all font-semibold">{{ generatedCredential }}</span>
+            <div
+              class="flex items-center gap-2 p-2 rounded-lg bg-muted/60 border border-border font-mono text-xs"
+            >
+              <span class="truncate flex-1 select-all font-semibold">{{
+                generatedCredential
+              }}</span>
               <Button
                 variant="outline"
                 size="sm"
                 class="h-7 px-2 text-xs flex items-center gap-1"
                 @click="copyToClipboard(generatedCredential, 'credential')"
               >
-                <Check v-if="copiedTarget === 'credential'" class="w-3 h-3 text-emerald-500" />
+                <Check
+                  v-if="copiedTarget === 'credential'"
+                  class="w-3 h-3 text-emerald-500"
+                />
                 <Copy v-else class="w-3 h-3" />
                 {{ copiedTarget === 'credential' ? 'Copied' : 'Copy' }}
               </Button>
             </div>
             <p class="text-[11px] text-muted-foreground">
-              Store this secret safely. For security, only its SHA-256 digest is stored on the server.
+              Store this secret safely. For security, only its SHA-256 digest is
+              stored on the server.
             </p>
           </div>
 
@@ -316,17 +345,25 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
                 class="h-6 px-2 text-[11px] flex items-center gap-1 text-primary hover:text-primary"
                 @click="copyToClipboard(runCommand, 'command')"
               >
-                <Check v-if="copiedTarget === 'command'" class="w-3 h-3 text-emerald-500" />
+                <Check
+                  v-if="copiedTarget === 'command'"
+                  class="w-3 h-3 text-emerald-500"
+                />
                 <Copy v-else class="w-3 h-3" />
-                {{ copiedTarget === 'command' ? 'Copied Command' : 'Copy Command' }}
+                {{
+                  copiedTarget === 'command' ? 'Copied Command' : 'Copy Command'
+                }}
               </Button>
             </div>
 
-            <div class="relative bg-zinc-950 dark:bg-black rounded-lg p-3 border border-border/80 font-mono text-xs text-emerald-400 overflow-x-auto select-all">
+            <div
+              class="relative bg-zinc-950 dark:bg-black rounded-lg p-3 border border-border/80 font-mono text-xs text-emerald-400 overflow-x-auto select-all"
+            >
               <code>{{ runCommand }}</code>
             </div>
             <p class="text-[11px] text-muted-foreground">
-              Run this command on your target host to establish the WebRTC signaling connection.
+              Run this command on your target host to establish the WebRTC
+              signaling connection.
             </p>
           </div>
 
