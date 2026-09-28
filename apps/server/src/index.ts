@@ -1,8 +1,8 @@
 import { createApp } from './app.js';
-import { serve } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { createAgentWebSocketServer, handleAgentUpgrade } from './routes/ws.js';
 import { getDb } from './db/client.js';
 
@@ -41,7 +41,7 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
       const url = `http://${headers.host ?? 'localhost'}${req.url ?? '/'}`;
 
       // Read the body if present
-      let body: BodyInit | undefined;
+      let body: Uint8Array | undefined;
       if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
         const chunks: Buffer[] = [];
         for await (const chunk of req) {
@@ -52,9 +52,17 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
         }
       }
 
+      // Convert IncomingHttpHeaders to a HeadersInit-compatible structure.
+      const headersInit: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (value !== undefined) {
+          headersInit[key] = Array.isArray(value) ? value.join(', ') : value;
+        }
+      }
+
       const request = new Request(url, {
         method: req.method,
-        headers,
+        headers: headersInit,
         body,
       });
 
@@ -92,13 +100,13 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
   });
 
   // Handle upgrade events: only intercept `/api/ws/agent`, destroy the rest.
-  server.on('upgrade', (_req, socket) => {
+  server.on('upgrade', (_req, socket, head) => {
     const url = _req.url ?? '';
     if (url === '/api/ws/agent' || url.startsWith('/api/ws/agent?')) {
       // Authentication happens inside handleAgentUpgrade before the WS handshake.
       // If auth fails, it sends an HTTP 401 and destroys the socket.
       void getDb(); // ensure DB is initialized
-      void handleAgentUpgrade(_req, socket, Buffer.alloc(0), wss);
+      void handleAgentUpgrade(_req, socket as Duplex, head, wss);
     } else {
       socket.destroy();
     }

@@ -82,7 +82,6 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
   let credential: string;
   let agentId: string;
   let sessionId: string;
-  let servers: Server[] = [];
 
   beforeEach(async () => {
     db = getDb(':memory:');

@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import type { Server, IncomingMessage, ServerResponse } from 'node:http';
+import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
 import type { Database } from '../db/client.js';
@@ -49,7 +50,7 @@ export function pushToAgent(agentId: string, message: SignalMessage): boolean {
  */
 export async function handleAgentUpgrade(
   request: IncomingMessage,
-  socket: import('node:net').Socket,
+  socket: Duplex,
   head: Buffer,
   wss: WebSocketServer,
 ): Promise<boolean> {
