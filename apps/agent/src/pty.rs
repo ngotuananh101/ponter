@@ -68,6 +68,7 @@ pub fn frame_pty_output(terminal_id: &str, bytes: &[u8], timestamp_ms: i64) -> S
 /// `Err` when it is but cannot be decoded. Strict, padded standard alphabet
 /// (spec R16): a lenient decode would silently accept a frame the browser
 /// never meant to send.
+#[allow(dead_code)]
 pub fn decode_pty_input(raw: &str) -> Result<Option<Vec<u8>>> {
     if raw.len() > MAX_FRAME_BYTES {
         anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
@@ -85,9 +86,142 @@ pub fn decode_pty_input(raw: &str) -> Result<Option<Vec<u8>>> {
 
     let bytes = STANDARD
         .decode(payload.data.as_bytes())
-        .context("payload.data is not valid base64")?;
+        .context("payload.data is not valid standard-base64")?;
 
     Ok(Some(bytes))
+}
+
+/// Decode an inbound `terminal-data` frame, returning the terminal id and bytes.
+///
+/// Like `decode_pty_input` but also returns the `terminal_id` so the dispatcher
+/// can route the bytes to the right PTY session. Returns `Ok(None)` for any
+/// frame that is not a `terminal-data` frame on the `terminal` channel.
+#[allow(dead_code)]
+pub fn decode_pty_input_with_id(raw: &str) -> Result<Option<(String, Vec<u8>)>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<TerminalDataMessage> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-data" {
+        return Ok(None);
+    }
+
+    let bytes = STANDARD
+        .decode(envelope.payload.data.as_bytes())
+        .context("payload.data is not valid standard-base64")?;
+
+    Ok(Some((envelope.payload.terminal_id, bytes)))
+}
+
+/// Decode an inbound `terminal-create` frame.
+#[allow(dead_code)]
+pub fn decode_terminal_create(raw: &str) -> Result<Option<TerminalCreateMessage>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-create" {
+        return Ok(None);
+    }
+
+    let payload: TerminalCreateMessage = serde_json::from_value(envelope.payload)
+        .context("payload is not a TerminalCreateMessage")?;
+
+    Ok(Some(payload))
+}
+
+/// Decode an inbound `terminal-resize` frame.
+#[allow(dead_code)]
+pub fn decode_terminal_resize(raw: &str) -> Result<Option<TerminalResizeMessage>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-resize" {
+        return Ok(None);
+    }
+
+    let payload: TerminalResizeMessage = serde_json::from_value(envelope.payload)
+        .context("payload is not a TerminalResizeMessage")?;
+
+    Ok(Some(payload))
+}
+
+/// Decode an inbound `terminal-close` frame.
+#[allow(dead_code)]
+pub fn decode_terminal_close(raw: &str) -> Result<Option<TerminalCloseMessage>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
+
+    let envelope: DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+
+    if envelope.channel != "terminal" || envelope.r#type != "terminal-close" {
+        return Ok(None);
+    }
+
+    let payload: TerminalCloseMessage = serde_json::from_value(envelope.payload)
+        .context("payload is not a TerminalCloseMessage")?;
+
+    Ok(Some(payload))
+}
+
+/// Resize a PTY session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalResizeMessage {
+    pub terminal_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Exit notification for a PTY session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExitMessage {
+    pub terminal_id: String,
+    pub exit_code: Option<u32>,
+}
+
+/// Create notification for a new PTY session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCreateMessage {
+    pub terminal_id: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub shell: Option<String>,
+}
+
+/// Close notification for a PTY session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCloseMessage {
+    pub terminal_id: String,
+}
+
+/// Encode an exit notification as a `terminal-exit` frame.
+pub fn frame_pty_exit(terminal_id: &str, exit_code: Option<u32>, timestamp_ms: i64) -> String {
+    let message = DataChannelMessage {
+        r#type: "terminal-exit".to_string(),
+        channel: "terminal".to_string(),
+        payload: TerminalExitMessage {
+            terminal_id: terminal_id.to_string(),
+            exit_code,
+        },
+        timestamp: timestamp_ms,
+    };
+    serde_json::to_string(&message).expect("serialization of exit frame cannot fail")
 }
 
 /// A spawned shell on a PTY.
@@ -204,6 +338,29 @@ impl PtySession {
         Ok(frame_rx)
     }
 
+    /// Resize the PTY to `cols` x `rows`.
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        self.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("resize pty")
+    }
+
+    /// Wait for the child process to exit, returning its exit code.
+    ///
+    /// Calls `self.child.wait()` — a blocking call — to reap the child process
+    /// and obtain its exit code. In practice the child has already exited by the
+    /// time this is called (the reader loop reached EOF), so `wait()` returns
+    /// immediately. Used by `PtyManager` to report the real exit code to the
+    /// browser instead of a hardcoded `Some(0)` and to prevent zombies.
+    pub fn wait_child(&mut self) -> Option<u32> {
+        self.child.wait().ok().map(|s| s.exit_code())
+    }
+
     /// Drop the writer, signal, then wait **with a timeout**.
     ///
     /// `Child::wait` is blocking (spec R10) and a wedged child must not hang the
@@ -274,6 +431,38 @@ mod tests {
         // A frame above MAX_FRAME_BYTES is rejected before parsing.
         let oversize = "x".repeat(MAX_FRAME_BYTES + 1);
         assert!(decode_pty_input(&oversize).is_err());
+    }
+
+    #[test]
+    fn resize_message_round_trip() {
+        let raw = serde_json::json!({
+            "type": "terminal-resize",
+            "channel": "terminal",
+            "payload": {
+                "terminalId": "t1",
+                "cols": 120,
+                "rows": 40
+            },
+            "timestamp": 123456
+        })
+        .to_string();
+
+        let envelope: DataChannelMessage<TerminalResizeMessage> =
+            serde_json::from_str(&raw).unwrap();
+        assert_eq!(envelope.r#type, "terminal-resize");
+        assert_eq!(envelope.payload.terminal_id, "t1");
+        assert_eq!(envelope.payload.cols, 120);
+        assert_eq!(envelope.payload.rows, 40);
+    }
+
+    #[test]
+    fn frame_pty_exit_produces_valid_envelope() {
+        let frame = frame_pty_exit("t1", Some(0), 123456);
+        let envelope: DataChannelMessage<TerminalExitMessage> =
+            serde_json::from_str(&frame).unwrap();
+        assert_eq!(envelope.r#type, "terminal-exit");
+        assert_eq!(envelope.payload.terminal_id, "t1");
+        assert_eq!(envelope.payload.exit_code, Some(0));
     }
 
     #[test]
