@@ -77,6 +77,28 @@ export const useTerminalStore = defineStore('terminal', () => {
       });
 
       await peer.start();
+
+      // ICE failure used to be observed by nobody. The only symptom was a tab
+      // stuck on "connecting" for the full 10s `waitForChannel` timeout, with
+      // nothing to tell an unreachable agent apart from a symmetric NAT both
+      // sides could not get around. `failed` is the terminal state; `disconnected`
+      // is transient and recovers on its own, so it is deliberately ignored.
+      peer.onConnectionStateChange((state) => {
+        if (state !== 'failed') return;
+        const message =
+          'Connection failed: no direct route to the agent (ICE). Check that ' +
+          'TURN is reachable, or that the agent is not behind a blocking NAT.';
+        for (const tab of tabs.value) {
+          if (tab.agentId !== agentId) continue;
+          tab.status = 'error';
+          tab.error = message;
+        }
+        // The peer is terminal; keeping it cached would make the next open or
+        // retry hand back the same dead connection.
+        connections.delete(agentId);
+        pendingConnections.delete(agentId);
+      });
+
       await peer.waitForChannel('terminal');
 
       const client = new TerminalClient(agentId, peer.dataChannels);

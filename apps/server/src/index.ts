@@ -5,6 +5,8 @@ import type { Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { createAgentWebSocketServer, handleAgentUpgrade } from './routes/ws.js';
 import { getDb } from './db/client.js';
+import type { Database } from './db/client.js';
+import { runCleanup } from './utils/cleanup.js';
 
 /**
  * Create a fully-wired signaling HTTP server, including the WebSocket upgrade
@@ -119,6 +121,48 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
   return server;
 }
 
+/**
+ * Start the periodic cleanup that reaps expired signals and abandoned
+ * sessions.
+ *
+ * `signals.expires_at` was written from the start and honoured by the poll
+ * query, but nothing ever deleted the rows; a `pending` session abandoned
+ * mid-handshake had no timer at all. Both grew without bound.
+ *
+ * Exported separately from `startServer` so a test can drive one pass without
+ * waiting on a timer, and so the interval can be shortened in a test.
+ */
+export function startCleanup(
+  db: Database,
+  intervalMs: number,
+): {
+  stop: () => void;
+} {
+  const tick = async (): Promise<void> => {
+    try {
+      const result = await runCleanup(db);
+      if (result.signalsDeleted > 0 || result.sessionsTerminated > 0) {
+        console.log(
+          `[cleanup] removed ${result.signalsDeleted} expired signal(s), ` +
+            `terminated ${result.sessionsTerminated} abandoned session(s)`,
+        );
+      }
+    } catch (err) {
+      // A failed reap must never take the server down: it is housekeeping, and
+      // the next tick will try again.
+      console.error('[cleanup] pass failed:', err);
+    }
+  };
+
+  const timer = setInterval(() => void tick(), intervalMs);
+  // Do not hold the event loop open on the timer's account alone.
+  timer.unref?.();
+  return { stop: () => clearInterval(timer) };
+}
+
+/** How often the reap runs. Fifteen minutes is well inside the 1 h window. */
+export const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+
 export function startServer(port?: number) {
   const portNum = port ?? (Number(process.env.PORT) || 8080);
   const { server } = createSignalingServer();
@@ -133,6 +177,8 @@ export function startServer(port?: number) {
   server.on('error', (err) => {
     console.error('[server] fatal error:', err);
   });
+
+  startCleanup(getDb(), CLEANUP_INTERVAL_MS);
 
   return server;
 }
