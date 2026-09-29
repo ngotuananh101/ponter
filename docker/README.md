@@ -1,6 +1,6 @@
 # Docker Packaging
 
-This directory contains the multi-stage Dockerfile and three Docker Compose setups for running the `@remote/server` self-hosted backend.
+This directory contains the multi-stage Dockerfile and four Docker Compose setups for running the `@remote/server` self-hosted backend.
 
 ## Files
 
@@ -10,6 +10,8 @@ This directory contains the multi-stage Dockerfile and three Docker Compose setu
 | `docker-compose.local.yml`  | Local LAN testing. No TURN, Google public STUN only.                                                                                               |
 | `docker-compose.tunnel.yml` | Homelab behind a Cloudflare Tunnel. Public exposure via `cloudflared`.                                                                             |
 | `docker-compose.prod.yml`   | Production VPS. Caddy (Let's Encrypt) + Coturn (TURN/STUN) alongside the server.                                                                   |
+| `docker-compose.nginx.yml`  | Production VPS with host Nginx. Binds `127.0.0.1:8787` + Coturn; host Nginx handles TLS & WebSocket proxying.                                      |
+| `nginx.conf.example`        | Sample Nginx configuration for reverse proxy with WebSocket upgrade support and SSL.                                                               |
 | `Caddyfile`                 | Caddy reverse proxy config for the prod setup.                                                                                                     |
 | `.env.example`              | Template for required environment variables.                                                                                                       |
 
@@ -66,6 +68,29 @@ Full production stack with automatic HTTPS and a native TURN relay for WebRTC NA
    ```
 
 Caddy will automatically request Let's Encrypt certificates for `DOMAIN`. The Coturn server uses `TURN_SECRET` as its RFC 5766 shared secret; the server's `GET /api/webrtc/ice-servers` endpoint mints time-limited HMAC-SHA1 TURN credentials on demand.
+
+### 4. Production (VPS with Existing Nginx + Coturn)
+
+When your VPS already has Nginx running on ports 80/443:
+
+1. Configure `.env`:
+   ```bash
+   cd docker
+   cp .env.example .env
+   # Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, TURN_SECRET, CORS_ORIGIN
+   ```
+2. Start the backend and Coturn:
+   ```bash
+   docker compose -f docker-compose.nginx.yml up --build -d
+   ```
+   The server container binds only to `127.0.0.1:8787`.
+3. Configure Nginx on the host using `docker/nginx.conf.example` as a template:
+   - Ensure WebSocket upgrade headers are passed (`proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade;`).
+   - Increase `proxy_read_timeout` to `86400s` to avoid idle WebSocket disconnects.
+   - Reload Nginx: `sudo nginx -t && sudo systemctl reload nginx`.
+4. Ensure VPS firewall opens Coturn ports:
+   - `3478` (TCP/UDP)
+   - `49152:49200` (UDP)
 
 ## Environment Variables
 

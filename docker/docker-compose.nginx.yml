@@ -1,0 +1,51 @@
+# Production VPS compose setup for environments with an existing Nginx on the host.
+#
+# Services:
+#   - server   : @remote/server, persistent SQLite on ./data, binds 127.0.0.1:8787.
+#   - coturn   : STUN/TURN on host networking (RFC 5766 long-term auth).
+#
+# Usage:
+#   cd docker
+#   cp .env.example .env
+#   # edit .env with your real secrets, DOMAIN, and CORS_ORIGIN
+#   docker compose -f docker-compose.nginx.yml up --build -d
+#
+# Nginx on Host:
+#   See `docker/nginx.conf.example` for the reverse proxy and WebSocket upgrade configuration.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    image: remote-server:prod
+    container_name: remote-server-prod
+    restart: always
+    environment:
+      - PORT=8787
+      - DATABASE_PATH=/app/data/remote.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - TURN_SECRET=${TURN_SECRET}
+      - TURN_URL=turn:${DOMAIN}:3478
+      - STUN_URL=stun:${DOMAIN}:3478
+    ports:
+      # Bound to localhost so only host Nginx reverse proxy can reach it.
+      - '127.0.0.1:8787:8787'
+    volumes:
+      - ./data:/app/data
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: coturn
+    restart: always
+    network_mode: host
+    command:
+      - '-n'
+      - '--log-file=stdout'
+      - '--lt-cred-mech'
+      - '--use-auth-secret'
+      - '--static-auth-secret=${TURN_SECRET}'
+      - '--realm=${DOMAIN}'
+      - '--min-port=49152'
+      - '--max-port=49200'
