@@ -69,6 +69,8 @@ docker compose -f docker-compose.local.yml up --build
 
 Server sẽ chạy tại `http://localhost:8787`. 
 
+> **Scenario 1 là ngoại lệ duy nhất còn build từ source.** Image được publish sẵn bởi CI lên Docker Hub (`ngotuananh101/ponter:latest`) và Scenario 2/3 chỉ `pull` image đó — nên không cần build lại trên máy deploy. Scenario 1 giữ `--build` để thấy đúng code local, kể cả phần chưa commit. Xem [Deploy phiên bản mới](#deploy-phien-ban-moi).
+
 **Health check:**
 ```bash
 curl http://localhost:8787/health
@@ -94,7 +96,8 @@ cp .env.example .env
 
 **Bước 3:** Khởi động:
 ```bash
-docker compose -f docker-compose.tunnel.yml up --build
+docker compose -f docker-compose.tunnel.yml pull
+docker compose -f docker-compose.tunnel.yml up -d
 ```
 
 ### Scenario 3: Production VPS (Caddy + Coturn)
@@ -112,10 +115,47 @@ cp .env.example .env
 
 **Bước 3:** Khởi động:
 ```bash
-docker compose -f docker-compose.prod.yml up --build -d
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 Caddy sẽ tự động yêu cầu chứng chỉ Let's Encrypt cho `DOMAIN`. Máy chủ Coturn sử dụng `TURN_SECRET` làm shared secret RFC 5766; endpoint `GET /api/webrtc/ice-servers` trên server sẽ tạo thông tin xác thực HMAC-SHA1 thời gian giới hạn cho mỗi người dùng.
+
+---
+
+## 3.1 Deploy phiên bản mới
+
+Các Scenario 2 và 3 chạy image `ngotuananh101/ponter:latest` được build và publish bởi workflow **Docker Publish** (`.github/workflows/docker-publish.yml`).
+
+**Bước 1 — Publish image:** trên GitHub, vào Actions → *Docker Publish* → *Run workflow*, chọn branch cần build.
+
+Workflow build `linux/amd64` và `linux/arm64` trên hai runner native riêng rồi gộp thành một manifest multi-arch, nên cùng một image chạy được trên VPS x86 lẫn máy ARM (Oracle Cloud, Ampere, Raspberry Pi) mà không cần QEMU.
+
+Sinh ra hai tag:
+
+| Tag                              | Khi nào được cập nhật | Dùng để                                            |
+| -------------------------------- | --------------------- | -------------------------------------------------- |
+| `ngotuananh101/ponter:latest`    | Chỉ khi chạy trên `main` | Tag mà các file compose trỏ tới.                |
+| `ngotuananh101/ponter:sha-<sha>` | Mỗi lần chạy          | Ghim một build cụ thể, hoặc rollback về bản trước. |
+
+Chạy từ feature branch chỉ sinh tag `sha-`, nên thử nghiệm không thể làm dịch chuyển image mà production đang dùng.
+
+**Bước 2 — Pull và restart trên máy deploy:**
+```bash
+cd docker
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+**Bước 3 — Kiểm tra:**
+```bash
+curl https://<your-domain>/health
+# {"status":"ok"}
+```
+
+**Rollback:** vì `latest` là tag mutable, nếu bản mới lỗi thì sửa dòng `image:` trong file compose thành tag `sha-` của bản trước, rồi `pull && up -d`.
+
+> **Repository secrets:** workflow cần `DOCKERHUB_USERNAME` và `DOCKERHUB_TOKEN` (Docker Hub **access token** tại Account Settings → Personal Access Tokens, quyền Read/Write — không phải mật khẩu account).
 
 ---
 

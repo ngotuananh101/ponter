@@ -8,7 +8,11 @@
 #   cd docker
 #   cp .env.example .env
 #   # edit .env with your JWT_SECRET, TUNNEL_TOKEN, etc.
-#   docker compose -f docker-compose.tunnel.yml up --build
+#   docker compose -f docker-compose.tunnel.yml pull
+#   docker compose -f docker-compose.tunnel.yml up -d
+#
+# The server image is published by CI (see .github/workflows/docker-publish.yml)
+# and pulled from Docker Hub — no local build required.
 #
 # Prerequisites:
 #   - A Cloudflare Tunnel created with `cloudflared tunnel create <name>`
@@ -16,10 +20,7 @@
 #   - DNS record pointing your domain to the tunnel.
 services:
   server:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.server
-    image: ponter-server:tunnel
+    image: ngotuananh101/ponter:latest
     container_name: ponter-server-tunnel
     restart: unless-stopped
     environment:

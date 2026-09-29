@@ -2,15 +2,17 @@
 
 This directory contains the multi-stage Dockerfile and four Docker Compose setups for running the `@ponter/server` self-hosted backend.
 
+The server image is built and published to Docker Hub by CI (`.github/workflows/docker-publish.yml`), so the three deployment setups below pull a prebuilt image instead of compiling on the host. See [Deploying a new version](#deploying-a-new-version) for the workflow.
+
 ## Files
 
 | File                        | Description                                                                                                                                        |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Dockerfile.server`         | Multi-stage build: `node:24-alpine` base → builder (full deps + native toolchain) → runner (production deps only, better-sqlite3 native bindings). |
-| `docker-compose.local.yml`  | Local LAN testing. No TURN, Google public STUN only.                                                                                               |
-| `docker-compose.tunnel.yml` | Homelab behind a Cloudflare Tunnel. Public exposure via `cloudflared`.                                                                             |
-| `docker-compose.prod.yml`   | Production VPS. Caddy (Let's Encrypt) + Coturn (TURN/STUN) alongside the server.                                                                   |
-| `docker-compose.nginx.yml`  | Production VPS with host Nginx. Binds `127.0.0.1:8787` + Coturn; host Nginx handles TLS & WebSocket proxying.                                      |
+| `docker-compose.local.yml`  | Local LAN testing. **Builds from source.** No TURN, Google public STUN only.                                                                       |
+| `docker-compose.tunnel.yml` | Homelab behind a Cloudflare Tunnel. Pulls the published image. Public exposure via `cloudflared`.                                                  |
+| `docker-compose.prod.yml`   | Production VPS. Pulls the published image. Caddy (Let's Encrypt) + Coturn (TURN/STUN) alongside the server.                                        |
+| `docker-compose.nginx.yml`  | Production VPS with host Nginx. Pulls the published image. Binds `127.0.0.1:8787` + Coturn; host Nginx handles TLS & WebSocket proxying.           |
 | `nginx.conf.example`        | Sample Nginx configuration for reverse proxy with WebSocket upgrade support and SSL.                                                               |
 | `Caddyfile`                 | Caddy reverse proxy config for the prod setup.                                                                                                     |
 | `.env.example`              | Template for required environment variables.                                                                                                       |
@@ -48,7 +50,8 @@ Exposes the server to the internet through a Cloudflare Tunnel, so no port 80/44
    ```
 3. Start:
    ```bash
-   docker compose -f docker-compose.tunnel.yml up --build
+   docker compose -f docker-compose.tunnel.yml pull
+   docker compose -f docker-compose.tunnel.yml up -d
    ```
 
 ### 3. Production (VPS with Caddy + Coturn)
@@ -64,7 +67,8 @@ Full production stack with automatic HTTPS and a native TURN relay for WebRTC NA
    ```
 3. Start:
    ```bash
-   docker compose -f docker-compose.prod.yml up --build -d
+   docker compose -f docker-compose.prod.yml pull
+   docker compose -f docker-compose.prod.yml up -d
    ```
 
 Caddy will automatically request Let's Encrypt certificates for `DOMAIN`. The Coturn server uses `TURN_SECRET` as its RFC 5766 shared secret; the server's `GET /api/webrtc/ice-servers` endpoint mints time-limited HMAC-SHA1 TURN credentials on demand.
@@ -81,7 +85,8 @@ When your VPS already has Nginx running on ports 80/443:
    ```
 2. Start the backend and Coturn:
    ```bash
-   docker compose -f docker-compose.nginx.yml up --build -d
+   docker compose -f docker-compose.nginx.yml pull
+   docker compose -f docker-compose.nginx.yml up -d
    ```
    The server container binds only to `127.0.0.1:8787`.
 3. Configure Nginx on the host using `docker/nginx.conf.example` as a template:
@@ -122,6 +127,42 @@ Podman is also supported:
 ```bash
 podman build -f docker/Dockerfile.server -t ponter-server:test .
 ```
+
+## Deploying a new version
+
+The three deployment setups (tunnel / prod / nginx) run `ngotuananh101/ponter:latest`, published by the **Docker Publish** GitHub Actions workflow. `docker-compose.local.yml` is the exception — it builds from source so local development reflects uncommitted edits.
+
+**1. Publish the image.** In GitHub, go to Actions → _Docker Publish_ → _Run workflow_. Pick the branch to build from.
+
+The workflow builds `linux/amd64` and `linux/arm64` on separate native runners and merges them into one multi-arch manifest, so the same image works on an x86 VPS and an ARM machine (Oracle Cloud, Ampere, Raspberry Pi) without QEMU emulation.
+
+Two tags are produced:
+
+| Tag                              | When it moves           | Use                                                          |
+| -------------------------------- | ----------------------- | ------------------------------------------------------------ |
+| `ngotuananh101/ponter:latest`    | Only for runs on `main` | What the compose files point at.                             |
+| `ngotuananh101/ponter:sha-<sha>` | Every run               | Pinning a specific build, or rolling back to an earlier one. |
+
+A run from a feature branch publishes only the `sha-` tag, so experimenting cannot move the image production resolves.
+
+**2. Pull and restart on the host:**
+
+```bash
+cd docker
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+**3. Verify:**
+
+```bash
+curl https://<your-domain>/health
+# Expected: {"status":"ok"}
+```
+
+**Rolling back.** Because `latest` moves, a bad release is undone by pinning the previous `sha-` tag in the compose file and re-running `pull && up -d`.
+
+**Repository secrets.** The workflow needs `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub **access token** from Account Settings → Personal Access Tokens with Read/Write — not the account password). The native ARM runner is only free for public repositories; this one is public, so it costs nothing.
 
 ## Smoke Test
 

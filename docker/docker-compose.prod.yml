@@ -10,7 +10,11 @@
 #   cd docker
 #   cp .env.example .env
 #   # edit .env with your real secrets and DOMAIN
-#   docker compose -f docker-compose.prod.yml up --build
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# The server image is published by CI (see .github/workflows/docker-publish.yml)
+# and pulled from Docker Hub — no local build required.
 #
 # Notes:
 #   - coturn uses `network_mode: host` so it can bind the full 49152-49200 UDP
@@ -20,10 +24,7 @@
 #     `GET /api/webrtc/ice-servers` using TURN_SECRET + TURN_URL + STUN_URL.
 services:
   server:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.server
-    image: ponter-server:prod
+    image: ngotuananh101/ponter:latest
     container_name: ponter-server-prod
     restart: always
     environment:

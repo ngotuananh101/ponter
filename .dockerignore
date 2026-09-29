@@ -1,0 +1,64 @@
+# Docker build context filter.
+#
+# `docker/Dockerfile.server` builds @ponter/server and copies ONLY these paths
+# from the context:
+#
+#   pnpm-lock.yaml  pnpm-workspace.yaml  package.json  tsconfig.base.json
+#   packages/       apps/server/
+#
+# Everything below is therefore dead weight in the context. Without this file
+# the context is ~3.4GB: apps/agent/target alone is 2.6GB of compiled Rust,
+# node_modules is 809MB, and packages/*/node_modules (api-client, crypto,
+# webrtc-core) get dragged in by the `COPY packages/` layer even though pnpm
+# recreates them inside the image.
+#
+# Nothing excluded here is read by the build: the repo has no
+# `patchedDependencies`, no `patches/` dir, no `.npmrc`, and no
+# `.pnpmfile.cjs`, so `pnpm install --frozen-lockfile` inside the image
+# resolves entirely from pnpm-lock.yaml.
+
+# Version control
+.git/
+.gitignore
+.github/
+
+# Dependencies — reinstalled in-image by pnpm install --frozen-lockfile.
+**/node_modules/
+.pnpm-store/
+
+# Build outputs — produced inside the image by the builder stage.
+**/dist/
+**/build/
+**/target/
+**/.turbo/
+.turbo/
+
+# Cloudflare tooling artifacts (wrangler/miniflare)
+.wrangler/
+.mf/
+
+# Secrets. No .env is ever needed at image-build time; the compose files
+# inject them at `docker compose up`.
+**/.env
+**/.env.*
+**/*.env
+
+# Local tooling & memory
+.remember/
+.superpowers/
+.claude/
+.vscode/
+.idea/
+
+# Docs
+docs/
+
+# Workspace members the server image does not need. The Dockerfile never
+# COPYs them; excluding them keeps apps/agent/target (2.6GB) out of context.
+apps/agent/
+apps/web/
+apps/mobile/
+apps/desktop/
+workers/
+tests/
+scripts/

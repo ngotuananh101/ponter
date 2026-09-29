@@ -115,7 +115,7 @@ _Để biết chi tiết cách đăng ký agent và lấy credential, xem [Local
 ### 4. Docker (Alternative)
 
 ```bash
-# Chạy backend trong Docker (local LAN setup)
+# Chạy backend trong Docker (local LAN setup — build từ source)
 cd docker
 docker compose -f docker-compose.local.yml up --build
 ```
@@ -185,16 +185,20 @@ _Xem đầy đủ thông số tại [Terminal Multiplexing & Wire Protocol Guide
 ### Self-Hosted Backend (Docker)
 
 ```bash
-# Local LAN
+# Local LAN (build từ source)
 cd docker
 docker compose -f docker-compose.local.yml up --build
 
-# Homelab (Cloudflare Tunnel)
-docker compose -f docker-compose.tunnel.yml up --build
+# Homelab (Cloudflare Tunnel) — pull image đã build sẵn từ Docker Hub
+docker compose -f docker-compose.tunnel.yml pull
+docker compose -f docker-compose.tunnel.yml up -d
 
-# Production VPS (Caddy + Coturn)
-docker compose -f docker-compose.prod.yml up --build -d
+# Production VPS (Caddy + Coturn) — pull image đã build sẵn từ Docker Hub
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 ```
+
+Image `ngotuananh101/ponter` được build và publish bởi workflow **Docker Publish** (GitHub Actions) cho cả `linux/amd64` lẫn `linux/arm64` — máy deploy chỉ cần `pull`, không build lại. Xem [Deployment Guide](docs/guides/deployment.md#31-deploy-phien-ban-moi).
 
 ### Web Frontend (Cloudflare Pages)
 

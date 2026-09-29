@@ -8,6 +8,12 @@
 #   cd docker
 #   docker compose -f docker-compose.local.yml up --build
 #
+# This file deliberately keeps `build:` while the tunnel/prod/nginx files pull
+# `ngotuananh101/ponter:latest` from Docker Hub. Local development must reflect
+# uncommitted edits to apps/server — pulling a published image would silently run
+# stale code instead. The deployment compose files are the ones that avoid the
+# build step.
+#
 services:
   server:
     build:

@@ -8,16 +8,17 @@
 #   cd docker
 #   cp .env.example .env
 #   # edit .env with your real secrets, DOMAIN, and CORS_ORIGIN
-#   docker compose -f docker-compose.nginx.yml up --build -d
+#   docker compose -f docker-compose.nginx.yml pull
+#   docker compose -f docker-compose.nginx.yml up -d
+#
+# The server image is published by CI (see .github/workflows/docker-publish.yml)
+# and pulled from Docker Hub — no local build required.
 #
 # Nginx on Host:
 #   See `docker/nginx.conf.example` for the reverse proxy and WebSocket upgrade configuration.
 services:
   server:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.server
-    image: ponter-server:prod
+    image: ngotuananh101/ponter:latest
     container_name: ponter-server-prod
     restart: always
     environment:
