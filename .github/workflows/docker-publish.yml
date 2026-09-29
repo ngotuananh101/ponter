@@ -65,20 +65,11 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE_NAME }}
-          # `type=raw,value=latest` is required, not decorative. metadata-action
-          # only auto-generates `latest` for tag/semver/pep440/match events;
-          # a workflow_dispatch run carries a branch ref, so without this line
-          # the only tag produced would be `main` and every compose file
-          # pointing at :latest would fail to pull.
-          #
-          # The enable guard keeps an experimental branch from moving the tag
-          # that production resolves; it still gets its own sha tag.
-          #
-          # type=sha defaults to a 7-character short sha; stated explicitly so
-          # the rollback tag stays what people expect if the default ever moves.
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=short
+          # Tags are not requested here: a push-by-digest build cannot carry a
+          # tagged ref, so the merge job is what applies them. Only the OCI
+          # labels are needed, and they must be present on the per-platform
+          # images that make up the final manifest. Kept in sync with the
+          # labels block in the merge job.
           labels: |
             org.opencontainers.image.title=ponter-server
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -94,8 +85,13 @@ jobs:
           # jobs run concurrently; pushing the same tag from two jobs is a race
           # in which the last one to finish overwrites the other's manifest.
           # The merge job below combines these digests into the tagged manifest.
+          #
+          # `tags:` is deliberately NOT passed here. push-by-digest and a tagged
+          # ref are mutually exclusive -- buildx rejects the combination with
+          # "can't push tagged ref ... by digest". The tag names are computed
+          # by metadata-action and applied in the merge job instead; only the
+          # OCI labels travel with the per-platform build.
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
@@ -142,6 +138,21 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE_NAME }}
+          # This is the only place tags are defined. The per-platform builds
+          # push by digest and cannot carry a tagged ref; this job attaches the
+          # names to the merged manifest.
+          #
+          # `type=raw,value=latest` is required, not decorative. metadata-action
+          # only auto-generates `latest` for tag/semver/pep440/match events; a
+          # workflow_dispatch run carries a branch ref, so without this line the
+          # only tag produced would be `main` and every compose file pointing at
+          # :latest would fail to pull.
+          #
+          # The enable guard keeps an experimental branch from moving the tag
+          # that production resolves; it still gets its own sha tag.
+          #
+          # type=sha defaults to a 7-character short sha; stated explicitly so
+          # the rollback tag stays what people expect if the default ever moves.
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=short
