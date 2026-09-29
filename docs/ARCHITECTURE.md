@@ -108,7 +108,7 @@ Nền tảng Remote Access sử dụng kiến trúc **self-hosted stateful serve
 │ Docker Host / VPS                                                                      │
 │                                                                                        │
 │   ┌────────────────────────────────────────────────────────────────────────────────┐   │
-│   │ apps/server (@remote/server)                                                   │   │
+│   │ apps/server (@ponter/server)                                                   │   │
 │   │                                                                                │   │
 │   │   • Runtime: Node.js 24 LTS + @hono/node-server + ws                           │   │
 │   │   • In-Memory WebSocket Registry: Map<agentId, AgentConnection> (RAM)          │   │
@@ -122,7 +122,7 @@ Nền tảng Remote Access sử dụng kiến trúc **self-hosted stateful serve
 │     WSS /api/ws/agent     │                                │ STUN/TURN Allocation      │
 │                           │                                │ (RFC 5766 Shared Secret)  │
 │   ┌───────────────────────┴───────────────┐    ┌───────────┴───────────────────────┐   │
-│   │ remote-agent (Rust Daemon)            │    │ coturn (Dockerized STUN/TURN)     │   │
+│   │ ponter-agent (Rust Daemon)            │    │ coturn (Dockerized STUN/TURN)     │   │
 │   │ (Windows / Linux / macOS)             │    │ Port 3478, Relays: 49152-49200    │   │
 │   └───────────────────────────────────────┘    └───────────────────────────────────┘   │
 │                                                                                        │
@@ -269,7 +269,7 @@ flowchart TD
 ### 3.1 Tổng quan
 
 ```
-ponta-remote/
+ponter/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                    # CI pipeline
@@ -281,7 +281,7 @@ ponta-remote/
 │   ├── desktop/                      # Tauri Desktop App
 │   ├── mobile/                       # Tauri Mobile App
 │   ├── agent/                        # Native Rust agent daemon
-│   └── server/                       # Self-hosted Node.js backend (@remote/server)
+│   └── server/                       # Self-hosted Node.js backend (@ponter/server)
 │
 ├── packages/
 │   ├── shared/                       # Shared TypeScript types, schemas
@@ -291,7 +291,7 @@ ponta-remote/
 │   ├── webrtc-core/                  # WebRTC abstraction
 │   └── ui-components/                # Shared Vue components
 │
-├── docker/                           # Docker packaging for @remote/server
+├── docker/                           # Docker packaging for @ponter/server
 │   ├── Dockerfile.server
 │   ├── docker-compose.local.yml
 │   ├── docker-compose.tunnel.yml
@@ -339,7 +339,7 @@ allowBuilds:
 **File:** `apps/web/package.json`
 ```json
 {
-  "name": "@remote/web",
+  "name": "@ponter/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -351,11 +351,11 @@ allowBuilds:
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*",
-    "@remote/api-client": "workspace:*",
-    "@remote/webrtc-core": "workspace:*",
-    "@remote/terminal-core": "workspace:*",
-    "@remote/ui-components": "workspace:*",
+    "@ponter/shared": "workspace:*",
+    "@ponter/api-client": "workspace:*",
+    "@ponter/webrtc-core": "workspace:*",
+    "@ponter/terminal-core": "workspace:*",
+    "@ponter/ui-components": "workspace:*",
     "vue": "^3.4.0",
     "vue-router": "^4.3.0",
     "pinia": "^2.1.0",
@@ -366,12 +366,12 @@ allowBuilds:
 }
 ```
 
-### 4.2 Self-Hosted Backend (`@remote/server`)
+### 4.2 Self-Hosted Backend (`@ponter/server`)
 
 **File:** `apps/server/package.json`
 ```json
 {
-  "name": "@remote/server",
+  "name": "@ponter/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -385,7 +385,7 @@ allowBuilds:
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
-    "@remote/shared": "workspace:*",
+    "@ponter/shared": "workspace:*",
     "better-sqlite3": "^11.8.1",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9",
@@ -430,7 +430,7 @@ apps/server/
 
 **Dockerfile.server** — Multi-stage build:
 - **Stage 1 (`base`)**: `node:24-alpine` với Corepack/pnpm
-- **Stage 2 (`builder`)**: Cài đặt dependencies + biên dịch `@remote/server`
+- **Stage 2 (`builder`)**: Cài đặt dependencies + biên dịch `@ponter/server`
 - **Stage 3 (`runner`)**: Chỉ production deps, `better-sqlite3` native bindings
 
 **Three Compose Setups:**
@@ -443,7 +443,7 @@ apps/server/
 **File:** `apps/agent/Cargo.toml`
 ```toml
 [package]
-name = "remote-agent"
+name = "ponter-agent"
 version = "0.1.0"
 edition = "2021"
 
@@ -862,8 +862,8 @@ gantt
 - [ ] Test kết nối P2P
 
 #### Tuần 5: Desktop Agent - Terminal
-- [ ] Tạo Rust agent — `apps/agent` (crate `remote-agent`)
-- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `@remote/server`
+- [ ] Tạo Rust agent — `apps/agent` (crate `ponter-agent`)
+- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `@ponter/server`
 - [ ] Tích hợp portable-pty — PTY thật, 1 session
 - [ ] Xử lý terminal I/O — kênh `terminal`
 - [ ] Implement session management
@@ -882,8 +882,8 @@ gantt
 
 ```bash
 # Clone repository
-git clone https://github.com/ngotuananh101/ponta-remote.git
-cd ponta-remote
+git clone https://github.com/ngotuananh101/ponter.git
+cd ponter
 
 # Install dependencies
 pnpm install
@@ -898,10 +898,10 @@ Chạy từng thành phần trong terminal riêng:
 
 ```bash
 # Terminal 1: Start the Backend (Node.js + Hono + SQLite)
-pnpm --filter @remote/server dev
+pnpm --filter @ponter/server dev
 
 # Terminal 2: Start the Web Client (Vite on http://127.0.0.1:5173)
-pnpm --filter @remote/web dev
+pnpm --filter @ponter/web dev
 
 # Terminal 3: Run the Native Agent Daemon
 cargo run --manifest-path apps/agent/Cargo.toml -- \
@@ -944,7 +944,7 @@ VITE_API_URL=http://localhost:8787
 pnpm test
 
 # Server-specific tests
-pnpm --filter @remote/server test
+pnpm --filter @ponter/server test
 
 # Rust unit tests
 cargo test --manifest-path apps/agent/Cargo.toml
@@ -967,10 +967,10 @@ Web client (`apps/web`) được triển khai như static assets trên Cloudflar
 
 ```bash
 # Build
-pnpm --filter @remote/web build
+pnpm --filter @ponter/web build
 
 # Deploy to Cloudflare Pages
-pnpm --filter @remote/web exec wrangler deploy
+pnpm --filter @ponter/web exec wrangler deploy
 ```
 
 ### 10.3 Desktop Agent

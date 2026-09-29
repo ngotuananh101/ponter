@@ -202,7 +202,7 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.8
         version: 1.19.17(hono@4.13.9)
-      '@remote/shared':
+      '@ponter/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       better-sqlite3:
@@ -245,19 +245,19 @@ importers:
       '@lucide/vue':
         specifier: ^1.48.0
         version: 1.48.0(vue@3.5.43(typescript@6.0.3))
-      '@remote/api-client':
+      '@ponter/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@remote/crypto':
+      '@ponter/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
-      '@remote/shared':
+      '@ponter/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@remote/terminal-core':
+      '@ponter/terminal-core':
         specifier: workspace:*
         version: link:../../packages/terminal-core
-      '@remote/webrtc-core':
+      '@ponter/webrtc-core':
         specifier: workspace:*
         version: link:../../packages/webrtc-core
       '@xterm/addon-fit':
@@ -336,7 +336,7 @@ importers:
 
   packages/api-client:
     dependencies:
-      '@remote/shared':
+      '@ponter/shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -373,10 +373,10 @@ importers:
 
   packages/terminal-core:
     dependencies:
-      '@remote/shared':
+      '@ponter/shared':
         specifier: workspace:*
         version: link:../shared
-      '@remote/webrtc-core':
+      '@ponter/webrtc-core':
         specifier: workspace:*
         version: link:../webrtc-core
     devDependencies:
@@ -394,7 +394,7 @@ importers:
 
   packages/webrtc-core:
     dependencies:
-      '@remote/shared':
+      '@ponter/shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -413,7 +413,7 @@ importers:
 
   workers:
     dependencies:
-      '@remote/shared':
+      '@ponter/shared':
         specifier: workspace:*
         version: link:../packages/shared
       drizzle-orm:

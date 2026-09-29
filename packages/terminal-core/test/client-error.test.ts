@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { TerminalClient } from '../src/client';
-import type { DataChannelManager } from '@remote/webrtc-core';
-import type { DataChannelMessage } from '@remote/shared';
+import type { DataChannelManager } from '@ponter/webrtc-core';
+import type { DataChannelMessage } from '@ponter/shared';
 
 // The agent could not previously tell the browser that a terminal failed: a
 // refused PTY spawn was a `tracing::warn!` on the agent and nothing at all in

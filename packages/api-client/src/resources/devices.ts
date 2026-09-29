@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { Device } from '@remote/shared';
+import type { Device } from '@ponter/shared';
 
 export interface CreateDeviceInput {
   fingerprint: string;

@@ -1,6 +1,6 @@
 # Docker Packaging
 
-This directory contains the multi-stage Dockerfile and four Docker Compose setups for running the `@remote/server` self-hosted backend.
+This directory contains the multi-stage Dockerfile and four Docker Compose setups for running the `@ponter/server` self-hosted backend.
 
 ## Files
 
@@ -114,13 +114,13 @@ When your VPS already has Nginx running on ports 80/443:
 You can also build the image directly without Compose:
 
 ```bash
-docker build -f docker/Dockerfile.server -t remote-server:test .
+docker build -f docker/Dockerfile.server -t ponter-server:test .
 ```
 
 Podman is also supported:
 
 ```bash
-podman build -f docker/Dockerfile.server -t remote-server:test .
+podman build -f docker/Dockerfile.server -t ponter-server:test .
 ```
 
 ## Smoke Test

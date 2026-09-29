@@ -1,6 +1,6 @@
-# Ponta Remote Access Platform
+# Ponter
 
-[![CI](https://github.com/ngotuananh101/ponta-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/ngotuananh101/ponta-remote/actions/workflows/ci.yml)
+[![CI](https://github.com/ngotuananh101/ponter/actions/workflows/ci.yml/badge.svg)](https://github.com/ngotuananh101/ponter/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Turborepo](https://img.shields.io/badge/monorepo-Turborepo-ef4444.svg)](https://turbo.build)
 [![Node.js 24](https://img.shields.io/badge/runtime-Node.js%2024-68A063.svg)](https://nodejs.org)
@@ -30,13 +30,13 @@ A high-performance, low-latency, zero-trust remote access platform featuring **M
 Managed with **Turborepo** and **pnpm workspaces**:
 
 ```
-ponta-remote/
+ponter/
 ├── apps/
 │   ├── web/               # Vue 3 + Vite + Pinia workspace (Xterm.js, TabBar, Sidebar)
 │   ├── desktop/           # Tauri 2.0 cross-platform desktop shell (Linux, macOS, Windows)
 │   ├── mobile/            # Tauri mobile client shell (iOS, Android)
 │   ├── agent/             # Native Rust desktop agent daemon (portable-pty, webrtc-rs, tokio)
-│   └── server/            # Self-hosted backend (@remote/server): Node.js 24 + Hono + SQLite + ws
+│   └── server/            # Self-hosted backend (@ponter/server): Node.js 24 + Hono + SQLite + ws
 ├── packages/
 │   ├── shared/            # Shared TypeScript types, schemas, and wire protocol definitions
 │   ├── api-client/        # Type-safe HTTP & WebSocket client SDK with token auto-refresh
@@ -97,10 +97,10 @@ Chạy từng thành phần trong terminal riêng:
 
 ```bash
 # Terminal 1: Start the Backend (Node.js + Hono + SQLite on http://127.0.0.1:8787)
-pnpm --filter @remote/server dev
+pnpm --filter @ponter/server dev
 
 # Terminal 2: Start the Web Client (Vite on http://127.0.0.1:5173)
-pnpm --filter @remote/web dev
+pnpm --filter @ponter/web dev
 
 # Terminal 3: Run the Native Agent Daemon
 cargo run --manifest-path apps/agent/Cargo.toml -- \
@@ -131,7 +131,7 @@ Xem [Deployment Guide](docs/guides/deployment.md) để biết chi tiết về c
 pnpm -w test
 
 # Server-specific tests
-pnpm --filter @remote/server test
+pnpm --filter @ponter/server test
 
 # Rust unit tests
 cargo test --manifest-path apps/agent/Cargo.toml
@@ -148,14 +148,14 @@ pnpm format:check
 cargo fmt --check --manifest-path apps/agent/Cargo.toml
 
 # Cross-language E2E tests
-pnpm --filter @remote/webrtc-core test:e2e
+pnpm --filter @ponter/webrtc-core test:e2e
 ```
 
 ---
 
 ## 🌐 API & Protocol Overview
 
-### REST API Endpoints (`@remote/server`)
+### REST API Endpoints (`@ponter/server`)
 
 - **Authentication**: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`
 - **Agents**: `GET /api/agents`, `POST /api/agents` (register & mint credentials), `GET /api/agents/:id`
@@ -199,8 +199,8 @@ docker compose -f docker-compose.prod.yml up --build -d
 ### Web Frontend (Cloudflare Pages)
 
 ```bash
-pnpm --filter @remote/web build
-pnpm --filter @remote/web exec wrangler deploy
+pnpm --filter @ponter/web build
+pnpm --filter @ponter/web exec wrangler deploy
 ```
 
 Xem [Deployment Guide](docs/guides/deployment.md) để biết chi tiết.

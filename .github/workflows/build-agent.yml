@@ -1,6 +1,6 @@
 name: Build Agent
 
-# Cross-platform release + verification workflow for the `remote-agent` Rust
+# Cross-platform release + verification workflow for the `ponter-agent` Rust
 # binary at `apps/agent` (spec: Cross-Platform Build Workflow Design).
 #
 # - Tag push (v*.*.* / agent-v*.*.*): builds all targets, publishes a GitHub
@@ -121,38 +121,38 @@ jobs:
             arch: x64-gnu
             runner: ubuntu-latest
             pkg_ext: tar.gz
-            bin_name: remote-agent
+            bin_name: ponter-agent
           - target: x86_64-unknown-linux-musl
             os: Linux
             arch: x64-musl
             runner: ubuntu-latest
             pkg_ext: tar.gz
-            bin_name: remote-agent
+            bin_name: ponter-agent
             static: true
           - target: aarch64-unknown-linux-gnu
             os: Linux
             arch: arm64-gnu
             runner: ubuntu-24.04-arm
             pkg_ext: tar.gz
-            bin_name: remote-agent
+            bin_name: ponter-agent
           - target: x86_64-apple-darwin
             os: macOS
             arch: x64
             runner: macos-14
             pkg_ext: tar.gz
-            bin_name: remote-agent
+            bin_name: ponter-agent
           - target: aarch64-apple-darwin
             os: macOS
             arch: arm64
             runner: macos-14
             pkg_ext: tar.gz
-            bin_name: remote-agent
+            bin_name: ponter-agent
           - target: x86_64-pc-windows-msvc
             os: Windows
             arch: x64-msvc
             runner: windows-latest
             pkg_ext: zip
-            bin_name: remote-agent.exe
+            bin_name: ponter-agent.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -219,7 +219,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           BIN: ${{ matrix.bin_name }}
         run: |
-          ARTIFACT="remote-agent-v${VERSION}-${TARGET}"
+          ARTIFACT="ponter-agent-v${VERSION}-${TARGET}"
           tar -czf "${ARTIFACT}.tar.gz" \
             -C "${WORKSPACE}/target/${TARGET}/release" \
             "${BIN}"
@@ -236,8 +236,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           TARGET: ${{ matrix.target }}
         run: |
-          $DEST = "remote-agent-v$env:VERSION-$env:TARGET.zip"
-          $SOURCE = "$env:WORKSPACE/target/$env:TARGET/release/remote-agent.exe"
+          $DEST = "ponter-agent-v$env:VERSION-$env:TARGET.zip"
+          $SOURCE = "$env:WORKSPACE/target/$env:TARGET/release/ponter-agent.exe"
           Compress-Archive -Path $SOURCE -DestinationPath $DEST -Force
           $HASH = (Get-FileHash -Path $DEST -Algorithm SHA256).Hash.ToLower()
           "$HASH  $DEST" | Out-File -FilePath "$DEST.sha256" -Encoding ascii
@@ -247,11 +247,11 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: remote-agent-${{ matrix.target }}
+          name: ponter-agent-${{ matrix.target }}
           path: |
-            remote-agent-v*.tar.gz
-            remote-agent-v*.zip
-            remote-agent-v*.sha256
+            ponter-agent-v*.tar.gz
+            ponter-agent-v*.zip
+            ponter-agent-v*.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -320,7 +320,7 @@ jobs:
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.meta.outputs.version) }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('remote-agent v{0}', steps.meta.outputs.version) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('ponter-agent v{0}', steps.meta.outputs.version) }}
           files: |
             dist/*.tar.gz
             dist/*.zip

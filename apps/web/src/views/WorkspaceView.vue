@@ -2,8 +2,8 @@
 import { ref, onMounted, onUnmounted, toRaw } from 'vue';
 import { useRoute } from 'vue-router';
 import { useTerminalStore } from '@/stores/terminal';
-import type { Agent } from '@remote/shared';
-import type { TerminalSession } from '@remote/terminal-core';
+import type { Agent } from '@ponter/shared';
+import type { TerminalSession } from '@ponter/terminal-core';
 import WorkspaceSidebar from '@/components/terminal/WorkspaceSidebar.vue';
 import TerminalTabBar from '@/components/terminal/TerminalTabBar.vue';
 import XtermTerminal from '@/components/terminal/XtermTerminal.vue';

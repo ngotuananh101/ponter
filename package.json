@@ -1,5 +1,5 @@
 {
-  "name": "remote-access-platform",
+  "name": "ponter",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,10 +14,10 @@
     "test": "turbo run test",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
-    "deploy:web": "pnpm --filter @remote/web deploy",
-    "dev:web": "pnpm --filter @remote/web dev",
-    "dev:server": "pnpm --filter @remote/server dev",
-    "test:server": "pnpm --filter @remote/server test"
+    "deploy:web": "pnpm --filter @ponter/web deploy",
+    "dev:web": "pnpm --filter @ponter/web dev",
+    "dev:server": "pnpm --filter @ponter/server dev",
+    "test:server": "pnpm --filter @ponter/server test"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

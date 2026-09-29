@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Hướng dẫn triển khai nền tảng Remote Access. Backend (`@remote/server`) là một ứng dụng Node.js self-hosted chạy trong Docker. Frontend web (`apps/web`) là Vue 3 SPA được triển khai lên Cloudflare Pages.
+Hướng dẫn triển khai nền tảng Remote Access. Backend (`@ponter/server`) là một ứng dụng Node.js self-hosted chạy trong Docker. Frontend web (`apps/web`) là Vue 3 SPA được triển khai lên Cloudflare Pages.
 
 ---
 
@@ -42,7 +42,7 @@ Production deployment bao gồm các thành phần sau:
    - **Framework**: Vue 3 SPA + Vite + Tailwind CSS + Pinia
    - **Kết nối backend**: Cấu hình qua `VITE_API_URL` trỏ tới self-hosted server
 
-2. **Backend Server (`@remote/server`)**:
+2. **Backend Server (`@ponter/server`)**:
    - **Runtime**: Node.js 24 LTS + @hono/node-server + `ws` library
    - **Database**: SQLite (better-sqlite3 + Drizzle ORM) với WAL mode
    - **WebSocket**: In-memory `Map<agentId, AgentConnection>` dispatcher
@@ -129,7 +129,7 @@ Web frontend giao tiếp với self-hosted backend thông qua biến môi trư�
 
 1. Copy template:
    ```bash
-   pnpm --filter @remote/web exec cp .env.production.example .env.production
+   pnpm --filter @ponter/web exec cp .env.production.example .env.production
    ```
    (`.env.production` được gitignored để cấu hình địa phương luôn riêng tư)
 
@@ -142,10 +142,10 @@ Web frontend giao tiếp với self-hosted backend thông qua biến môi trư�
 
 ```bash
 # Build web application
-pnpm --filter @remote/web build
+pnpm --filter @ponter/web build
 
 # Deploy to Cloudflare Pages
-pnpm --filter @remote/web exec wrangler deploy
+pnpm --filter @ponter/web exec wrangler deploy
 ```
 
 ### 4.3 Verify Web Deployment

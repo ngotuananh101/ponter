@@ -40,17 +40,17 @@
 
 **Interfaces:**
 - Produces: `createApp()` function returning Hono app instance, `startServer()` starting `@hono/node-server` HTTP and WebSocket server.
-- Consumes: `@remote/shared`.
+- Consumes: `@ponter/shared`.
 
 - [ ] **Step 1: Update workspace configuration**
 In `pnpm-workspace.yaml`, ensure `apps/*` and `packages/*` are included.
-In root `package.json`, update scripts to add `"dev:server": "pnpm --filter @remote/server dev"`, `"test:server": "pnpm --filter @remote/server test"`.
+In root `package.json`, update scripts to add `"dev:server": "pnpm --filter @ponter/server dev"`, `"test:server": "pnpm --filter @ponter/server test"`.
 
 - [ ] **Step 2: Create `apps/server/package.json`**
 Define dependencies:
 ```json
 {
-  "name": "@remote/server",
+  "name": "@ponter/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -64,7 +64,7 @@ Define dependencies:
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
-    "@remote/shared": "workspace:*",
+    "@ponter/shared": "workspace:*",
     "better-sqlite3": "^11.8.1",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9",
@@ -104,7 +104,7 @@ describe('GET /health', () => {
 ```
 
 - [ ] **Step 5: Run test to verify it fails**
-Run: `pnpm --filter @remote/server test`
+Run: `pnpm --filter @ponter/server test`
 Expected: FAIL (Cannot find module '../src/app')
 
 - [ ] **Step 6: Implement minimal `app.ts` and `types.ts`**
@@ -151,13 +151,13 @@ export function createApp() {
 ```
 
 - [ ] **Step 7: Run test to verify it passes**
-Run: `pnpm --filter @remote/server test`
+Run: `pnpm --filter @ponter/server test`
 Expected: PASS
 
 - [ ] **Step 8: Commit**
 ```bash
 git add apps/server pnpm-workspace.yaml package.json
-git commit -m "feat(server): scaffold @remote/server package with Hono on Node.js"
+git commit -m "feat(server): scaffold @ponter/server package with Hono on Node.js"
 ```
 
 ---
@@ -219,7 +219,7 @@ describe('Database client', () => {
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
-Run: `pnpm --filter @remote/server test test/db.test.ts`
+Run: `pnpm --filter @ponter/server test test/db.test.ts`
 Expected: FAIL
 
 - [ ] **Step 3: Implement `apps/server/src/db/schema.ts`**
@@ -308,7 +308,7 @@ Create `client.ts`:
 - Export `getDb(dbPath?: string)` and `closeDb()`.
 
 - [ ] **Step 5: Run test to verify it passes**
-Run: `pnpm --filter @remote/server test test/db.test.ts`
+Run: `pnpm --filter @ponter/server test test/db.test.ts`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
@@ -341,7 +341,7 @@ In `apps/server/test/auth.test.ts`:
 - Test logout -> token revoked; subsequent `/api/users/me` -> 401 Unauthorized.
 
 - [ ] **Step 2: Run test to verify it fails**
-Run: `pnpm --filter @remote/server test test/auth.test.ts`
+Run: `pnpm --filter @ponter/server test test/auth.test.ts`
 Expected: FAIL
 
 - [ ] **Step 3: Port and adapt crypto, JWT, and middleware**
@@ -351,7 +351,7 @@ Expected: FAIL
 - Implement `apps/server/src/routes/auth.ts` and `apps/server/src/routes/users.ts`.
 
 - [ ] **Step 4: Run test to verify it passes**
-Run: `pnpm --filter @remote/server test test/auth.test.ts`
+Run: `pnpm --filter @ponter/server test test/auth.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -389,7 +389,7 @@ In `apps/server/test/agents-sessions.test.ts`:
 - Terminate session -> marks `status = 'terminated'` and `ended_at = now()`.
 
 - [ ] **Step 2: Run test to verify it fails**
-Run: `pnpm --filter @remote/server test test/agents-sessions.test.ts`
+Run: `pnpm --filter @ponter/server test test/agents-sessions.test.ts`
 Expected: FAIL
 
 - [ ] **Step 3: Implement `agents.ts`, `devices.ts`, `sessions.ts`**
@@ -397,7 +397,7 @@ Port business logic from `workers/src/routes/agents.ts`, `devices.ts`, `sessions
 Ensure tenancy guards and UUID validations match spec.
 
 - [ ] **Step 4: Run test to verify it passes**
-Run: `pnpm --filter @remote/server test test/agents-sessions.test.ts`
+Run: `pnpm --filter @ponter/server test test/agents-sessions.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -438,7 +438,7 @@ In `apps/server/test/signaling.test.ts`:
 - Test `GET /api/webrtc/ice-servers` -> returns STUN server and TURN credentials if secret configured.
 
 - [ ] **Step 2: Run test to verify it fails**
-Run: `pnpm --filter @remote/server test test/signaling.test.ts`
+Run: `pnpm --filter @ponter/server test test/signaling.test.ts`
 Expected: FAIL
 
 - [ ] **Step 3: Implement `apps/server/src/routes/ws.ts`**
@@ -464,7 +464,7 @@ Expected: FAIL
 Handle `server.on('upgrade')`: If `url === '/api/ws/agent'`, route to WebSocketServer; otherwise destroy socket.
 
 - [ ] **Step 6: Run test to verify it passes**
-Run: `pnpm --filter @remote/server test test/signaling.test.ts`
+Run: `pnpm --filter @ponter/server test test/signaling.test.ts`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
@@ -505,7 +505,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/ ./packages/
 COPY apps/server/ ./apps/server/
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @remote/server build
+RUN pnpm --filter @ponter/server build
 
 FROM base AS runner
 WORKDIR /app
@@ -536,7 +536,7 @@ Configured with service `server` and service `cloudflared` (using `TUNNEL_TOKEN`
 Configured with service `server`, service `coturn` (STUN/TURN with `TURN_SECRET`), and service `caddy` (Let's Encrypt reverse proxy).
 
 - [ ] **Step 5: Verify Docker build locally**
-Run: `docker build -f docker/Dockerfile.server -t remote-server:test .`
+Run: `docker build -f docker/Dockerfile.server -t ponter-server:test .`
 Expected: Successfully built image.
 
 - [ ] **Step 6: Commit**
@@ -568,7 +568,7 @@ Document running with `docker-compose.local.yml`, `docker-compose.tunnel.yml`, a
 Document deploying the frontend `apps/web` to Cloudflare Pages.
 
 - [ ] **Step 3: Update `docs/guides/development.md` and `docs/guides/agent-setup.md`**
-Replace `wrangler dev` commands with `pnpm --filter @remote/server dev`.
+Replace `wrangler dev` commands with `pnpm --filter @ponter/server dev`.
 Update agent connection strings to `ws://localhost:8787/api/ws/agent`.
 
 - [ ] **Step 4: Update root `README.md` and `docs/README.md`**

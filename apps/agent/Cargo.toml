@@ -1,5 +1,5 @@
 [package]
-name = "remote-agent"
+name = "ponter-agent"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"          # clap 4.6.7's MSRV is the highest in the set (spec R24)

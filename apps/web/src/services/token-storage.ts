@@ -1,4 +1,4 @@
-import type { TokenStorageAdapter, TokenPair } from '@remote/api-client';
+import type { TokenStorageAdapter, TokenPair } from '@ponter/api-client';
 
 const ACCESS_TOKEN_KEY = 'remote.accessToken';
 const REFRESH_TOKEN_KEY = 'remote.refreshToken';

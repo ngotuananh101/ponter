@@ -1,4 +1,4 @@
-import { ApiClient } from '@remote/api-client';
+import { ApiClient } from '@ponter/api-client';
 import { tokenStorage } from './token-storage';
 
 const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';

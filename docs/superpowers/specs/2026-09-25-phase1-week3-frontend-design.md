@@ -226,7 +226,7 @@ Run under Node with `fake-indexeddb/auto` loaded in `setupFiles`.
 
 **Purpose:** A typed HTTP SDK for the Week 2 REST API. Framework-free and runtime-agnostic (uses global `fetch`).
 
-**Dependencies:** `@remote/shared` (workspace). Dev: `vitest`, `typescript`.
+**Dependencies:** `@ponter/shared` (workspace). Dev: `vitest`, `typescript`.
 
 ### 5.1 File Structure
 
@@ -333,7 +333,7 @@ return request(method, path, options, { retried: true })
 
 ### 5.5 Resources
 
-Each resource is a factory taking the `HttpClient` and returning an object of methods. Response types come from `@remote/shared` where they exist.
+Each resource is a factory taking the `HttpClient` and returning an object of methods. Response types come from `@ponter/shared` where they exist.
 
 | Resource | Methods | Endpoint |
 |---|---|---|
@@ -607,7 +607,7 @@ interface AuthState {
 |---|---|
 | `restore()` | No-op if `restored` is true. Reads the access token from the adapter; if absent, sets `idle` and returns. If present, calls `fetchMe()`; on failure clears tokens and resets to `idle`. Sets `restored = true` either way. |
 | `login(username, password)` | Sets `loading`, calls `api.auth.login`, then `fetchMe()`, sets `authenticated`. On `ApiError` sets `error` to `err.message` and status `error`. |
-| `register({ username, email, password })` | Calls `generateUserKeyPair()` from `@remote/crypto`, then `api.auth.register({ username, email, password, publicKey: publicKeySpkiBase64 })`, then `savePrivateKey(user.id, privateKey)`, then `fetchMe()`. |
+| `register({ username, email, password })` | Calls `generateUserKeyPair()` from `@ponter/crypto`, then `api.auth.register({ username, email, password, publicKey: publicKeySpkiBase64 })`, then `savePrivateKey(user.id, privateKey)`, then `fetchMe()`. |
 | `logout()` | Reads the refresh token, calls `api.auth.logout(refreshToken)` (best-effort — a failure does not block local logout), clears tokens, resets state. |
 | `fetchMe()` | Calls `api.users.me()` and assigns `user`. |
 | `clearError()` | Sets `error = null`. |
@@ -664,7 +664,7 @@ export function useTheme(): UseTheme;
 
 ### 6.9 Tests
 
-**`auth-store.test.ts`** — mocks `@remote/api-client` and `@remote/crypto` with `vi.mock`.
+**`auth-store.test.ts`** — mocks `@ponter/api-client` and `@ponter/crypto` with `vi.mock`.
 
 1. `login` with valid credentials sets `user` and `status: 'authenticated'`.
 2. `login` failure sets `error` and leaves `status: 'error'`.
@@ -799,7 +799,7 @@ The `workers/**/*.ts` glob is preserved from the current config so backend lint 
 
 ### 7.4 Root `package.json`
 
-Add `"dev:web": "pnpm --filter @remote/web dev"` alongside the existing `deploy:workers` and `db:migrate:prod` shortcuts.
+Add `"dev:web": "pnpm --filter @ponter/web dev"` alongside the existing `deploy:workers` and `db:migrate:prod` shortcuts.
 
 ### 7.5 GitHub Actions
 
@@ -815,11 +815,11 @@ No change. `dist` and `node_modules` are already ignored, which covers `apps/web
 
 Two terminals:
 ```bash
-pnpm --filter @remote/signaling dev   # Worker on http://localhost:8787
+pnpm --filter @ponter/signaling dev   # Worker on http://localhost:8787
 pnpm dev:web                          # Vite on http://localhost:5173
 ```
 
-The Worker requires local D1 migrations to have been applied (`pnpm --filter @remote/signaling db:migrate:local`) and local secrets to be present for JWT signing.
+The Worker requires local D1 migrations to have been applied (`pnpm --filter @ponter/signaling db:migrate:local`) and local secrets to be present for JWT signing.
 
 ---
 
@@ -846,7 +846,7 @@ Three tasks, each independently testable and reviewable.
 | Task | Deliverable | Depends on |
 |---|---|---|
 | **Task 1** | `packages/crypto` — keypair generation, SPKI serialization, IndexedDB storage, 7 tests | — |
-| **Task 2** | `packages/api-client` — `HttpClient`, refresh queue, five resources, 10 tests | Task 1 not required; `@remote/shared` only |
+| **Task 2** | `packages/api-client` — `HttpClient`, refresh queue, five resources, 10 tests | Task 1 not required; `@ponter/shared` only |
 | **Task 3** | `apps/web` — Vite/Vue/Tailwind scaffold, shadcn-vue init + components, dark mode, router + guard, auth store, forms and views, 22 tests; plus `pnpm-workspace.yaml` (`vue-demi`), root ESLint, root `package.json`, and `.env.example` updates | Tasks 1 and 2 |
 
 Tasks 1 and 2 are independent of each other. Task 3 consumes both, and begins with the `pnpm-workspace.yaml` change — nothing in Task 3's UI layer works until `shadcn-vue init` succeeds.

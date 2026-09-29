@@ -1,14 +1,14 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { User } from '@remote/shared';
+import type { User } from '@ponter/shared';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
 import {
   generateUserKeyPair,
   savePrivateKey,
   deletePrivateKey,
-} from '@remote/crypto';
-import { isApiError } from '@remote/api-client';
+} from '@ponter/crypto';
+import { isApiError } from '@ponter/api-client';
 
 export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'error';
 

@@ -150,11 +150,11 @@ Week 4 ships `RESTPollingTransport`; Week 5 adds `WebSocketTransport`. `webrtc-c
 
 **Rationale.** The seam spike drove a complete offer/answer/ICE exchange through exactly this
 interface (§2.2). It is also the minimum: `send` and `subscribe` are what signaling *is*, and
-`close` is needed to release a polling loop. `webrtc-core` must not import `@remote/api-client` —
+`close` is needed to release a polling loop. `webrtc-core` must not import `@ponter/api-client` —
 doing so would drag in auth and token storage, making the package untestable under `werift` and
 unusable by the Rust agent.
 
-**Consequence.** `webrtc-core` has no dependency on `@remote/api-client`; the caller wires the
+**Consequence.** `webrtc-core` has no dependency on `@ponter/api-client`; the caller wires the
 transport. Week 5's work is additive. The cost is that transport selection is the caller's
 responsibility, so `apps/web` (and later the agent) must construct the right one.
 
@@ -498,7 +498,7 @@ CREATE INDEX `signals_session_created_idx` ON `signals` (`session_id`, `created_
 CREATE INDEX `signals_expires_at_idx` ON `signals` (`expires_at`);
 ```
 
-Generated with `pnpm --filter @remote/signaling db:generate` (drizzle-kit needs no credentials),
+Generated with `pnpm --filter @ponter/signaling db:generate` (drizzle-kit needs no credentials),
 then applied locally with `db:migrate:local`. The `signals` table itself is unchanged (ADR-03).
 
 ### 5.6 Tests
@@ -512,8 +512,8 @@ then applied locally with `db:migrate:local`. The `signals` table itself is unch
 ## 6. Workspace & CI Integration
 
 1. **`packages/webrtc-core/package.json`** — replace the `echo ok` stubs with real scripts
-   (`eslint .`, `tsc --noEmit`, `vitest run`), add `dependencies: { "@remote/shared": "workspace:*" }`
-   and `devDependencies: { werift, typescript, vitest }`. No `@remote/api-client` dependency
+   (`eslint .`, `tsc --noEmit`, `vitest run`), add `dependencies: { "@ponter/shared": "workspace:*" }`
+   and `devDependencies: { werift, typescript, vitest }`. No `@ponter/api-client` dependency
    (ADR-02).
 2. **`packages/webrtc-core/tsconfig.json`** — `lib: ["ES2024","DOM"]`, following F12's precedent.
 3. **`packages/webrtc-core/vitest.config.ts`** — `environment: 'node'`, mirroring
@@ -552,7 +552,7 @@ suite growing from **97** to **135** tests (24 in `webrtc-core`, 14 in `workers/
 
 **Boundaries**
 
-- `webrtc-core` must not import `@remote/api-client` or any browser-only global at module scope.
+- `webrtc-core` must not import `@ponter/api-client` or any browser-only global at module scope.
 - `packages/shared` must stay DOM-free (F11) — do not "fix" `sdp: string` to
   `RTCSessionDescriptionInit`.
 - The test fixture must create `signals` before any signal route runs (F8).

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
-import type { TerminalSession } from '@remote/terminal-core';
+import type { TerminalSession } from '@ponter/terminal-core';
 
 describe('useTerminalStore', () => {
   beforeEach(() => {

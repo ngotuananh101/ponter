@@ -48,16 +48,16 @@ jobs:
       - name: Check code formatting
         run: pnpm format:check
 
-      # Run @remote/server tests (Node.js + Hono + SQLite)
+      # Run @ponter/server tests (Node.js + Hono + SQLite)
       - name: Run server test suite
-        run: pnpm --filter @remote/server test
+        run: pnpm --filter @ponter/server test
 
       - name: Run web test suite
-        run: pnpm --filter @remote/web test
+        run: pnpm --filter @ponter/web test
         continue-on-error: true # UI tests may be flaky
 
       - name: Run shared package tests
-        run: pnpm --filter @remote/shared test
+        run: pnpm --filter @ponter/shared test
         continue-on-error: true
 
   rust:
@@ -101,10 +101,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build server Docker image
-        run: docker build -f docker/Dockerfile.server -t remote-server:ci .
+        run: docker build -f docker/Dockerfile.server -t ponter-server:ci .
 
       - name: Verify image exists
-        run: docker image inspect remote-server:ci
+        run: docker image inspect ponter-server:ci
 
   e2e:
     name: Cross-language terminal E2E
@@ -144,4 +144,4 @@ jobs:
         working-directory: apps/agent
 
       - name: Run the E2E suite
-        run: pnpm --filter @remote/webrtc-core test:e2e
+        run: pnpm --filter @ponter/webrtc-core test:e2e

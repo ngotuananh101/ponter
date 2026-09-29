@@ -2,7 +2,7 @@ import { sql, and, eq } from 'drizzle-orm';
 import { signals, sessions } from '../db/schema';
 import type { SignalSelect } from '../db/schema';
 import type { Database } from '../db/client';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 /** Matches the TTL the three REST routes wrote before this helper existed. */
 export const SIGNAL_TTL_SQL = sql`datetime('now', '+5 minutes')`;

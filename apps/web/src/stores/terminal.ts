@@ -4,12 +4,12 @@ import {
   TerminalClient,
   TerminalSession,
   type TerminalSession as TerminalSessionType,
-} from '@remote/terminal-core';
+} from '@ponter/terminal-core';
 import {
   PeerConnection,
   createBrowserAdapter,
   RESTPollingTransport,
-} from '@remote/webrtc-core';
+} from '@ponter/webrtc-core';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
 

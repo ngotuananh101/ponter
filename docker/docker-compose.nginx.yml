@@ -1,7 +1,7 @@
 # Production VPS compose setup for environments with an existing Nginx on the host.
 #
 # Services:
-#   - server   : @remote/server, persistent SQLite on ./data, binds 127.0.0.1:8787.
+#   - server   : @ponter/server, persistent SQLite on ./data, binds 127.0.0.1:8787.
 #   - coturn   : STUN/TURN on host networking (RFC 5766 long-term auth).
 #
 # Usage:
@@ -17,8 +17,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.server
-    image: remote-server:prod
-    container_name: remote-server-prod
+    image: ponter-server:prod
+    container_name: ponter-server-prod
     restart: always
     environment:
       - PORT=8787

@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 
 export interface IceServersResponse {
   iceServers?: IceServerConfig[];

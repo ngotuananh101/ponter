@@ -4,7 +4,7 @@
 
 **Goal:** Build the backend foundation on Cloudflare Workers (`workers/signaling`) using Hono, D1 database with Drizzle ORM, KV cache, Web Crypto PBKDF2 password hashing, JWT authentication with token revocation, REST API endpoints (Auth, Users, Devices, Agents, Sessions), and a Vitest automated test suite running in `workerd`.
 
-**Architecture:** A unified Cloudflare Worker (`@remote/signaling`) built with Hono router exposing modular sub-routers (`/api/auth`, `/api/users`, `/api/devices`, `/api/agents`, `/api/sessions`). Data persistence via Cloudflare D1 with Drizzle ORM for schema and migration management. Cloudflare KV cache for instant token revocation blacklist and ephemeral caching. Password hashing using Web Crypto API PBKDF2 with constant-time verification. Testing via Vitest and `@cloudflare/vitest-pool-workers`.
+**Architecture:** A unified Cloudflare Worker (`@ponter/signaling`) built with Hono router exposing modular sub-routers (`/api/auth`, `/api/users`, `/api/devices`, `/api/agents`, `/api/sessions`). Data persistence via Cloudflare D1 with Drizzle ORM for schema and migration management. Cloudflare KV cache for instant token revocation blacklist and ephemeral caching. Password hashing using Web Crypto API PBKDF2 with constant-time verification. Testing via Vitest and `@cloudflare/vitest-pool-workers`.
 
 **Tech Stack:** Cloudflare Workers, Hono 4.13.9, Drizzle ORM 0.45.3, Drizzle Kit 0.31.11, Vitest 4.1.11, `@cloudflare/vitest-pool-workers` 0.22.0, `@cloudflare/workers-types`, TypeScript 6.0.3, pnpm 12.6.0, Turborepo 2.11.3.
 
@@ -44,7 +44,7 @@
 - Modify: `package.json`
 
 **Interfaces:**
-- Produces: Working `@remote/signaling` package capable of running `pnpm --filter @remote/signaling dev`, `pnpm --filter @remote/signaling test`, and `pnpm --filter @remote/signaling typecheck`.
+- Produces: Working `@ponter/signaling` package capable of running `pnpm --filter @ponter/signaling dev`, `pnpm --filter @ponter/signaling test`, and `pnpm --filter @ponter/signaling typecheck`.
 - Produces: Root `pnpm test` orchestrated through Turborepo.
 
 - [ ] **Step 1: Cập nhật `pnpm-workspace.yaml` để cho phép build scripts cho `esbuild` và `workerd`**
@@ -66,7 +66,7 @@ allowBuilds:
 Ghi nội dung vào `workers/signaling/package.json`:
 ```json
 {
-  "name": "@remote/signaling",
+  "name": "@ponter/signaling",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -81,7 +81,7 @@ Ghi nội dung vào `workers/signaling/package.json`:
     "test": "vitest run"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*",
+    "@ponter/shared": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9"
   },
@@ -199,7 +199,7 @@ Run:
 ```bash
 rm -rf node_modules pnpm-lock.yaml && pnpm install
 ```
-Expected: Cài đặt thành công toàn bộ dependencies cho `@remote/signaling`, `esbuild` và `workerd` build scripts được approved qua `allowBuilds`.
+Expected: Cài đặt thành công toàn bộ dependencies cho `@ponter/signaling`, `esbuild` và `workerd` build scripts được approved qua `allowBuilds`.
 
 - [ ] **Step 9: Viết test failing đầu tiên cho Health Check (RED)**
 
@@ -229,7 +229,7 @@ describe('Worker Scaffolding & Health', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: FAIL vì `src/index.ts` chưa tồn tại hoặc chưa có route `/health`.
 
@@ -260,7 +260,7 @@ export default app;
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: `Test Files: 1 passed (1), Tests: 2 passed (2)`, exit code 0.
 
@@ -420,7 +420,7 @@ describe('D1 Database & Schema', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: FAIL vì `src/db/schema.ts` và `src/db/client.ts` chưa tồn tại.
 
@@ -526,7 +526,7 @@ export type Database = ReturnType<typeof getDb>;
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: Cả 2 test suites `health.test.ts` và `db.test.ts` pass 100%.
 
@@ -534,7 +534,7 @@ Expected: Cả 2 test suites `health.test.ts` và `db.test.ts` pass 100%.
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:generate
+pnpm --filter @ponter/signaling db:generate
 ```
 Expected: File `db/migrations/0000_*.sql` được tạo ra trong `workers/signaling/db/migrations/`.
 
@@ -627,7 +627,7 @@ describe('Crypto & JWT Utilities', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: FAIL vì `src/utils/crypto.ts` và `src/utils/jwt.ts` chưa tồn tại.
 
@@ -794,7 +794,7 @@ export async function verifyToken(token: string, secret: string): Promise<TokenP
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: Tất cả các test trong `crypto.test.ts` pass, exit code 0.
 
@@ -946,7 +946,7 @@ describe('Auth Middleware & Token Revocation', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: FAIL vì `auth.ts`, `error.ts` chưa được tạo.
 
@@ -1077,7 +1077,7 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => 
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: Tất cả 4 test files (`health`, `db`, `crypto`, `middleware`) pass 100%.
 
@@ -1334,7 +1334,7 @@ describe('Auth & Users REST API', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: FAIL vì các route `/api/auth/*` và `/api/users/*` chưa được cài đặt.
 
@@ -1613,7 +1613,7 @@ export default app;
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: Tất cả 5 test files (`health`, `db`, `crypto`, `middleware`, `auth`) pass 100%.
 
@@ -1878,7 +1878,7 @@ describe('Devices, Agents & Sessions REST API', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: FAIL vì các route `/api/devices`, `/api/agents`, `/api/sessions` chưa tồn tại.
 

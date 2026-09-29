@@ -1,6 +1,6 @@
 # Homelab / self-host compose setup with Cloudflare Tunnel.
 #
-# Runs the @remote/server container with a bind-mounted SQLite volume and exposes
+# Runs the @ponter/server container with a bind-mounted SQLite volume and exposes
 # it to the public internet via a Cloudflare Tunnel. A single TUNNEL_TOKEN
 # (created with `cloudflared tunnel create`) is the only external secret.
 #
@@ -19,8 +19,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.server
-    image: remote-server:tunnel
-    container_name: remote-server-tunnel
+    image: ponter-server:tunnel
+    container_name: ponter-server-tunnel
     restart: unless-stopped
     environment:
       - PORT=8787

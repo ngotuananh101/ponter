@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
-import type { Agent } from '@remote/shared';
+import type { Agent } from '@ponter/shared';
 import { Terminal, RefreshCw, Server, Search } from '@lucide/vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';

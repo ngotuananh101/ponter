@@ -6,7 +6,7 @@ import { AppError } from '../middleware/error.js';
 import { sessions } from '../db/schema.js';
 import { recordSignal } from '../utils/signals.js';
 import { pushToAgent } from './ws.js';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);

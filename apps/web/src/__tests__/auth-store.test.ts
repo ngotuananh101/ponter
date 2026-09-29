@@ -3,10 +3,10 @@ import { setActivePinia, createPinia } from 'pinia';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
-import * as cryptoPkg from '@remote/crypto';
-import type { User } from '@remote/shared';
+import * as cryptoPkg from '@ponter/crypto';
+import type { User } from '@ponter/shared';
 
-vi.mock('@remote/crypto', async (importOriginal) => ({
+vi.mock('@ponter/crypto', async (importOriginal) => ({
   ...(await importOriginal()),
   generateUserKeyPair: vi.fn(),
   savePrivateKey: vi.fn(),

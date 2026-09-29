@@ -1,4 +1,4 @@
-# Nginx configuration example for Ponta Remote Backend (@remote/server).
+# Nginx configuration example for Ponter Backend (@ponter/server).
 #
 # Place this file in /etc/nginx/sites-available/api.example.com
 # and symlink to /etc/nginx/sites-enabled/:

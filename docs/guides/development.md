@@ -1,6 +1,6 @@
 # Local Development Guide
 
-Hướng dẫn chi tiết cách thiết lập, chạy, test và phát triển trên toàn bộ monorepo Ponta Remote Access Platform.
+Hướng dẫn chi tiết cách thiết lập, chạy, test và phát triển trên toàn bộ monorepo Ponter.
 
 ---
 
@@ -29,8 +29,8 @@ cargo -V   # cargo 1.80+ (stable)
 ## 2. Installation & Scaffolding
 
 ```bash
-git clone https://github.com/ngotuananh101/ponta-remote.git
-cd ponta-remote
+git clone https://github.com/ngotuananh101/ponter.git
+cd ponter
 
 # Cài đặt dependencies cho toàn bộ workspace
 pnpm install
@@ -39,15 +39,15 @@ pnpm install
 cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-Binary được đặt tại `apps/agent/target/debug/remote-agent`.
+Binary được đặt tại `apps/agent/target/debug/ponter-agent`.
 
 ---
 
 ## 3. Running Services Locally
 
 Nền tảng bao gồm ba thành phần chính chạy đồng thời:
-1. **Signaling Server & REST API** (`@remote/server` - Node.js + Hono + SQLite)
-2. **Web Client** (`@remote/web` - Vue 3 + Vite)
+1. **Signaling Server & REST API** (`@ponter/server` - Node.js + Hono + SQLite)
+2. **Web Client** (`@ponter/web` - Vue 3 + Vite)
 3. **Native Desktop Agent Daemon** (`apps/agent` - Rust)
 
 ### 3.1 Start the Backend (Node.js + Hono + SQLite)
@@ -55,7 +55,7 @@ Nền tảng bao gồm ba thành phần chính chạy đồng thời:
 Trong Terminal 1:
 
 ```bash
-pnpm --filter @remote/server dev
+pnpm --filter @ponter/server dev
 ```
 
 - **URL:** `http://127.0.0.1:8787`
@@ -72,7 +72,7 @@ pnpm --filter @remote/server dev
 Trong Terminal 2:
 
 ```bash
-pnpm --filter @remote/web dev
+pnpm --filter @ponter/web dev
 ```
 
 - **URL:** `http://127.0.0.1:5173`
@@ -126,8 +126,8 @@ Monorepo sử dụng Turborepo để cache task và orchestrate tests.
 # Chạy tất cả unit tests trên toàn bộ workspace
 pnpm -w test
 
-# Chạy tests cho @remote/server cụ thể
-pnpm --filter @remote/server test
+# Chạy tests cho @ponter/server cụ thể
+pnpm --filter @ponter/server test
 
 # Rust unit tests
 cargo test --manifest-path apps/agent/Cargo.toml
@@ -161,7 +161,7 @@ cargo fmt --check --manifest-path apps/agent/Cargo.toml
 Cross-language E2E test khởi động một Node.js server thực, spawn native Rust agent binary, thực hiện DTLS/SCTP handshake qua `werift`, và xác minh PTY data bidirection:
 
 ```bash
-pnpm --filter @remote/webrtc-core test:e2e
+pnpm --filter @ponter/webrtc-core test:e2e
 ```
 
 ---
@@ -175,7 +175,7 @@ Database schema được định nghĩa inline trong `apps/server/src/db/client.
 1. Cập nhật định nghĩa bảng trong `apps/server/src/db/client.ts` (hoặc `apps/server/src/db/schema.ts` nếu sử dụng Drizzle ORM).
 2. Chạy migration:
    ```bash
-   pnpm --filter @remote/server db:generate
+   pnpm --filter @ponter/server db:generate
    ```
 3. Áp dụng migration:
    ```bash
@@ -191,18 +191,18 @@ Tất cả wire protocol types và data envelope definitions nằm trong `packag
 - `terminal.ts`: Terminal framing (`terminal-create`, `terminal-data`, `terminal-resize`, `terminal-close`, `terminal-exit`)
 - `agent.ts`: Agent status và credential definitions
 
-Sau khi sửa `@remote/shared`, các packages tự động resolve updated types qua pnpm workspace references. Chạy `pnpm -w typecheck` để kiểm tra độ nhất quán.
+Sau khi sửa `@ponter/shared`, các packages tự động resolve updated types qua pnpm workspace references. Chạy `pnpm -w typecheck` để kiểm tra độ nhất quán.
 
 ### 5.3 Server Development Scripts
 
 | Script | Mô tả |
 |--------|-------|
-| `pnpm --filter @remote/server dev` | Chạy server ở chế độ watch (tsx) |
-| `pnpm --filter @remote/server build` | Compile TypeScript thành JS (dist/) |
-| `pnpm --filter @remote/server start` | Chạy server từ dist/ đã build |
-| `pnpm --filter @remote/server test` | Chạy vitest test suite |
-| `pnpm --filter @remote/server lint` | ESLint check |
-| `pnpm --filter @remote/server typecheck` | TypeScript type check |
+| `pnpm --filter @ponter/server dev` | Chạy server ở chế độ watch (tsx) |
+| `pnpm --filter @ponter/server build` | Compile TypeScript thành JS (dist/) |
+| `pnpm --filter @ponter/server start` | Chạy server từ dist/ đã build |
+| `pnpm --filter @ponter/server test` | Chạy vitest test suite |
+| `pnpm --filter @ponter/server lint` | ESLint check |
+| `pnpm --filter @ponter/server typecheck` | TypeScript type check |
 
 ### 5.4 Docker Development
 
@@ -253,7 +253,7 @@ Server log với độ chi tiết cao:
 
 ```bash
 # Chạy với DEBUG=1 để xem log chi tiết
-DEBUG=1 pnpm --filter @remote/server dev
+DEBUG=1 pnpm --filter @ponter/server dev
 ```
 
 Log bao gồm:

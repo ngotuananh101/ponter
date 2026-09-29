@@ -37,7 +37,7 @@ signaling*, *Tích hợp portable-pty*, *Xử lý terminal I/O*, *Implement sess
    2 in `src/data-channel.ts`, 2 in `workers/signaling/src/routes/signal.ts`; ledger R24).
    *Testable:* each of the six mutants, re-applied to source, must now turn the suite **red** —
    measured by applying, running, and reverting each mutant, with the tree clean afterward.
-2. **Ship a real Rust agent (`apps/agent`)** — a `remote-agent` crate (edition 2021, 4 modules:
+2. **Ship a real Rust agent (`apps/agent`)** — a `ponter-agent` crate (edition 2021, 4 modules:
    `signal.rs`, `rtc.rs`, `pty.rs`, `main.rs`) that builds and tests in CI. *Testable:*
    `cargo build --release` and `cargo test` pass on the Rust CI job, and the crate is not a stub
    (`apps/agent` today holds only `package.json`).
@@ -121,7 +121,7 @@ signaling*, *Tích hợp portable-pty*, *Xử lý terminal I/O*, *Implement sess
 | 14 | **Signal TTL is 5 minutes, stamped on insert and enforced on read** — all three insert paths set `datetime('now','+5 minutes')`; poll filters `expires_at IS NULL OR expires_at > datetime('now')`. | `workers/signaling/src/routes/signal.ts:71`, `:122`, `:179` (inserts); `:230`, `:239` (poll filter) |
 | 15 | **Seam `SignalTransport` is exactly send/subscribe/close** — `subscribe` returns an unsubscribe closure; `close()` is sync and returns void. | `packages/webrtc-core/src/types.ts:36-40` |
 | 16 | **`RESTPollingTransport` exists and implements the seam** — POSTs to `/api/signal/{offer,answer,ice-candidate}`, GETs `/api/signal/poll/:sessionId?after=<cursor>`, exponential backoff 200ms→2000ms, stamps `sessionId` onto the wire payload. | `packages/webrtc-core/src/transport.ts:26` (class), `:50-92` (send), `:94-103` (subscribe), `:105-112` (close), `:122-180` (poll), `:182-218` (parse) |
-| 17 | **No WebSocket code anywhere in the signaling worker** — grep for `websocket|WebSocketPair|upgrade|101|Upgrade|Durable Object` over `workers/signaling/src` exits 1 (zero matches); deps are only `hono`, `drizzle-orm`, `@remote/shared`. Transport is pure REST polling. | `grep -rn -iE "websocket\|WebSocketPair\|upgradeWebSocket" workers/signaling/src` → `grep_exit=1`; `workers/signaling/package.json` dependencies block |
+| 17 | **No WebSocket code anywhere in the signaling worker** — grep for `websocket|WebSocketPair|upgrade|101|Upgrade|Durable Object` over `workers/signaling/src` exits 1 (zero matches); deps are only `hono`, `drizzle-orm`, `@ponter/shared`. Transport is pure REST polling. | `grep -rn -iE "websocket\|WebSocketPair\|upgradeWebSocket" workers/signaling/src` → `grep_exit=1`; `workers/signaling/package.json` dependencies block |
 | 18 | **`apps/agent` is a greenfield stub** — `package.json` only, no `src/`; `lint`/`typecheck` are `echo ok` placeholders. | `find apps/agent -type f -not -path '*/.turbo/*'` → `apps/agent/package.json` only |
 | 19 | **`packages/terminal-core` is a greenfield stub** — same shape: `package.json` only, `echo ok` scripts. The PTY/terminal contract it must eventually satisfy already exists in shared types. | `find packages/terminal-core -type f -not -path '*/.turbo/*'` → `packages/terminal-core/package.json` only; contract at `packages/shared/src/types/terminal.ts:1-25` (`TerminalSize`, `TerminalSession`, `TerminalDataMessage`, `TerminalResizeMessage`) |
 | 20 | **Toolchain measured**: Node `v24.21.0`, pnpm `12.6.0`, cargo `1.98.1 (797e8a9bc 2026-08-05)`, rustc `1.98.1 (48a229cea 2026-09-01)`. | `node -v` → `v24.21.0`; `pnpm -v` → `12.6.0`; `cargo --version` → `cargo 1.98.1 (797e8a9bc 2026-08-05)`; `rustc --version` → `rustc 1.98.1 (48a229cea 2026-09-01)` |
@@ -243,7 +243,7 @@ back through it, while the WebSocket edge is drawn only to the host — `ARCHITE
 `G -.->|WebSocket Signaling| H`, where `H` is the Rust Desktop Agent. The Week 5 roadmap item is
 scoped the same way: `ARCHITECTURE.md:1195` says "Implement WebSocket signaling" under "Tuần 5:
 Desktop Agent - Terminal". And there is no consumer: `apps/web` does not import
-`@remote/webrtc-core` at all, the only implementation of the interface is
+`@ponter/webrtc-core` at all, the only implementation of the interface is
 `RESTPollingTransport` (`packages/webrtc-core/src/transport.ts:26`), and the agent is Rust, so a
 TypeScript transport could not be used by it under any design.
 
@@ -998,7 +998,7 @@ export const sessions = sqliteTable('sessions', {
 
 #### 4.8.2 The migration
 
-Generated with `pnpm --filter @remote/signaling db:generate`, then the random tag renamed to `0002_agent_credentials` in both the filename and `_journal.json`'s `tag` field (keep the generated `when`). **The exact generated statements are:**
+Generated with `pnpm --filter @ponter/signaling db:generate`, then the random tag renamed to `0002_agent_credentials` in both the filename and `_journal.json`'s `tag` field (keep the generated `when`). **The exact generated statements are:**
 
 ```sql
 ALTER TABLE `agents` ADD `credential_hash` text;--> statement-breakpoint
@@ -1036,7 +1036,7 @@ Because the inline `UNIQUE` admits multiple `NULL`s (W2), the existing fixtures 
 `src/utils/agent.ts`, mirroring `src/utils/user.ts` exactly — one projection, in one place, applied by every route that lets an `agents` row leave the worker.
 
 ```ts
-import type { Agent as SharedAgent } from '@remote/shared';
+import type { Agent as SharedAgent } from '@ponter/shared';
 import type { AgentSelect } from '../db/schema';
 
 export type PublicAgent = SharedAgent;
@@ -1174,7 +1174,7 @@ Tasks 1 and 2 have no tests of their own and must land first: 3 depends on 1 (th
 
 ## 5. Application Design: Rust Desktop Agent (`apps/agent`)
 
-**Crate:** `remote-agent` (edition 2021), binary target `remote-agent` · **Roadmap:** `docs/ARCHITECTURE.md:1193` — Tuần 5: Desktop Agent - Terminal
+**Crate:** `ponter-agent` (edition 2021), binary target `ponter-agent` · **Roadmap:** `docs/ARCHITECTURE.md:1193` — Tuần 5: Desktop Agent - Terminal
 
 > **Scope note.** This section designs the **answerer** half of the Week 4 connection. Week 4 delivered
 > `packages/webrtc-core` (browser/Node offerer) and the four `/api/signal/*` REST routes; the agent is
@@ -1188,7 +1188,7 @@ Tasks 1 and 2 have no tests of their own and must land first: 3 depends on 1 (th
 
 ### In scope
 
-1. A Rust binary crate `remote-agent` at `apps/agent/`, four source files: `main.rs`, `signal.rs`,
+1. A Rust binary crate `ponter-agent` at `apps/agent/`, four source files: `main.rs`, `signal.rs`,
    `rtc.rs`, `pty.rs`.
 2. A **WebSocket signaling client** over `tokio-tungstenite` carrying the same `SignalMessage` wire
    shape Week 4 already fixed in `packages/shared/src/types/signaling.ts`.
@@ -1445,7 +1445,7 @@ import the modules, and the PTY echo test (§5.10.2) needs the real binary path 
 
 ```toml
 [package]
-name = "remote-agent"
+name = "ponter-agent"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"          # clap 4.6.7's MSRV is the highest in the set (R24)
@@ -1486,7 +1486,7 @@ base64 = "0.23"
 anyhow = "1"
 
 [[bin]]
-name = "remote-agent"
+name = "ponter-agent"
 path = "src/main.rs"
 ```
 
@@ -1971,7 +1971,7 @@ regardless.
 
 ```rust
 #[derive(Parser, Debug)]
-#[command(name = "remote-agent", version, about = "Ponta remote desktop agent")]
+#[command(name = "ponter-agent", version, about = "Ponter remote desktop agent")]
 struct Cli {
     /// Agent id registered with the signaling service.
     #[arg(long, env = "AGENT_ID")]
@@ -2229,7 +2229,7 @@ stated so the omission is a decision and not a hole:
 
 ```json
 {
-  "name": "@remote/agent",
+  "name": "@ponter/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -2527,13 +2527,13 @@ The base64-in-`data` choice is what makes R2 a real test rather than a formality
 
 The harness is the Week 4 `SignalTransport` seam (`packages/webrtc-core/src/types.ts`) consumed by a second, independent implementation — the strongest available validation of Week 4 ADR-02, because a contract that only one side implements is a contract that is only assumed to work.
 
-**Placement and execution.** The harness lives at `packages/webrtc-core/test/e2e/terminal.e2e.test.ts` with its own `packages/webrtc-core/vitest.e2e.config.ts`, and the default `vitest.config.ts` gains `exclude: [...configDefaults.exclude, 'test/e2e/**']`. Rationale: `webrtc-core` is the package that owns the offerer, already resolves `@remote/shared` and `werift` in tests, and already runs under `environment: 'node'`; this needs **no new dependency and no new workspace member**, and it leaves the default `webrtc-core` suite at its Week 4 count. The file is `it.skipIf(process.platform !== 'linux')`, so it is Linux-only in CI (§8.2) and skipped elsewhere.
+**Placement and execution.** The harness lives at `packages/webrtc-core/test/e2e/terminal.e2e.test.ts` with its own `packages/webrtc-core/vitest.e2e.config.ts`, and the default `vitest.config.ts` gains `exclude: [...configDefaults.exclude, 'test/e2e/**']`. Rationale: `webrtc-core` is the package that owns the offerer, already resolves `@ponter/shared` and `werift` in tests, and already runs under `environment: 'node'`; this needs **no new dependency and no new workspace member**, and it leaves the default `webrtc-core` suite at its Week 4 count. The file is `it.skipIf(process.platform !== 'linux')`, so it is Linux-only in CI (§8.2) and skipped elsewhere.
 
 **Steps.**
 
-1. Start the local Worker: `pnpm --filter @remote/signaling exec wrangler dev --local --port 8787` as a child process (Miniflare's `workerd` under the hood), then poll `GET /health` until it answers. Bounded wait, hard failure on timeout.
+1. Start the local Worker: `pnpm --filter @ponter/signaling exec wrangler dev --local --port 8787` as a child process (Miniflare's `workerd` under the hood), then poll `GET /health` until it answers. Bounded wait, hard failure on timeout.
 2. Seed over REST: register a user, `POST /api/agents` to obtain `credential = ag_<secret>`, `POST /api/sessions` with that `agentId`.
-3. Spawn the **real binary**: `apps/agent/target/debug/remote-agent --agent-id <id> --server ws://127.0.0.1:8787 --credential <secret>`. It connects over WS, authenticates by credential hash, and registers in the in-memory map.
+3. Spawn the **real binary**: `apps/agent/target/debug/ponter-agent --agent-id <id> --server ws://127.0.0.1:8787 --credential <secret>`. It connects over WS, authenticates by credential hash, and registers in the in-memory map.
 4. Offerer: `new PeerConnection(new WeriftAdapter({ iceServers: [] }), new RESTPollingTransport({ baseUrl, sessionId, token, fetch }), { role: 'offerer', channelLabels: ['terminal'] })` and `start()`.
 5. Wait for the agent to be online (`GET /api/agents` → `isOnline: true`) before posting the offer, so step 6's push is not racing the socket registration.
 6. Exchange: `offer` (POST → pushed to the agent) → agent `answer` (WS → D1) → harness polls the answer → ICE both directions (`POST /api/signal/ice-candidate` for the browser; WS for the agent) → DTLS/SCTP completes on loopback with `iceServers: []` and no STUN.
@@ -2584,9 +2584,9 @@ Task 1 exists to close Week 4's quantified residual before any new feature code 
 | 1 | **R24 six-test commit** (no feature code) | `webrtc-core`: `send()` non-2xx throw; `data-channel` typed-listener `JSON.parse` guard; `poll()` non-2xx error backoff; unknown-label throws. `signaling`: poll drain on a terminated session (mutant #5); `answer` route sdp validation (mutant #6) | +6 (4 + 2) | — |
 | 2 | **Week 4 residual tests (R30, R32)** | `webrtc-core`: `send()` HTTP-error propagation; `poll()` error-backoff; candidate-buffer bound; N-candidates flushed with one rejecting. `signaling`: decide and pin the malformed-JSON contract (**R31**) — either let `SyntaxError` reach `MALFORMED_JSON` or correct spec §5.1/§5.6 to say `VALIDATION_ERROR` | +4 | 1 |
 | 3 | **Migration `0002_agent_credentials.sql`** + credential issuance | `agents.credential_hash` (added as a plain column, then a `UNIQUE` index — SQLite rejects `ALTER TABLE ... ADD COLUMN ... UNIQUE`, verified), `agents.capabilities`, `sessions.started_at`; drizzle `schema.ts` fields with the `datetime('now')` convention; `POST /api/agents` returns `{ agent, credential }` once; `toPublicAgent` projection | +3 (W13, W14) | 2 |
-| 4 | **WS route + push + heartbeat** | `workers/signaling/src/routes/ws.ts` mounted at `/api/ws`; `AgentConnections` in-memory map; credential auth; inbound `signal` persisted through the shared helper; best-effort push from `POST /api/signal/*`; `ping`/`pong`; `AgentSocketMessage` type added to `packages/shared/src/types/signaling.ts` and imported by the Worker (this also closes the Week 4 finding that `@remote/shared` was declared but never imported) | +10 (W1-W10) | 3 |
+| 4 | **WS route + push + heartbeat** | `workers/signaling/src/routes/ws.ts` mounted at `/api/ws`; `AgentConnections` in-memory map; credential auth; inbound `signal` persisted through the shared helper; best-effort push from `POST /api/signal/*`; `ping`/`pong`; `AgentSocketMessage` type added to `packages/shared/src/types/signaling.ts` and imported by the Worker (this also closes the Week 4 finding that `@ponter/shared` was declared but never imported) | +10 (W1-W10) | 3 |
 | 5 | **Session state machine** | `pending → active` on persisted `answer` (+`started_at`); `terminated` on socket close (+`ended_at`); idempotent guards; `isAgentOnline` read-time window used by `toPublicAgent` and the push path | +3 (W11, W12, W9) | 3, 4 |
-| 6 | **Rust agent** | `apps/agent`: `Cargo.toml` (crate `remote-agent`), `src/main.rs`, `src/signal.rs`, `src/rtc.rs`, `src/pty.rs`; `Cargo.lock` committed; versions pinned against crates.io at scaffold (ADR-05) | +5 (R1-R5) | 4 |
+| 6 | **Rust agent** | `apps/agent`: `Cargo.toml` (crate `ponter-agent`), `src/main.rs`, `src/signal.rs`, `src/rtc.rs`, `src/pty.rs`; `Cargo.lock` committed; versions pinned against crates.io at scaffold (ADR-05) | +5 (R1-R5) | 4 |
 | 7 | **Cross-language E2E harness** | `packages/webrtc-core/test/e2e/terminal.e2e.test.ts` + `vitest.e2e.config.ts`; default config excludes `test/e2e/**` | +2 | 5, 6 |
 | 8 | **CI: Rust + E2E jobs** | New jobs in `.github/workflows/ci.yml`; `apps/agent/package.json` scripts call `cargo` | 0 | 6, 7 |
 | 9 | **Docs sync** | `ARCHITECTURE.md` §6.2 `SignalMessage` union (**R26**); §6.2 boundary note superseded by the Week 5 credential; §8 roadmap ticks; §4.2 Cargo sketch marked stale with a pointer to `Cargo.toml`; §3.1 agent tree annotated with the four modules actually shipped | 0 | 5, 6 |
@@ -2599,7 +2599,7 @@ Tasks 3-5 (Worker) and task 6 (Rust) are independent once the wire contract in t
 
 **`rust`** — `runs-on: ubuntu-latest`. `dtolnay/rust-toolchain` (pinned by SHA, stable toolchain with `rustfmt` + `clippy`), `Swatinem/rust-cache`, then in `apps/agent`: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo build --locked`, `cargo test --locked`. `--locked` everywhere so `Cargo.lock` is authoritative and a dependency bump is a reviewable diff rather than a CI surprise. No system packages are needed: `portable-pty` and `webrtc-rs` are pure Rust on Linux. `target/` is already ignored in three places (`.gitignore`, `eslint.config.js`'s `**/target/**`, `.prettierignore`), so the crate adds no ignore churn.
 
-**`e2e`** — `needs: [verify, rust]`, `runs-on: ubuntu-latest`, Linux-only by construction. Steps: install, `cargo build` in `apps/agent` (debug), then run the E2E config (`pnpm --filter @remote/webrtc-core exec vitest run --config vitest.e2e.config.ts`). This job is the week's done-criterion and is blocking; its child-process teardown runs in a `finally` so a failure does not leak a `wrangler dev` process into the next step.
+**`e2e`** — `needs: [verify, rust]`, `runs-on: ubuntu-latest`, Linux-only by construction. Steps: install, `cargo build` in `apps/agent` (debug), then run the E2E config (`pnpm --filter @ponter/webrtc-core exec vitest run --config vitest.e2e.config.ts`). This job is the week's done-criterion and is blocking; its child-process teardown runs in a `finally` so a failure does not leak a `wrangler dev` process into the next step.
 
 **`apps/agent/package.json`** — the `echo ok` stubs are replaced with `build`, `test`, `lint`, and `typecheck` scripts that shell out to `cargo` (`--manifest-path Cargo.toml`). Effect to state plainly: `turbo run test` (and therefore `pnpm test`) now also invokes the Rust suite, so the JS test total and the Rust total are reported by different runners in the same gate — the JS counts in §7.5 are unaffected.
 

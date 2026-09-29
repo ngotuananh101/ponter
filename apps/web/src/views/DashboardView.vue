@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
-import type { Device, Agent } from '@remote/shared';
+import type { Device, Agent } from '@ponter/shared';
 import {
   Card,
   CardHeader,

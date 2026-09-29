@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement full terminal capabilities for the Ponta Remote Platform: headless `packages/terminal-core`, multi-shell multiplexing and resizing in `apps/agent` (Rust), and an interactive dark-themed xterm.js `/workspace` UI in `apps/web` with multi-tab and mobile keyboard support.
+**Goal:** Implement full terminal capabilities for the Ponter Platform: headless `packages/terminal-core`, multi-shell multiplexing and resizing in `apps/agent` (Rust), and an interactive dark-themed xterm.js `/workspace` UI in `apps/web` with multi-tab and mobile keyboard support.
 
 **Architecture:** A single WebRTC DataChannel labeled `"terminal"` carries framed JSON messages (`DataChannelMessage<T>`). Multi-shell multiplexing uses `terminalId` in payloads. `packages/terminal-core` acts as a headless session and ring-buffer manager bridging WebRTC data channels and UI emulators. `apps/agent` manages a map of PTY sessions, applies resize via `portable-pty`, and reports exit codes. `apps/web` renders tabs, sidebar, xterm.js with `FitAddon`/`ResizeObserver`, and a mobile accessory toolbar.
 
@@ -78,7 +78,7 @@ describe('Terminal Message Types', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/shared test`  
+Run: `pnpm --filter @ponter/shared test`  
 Expected: FAIL due to missing type exports.
 
 - [ ] **Step 3: Implement updated terminal types in `packages/shared/src/types/terminal.ts`**
@@ -135,7 +135,7 @@ export * from './terminal';
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/shared test`  
+Run: `pnpm --filter @ponter/shared test`  
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -445,7 +445,7 @@ git commit -m "feat(agent): implement multi-session PtyManager with resize dispa
 Update `packages/terminal-core/package.json`:
 ```json
 {
-  "name": "@remote/terminal-core",
+  "name": "@ponter/terminal-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -457,8 +457,8 @@ Update `packages/terminal-core/package.json`:
     "test": "vitest run"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*",
-    "@remote/webrtc-core": "workspace:*"
+    "@ponter/shared": "workspace:*",
+    "@ponter/webrtc-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.13.6",
@@ -520,7 +520,7 @@ describe('RingBuffer', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/terminal-core test`  
+Run: `pnpm --filter @ponter/terminal-core test`  
 Expected: FAIL with module not found.
 
 - [ ] **Step 3: Implement `RingBuffer` and `TerminalSession`**
@@ -681,7 +681,7 @@ export * from './session';
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/terminal-core test`  
+Run: `pnpm --filter @ponter/terminal-core test`  
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -701,7 +701,7 @@ git commit -m "feat(terminal-core): add RingBuffer and TerminalSession implement
 - Test: `packages/terminal-core/test/client.test.ts`
 
 **Interfaces:**
-- Consumes: `DataChannelManager` (from `@remote/webrtc-core`), message types from `@remote/shared`
+- Consumes: `DataChannelManager` (from `@ponter/webrtc-core`), message types from `@ponter/shared`
 - Produces: `TerminalClient`
 
 - [ ] **Step 1: Write failing `client.test.ts`**
@@ -710,7 +710,7 @@ Create `packages/terminal-core/test/client.test.ts`:
 ```typescript
 import { describe, it, expect, vi } from 'vitest';
 import { TerminalClient } from '../src/client';
-import type { DataChannelManager } from '@remote/webrtc-core';
+import type { DataChannelManager } from '@ponter/webrtc-core';
 
 describe('TerminalClient', () => {
   it('creates a session and dispatches terminal-create message', () => {
@@ -771,21 +771,21 @@ describe('TerminalClient', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/terminal-core test`  
+Run: `pnpm --filter @ponter/terminal-core test`  
 Expected: FAIL with `TerminalClient` not found.
 
 - [ ] **Step 3: Implement `TerminalClient` in `packages/terminal-core/src/client.ts`**
 
 Create `packages/terminal-core/src/client.ts`:
 ```typescript
-import type { DataChannelManager } from '@remote/webrtc-core';
+import type { DataChannelManager } from '@ponter/webrtc-core';
 import type {
   TerminalCreateMessage,
   TerminalDataMessage,
   TerminalResizeMessage,
   TerminalCloseMessage,
   TerminalExitMessage,
-} from '@remote/shared';
+} from '@ponter/shared';
 import { TerminalSession } from './session';
 import type { TerminalSessionOptions } from './types';
 
@@ -950,7 +950,7 @@ export * from './client';
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/terminal-core test`  
+Run: `pnpm --filter @ponter/terminal-core test`  
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -976,8 +976,8 @@ git commit -m "feat(terminal-core): implement TerminalClient connecting to DataC
 
 Run:
 ```bash
-pnpm --filter @remote/web add @xterm/xterm@^5.5.0 @xterm/addon-fit@^0.10.0 @xterm/addon-web-links@^0.11.0
-pnpm --filter @remote/web add @remote/terminal-core@workspace:* @remote/webrtc-core@workspace:*
+pnpm --filter @ponter/web add @xterm/xterm@^5.5.0 @xterm/addon-fit@^0.10.0 @xterm/addon-web-links@^0.11.0
+pnpm --filter @ponter/web add @ponter/terminal-core@workspace:* @ponter/webrtc-core@workspace:*
 ```
 
 - [ ] **Step 2: Write failing test for `terminal.ts` store in `apps/web/src/__tests__/terminal-store.test.ts`**
@@ -1021,7 +1021,7 @@ describe('useTerminalStore', () => {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: FAIL with `useTerminalStore` not found.
 
 - [ ] **Step 4: Implement `useTerminalStore` in `apps/web/src/stores/terminal.ts`**
@@ -1033,12 +1033,12 @@ import { ref, computed } from 'vue';
 import {
   TerminalClient,
   type TerminalSession,
-} from '@remote/terminal-core';
+} from '@ponter/terminal-core';
 import {
   PeerConnection,
   createBrowserAdapter,
   RESTPollingTransport,
-} from '@remote/webrtc-core';
+} from '@ponter/webrtc-core';
 import { apiClient } from '@/services/client';
 
 export interface TabItem {
@@ -1166,7 +1166,7 @@ export const useTerminalStore = defineStore('terminal', () => {
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: PASS
 
 - [ ] **Step 6: Commit**
@@ -1185,7 +1185,7 @@ git commit -m "feat(web): add useTerminalStore and install xterm dependencies"
 - Test: `apps/web/src/__tests__/XtermTerminal.test.ts`
 
 **Interfaces:**
-- Consumes: `TerminalSession` from `@remote/terminal-core`, `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`
+- Consumes: `TerminalSession` from `@ponter/terminal-core`, `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`
 - Produces: `XtermTerminal.vue` component
 
 - [ ] **Step 1: Write failing component test in `apps/web/src/__tests__/XtermTerminal.test.ts`**
@@ -1195,7 +1195,7 @@ Create `apps/web/src/__tests__/XtermTerminal.test.ts`:
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import XtermTerminal from '../components/terminal/XtermTerminal.vue';
-import type { TerminalSession } from '@remote/terminal-core';
+import type { TerminalSession } from '@ponter/terminal-core';
 
 describe('XtermTerminal.vue', () => {
   it('renders container element and mounts terminal', () => {
@@ -1219,7 +1219,7 @@ describe('XtermTerminal.vue', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: FAIL with component missing.
 
 - [ ] **Step 3: Implement `XtermTerminal.vue` in `apps/web/src/components/terminal/XtermTerminal.vue`**
@@ -1232,7 +1232,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import type { TerminalSession } from '@remote/terminal-core';
+import type { TerminalSession } from '@ponter/terminal-core';
 
 const props = defineProps<{
   session: TerminalSession;
@@ -1337,7 +1337,7 @@ onBeforeUnmount(() => {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1404,7 +1404,7 @@ describe('MobileAccessoryBar.vue', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: FAIL with components missing.
 
 - [ ] **Step 3: Implement `TerminalTabBar.vue` and `MobileAccessoryBar.vue`**
@@ -1514,7 +1514,7 @@ function handlePress(e: PointerEvent, char: string) {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1575,7 +1575,7 @@ describe('WorkspaceView.vue', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: FAIL with `WorkspaceView` missing.
 
 - [ ] **Step 3: Implement `WorkspaceSidebar.vue`, `WorkspaceView.vue`, and update router**
@@ -1585,7 +1585,7 @@ Create `apps/web/src/components/terminal/WorkspaceSidebar.vue`:
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
-import type { Agent } from '@remote/shared';
+import type { Agent } from '@ponter/shared';
 import { Terminal, RefreshCw } from 'lucide-vue-next';
 
 defineEmits<{
@@ -1656,7 +1656,7 @@ Create `apps/web/src/views/WorkspaceView.vue`:
 import { ref, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { useTerminalStore } from '@/stores/terminal';
-import type { Agent } from '@remote/shared';
+import type { Agent } from '@ponter/shared';
 import WorkspaceSidebar from '@/components/terminal/WorkspaceSidebar.vue';
 import TerminalTabBar from '@/components/terminal/TerminalTabBar.vue';
 import XtermTerminal from '@/components/terminal/XtermTerminal.vue';
@@ -1737,7 +1737,7 @@ Update `apps/web/src/views/DashboardView.vue` to link online agents directly to 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @remote/web test`  
+Run: `pnpm --filter @ponter/web test`  
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1764,7 +1764,7 @@ Run:
 ```bash
 cargo build --manifest-path apps/agent/Cargo.toml
 ```
-Expected: Successful compile creating `apps/agent/target/debug/remote-agent`.
+Expected: Successful compile creating `apps/agent/target/debug/ponter-agent`.
 
 - [ ] **Step 2: Add multi-session E2E test to `packages/webrtc-core/test/e2e/terminal.e2e.test.ts`**
 
@@ -1780,7 +1780,7 @@ it('multiplexes two terminal sessions over one DataChannel', async () => {
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test:e2e
+pnpm --filter @ponter/webrtc-core test:e2e
 ```
 Expected: PASS (Real PTY output running over WebRTC DataChannel between TypeScript and Rust agent).
 

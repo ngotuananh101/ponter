@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 export class MemorySignalBus {
   private readonly subscribers: Array<(msg: SignalMessage) => void> = [];

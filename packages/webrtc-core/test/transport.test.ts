@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RESTPollingTransport } from '../src/transport';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 describe('RESTPollingTransport', () => {
   beforeEach(() => {

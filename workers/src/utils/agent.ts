@@ -1,4 +1,4 @@
-import type { Agent as SharedAgent } from '@remote/shared';
+import type { Agent as SharedAgent } from '@ponter/shared';
 import type { AgentSelect } from '../db/schema';
 import { buf2hex } from './crypto';
 

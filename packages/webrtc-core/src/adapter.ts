@@ -1,4 +1,4 @@
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 import { BrowserAdapter } from './adapters/browser';
 
 export function createBrowserAdapter(config?: {

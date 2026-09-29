@@ -50,7 +50,9 @@ async function handleLogout() {
           </div>
           <div class="flex flex-col">
             <div class="flex items-center gap-1.5 leading-none">
-              <span class="text-base font-extrabold tracking-tight">Ponta</span>
+              <span class="text-base font-extrabold tracking-tight"
+                >Ponter</span
+              >
               <span
                 class="text-xs font-mono font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
                 >REMOTE</span

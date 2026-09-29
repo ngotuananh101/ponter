@@ -1,4 +1,4 @@
-//! `remote-agent` — CLI, startup pipeline, Ctrl-C/SIGTERM teardown.
+//! `ponter-agent` — CLI, startup pipeline, Ctrl-C/SIGTERM teardown.
 //!
 //! Four flat modules, no `lib.rs`: this is a binary crate, and the unit tests
 //! live in `#[cfg(test)] mod tests` inside each module. A `lib.rs` would exist
@@ -26,7 +26,7 @@ use webrtc::peer_connection::RTCPeerConnection;
 use crate::signal::SignalClient;
 
 #[derive(Parser, Debug)]
-#[command(name = "remote-agent", version, about = "Ponta remote desktop agent")]
+#[command(name = "ponter-agent", version, about = "Ponter remote desktop agent")]
 struct Cli {
     /// Agent id registered with the signaling service.
     #[arg(long, env = "AGENT_ID")]
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
     let credential = resolve_credential(&cli)?;
     let shell = resolve_shell(&cli)?;
 
-    tracing::info!(server = %cli.server, shell = %shell, "starting remote-agent");
+    tracing::info!(server = %cli.server, shell = %shell, "starting ponter-agent");
 
     run_with_reconnect(&cli, &credential, &shell).await
 }

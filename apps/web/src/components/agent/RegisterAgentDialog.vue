@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { apiClient } from '@/services/client';
-import { generateUserKeyPair } from '@remote/crypto';
+import { generateUserKeyPair } from '@ponter/crypto';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -46,7 +46,7 @@ const signalingServerUrl = computed(() => {
 });
 
 const runCommand = computed(() => {
-  return `./remote-agent --agent-id ${registeredAgentId.value} --server ${signalingServerUrl.value} --credential ${generatedCredential.value}`;
+  return `./ponter-agent --agent-id ${registeredAgentId.value} --server ${signalingServerUrl.value} --credential ${generatedCredential.value}`;
 });
 
 function handleClose() {

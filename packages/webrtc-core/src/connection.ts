@@ -4,7 +4,7 @@ import type {
   SignalTransport,
   PeerConnectionOptions,
 } from './types';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 import { DataChannelManager } from './data-channel';
 import {
   toSessionDescriptionInit,

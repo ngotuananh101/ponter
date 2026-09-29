@@ -1,5 +1,5 @@
 {
-  "name": "@remote/webrtc-core",
+  "name": "@ponter/webrtc-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*"
+    "@ponter/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

@@ -4,7 +4,7 @@ import { router } from '@/router';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
-import type { User } from '@remote/shared';
+import type { User } from '@ponter/shared';
 
 describe('Router Guards', () => {
   beforeEach(async () => {

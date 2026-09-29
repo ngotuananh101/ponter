@@ -1,5 +1,5 @@
 {
-  "name": "@remote/server",
+  "name": "@ponter/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
-    "@remote/shared": "workspace:*",
+    "@ponter/shared": "workspace:*",
     "better-sqlite3": "^11.8.1",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9",

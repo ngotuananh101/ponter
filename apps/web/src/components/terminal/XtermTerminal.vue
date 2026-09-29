@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import type { TerminalSession } from '@remote/terminal-core';
+import type { TerminalSession } from '@ponter/terminal-core';
 
 const props = defineProps<{
   session: TerminalSession;

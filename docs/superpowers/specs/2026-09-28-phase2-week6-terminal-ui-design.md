@@ -9,7 +9,7 @@
 
 ## 1. Overview & Objectives
 
-Week 6 completes **Phase 2 (WebRTC & Terminal)** of the Ponta Remote Platform. Following the foundation laid in Week 4 (`packages/webrtc-core`, signaling transport) and Week 5 (`apps/agent` Rust PTY agent, data channel framing, agent credentials, and automated E2E tests), Week 6 delivers the interactive terminal interface and multi-shell capabilities.
+Week 6 completes **Phase 2 (WebRTC & Terminal)** of the Ponter Platform. Following the foundation laid in Week 4 (`packages/webrtc-core`, signaling transport) and Week 5 (`apps/agent` Rust PTY agent, data channel framing, agent credentials, and automated E2E tests), Week 6 delivers the interactive terminal interface and multi-shell capabilities.
 
 ### 1.1 Core Goals
 1. **Headless Terminal Core Package (`packages/terminal-core`)**: Provide a pure TypeScript, DOM-independent terminal session manager that bridges WebRTC data channels with terminal emulators. Maintain session lifecycle, output buffering (ring buffer), and base64 framing.

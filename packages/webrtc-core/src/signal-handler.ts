@@ -1,4 +1,4 @@
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 export function toSessionDescriptionInit(
   offerOrAnswer: { sdp: string },

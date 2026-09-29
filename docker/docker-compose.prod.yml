@@ -1,7 +1,7 @@
 # Production VPS compose setup with Caddy reverse proxy and a native Coturn TURN server.
 #
 # Services:
-#   - server   : @remote/server, persistent SQLite on ./data.
+#   - server   : @ponter/server, persistent SQLite on ./data.
 #   - coturn   : STUN/TURN on host networking, RFC 5766 long-term auth with a
 #                 shared secret so the server can mint time-limited credentials.
 #   - caddy    : automatic HTTPS via Let's Encrypt, reverse proxy to `server`.
@@ -23,8 +23,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.server
-    image: remote-server:prod
-    container_name: remote-server-prod
+    image: ponter-server:prod
+    container_name: ponter-server-prod
     restart: always
     environment:
       - PORT=8787

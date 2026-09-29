@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the Week 4 residual (eight untested reachable branches), then ship the credentialed agent WebSocket relay on `workers/signaling` (`GET /api/ws/agent`), the `pending → active → terminated` session state machine, the Rust `remote-agent` binary at `apps/agent` (WS signaling client + `webrtc` answerer + `portable-pty` bridge), a cross-language E2E harness that runs real PTY bytes over a real DTLS/SCTP connection, and the CI jobs that gate all of it.
+**Goal:** Close the Week 4 residual (eight untested reachable branches), then ship the credentialed agent WebSocket relay on `workers/signaling` (`GET /api/ws/agent`), the `pending → active → terminated` session state machine, the Rust `ponter-agent` binary at `apps/agent` (WS signaling client + `webrtc` answerer + `portable-pty` bridge), a cross-language E2E harness that runs real PTY bytes over a real DTLS/SCTP connection, and the CI jobs that gate all of it.
 
 **Architecture:** Two independent implementations of one wire contract, meeting at a real P2P connection. The browser keeps Week 4's `RESTPollingTransport`; the Rust agent dials a WebSocket relay that lives in the same Worker (`agentConnections`, a module-scope `Map`, therefore per-isolate — the push is a latency optimisation and D1 + poll remains the delivery guarantee). The agent is answerer-only: `set_remote_description` → `create_answer` → accept the `terminal` data channel → spawn a PTY → pump bytes as base64 inside `DataChannelMessage<TerminalDataMessage>`. One shared persistence helper (`recordSignal`) is the only writer of `signals`, and it is where the `answer → active` transition lives.
 
@@ -56,13 +56,13 @@ The spec is a design document written before the code it describes was read line
 | D-10 | The WS path is `/ws/agent` in §5.8.1's clap default, §5.9.3 and §5.11.5's `.env.example`; it is `/api/ws/agent` in §4.4, §4.13 and §8.1 task 4 | **Follow §4.4/§4.13.** Task 4 mounts `app.route('/api/ws', ws)`, so the reachable path is `/api/ws/agent`, and every other Worker route in this repository is under `/api`. The spec's four `/ws/agent` spellings describe a route that does not exist — an agent built from them gets a 404 at the handshake. Task 6's clap `default_value` and `.env.example` use the `/api` form, and Task 9 records the correction at the §5.8.1/§5.11.5 doc sites. |
 | D-11 | §7.3 step 2: "`POST /api/agents` to obtain `credential = ag_<secret>`" | Task 3 changed that response to `{ agent, credential }`. Task 7's harness reads `body.credential` from the envelope and `body.agent.id` for the `--agent-id` flag. §7.3's phrasing describes the pre-Task-3 shape — which is also the shape on `main` today (a bare agent row with no `credential` key at all), so a harness written from the spec would send `Bearer undefined` and be answered `401`. |
 | D-12 | §7.3 step 3: `--server ws://127.0.0.1:8787` | Missing the route path — the same root cause as D-10. Task 4 mounts `/api/ws` with a `/agent` route, so the URL is `ws://127.0.0.1:8787/api/ws/agent`. Task 7's harness passes the full path, which also overrides Task 6's `localhost` default with `127.0.0.1` — the address `wrangler dev` actually binds and prints as `Ready on`. |
-| D-13 | §7.3 step 9: teardown "kill the agent child process" | `remote-agent` **is** the child process; it has none of its own. Task 7's harness spawns it directly and kills the handle it holds (`child.kill('SIGKILL')`), then awaits its `exit`. No wrapper script, no process group. |
+| D-13 | §7.3 step 9: teardown "kill the agent child process" | `ponter-agent` **is** the child process; it has none of its own. Task 7's harness spawns it directly and kills the handle it holds (`child.kill('SIGKILL')`), then awaits its `exit`. No wrapper script, no process group. |
 | D-14 | §8.3's third bullet instructs: "tick the Week 5 items that ship" | **Annotate, do not tick.** `docs/ARCHITECTURE.md` contains **zero** ticked boxes (`grep -c '^- \[x\]'` → 0) across **85** unticked ones, and `git log -S'- [x]' -- docs/ARCHITECTURE.md` is empty — it has never contained one, including for the Phase 1 and Week 4 items that shipped. Ticking only Week 5 would assert that Phase 1 and Week 4 are *not* done while Week 5 is, contradicting the same roadmap. Task 9's Step 4 adds a `Trạng thái:` line and leaves the boxes as `[ ]`. |
 | D-15 | §8.3's last bullet: "the ledger entries can be marked resolved once the commit lands" | **Recorded in this plan instead.** The ledger is `.superpowers/sdd/2026-09-25-phase2-week4-webrtc-core/progress.md`, and `.superpowers/` is gitignored (`.gitignore:38`) — it is not part of the repository, so an edit there is unreviewable and unshippable. Task 9's Step 11 appends a Global Constraints bullet to this plan, which is the artifact that ships. |
 
 Two further spec statements are corrected rather than implemented:
 
-- **§4.11 "Boundaries" says `packages/shared` is not modified.** The `SignalMessage` union is indeed untouched, but `AgentSocketMessage` and `AgentErrorCode` are added to `src/types/signaling.ts` **and to the `src/types/index.ts` barrel** (the barrel is not mentioned in §8.1 task 4; without it the Worker's `import ... from '@remote/shared'` does not resolve).
+- **§4.11 "Boundaries" says `packages/shared` is not modified.** The `SignalMessage` union is indeed untouched, but `AgentSocketMessage` and `AgentErrorCode` are added to `src/types/signaling.ts` **and to the `src/types/index.ts` barrel** (the barrel is not mentioned in §8.1 task 4; without it the Worker's `import ... from '@ponter/shared'` does not resolve).
 - **§4.10's per-file test counts (16 + 6 + 5 + 4 = +31) contradict §7.5's target of 161, and §8.1's per-task counts (+6, +4, +3, +10, +3 = +26) double-book the same work twice**: W9 appears in both task 4's list (W1–W10) and task 5's list (W11, W12, W9), and §4.12's task 5 ("best-effort push", +5) is a slice of §8.1's task 4 (+10, the whole socket suite) rather than an addition to it. The spine's own sum is therefore +25 by its own accounting and +26 by its list. This plan pins the counts exactly, from the tests the tasks below actually write:
 
   | Suite | Baseline | After | Per-file additions |
@@ -215,7 +215,7 @@ Append to `packages/webrtc-core/test/transport.test.ts`:
 
 - [ ] **Step 3: Run the two transport tests and confirm they pass against the current source**
 
-Run: `pnpm --filter @remote/webrtc-core test transport`
+Run: `pnpm --filter @ponter/webrtc-core test transport`
 Expected: 9 tests PASS. If either new test fails, the branch under test is already broken — stop and report rather than editing `src/`.
 
 - [ ] **Step 4: Pin mutant #2 — the typed-listener `JSON.parse` guard**
@@ -278,7 +278,7 @@ Append to `packages/webrtc-core/test/data-channel.test.ts`:
 
 - [ ] **Step 6: Run the data-channel tests**
 
-Run: `pnpm --filter @remote/webrtc-core test data-channel`
+Run: `pnpm --filter @ponter/webrtc-core test data-channel`
 Expected: 8 tests PASS.
 
 - [ ] **Step 7: Pin mutant #5 — the poll still drains a terminated session**
@@ -356,7 +356,7 @@ Append to `workers/signaling/test/signal.test.ts`:
 
 - [ ] **Step 9: Run the signaling suite**
 
-Run: `pnpm --filter @remote/signaling test`
+Run: `pnpm --filter @ponter/signaling test`
 Expected: 62 tests PASS (60 + 2).
 
 - [ ] **Step 10: Run the whole gate and the format check**
@@ -441,7 +441,7 @@ Append to `packages/webrtc-core/test/transport.test.ts`:
 
 - [ ] **Step 2: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/webrtc-core test transport`
+Run: `pnpm --filter @ponter/webrtc-core test transport`
 Expected: 10 tests PASS. (`src/transport.ts:82-87` already interpolates both values; this test pins the contract so a future edit cannot drop them.)
 
 - [ ] **Step 3: Write the failing test for `poll()` backing off when `fetch` rejects (R30b)**
@@ -483,7 +483,7 @@ Append to `packages/webrtc-core/test/transport.test.ts`:
 
 - [ ] **Step 4: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/webrtc-core test transport`
+Run: `pnpm --filter @ponter/webrtc-core test transport`
 Expected: 11 tests PASS.
 
 - [ ] **Step 5: Write the failing test for the candidate-buffer bound (R32a)**
@@ -553,7 +553,7 @@ import { PeerConnection, MAX_PENDING_CANDIDATES } from '../src/connection';
 
 - [ ] **Step 7: Run the R32a test and confirm it fails**
 
-Run: `pnpm --filter @remote/webrtc-core test p2p`
+Run: `pnpm --filter @ponter/webrtc-core test p2p`
 Expected: FAIL — `MAX_PENDING_CANDIDATES` is not exported from `../src/connection` (and `pendingCandidateCount` does not exist).
 
 - [ ] **Step 8: Implement the bound in `packages/webrtc-core/src/connection.ts`**
@@ -635,7 +635,7 @@ with:
 
 - [ ] **Step 9: Run the R32a test and confirm it passes**
 
-Run: `pnpm --filter @remote/webrtc-core test p2p`
+Run: `pnpm --filter @ponter/webrtc-core test p2p`
 Expected: PASS.
 
 - [ ] **Step 10: Write the failing test for a rejecting candidate dropping the tail (R32b)**
@@ -731,7 +731,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 
 - [ ] **Step 11: Run it and confirm it fails**
 
-Run: `pnpm --filter @remote/webrtc-core test p2p`
+Run: `pnpm --filter @ponter/webrtc-core test p2p`
 Expected: FAIL — the run times out at `await vi.waitFor(() => expect(added).toHaveLength(3))`, with `added` stuck at `['cand_1']`.
 
 Why it stops at one rather than two: **werift rejects all three candidates, not just the mock's `cand_2`.** All three carry `sdpMid: null` / `sdpMLineIndex: null`, and `secureTransportManager.js`'s `resolveCandidateMediaIndices` falls to its `else` branch — `typeof null` is `'object'`, so neither the `string` nor the `number` branch matches and `isEndOfCandidates` is false — and throws `TypeError('sdpMid or sdpMLineIndex must be provided with a candidate')`. The recorder pushes `cand_1` onto `added` *before* delegating to `inner.addIceCandidate`, so the first candidate is recorded and then throws; the throw propagates out of `flushPendingCandidates`' bare `await` and exits the loop. `cand_2` and `cand_3` are never reached. After Step 12's `try`/`catch` the loop survives all three throws and `added` becomes `['cand_1', 'cand_2', 'cand_3']` — which is what Step 13 asserts. If you see `added` at length 3 before Step 12, the test is not exercising the bug and must not be treated as passing.
@@ -771,7 +771,7 @@ with:
 
 - [ ] **Step 13: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/webrtc-core test p2p`
+Run: `pnpm --filter @ponter/webrtc-core test p2p`
 Expected: 7 tests PASS (5 existing + R32a + R32b).
 
 - [ ] **Step 14: Write the failing test that pins the malformed-JSON contract (R31)**
@@ -805,7 +805,7 @@ Append to `workers/signaling/test/signal.test.ts`:
 
 - [ ] **Step 15: Run it and confirm it passes against the current routes**
 
-Run: `pnpm --filter @remote/signaling test signal`
+Run: `pnpm --filter @ponter/signaling test signal`
 Expected: 17 tests PASS (16 + 1).
 
 - [ ] **Step 16: Correct the Week 4 spec's malformed-JSON contract row**
@@ -875,7 +875,7 @@ Three spec sub-tasks land together because they have one deliverable: an agent t
 - Test: `workers/signaling/test/db.test.ts` (append one test; file is 72 lines, 2 tests today)
 
 **Interfaces:**
-- Consumes: `crypto.getRandomValues`, `crypto.subtle.digest`; `AgentSelect` (`src/db/schema.ts`); `Agent` from `@remote/shared` (`packages/shared/src/types/user.ts:30-42`).
+- Consumes: `crypto.getRandomValues`, `crypto.subtle.digest`; `AgentSelect` (`src/db/schema.ts`); `Agent` from `@ponter/shared` (`packages/shared/src/types/user.ts:30-42`).
 - Produces:
   ```typescript
   // workers/signaling/src/utils/crypto.ts
@@ -942,7 +942,7 @@ and one field to `sessions` (`:59-77`), immediately after `status` (`:68`):
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:generate
+pnpm --filter @ponter/signaling db:generate
 ```
 Expected: drizzle-kit writes `db/migrations/0002_<random-name>.sql` plus `db/migrations/meta/0002_snapshot.json`, and appends an entry to `db/migrations/meta/_journal.json`.
 
@@ -967,7 +967,7 @@ Rename `db/migrations/0002_<random-name>.sql` to `db/migrations/0002_agent_crede
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:generate
+pnpm --filter @ponter/signaling db:generate
 ```
 Expected: "No schema changes, nothing to migrate" and **no** new `0003_*` file. If one appeared, the snapshot is out of sync: delete the stray file and repeat from Step 2.
 
@@ -984,7 +984,7 @@ Expected: exit 0. Without this, `format:check` exits 1 on the drizzle-generated 
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:migrate:local
+pnpm --filter @ponter/signaling db:migrate:local
 ```
 Expected: `0002_agent_credentials` applied successfully.
 
@@ -1062,7 +1062,7 @@ Append to `workers/signaling/test/db.test.ts` (inside the existing top-level `de
 
 - [ ] **Step 10: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/signaling test db`
+Run: `pnpm --filter @ponter/signaling test db`
 Expected: 3 tests PASS. (The fixture is extended in Step 8; if you skipped that, this fails with `no such column: credential_hash`.)
 
 - [ ] **Step 11: Export `buf2hex` and add `sha256Hex`**
@@ -1103,7 +1103,7 @@ import type { SQL } from 'drizzle-orm';
 import { signals } from '../db/schema';
 import type { SignalSelect } from '../db/schema';
 import type { Database } from '../db/client';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 /** Matches the TTL the three REST routes wrote before this helper existed. */
 export const SIGNAL_TTL_SQL = sql`datetime('now', '+5 minutes')`;
@@ -1219,7 +1219,7 @@ export async function recordSignal(
 - [ ] **Step 13: Create `workers/signaling/src/utils/agent.ts`**
 
 ```typescript
-import type { Agent as SharedAgent } from '@remote/shared';
+import type { Agent as SharedAgent } from '@ponter/shared';
 import type { AgentSelect } from '../db/schema';
 import { buf2hex } from './crypto';
 
@@ -1449,7 +1449,7 @@ Append to `workers/signaling/test/resources.test.ts` (inside `describe('Agents A
 
 - [ ] **Step 17: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/signaling test resources`
+Run: `pnpm --filter @ponter/signaling test resources`
 Expected: 15 tests PASS (14 + 1).
 
 - [ ] **Step 18: Write the failing projection test**
@@ -1504,7 +1504,7 @@ Append to `workers/signaling/test/resources.test.ts`:
 
 - [ ] **Step 19: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/signaling test resources`
+Run: `pnpm --filter @ponter/signaling test resources`
 Expected: 16 tests PASS.
 
 - [ ] **Step 20: Run the whole gate**
@@ -1632,13 +1632,13 @@ export type {
 } from './signaling';
 ```
 
-**This step is not optional and the spec's §8.1 task 4 does not mention it.** `packages/shared`'s `package.json` resolves `@remote/shared` to `src/index.ts`, which re-exports `./types` — so a type that is not in this barrel is invisible to the Worker even though it is in the file.
+**This step is not optional and the spec's §8.1 task 4 does not mention it.** `packages/shared`'s `package.json` resolves `@ponter/shared` to `src/index.ts`, which re-exports `./types` — so a type that is not in this barrel is invisible to the Worker even though it is in the file.
 
 - [ ] **Step 3: Verify the shared package still typechecks and its consumers still build**
 
 Run:
 ```bash
-pnpm --filter @remote/shared typecheck && pnpm typecheck
+pnpm --filter @ponter/shared typecheck && pnpm typecheck
 ```
 Expected: exit 0. `webrtc-core` and `apps/web` consume `SignalMessage` through the barrel; an accidental change to that union would surface here.
 
@@ -1816,7 +1816,7 @@ describe('Agent WebSocket (/api/ws/agent)', () => {
 
 - [ ] **Step 5: Run it and confirm it fails**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: FAIL — `Cannot find module '../src/routes/ws'`.
 
 - [ ] **Step 6: Write `workers/signaling/src/routes/ws.ts`**
@@ -1831,7 +1831,7 @@ import { agents, sessions } from '../db/schema';
 import { AppError } from '../middleware/error';
 import { sha256Hex } from '../utils/crypto';
 import { NOW_SQL, parseSignalMessage, recordSignal } from '../utils/signals';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 /**
  * Live agent sockets, keyed by `agents.id`.
@@ -2087,7 +2087,7 @@ app.route('/api/ws', ws);
 
 - [ ] **Step 8: Run the ws tests and confirm they pass**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: 3 tests PASS.
 
 - [ ] **Step 9: Write the failing tests for the inbound signal path**
@@ -2360,7 +2360,7 @@ The `ws_other` user registered at the top of the test is what makes the first ca
 
 - [ ] **Step 10: Run them and confirm they pass**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: 6 tests PASS.
 
 - [ ] **Step 11: Write the failing test for socket supersession**
@@ -2481,7 +2481,7 @@ Append to `workers/signaling/test/ws.test.ts`:
 
 - [ ] **Step 12: Run them and confirm they pass**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: 8 tests PASS.
 
 - [ ] **Step 13: Write the failing push tests in `signal.test.ts`**
@@ -2754,19 +2754,19 @@ and to the ice-candidate route (`:163-195`):
 Then remove what is now unused from the file's imports: `signals` (the table) and `sql`, if nothing else in the file uses them. `sessions` and `and`/`eq` are still used by `getOwnedActiveSession`, and the poll route uses raw SQL. Add the `SignalMessage` type import:
 
 ```typescript
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 ```
 
 **The `201` body must not change.** `recordSignal` inserts `{sessionId, type, payload, expiresAt}` and the response is rebuilt from the returned row with the same four fields in the same order — the payload is `JSON.stringify(message.data)`, which reproduces the previous key order exactly (`{sessionId, sdp, capabilities}` for an offer, `{sessionId, sdp, approved}` for an answer, `{sessionId, candidate, sdpMid, sdpMLineIndex}` for a candidate). No existing `signal.test.ts` assertion changes (D23).
 
 - [ ] **Step 15: Run the signal tests and confirm they pass**
 
-Run: `pnpm --filter @remote/signaling test signal`
+Run: `pnpm --filter @ponter/signaling test signal`
 Expected: 19 tests PASS (14 existing + 2 mutants + 1 R31 + 2 push).
 
 - [ ] **Step 16: Run the whole signaling suite**
 
-Run: `pnpm --filter @remote/signaling test`
+Run: `pnpm --filter @ponter/signaling test`
 Expected: 76 tests PASS (60 baseline + 2 mutants + 1 R31 + 3 credential/projection + 2 push + 8 socket).
 
 - [ ] **Step 17: Run the whole gate**
@@ -2964,7 +2964,7 @@ Append to `workers/signaling/test/ws.test.ts` (inside the `describe`, before its
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: FAIL — `status` stays `'pending'` (nothing advances it yet).
 
 - [ ] **Step 3: Add the transition to `recordSignal`**
@@ -3030,7 +3030,7 @@ Merge into the lines Task 3 already wrote rather than duplicating. `inArray` is 
 
 - [ ] **Step 4: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: 9 tests PASS (8 from Task 4 + this one). The two Task 4 inbound tests now also transition their sessions, which no assertion in them contradicts.
 
 - [ ] **Step 5: Write the failing test for the socket-close termination**
@@ -3208,7 +3208,7 @@ Append to `workers/signaling/test/ws.test.ts`:
 
 - [ ] **Step 7: Run them and confirm they fail**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: FAIL on both — the close handler does not terminate sessions, and `handleInbound` has no status check.
 
 - [ ] **Step 8: Terminate sessions on socket close**
@@ -3301,7 +3301,7 @@ In `handleInbound`, the session lookup currently selects `{ id, userId, agentId 
 
 - [ ] **Step 10: Run the ws tests and confirm they pass**
 
-Run: `pnpm --filter @remote/signaling test ws`
+Run: `pnpm --filter @ponter/signaling test ws`
 Expected: 11 tests PASS (9 after Step 4 + the close and refusal tests).
 
 - [ ] **Step 11: Write the failing test for the `datetime('now')` convergence**
@@ -3387,7 +3387,7 @@ Add `sql` to that file's drizzle import if it is not already there.
 
 - [ ] **Step 13: Run it and confirm it passes**
 
-Run: `pnpm --filter @remote/signaling test resources`
+Run: `pnpm --filter @ponter/signaling test resources`
 Expected: 17 tests PASS (16 from Task 3 + the convergence test).
 
 - [ ] **Step 14: Write the failing test for the read-time online window**
@@ -3447,7 +3447,7 @@ Append to `workers/signaling/test/resources.test.ts`:
 
 - [ ] **Step 15: Run it and confirm it fails**
 
-Run: `pnpm --filter @remote/signaling test resources`
+Run: `pnpm --filter @ponter/signaling test resources`
 Expected: FAIL — `isOnline` currently mirrors the column, so the stale row reads `true`.
 
 - [ ] **Step 16: Implement `isAgentOnline` and thread it through the projection**
@@ -3558,7 +3558,7 @@ In `POST /`:
 
 - [ ] **Step 18: Run the resources and ws tests**
 
-Run: `pnpm --filter @remote/signaling test resources ws`
+Run: `pnpm --filter @ponter/signaling test resources ws`
 Expected: resources 18 PASS (16 from Task 3 + the two this task adds), ws 11 PASS (8 from Task 4 + the three this task adds).
 
 - [ ] **Step 19: Run the whole gate**
@@ -3586,7 +3586,7 @@ git commit -m "feat(signaling): session state machine, read-time online window, 
 
 ### Task 6: The Rust Agent — `apps/agent`
 
-Four flat modules, no `lib.rs`, no `config.rs`, no `webrtc/` subdirectory (D-7). The crate is `remote-agent`, a binary. Its only contract with the rest of the repository is the wire shape of `SignalMessage` and `DataChannelMessage<T>`, which it mirrors from `packages/shared` by hand.
+Four flat modules, no `lib.rs`, no `config.rs`, no `webrtc/` subdirectory (D-7). The crate is `ponter-agent`, a binary. Its only contract with the rest of the repository is the wire shape of `SignalMessage` and `DataChannelMessage<T>`, which it mirrors from `packages/shared` by hand.
 
 **Everything in this task is new code in a language this repository has never compiled.** §5.2.1 of the spec records that explicitly, and Step 1 exists to turn the spec's version table from a *claim* into a resolved lock file before any of it is written.
 
@@ -3674,7 +3674,7 @@ Do **not** hand-write `Cargo.toml` from the spec's table. §5.4.3's versions are
 
 ```bash
 cd apps/agent
-cargo init --name remote-agent --vcs none .
+cargo init --name ponter-agent --vcs none .
 cargo add tokio --features full
 cargo add webrtc@0.13
 cargo add tokio-tungstenite --features rustls-tls-webpki-roots
@@ -3702,7 +3702,7 @@ Add the three fields the spec fixes and that `cargo init` does not set:
 
 ```toml
 [package]
-name = "remote-agent"
+name = "ponter-agent"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"          # clap 4.6.7's MSRV is the highest in the set (spec R24)
@@ -4795,7 +4795,7 @@ The `10 s` deadline in `pty_echo_round_trip` is the watchdog spec §5.10.4 requi
 - [ ] **Step 9: Write `src/main.rs` — CLI, pipeline, teardown**
 
 ```rust
-//! `remote-agent` — CLI, startup pipeline, Ctrl-C/SIGTERM teardown.
+//! `ponter-agent` — CLI, startup pipeline, Ctrl-C/SIGTERM teardown.
 //!
 //! Four flat modules, no `lib.rs`: this is a binary crate, and the unit tests
 //! live in `#[cfg(test)] mod tests` inside each module. A `lib.rs` would exist
@@ -4820,7 +4820,7 @@ use webrtc::peer_connection::RTCPeerConnection;
 use crate::signal::SignalClient;
 
 #[derive(Parser, Debug)]
-#[command(name = "remote-agent", version, about = "Ponta remote desktop agent")]
+#[command(name = "ponter-agent", version, about = "Ponter remote desktop agent")]
 struct Cli {
     /// Agent id registered with the signaling service.
     #[arg(long, env = "AGENT_ID")]
@@ -4923,7 +4923,7 @@ async fn main() -> Result<()> {
     let credential = resolve_credential(&cli)?;
     let shell = resolve_shell(&cli)?;
 
-    tracing::info!(server = %cli.server, shell = %shell, "starting remote-agent");
+    tracing::info!(server = %cli.server, shell = %shell, "starting ponter-agent");
 
     run_with_reconnect(&cli, &credential, &shell).await
 }
@@ -5322,7 +5322,7 @@ The one expected exception is the `master` field in `PtySession` (held for its l
 
 ```json
 {
-  "name": "@remote/agent",
+  "name": "@ponter/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -5352,7 +5352,7 @@ If `pnpm format:check` fails, the cause is almost certainly the generated `Cargo
 git add apps/agent/Cargo.toml apps/agent/Cargo.lock apps/agent/rust-toolchain.toml \
         apps/agent/.env.example apps/agent/package.json apps/agent/src/main.rs \
         apps/agent/src/signal.rs apps/agent/src/rtc.rs apps/agent/src/pty.rs
-git commit -m "feat(agent): add Rust remote-agent with WS signaling, WebRTC answerer, and PTY bridge"
+git commit -m "feat(agent): add Rust ponter-agent with WS signaling, WebRTC answerer, and PTY bridge"
 ```
 
 Confirm `Cargo.lock` is in the commit (`git show --stat HEAD | grep Cargo.lock`) and that `target/` is not (`git show --stat HEAD | grep -c target` → 0).
@@ -5371,14 +5371,14 @@ Task 6 shipped a Rust binary that compiles and whose unit tests pass. This task 
 - Modify: `docs/superpowers/plans/2026-09-26-phase2-week5-terminal-agent.md` (the deviation rows and the count in Step 1)
 
 **Interfaces:**
-- Consumes: `PeerConnection` (`packages/webrtc-core/src/connection.ts:17`), `WeriftAdapter` (`src/adapters/werift.ts:67`), `RESTPollingTransport` (`src/transport.ts:26`), `DataChannelManager` (`src/data-channel.ts:4`); `DataChannelMessage<T>`/`TerminalDataMessage` from `@remote/shared`; the Worker's REST surface (`/api/auth/register`, `/api/agents`, `/api/sessions`, `/api/signal/*`) and its WS route (`/api/ws/agent`, Task 4); the `remote-agent` binary (Task 6).
+- Consumes: `PeerConnection` (`packages/webrtc-core/src/connection.ts:17`), `WeriftAdapter` (`src/adapters/werift.ts:67`), `RESTPollingTransport` (`src/transport.ts:26`), `DataChannelManager` (`src/data-channel.ts:4`); `DataChannelMessage<T>`/`TerminalDataMessage` from `@ponter/shared`; the Worker's REST surface (`/api/auth/register`, `/api/agents`, `/api/sessions`, `/api/signal/*`) and its WS route (`/api/ws/agent`, Task 4); the `ponter-agent` binary (Task 6).
 - Produces: `vitest.e2e.config.ts` (the Layer-3 runner Task 8's `e2e` job invokes) and a `test:e2e` script.
 
 **Three spec statements this task corrects.** All three are recorded as deviation rows in Step 1, because a reader following §7.3 verbatim would write a harness that cannot work:
 
 - **§7.3 step 2 says `POST /api/agents` is used "to obtain `credential = ag_<secret>`".** After Task 3 that route returns `{ agent, credential }` — the credential is nested, and `agent` is a `PublicAgent` with `credentialHash` absent. A harness that reads `body.credential` off a bare-agent shape gets `undefined` and then sends `Bearer undefined`, which the Worker answers `401`. (Verified against the running Worker: today's route returns a bare agent with no `credential` key at all, so the pre-Task-3 shape the spec describes is exactly the shape a naive harness would assume.)
 - **§7.3 step 3 passes `--server ws://127.0.0.1:8787`.** That is an origin, not the route. Task 4 mounts the socket at `app.route('/api/ws', ws)` and the route is `router.get('/agent')`, so the reachable URL is `ws://127.0.0.1:8787/api/ws/agent` (deviation D-10). The spec's value 404s at the handshake.
-- **§7.3 step 9 says teardown kills "the agent child process".** The agent *is* the process. There is no child of it to kill: `remote-agent` is spawned by the harness and torn down with `SIGKILL` on the handle the harness itself holds. "The agent child process" presumes a wrapper script this repository does not have.
+- **§7.3 step 9 says teardown kills "the agent child process".** The agent *is* the process. There is no child of it to kill: `ponter-agent` is spawned by the harness and torn down with `SIGKILL` on the handle the harness itself holds. "The agent child process" presumes a wrapper script this repository does not have.
 
 - [ ] **Step 1: Confirm the three deviation rows are recorded**
 
@@ -5501,7 +5501,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PeerConnection } from '../../src/connection';
 import { WeriftAdapter } from '../../src/adapters/werift';
 import { RESTPollingTransport } from '../../src/transport';
-import type { DataChannelMessage, TerminalDataMessage } from '@remote/shared';
+import type { DataChannelMessage, TerminalDataMessage } from '@ponter/shared';
 
 /**
  * Layer 3: the whole week in one file — a Rust agent, a TypeScript offerer, a
@@ -5521,7 +5521,7 @@ const isLinux = process.platform === 'linux';
  * shim.
  */
 const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
-const AGENT_BIN = join(REPO_ROOT, 'apps', 'agent', 'target', 'debug', 'remote-agent');
+const AGENT_BIN = join(REPO_ROOT, 'apps', 'agent', 'target', 'debug', 'ponter-agent');
 const SIGNALING_DIR = join(REPO_ROOT, 'workers', 'signaling');
 const PORT = 8787;
 
@@ -5641,7 +5641,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     //    developer's own `.wrangler/state` and two runs cannot collide.
     //    `--persist-to` is resolved with `path.resolve(cwd, persistTo)`, so an
     //    absolute path is what makes this independent of where vitest ran.
-    tempDir = mkdtempSync(join(tmpdir(), 'ponta-e2e-'));
+    tempDir = mkdtempSync(join(tmpdir(), 'ponter-e2e-'));
 
     // 2. Migrate the SAME sqlite file `wrangler dev` will read. `wrangler dev`
     //    does not apply migrations, and both commands resolve their persistence
@@ -5956,7 +5956,7 @@ Add the second `it` inside the same `describe` block. It seeds its own agent and
 
 - [ ] **Step 9: Run the E2E suite**
 
-Build the binary first. The harness spawns `target/debug/remote-agent`, and Task 6's `cargo test` builds a *test* binary — not the binary the harness needs:
+Build the binary first. The harness spawns `target/debug/ponter-agent`, and Task 6's `cargo test` builds a *test* binary — not the binary the harness needs:
 
 ```bash
 cd apps/agent && cargo build
@@ -5965,7 +5965,7 @@ cd apps/agent && cargo build
 Then run:
 
 ```bash
-pnpm --filter @remote/webrtc-core test:e2e
+pnpm --filter @ponter/webrtc-core test:e2e
 ```
 
 Expected: **2 tests PASS** on Linux. On any other platform: **2 tests SKIPPED**, exit 0.
@@ -5974,7 +5974,7 @@ Expected: **2 tests PASS** on Linux. On any other platform: **2 tests SKIPPED**,
 
 Two environment notes, both of which the harness depends on:
 
-- The harness spawns `pnpm`, so `pnpm` must be on `PATH`. That holds in CI (`pnpm/action-setup`) and on a normal Linux dev box. On a machine where pnpm is only reachable through Corepack, prefix the invocation: `corepack pnpm --filter @remote/webrtc-core test:e2e`.
+- The harness spawns `pnpm`, so `pnpm` must be on `PATH`. That holds in CI (`pnpm/action-setup`) and on a normal Linux dev box. On a machine where pnpm is only reachable through Corepack, prefix the invocation: `corepack pnpm --filter @ponter/webrtc-core test:e2e`.
 - `describe.skipIf` is used rather than `it.skipIf` even though §7.3 says the latter. `it.skipIf` skips the *test* but still runs `beforeAll`, which spawns the Worker and applies migrations — on macOS or Windows that would fail rather than skip, which is the opposite of "skipped, not failed". `describe.skipIf` skips the hooks too. Both forms exist in vitest 5 (`skipIf` on `SuiteAPI` and on `ChainableTestAPI`).
 
 If the suite fails, the failure modes and their causes, in the order they are likely:
@@ -5990,7 +5990,7 @@ If the suite fails, the failure modes and their causes, in the order they are li
 Run:
 
 ```bash
-pnpm --filter @remote/webrtc-core test
+pnpm --filter @ponter/webrtc-core test
 ```
 
 Expected: **32 passing** — the Task 1/2 additions, unchanged by this task. If the count is 34, the `exclude` from Step 2 is not taking effect and the E2E file is being collected by the default runner.
@@ -6032,7 +6032,7 @@ Two jobs, and one of them is the week's done-criterion. `verify` is not touched.
 - Consumes: `apps/agent/Cargo.toml` + `Cargo.lock` (Task 6), `apps/agent/rust-toolchain.toml` (Task 6), `packages/webrtc-core/vitest.e2e.config.ts` + the `test:e2e` script (Task 7).
 - Produces: nothing importable. The deliverable is a green gate.
 
-**One hazard this task exists to close.** Task 6's Step 12 makes `apps/agent/package.json`'s `lint`, `typecheck` and `test` shell out to `cargo`. `turbo run lint|typecheck|test` therefore walks into `@remote/agent` like any other workspace package, so the existing `verify` job — which installs Node and pnpm and nothing else — now needs a Rust toolchain. This was **verified, not assumed**: `turbo run lint --dry=json` lists `@remote/agent:lint` in the task graph today, and `ubuntu-latest` ships Rust 1.98.1, rustup 1.29.1 and clippy preinstalled (the image's `install-rust.sh` runs `rustup component add rustfmt clippy`). So `verify` will pass — but it passes by accident of the runner image, and the version it uses is whatever the image happens to carry rather than the 1.98.1 `rust-toolchain.toml` pins.
+**One hazard this task exists to close.** Task 6's Step 12 makes `apps/agent/package.json`'s `lint`, `typecheck` and `test` shell out to `cargo`. `turbo run lint|typecheck|test` therefore walks into `@ponter/agent` like any other workspace package, so the existing `verify` job — which installs Node and pnpm and nothing else — now needs a Rust toolchain. This was **verified, not assumed**: `turbo run lint --dry=json` lists `@ponter/agent:lint` in the task graph today, and `ubuntu-latest` ships Rust 1.98.1, rustup 1.29.1 and clippy preinstalled (the image's `install-rust.sh` runs `rustup component add rustfmt clippy`). So `verify` will pass — but it passes by accident of the runner image, and the version it uses is whatever the image happens to carry rather than the 1.98.1 `rust-toolchain.toml` pins.
 
 The fix is one step: install the pinned toolchain in `verify` too. `rust-toolchain.toml` alone does not guarantee it, because `dtolnay/rust-toolchain` **requires** its `toolchain` input (`action.yml` marks it `required: true`; the action never reads a toolchain file) and the image's `stable` may drift from 1.98.1. Being explicit costs one cache-backed step and removes the drift.
 
@@ -6128,7 +6128,7 @@ Append after the `rust` job:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The harness spawns `apps/agent/target/debug/remote-agent`, and `cargo
+      # The harness spawns `apps/agent/target/debug/ponter-agent`, and `cargo
       # test` builds a test binary, not that one. Debug, not release: the E2E
       # measures correctness of the wire contract, not throughput.
       - name: Build the agent binary
@@ -6136,7 +6136,7 @@ Append after the `rust` job:
         working-directory: apps/agent
 
       - name: Run the E2E suite
-        run: pnpm --filter @remote/webrtc-core test:e2e
+        run: pnpm --filter @ponter/webrtc-core test:e2e
 ```
 
 Notes:
@@ -6176,7 +6176,7 @@ After Task 6, `apps/agent/package.json` reads:
 
 ```json
 {
-  "name": "@remote/agent",
+  "name": "@ponter/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -6192,7 +6192,7 @@ Add `build`:
 
 ```json
 {
-  "name": "@remote/agent",
+  "name": "@ponter/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -6205,7 +6205,7 @@ Add `build`:
 }
 ```
 
-**`build` is added for the developer, not for CI.** Turbo has no `build` task configured (`turbo.json` declares only `lint`, `typecheck` and `test`; `turbo run build --dry=json` fails with `Could not find task 'build' in project`), and this task's `e2e` job calls `cargo build` directly. The script exists so `pnpm --filter @remote/agent build` produces the binary the E2E harness needs, which is the command a contributor will reach for after cloning. Adding a `build` task to `turbo.json` is deliberately **not** done: it would put a multi-minute Rust compile into `pnpm build` for every consumer of the repo, and nothing in the JS pipeline consumes the binary.
+**`build` is added for the developer, not for CI.** Turbo has no `build` task configured (`turbo.json` declares only `lint`, `typecheck` and `test`; `turbo run build --dry=json` fails with `Could not find task 'build' in project`), and this task's `e2e` job calls `cargo build` directly. The script exists so `pnpm --filter @ponter/agent build` produces the binary the E2E harness needs, which is the command a contributor will reach for after cloning. Adding a `build` task to `turbo.json` is deliberately **not** done: it would put a multi-minute Rust compile into `pnpm build` for every consumer of the repo, and nothing in the JS pipeline consumes the binary.
 
 - [ ] **Step 5: Validate the workflow file**
 
@@ -6375,7 +6375,7 @@ Replace `docs/ARCHITECTURE.md:1193-1198`. The five `- [ ]` lines are kept as `[ 
 trong tài liệu này chưa từng được tick — kể cả Phase 1 và Tuần 4 đã hoàn thành — nên tick riêng
 Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay vì tick.
 
-- [ ] Tạo Rust agent — `apps/agent` (crate `remote-agent`), 4 module phẳng: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
+- [ ] Tạo Rust agent — `apps/agent` (crate `ponter-agent`), 4 module phẳng: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
 - [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `workers/signaling`, xác thực bằng credential `ag_<32 hex>`
 - [ ] Tích hợp portable-pty — `portable-pty 0.9`, PTY thật, 1 session
 - [ ] Xử lý terminal I/O — base64 trong `DataChannelMessage<TerminalDataMessage>`, kênh `terminal`
@@ -6455,7 +6455,7 @@ comment (the convention the repository settled on in Week 4):
 |---|---|---|
 | `verify` | Node 24 + pnpm 12.6.0 + Rust 1.98.1 | `pnpm lint`, `pnpm typecheck`, `pnpm format:check`, `pnpm test` |
 | `rust` | Rust 1.98.1 (`apps/agent` as the working directory) | `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --locked`, `cargo test --locked` |
-| `e2e` | Node 24 + pnpm + Rust, `needs: [verify, rust]` | builds `apps/agent/target/debug/remote-agent`, then `pnpm --filter @remote/webrtc-core test:e2e` |
+| `e2e` | Node 24 + pnpm + Rust, `needs: [verify, rust]` | builds `apps/agent/target/debug/ponter-agent`, then `pnpm --filter @ponter/webrtc-core test:e2e` |
 
 The `e2e` job is Week 5's done-criterion: the same wire contract implemented twice, meeting at a real
 DTLS/SCTP connection with real PTY bytes crossing it. It is Linux-only by construction (`iceServers:
@@ -6487,12 +6487,12 @@ Replace the `### 9.3 Testing Strategy` code block at `docs/ARCHITECTURE.md:1364-
 pnpm test
 
 # Specific package tests
-pnpm --filter @remote/shared test
-pnpm --filter @remote/api-client test
+pnpm --filter @ponter/shared test
+pnpm --filter @ponter/api-client test
 
 # Cross-language terminal E2E — Linux only; spawns wrangler dev and the Rust agent
-# on 127.0.0.1:8787. Build the agent first: `pnpm --filter @remote/agent build`.
-pnpm --filter @remote/webrtc-core test:e2e
+# on 127.0.0.1:8787. Build the agent first: `pnpm --filter @ponter/agent build`.
+pnpm --filter @ponter/webrtc-core test:e2e
 ```
 
 Two corrections, both verified against the repository: `pnpm test:e2e` is not a root script (the root `package.json` has `lint`, `typecheck`, `test`, `format:check`, `format`, `deploy:workers`, `db:migrate:prod`, `dev:web`), and `pnpm test:integration` has no script anywhere and no suite behind it. The E2E script lives in `packages/webrtc-core`, which is also how Task 8's `e2e` job invokes it.

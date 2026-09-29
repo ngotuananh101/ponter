@@ -6,7 +6,7 @@ import type {
   RTCDataChannelLike,
   SignalTransport,
 } from '../src/types';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 // Direct in-memory bus connecting offerer and answerer transports
 class InProcessBus {

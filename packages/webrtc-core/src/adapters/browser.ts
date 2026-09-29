@@ -1,5 +1,5 @@
 import type { RTCPeerConnectionLike, RTCDataChannelLike } from '../types';
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 
 class BrowserDataChannel implements RTCDataChannelLike {
   constructor(private readonly dc: RTCDataChannel) {}

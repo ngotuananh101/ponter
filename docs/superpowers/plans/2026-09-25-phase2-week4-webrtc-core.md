@@ -200,7 +200,7 @@ Replace the hardcoded secret with `TEST_JWT_SECRET`.
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: All existing test files PASS (auth, crypto, db, health, middleware, resources). Exactly 46 passing tests.
 
@@ -251,7 +251,7 @@ Configure `packages/webrtc-core/package.json`, `tsconfig.json`, `vitest.config.t
   }
 
   export interface PeerConnectionOptions {
-    iceServers?: import('@remote/shared').IceServerConfig[];
+    iceServers?: import('@ponter/shared').IceServerConfig[];
     role: 'offerer' | 'answerer';
     channelLabels: string[];
     connectTimeoutMs?: number;
@@ -263,7 +263,7 @@ Configure `packages/webrtc-core/package.json`, `tsconfig.json`, `vitest.config.t
 Edit `packages/webrtc-core/package.json`:
 ```json
 {
-  "name": "@remote/webrtc-core",
+  "name": "@ponter/webrtc-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -279,7 +279,7 @@ Edit `packages/webrtc-core/package.json`:
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*"
+    "@ponter/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.13.6",
@@ -329,7 +329,7 @@ export default defineConfig({
 
 Create `packages/webrtc-core/src/types.ts`:
 ```typescript
-import type { IceServerConfig, SignalMessage } from '@remote/shared';
+import type { IceServerConfig, SignalMessage } from '@ponter/shared';
 
 export interface RTCDataChannelLike {
   readonly label: string;
@@ -379,7 +379,7 @@ export * from './types';
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core typecheck
+pnpm --filter @ponter/webrtc-core typecheck
 ```
 Expected: PASS with 0 errors.
 
@@ -424,7 +424,7 @@ import type {
   RTCPeerConnectionLike,
   RTCDataChannelLike,
 } from '../types';
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 
 class BrowserDataChannel implements RTCDataChannelLike {
   constructor(private readonly dc: RTCDataChannel) {}
@@ -567,7 +567,7 @@ import type {
   RTCPeerConnectionLike,
   RTCDataChannelLike,
 } from '../types';
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 
 class WeriftDataChannel implements RTCDataChannelLike {
   private readonly stateHandlers: Array<(state: string) => void> = [];
@@ -733,7 +733,7 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
 
 Create `packages/webrtc-core/src/adapter.ts`:
 ```typescript
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 import { BrowserAdapter } from './adapters/browser';
 
 export function createBrowserAdapter(config?: { iceServers?: IceServerConfig[] }): BrowserAdapter {
@@ -753,7 +753,7 @@ export * from './adapter';
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core typecheck
+pnpm --filter @ponter/webrtc-core typecheck
 ```
 Expected: PASS with 0 errors.
 
@@ -887,7 +887,7 @@ describe('Signal Handler conversions', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test signal-handler
+pnpm --filter @ponter/webrtc-core test signal-handler
 ```
 Expected: FAIL (cannot find module `../src/signal-handler`).
 
@@ -895,7 +895,7 @@ Expected: FAIL (cannot find module `../src/signal-handler`).
 
 Create `packages/webrtc-core/src/signal-handler.ts`:
 ```typescript
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 export function toSessionDescriptionInit(
   offerOrAnswer: { sdp: string },
@@ -975,7 +975,7 @@ export function createCandidateSignal(
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test signal-handler
+pnpm --filter @ponter/webrtc-core test signal-handler
 ```
 Expected: PASS (6 tests).
 
@@ -984,7 +984,7 @@ Expected: PASS (6 tests).
 Create `packages/webrtc-core/test/helpers.ts` for mock in-memory signaling bus and mock fetch:
 ```typescript
 import { vi } from 'vitest';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 export class MemorySignalBus {
   private readonly subscribers: Array<(msg: SignalMessage) => void> = [];
@@ -1018,7 +1018,7 @@ Create `packages/webrtc-core/test/transport.test.ts`:
 ```typescript
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RESTPollingTransport } from '../src/transport';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 describe('RESTPollingTransport', () => {
   beforeEach(() => {
@@ -1244,7 +1244,7 @@ describe('RESTPollingTransport', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test transport
+pnpm --filter @ponter/webrtc-core test transport
 ```
 Expected: FAIL (cannot find module `../src/transport`).
 
@@ -1253,7 +1253,7 @@ Expected: FAIL (cannot find module `../src/transport`).
 Create `packages/webrtc-core/src/transport.ts`:
 ```typescript
 import type { SignalTransport } from './types';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 export interface RESTPollingTransportOptions {
   baseUrl: string;
@@ -1473,7 +1473,7 @@ export * from './transport';
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test signal-handler transport
+pnpm --filter @ponter/webrtc-core test signal-handler transport
 ```
 Expected: PASS (13 tests total: 6 signal-handler + 7 transport).
 
@@ -1654,7 +1654,7 @@ describe('DataChannelManager', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test data-channel
+pnpm --filter @ponter/webrtc-core test data-channel
 ```
 Expected: FAIL (cannot find module `../src/data-channel`).
 
@@ -1663,7 +1663,7 @@ Expected: FAIL (cannot find module `../src/data-channel`).
 Create `packages/webrtc-core/src/data-channel.ts`:
 ```typescript
 import type { RTCDataChannelLike } from './types';
-import type { DataChannelMessage, WebRTCChannelType } from '@remote/shared';
+import type { DataChannelMessage, WebRTCChannelType } from '@ponter/shared';
 
 export class DataChannelManager {
   private readonly channels = new Map<string, RTCDataChannelLike>();
@@ -1813,7 +1813,7 @@ export * from './data-channel';
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test data-channel
+pnpm --filter @ponter/webrtc-core test data-channel
 ```
 Expected: PASS (6 tests).
 
@@ -1862,7 +1862,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { WeriftAdapter } from '../src/adapters/werift';
 import { PeerConnection } from '../src/connection';
 import type { SignalTransport } from '../src/types';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 // Direct in-memory bus connecting offerer and answerer transports
 class InProcessBus {
@@ -2064,7 +2064,7 @@ describe('Real P2P Handshake (werift)', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test p2p
+pnpm --filter @ponter/webrtc-core test p2p
 ```
 Expected: FAIL (cannot find module `../src/connection`).
 
@@ -2078,7 +2078,7 @@ import type {
   SignalTransport,
   PeerConnectionOptions,
 } from './types';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 import { DataChannelManager } from './data-channel';
 import {
   toSessionDescriptionInit,
@@ -2250,7 +2250,7 @@ export * from './connection';
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test p2p
+pnpm --filter @ponter/webrtc-core test p2p
 ```
 Expected: PASS (all 5 P2P test cases succeed, completing genuine ICE+DTLS+SCTP handshakes in Node).
 
@@ -2258,7 +2258,7 @@ Expected: PASS (all 5 P2P test cases succeed, completing genuine ICE+DTLS+SCTP h
 
 Run:
 ```bash
-pnpm --filter @remote/webrtc-core test
+pnpm --filter @ponter/webrtc-core test
 ```
 Expected: All 24 tests pass (6 signal-handler + 7 transport + 6 data-channel + 5 p2p).
 
@@ -2348,7 +2348,7 @@ export const signals = sqliteTable(
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:generate
+pnpm --filter @ponter/signaling db:generate
 ```
 Expected: drizzle-kit reports the two new indexes and writes
 `db/migrations/0001_<random-name>.sql` plus `db/migrations/meta/0001_snapshot.json`, and appends an
@@ -2372,7 +2372,7 @@ CREATE INDEX `signals_expires_at_idx` ON `signals` (`expires_at`);
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:generate
+pnpm --filter @ponter/signaling db:generate
 ```
 Expected: "No schema changes, nothing to migrate" — and **no** new `0002_*` file appears. If a new
 file was generated, the snapshot is out of sync: delete the stray file and repeat from Step 2.
@@ -2381,7 +2381,7 @@ file was generated, the snapshot is out of sync: delete the stray file and repea
 
 Run:
 ```bash
-pnpm --filter @remote/signaling db:migrate:local
+pnpm --filter @ponter/signaling db:migrate:local
 ```
 Expected: Successfully applied migration `0001_signal_indexes`.
 
@@ -2389,7 +2389,7 @@ Expected: Successfully applied migration `0001_signal_indexes`.
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: All existing test files PASS (46 tests).
 
@@ -2834,7 +2834,7 @@ describe('Signaling REST API (/api/signal)', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test signal
+pnpm --filter @ponter/signaling test signal
 ```
 Expected: FAIL (route `/api/signal/*` not found 404).
 
@@ -3117,7 +3117,7 @@ app.route('/api/signal', signal);
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test signal
+pnpm --filter @ponter/signaling test signal
 ```
 Expected: PASS (14 tests).
 
@@ -3125,7 +3125,7 @@ Expected: PASS (14 tests).
 
 Run:
 ```bash
-pnpm --filter @remote/signaling test
+pnpm --filter @ponter/signaling test
 ```
 Expected: PASS (60 tests total across all 7 test files).
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import RegisterAgentDialog from '@/components/agent/RegisterAgentDialog.vue';
 import { apiClient } from '@/services/client';
-import type { Agent } from '@remote/shared';
+import type { Agent } from '@ponter/shared';
 
 function createMockAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -29,7 +29,7 @@ vi.mock('@/services/client', () => ({
   },
 }));
 
-vi.mock('@remote/crypto', () => ({
+vi.mock('@ponter/crypto', () => ({
   generateUserKeyPair: vi.fn().mockResolvedValue({
     publicKeySpkiBase64: 'mocked-spki-public-key',
     privateKey: {} as CryptoKey,
@@ -123,7 +123,7 @@ describe('RegisterAgentDialog.vue', () => {
     expect(wrapper.text()).toContain('Agent Provisioned:');
     expect(wrapper.text()).toContain('node-alpha-01');
     expect(wrapper.text()).toContain('ag_credential_token_12345');
-    expect(wrapper.text()).toContain('./remote-agent --agent-id node-alpha-01');
+    expect(wrapper.text()).toContain('./ponter-agent --agent-id node-alpha-01');
   });
 
   it('5. Handles registration API errors cleanly', async () => {
@@ -184,7 +184,7 @@ describe('RegisterAgentDialog.vue', () => {
     await copyCmdBtn?.trigger('click');
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       expect.stringContaining(
-        './remote-agent --agent-id node-beta-02 --server',
+        './ponter-agent --agent-id node-beta-02 --server',
       ),
     );
   });

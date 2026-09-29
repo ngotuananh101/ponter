@@ -1,4 +1,4 @@
-import type { IceServerConfig, SignalMessage } from '@remote/shared';
+import type { IceServerConfig, SignalMessage } from '@ponter/shared';
 
 export interface RTCDataChannelLike {
   readonly label: string;

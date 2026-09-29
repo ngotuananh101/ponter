@@ -1,4 +1,4 @@
-import type { DataChannelManager } from '@remote/webrtc-core';
+import type { DataChannelManager } from '@ponter/webrtc-core';
 import type {
   TerminalCreateMessage,
   TerminalDataMessage,
@@ -6,10 +6,10 @@ import type {
   TerminalCloseMessage,
   TerminalExitMessage,
   TerminalErrorMessage,
-} from '@remote/shared';
+} from '@ponter/shared';
 import { TerminalSession } from './session';
 import type { TerminalSessionOptions } from './types';
-import type { DataChannelMessage } from '@remote/shared';
+import type { DataChannelMessage } from '@ponter/shared';
 
 function base64ToUint8Array(base64: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {

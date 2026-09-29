@@ -1,5 +1,5 @@
 {
-  "name": "@remote/terminal-core",
+  "name": "@ponter/terminal-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*",
-    "@remote/webrtc-core": "workspace:*"
+    "@ponter/shared": "workspace:*",
+    "@ponter/webrtc-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

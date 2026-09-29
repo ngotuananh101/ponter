@@ -1,5 +1,5 @@
 import type { SignalTransport } from './types';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 export interface RESTPollingTransportOptions {
   baseUrl: string;

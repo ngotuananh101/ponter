@@ -64,7 +64,7 @@
 Update `packages/crypto/package.json`:
 ```json
 {
-  "name": "@remote/crypto",
+  "name": "@ponter/crypto",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -233,7 +233,7 @@ describe('packages/crypto', () => {
 
 Run:
 ```bash
-pnpm --filter @remote/crypto test
+pnpm --filter @ponter/crypto test
 ```
 Expected: FAIL (cannot find module `../src/index`).
 
@@ -388,9 +388,9 @@ export async function deletePrivateKey(userId: string): Promise<void> {
 Run:
 ```bash
 pnpm install
-pnpm --filter @remote/crypto test
-pnpm --filter @remote/crypto typecheck
-pnpm --filter @remote/crypto lint
+pnpm --filter @ponter/crypto test
+pnpm --filter @ponter/crypto typecheck
+pnpm --filter @ponter/crypto lint
 ```
 Expected: All 7 tests PASS, typecheck passes, lint passes.
 
@@ -422,7 +422,7 @@ git commit -m "feat(crypto): implement ECDH P-256 keypair generation and Indexed
 - Create: `packages/api-client/test/refresh-queue.test.ts`
 
 **Interfaces:**
-- Consumes: `@remote/shared` types (`User`, `Device`, `Agent`, `Session`, `LoginResponse`, `RegisterRequest`).
+- Consumes: `@ponter/shared` types (`User`, `Device`, `Agent`, `Session`, `LoginResponse`, `RegisterRequest`).
 - Produces:
   ```typescript
   export class ApiClient {
@@ -458,7 +458,7 @@ git commit -m "feat(crypto): implement ECDH P-256 keypair generation and Indexed
 Update `packages/api-client/package.json`:
 ```json
 {
-  "name": "@remote/api-client",
+  "name": "@ponter/api-client",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -473,7 +473,7 @@ Update `packages/api-client/package.json`:
     "test": "vitest run"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*"
+    "@ponter/shared": "workspace:*"
   },
   "devDependencies": {
     "typescript": "6.0.3",
@@ -774,7 +774,7 @@ export class ApiClient {
 Create `packages/api-client/src/resources/auth.ts`:
 ```typescript
 import type { HttpClient } from '../client';
-import type { User, LoginResponse, RegisterRequest } from '@remote/shared';
+import type { User, LoginResponse, RegisterRequest } from '@ponter/shared';
 
 export interface RegisterInput {
   username: string;
@@ -838,7 +838,7 @@ export class AuthResource {
 Create `packages/api-client/src/resources/users.ts`:
 ```typescript
 import type { HttpClient } from '../client';
-import type { User } from '@remote/shared';
+import type { User } from '@ponter/shared';
 
 export class UsersResource {
   constructor(private readonly http: HttpClient) {}
@@ -852,7 +852,7 @@ export class UsersResource {
 Create `packages/api-client/src/resources/devices.ts`:
 ```typescript
 import type { HttpClient } from '../client';
-import type { Device } from '@remote/shared';
+import type { Device } from '@ponter/shared';
 
 export interface CreateDeviceInput {
   fingerprint: string;
@@ -882,7 +882,7 @@ export class DevicesResource {
 Create `packages/api-client/src/resources/agents.ts`:
 ```typescript
 import type { HttpClient } from '../client';
-import type { Agent } from '@remote/shared';
+import type { Agent } from '@ponter/shared';
 
 export interface CreateAgentInput {
   id: string;
@@ -915,7 +915,7 @@ export class AgentsResource {
 Create `packages/api-client/src/resources/sessions.ts`:
 ```typescript
 import type { HttpClient } from '../client';
-import type { Session } from '@remote/shared';
+import type { Session } from '@ponter/shared';
 
 export interface CreateSessionInput {
   deviceId?: string;
@@ -1356,9 +1356,9 @@ describe('Refresh Queue & Concurrency Tests', () => {
 Run:
 ```bash
 pnpm install
-pnpm --filter @remote/api-client test
-pnpm --filter @remote/api-client typecheck
-pnpm --filter @remote/api-client lint
+pnpm --filter @ponter/api-client test
+pnpm --filter @ponter/api-client typecheck
+pnpm --filter @ponter/api-client lint
 ```
 Expected: All 10 tests PASS, typecheck passes, lint passes.
 
@@ -1411,9 +1411,9 @@ git commit -m "feat(api-client): implement typed HTTP client with single-flight 
 - Create: `apps/web/src/__tests__/RegisterForm.test.ts`
 
 **Interfaces:**
-- Consumes: `@remote/crypto` (`generateUserKeyPair`, `savePrivateKey`, `loadPrivateKey`, `deletePrivateKey`).
-- Consumes: `@remote/api-client` (`ApiClient`, `TokenStorageAdapter`, `ApiError`, `isApiError`).
-- Produces: Working SPA with `pnpm dev:web`, `pnpm --filter @remote/web build`, and 22 passing tests.
+- Consumes: `@ponter/crypto` (`generateUserKeyPair`, `savePrivateKey`, `loadPrivateKey`, `deletePrivateKey`).
+- Consumes: `@ponter/api-client` (`ApiClient`, `TokenStorageAdapter`, `ApiError`, `isApiError`).
+- Produces: Working SPA with `pnpm dev:web`, `pnpm --filter @ponter/web build`, and 22 passing tests.
 
 - [ ] **Step 1: Configure root dependencies, `pnpm-workspace.yaml`, and root `eslint.config.js`**
 
@@ -1438,7 +1438,7 @@ Add Vue ESLint plugins and `dev:web` script to root `package.json`:
 ```json
 {
   "scripts": {
-    "dev:web": "pnpm --filter @remote/web dev"
+    "dev:web": "pnpm --filter @ponter/web dev"
   },
   "devDependencies": {
     "eslint-plugin-vue": "10.11.1",
@@ -1509,7 +1509,7 @@ export default tseslint.config(
 Update `apps/web/package.json`:
 ```json
 {
-  "name": "@remote/web",
+  "name": "@ponter/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -1522,9 +1522,9 @@ Update `apps/web/package.json`:
     "test": "vitest run"
   },
   "dependencies": {
-    "@remote/api-client": "workspace:*",
-    "@remote/crypto": "workspace:*",
-    "@remote/shared": "workspace:*",
+    "@ponter/api-client": "workspace:*",
+    "@ponter/crypto": "workspace:*",
+    "@ponter/shared": "workspace:*",
     "pinia": "4.0.3",
     "vue": "3.5.43",
     "vue-router": "5.3.1"
@@ -1631,7 +1631,7 @@ Create `apps/web/index.html`:
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ponta Remote Access</title>
+    <title>Ponter</title>
   </head>
   <body class="bg-background text-foreground antialiased min-h-screen">
     <div id="app"></div>
@@ -1767,7 +1767,7 @@ export function resetTheme(): void {
 
 Create `apps/web/src/services/token-storage.ts`:
 ```typescript
-import type { TokenStorageAdapter, TokenPair } from '@remote/api-client';
+import type { TokenStorageAdapter, TokenPair } from '@ponter/api-client';
 
 const ACCESS_TOKEN_KEY = 'remote.accessToken';
 const REFRESH_TOKEN_KEY = 'remote.refreshToken';
@@ -1813,7 +1813,7 @@ export const tokenStorage = new LocalStorageTokenAdapter();
 
 Create `apps/web/src/services/client.ts`:
 ```typescript
-import { ApiClient } from '@remote/api-client';
+import { ApiClient } from '@ponter/api-client';
 import { tokenStorage } from './token-storage';
 
 const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
@@ -1830,11 +1830,11 @@ Create `apps/web/src/stores/auth.ts`:
 ```typescript
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { User } from '@remote/shared';
+import type { User } from '@ponter/shared';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
-import { generateUserKeyPair, savePrivateKey, deletePrivateKey } from '@remote/crypto';
-import { isApiError } from '@remote/api-client';
+import { generateUserKeyPair, savePrivateKey, deletePrivateKey } from '@ponter/crypto';
+import { isApiError } from '@ponter/api-client';
 
 export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'error';
 
@@ -2137,7 +2137,7 @@ async function handleLogout() {
     <div class="container mx-auto flex h-16 items-center justify-between px-4">
       <div class="flex items-center space-x-3">
         <router-link to="/" class="flex items-center space-x-2 text-xl font-bold tracking-tight">
-          <span class="text-primary font-extrabold">Ponta</span>
+          <span class="text-primary font-extrabold">Ponter</span>
           <span class="text-muted-foreground font-normal">Remote</span>
         </router-link>
       </div>
@@ -2504,7 +2504,7 @@ Create `apps/web/src/views/DashboardView.vue`:
 import { ref, onMounted } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
-import type { Device, Agent } from '@remote/shared';
+import type { Device, Agent } from '@ponter/shared';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -2758,7 +2758,7 @@ import { setActivePinia, createPinia } from 'pinia';
 import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
-import * as cryptoPkg from '@remote/crypto';
+import * as cryptoPkg from '@ponter/crypto';
 
 describe('Auth Store (Pinia)', () => {
   beforeEach(() => {
@@ -3055,10 +3055,10 @@ describe('RegisterForm.vue', () => {
 Run:
 ```bash
 pnpm install
-pnpm --filter @remote/web test
-pnpm --filter @remote/web typecheck
-pnpm --filter @remote/web lint
-pnpm --filter @remote/web build
+pnpm --filter @ponter/web test
+pnpm --filter @ponter/web typecheck
+pnpm --filter @ponter/web lint
+pnpm --filter @ponter/web build
 
 # Verify whole monorepo passes CI commands
 pnpm lint

@@ -6,7 +6,7 @@ import type { Database } from '../src/db/client.js';
 import { agents, sessions, signals } from '../src/db/schema.js';
 import { eq } from 'drizzle-orm';
 import { WebSocket } from 'ws';
-import type { SignalMessage, AgentSocketMessage } from '@remote/shared';
+import type { SignalMessage, AgentSocketMessage } from '@ponter/shared';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 

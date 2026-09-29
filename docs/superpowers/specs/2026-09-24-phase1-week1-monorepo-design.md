@@ -11,7 +11,7 @@ Thành công khi:
 
 - `pnpm install` chạy xong và tạo lockfile.
 - `pnpm lint`, `pnpm typecheck`, `pnpm format:check` đều xanh ở local và trên GitHub Actions.
-- `@remote/shared` export được các type contract dùng chung.
+- `@ponter/shared` export được các type contract dùng chung.
 
 ## Ngoài phạm vi
 
@@ -43,7 +43,7 @@ Root `package.json` có `"type": "module"` để nạp `eslint.config.js` không
 
 `pnpm-workspace.yaml` trỏ `apps/*`, `packages/*`, `workers/*`.
 
-Mỗi workspace có `package.json` với `name` theo `@remote/<tên>`, `private: true`,
+Mỗi workspace có `package.json` với `name` theo `@ponter/<tên>`, `private: true`,
 `version: 0.1.0`. Package chưa có code chỉ khai báo script `lint` và `typecheck`
 bằng `echo` (no-op, exit 0) và không có dependency. Format không phải task của
 từng package: Prettier chạy một lần ở root.

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Khởi tạo monorepo pnpm + Turborepo cho Remote Access Platform, tạo cấu trúc toàn bộ thư mục và package placeholder, định nghĩa type contracts cốt lõi trong `@remote/shared`, cấu hình ESLint 10 + Prettier + TypeScript 6, và thiết lập GitHub Actions CI.
+**Goal:** Khởi tạo monorepo pnpm + Turborepo cho Remote Access Platform, tạo cấu trúc toàn bộ thư mục và package placeholder, định nghĩa type contracts cốt lõi trong `@ponter/shared`, cấu hình ESLint 10 + Prettier + TypeScript 6, và thiết lập GitHub Actions CI.
 
-**Architecture:** Monorepo pnpm workspaces kết hợp Turborepo 2. Cấu trúc chia làm 3 nhóm workspace: `apps/*`, `packages/*`, `workers/*`. Tuần 1 chỉ `@remote/shared` có code thật và typecheck qua TypeScript; các package khác là placeholder với script no-op. Toolchain ở root dùng ESLint 10 flat config và Prettier quét code (loại trừ `docs/`).
+**Architecture:** Monorepo pnpm workspaces kết hợp Turborepo 2. Cấu trúc chia làm 3 nhóm workspace: `apps/*`, `packages/*`, `workers/*`. Tuần 1 chỉ `@ponter/shared` có code thật và typecheck qua TypeScript; các package khác là placeholder với script no-op. Toolchain ở root dùng ESLint 10 flat config và Prettier quét code (loại trừ `docs/`).
 
 **Tech Stack:** Node 24, pnpm 12.6.0, Turborepo 2.11.3, TypeScript 6.0.3, ESLint 10.11.0, typescript-eslint 8.70.1, Prettier 3.9.9, @types/node 24.13.6.
 
@@ -26,7 +26,7 @@
 
 1. **Thừa hoặc thiếu package trong workspace:** Nếu một thư mục trong `apps/`, `packages/`, `workers/` thiếu `package.json`, pnpm hoặc Turborepo có thể bỏ qua hoặc báo lỗi khi chạy glob. *Test ở Task 2 kiểm tra đủ 12 `package.json`.*
 2. **ESLint không quét hoặc quét quá đà:** Nếu flat config định nghĩa sai glob `files`, lint có thể exit 0 giả (không quét file nào) hoặc quét nhầm file config không phải TS. *Test ở Task 4 kiểm tra ESLint thực sự bắt lỗi vi phạm quy tắc.*
-3. **Import giữa các file type trong `@remote/shared` thiếu đuôi hoặc hỏng với bundler:** Khi các file type import lẫn nhau, cấu hình `verbatimModuleSyntax` bắt buộc phải dùng `import type`. *Test ở Task 3 dùng TypeScript compiler kiểm tra không lỗi cú pháp.*
+3. **Import giữa các file type trong `@ponter/shared` thiếu đuôi hoặc hỏng với bundler:** Khi các file type import lẫn nhau, cấu hình `verbatimModuleSyntax` bắt buộc phải dùng `import type`. *Test ở Task 3 dùng TypeScript compiler kiểm tra không lỗi cú pháp.*
 4. **Prettier fail trên file markdown hoặc lockfile:** Nếu `.prettierignore` thiếu thư mục, `pnpm format:check` sẽ fail trên `pnpm-lock.yaml`, `.turbo/`, hoặc `docs/ARCHITECTURE.md`. *Test ở Task 4 kiểm tra Prettier pass trên toàn bộ repo.*
 5. **CI trên GitHub Actions không khớp cấu hình local:** Nếu CI dùng version Node hoặc pnpm khác, `--frozen-lockfile` có thể thất bại. *Test ở Task 5 xác nhận CI workflow dùng Node 24 và pnpm 12.6.0.*
 
@@ -104,7 +104,7 @@ packages:
 
 ```json
 {
-  "name": "remote-access-platform",
+  "name": "ponter",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -218,7 +218,7 @@ Expected: `.remember` và `.claude/settings.local.json` KHÔNG xuất hiện tro
 - Create: `docs/architecture/.gitkeep`
 
 **Interfaces:**
-- Produces: 11 package placeholder khai báo đúng `name` namespace `@remote/*`, `private: true`, `version: 0.1.0`.
+- Produces: 11 package placeholder khai báo đúng `name` namespace `@ponter/*`, `private: true`, `version: 0.1.0`.
 - Produces: Mọi package placeholder có scripts `"lint": "echo ok"` và `"typecheck": "echo ok"` để Turborepo chạy thông suốt.
 
 - [ ] **Step 1: Tạo các thư mục không phải package kèm `.gitkeep`**
@@ -233,7 +233,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `apps/web/package.json`:
 ```json
 {
-  "name": "@remote/web",
+  "name": "@ponter/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -247,7 +247,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `apps/desktop/package.json`:
 ```json
 {
-  "name": "@remote/desktop",
+  "name": "@ponter/desktop",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -261,7 +261,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `apps/mobile/package.json`:
 ```json
 {
-  "name": "@remote/mobile",
+  "name": "@ponter/mobile",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -275,7 +275,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `apps/agent/package.json`:
 ```json
 {
-  "name": "@remote/agent",
+  "name": "@ponter/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -291,7 +291,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `packages/api-client/package.json`:
 ```json
 {
-  "name": "@remote/api-client",
+  "name": "@ponter/api-client",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -305,7 +305,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `packages/webrtc-core/package.json`:
 ```json
 {
-  "name": "@remote/webrtc-core",
+  "name": "@ponter/webrtc-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -319,7 +319,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `packages/terminal-core/package.json`:
 ```json
 {
-  "name": "@remote/terminal-core",
+  "name": "@ponter/terminal-core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -333,7 +333,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `packages/ui-components/package.json`:
 ```json
 {
-  "name": "@remote/ui-components",
+  "name": "@ponter/ui-components",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -347,7 +347,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `packages/crypto/package.json`:
 ```json
 {
-  "name": "@remote/crypto",
+  "name": "@ponter/crypto",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -363,7 +363,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `workers/signaling/package.json`:
 ```json
 {
-  "name": "@remote/signaling",
+  "name": "@ponter/signaling",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -377,7 +377,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 `workers/api/package.json`:
 ```json
 {
-  "name": "@remote/api",
+  "name": "@ponter/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -415,7 +415,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
 
 ---
 
-### Task 3: `@remote/shared` Core Types Package
+### Task 3: `@ponter/shared` Core Types Package
 
 **Files:**
 - Create: `packages/shared/package.json`
@@ -431,7 +431,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
 - Create: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Produces: Package `@remote/shared` export đầy đủ các interfaces và types cốt lõi:
+- Produces: Package `@ponter/shared` export đầy đủ các interfaces và types cốt lõi:
   - `User`, `Device`, `Agent`, `DeviceType`
   - `Session`, `SessionStatus`
   - `IceServerConfig`, `WebRTCChannelType`, `DataChannelMessage`
@@ -444,7 +444,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
 
 ```json
 {
-  "name": "@remote/shared",
+  "name": "@ponter/shared",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -749,7 +749,7 @@ export type {
 export * from './types/index';
 ```
 
-- [ ] **Step 12: Cập nhật workspace và chạy typecheck cho `@remote/shared`**
+- [ ] **Step 12: Cập nhật workspace và chạy typecheck cho `@ponter/shared`**
 
 Run: `rm -rf node_modules pnpm-lock.yaml && pnpm install && npx tsc -p packages/shared --noEmit`
 Expected: exit 0, không có lỗi typecheck nào. Lockfile mới có 12 dòng importer
@@ -826,7 +826,7 @@ Expected: "All matched files use Prettier code style!", exit 0.
 - [ ] **Step 5: Kiểm tra `pnpm lint` qua Turborepo**
 
 Run: `pnpm lint`
-Expected: Turbo chạy task `lint` cho `@remote/shared` và các placeholder packages, exit 0, không có warning hoặc error.
+Expected: Turbo chạy task `lint` cho `@ponter/shared` và các placeholder packages, exit 0, không có warning hoặc error.
 
 - [ ] **Step 6: Kiểm tra `pnpm typecheck` qua Turborepo**
 

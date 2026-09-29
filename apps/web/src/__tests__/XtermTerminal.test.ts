@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import XtermTerminal from '../components/terminal/XtermTerminal.vue';
-import type { TerminalSession } from '@remote/terminal-core';
+import type { TerminalSession } from '@ponter/terminal-core';
 
 describe('XtermTerminal.vue', () => {
   let mockSession: TerminalSession;

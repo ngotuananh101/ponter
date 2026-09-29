@@ -5,7 +5,7 @@ import { apiClient } from '../services/client';
 
 const adapterCalls: Array<{ iceServers?: unknown }> = [];
 
-vi.mock('@remote/webrtc-core', () => ({
+vi.mock('@ponter/webrtc-core', () => ({
   createBrowserAdapter: vi.fn((config: { iceServers?: unknown }) => {
     adapterCalls.push(config ?? {});
     throw new Error('stop-after-adapter-construction');

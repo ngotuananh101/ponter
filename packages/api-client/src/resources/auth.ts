@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { LoginResponse } from '@remote/shared';
+import type { LoginResponse } from '@ponter/shared';
 
 export interface RegisterInput {
   username: string;

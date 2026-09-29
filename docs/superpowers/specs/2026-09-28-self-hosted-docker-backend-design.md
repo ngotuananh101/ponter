@@ -38,7 +38,7 @@ Migrate the backend from Cloudflare Workers to a centralized, stateful **Node.js
 │ Docker Host / VPS                                                                      │
 │                                                                                        │
 │   ┌────────────────────────────────────────────────────────────────────────────────┐   │
-│   │ apps/server (@remote/server)                                                   │   │
+│   │ apps/server (@ponter/server)                                                   │   │
 │   │                                                                                │   │
 │   │   • Runtime: Node.js 24 LTS + @hono/node-server + ws                           │   │
 │   │   • In-Memory WebSocket Registry: Map<agentId, AgentConnection> (RAM)          │   │
@@ -51,7 +51,7 @@ Migrate the backend from Cloudflare Workers to a centralized, stateful **Node.js
 │     WSS /api/ws/agent     │                                │ STUN/TURN Allocation      │
 │                           │                                │ (RFC 5766 Shared Secret)  │
 │   ┌───────────────────────┴───────────────┐    ┌───────────┴───────────────────────┐   │
-│   │ remote-agent (Rust Daemon)            │    │ coturn (Dockerized STUN/TURN)     │   │
+│   │ ponter-agent (Rust Daemon)            │    │ coturn (Dockerized STUN/TURN)     │   │
 │   │ (Windows / Linux / macOS)             │    │ Port 3478, Relays: 49152-49200    │   │
 │   └───────────────────────────────────────┘    └───────────────────────────────────┘   │
 │                                                                                        │
@@ -170,7 +170,7 @@ To bypass strict firewalls and symmetric NATs:
 ### 5.1 Multi-Stage `docker/Dockerfile.server`
 - Base: `node:24-alpine` (with build-base / python3 for native `better-sqlite3` build).
 - Stage 1 (`deps`): Installs dependencies with `pnpm install --frozen-lockfile`.
-- Stage 2 (`builder`): Builds `@remote/shared` and `@remote/server`.
+- Stage 2 (`builder`): Builds `@ponter/shared` and `@ponter/server`.
 - Stage 3 (`runner`): Strips devDependencies, sets `NODE_ENV=production`, exposes port `8787`, mounts volume `/app/data`.
 
 ### 5.2 Compose Scenarios
@@ -275,7 +275,7 @@ services:
 
 1. **`docs/ARCHITECTURE.md`:** Update system architecture diagrams, removing Cloudflare Workers backend and detailing Node.js stateful architecture, SQLite storage, and STUN/TURN fallback.
 2. **`docs/guides/deployment.md`:** Provide complete instructions for running `docker-compose.local.yml`, `docker-compose.tunnel.yml`, and `docker-compose.prod.yml`, plus Cloudflare Pages static web deployment.
-3. **`docs/guides/development.md`:** Replace `wrangler dev` commands with `pnpm --filter @remote/server dev`.
+3. **`docs/guides/development.md`:** Replace `wrangler dev` commands with `pnpm --filter @ponter/server dev`.
 4. **`docs/guides/agent-setup.md`:** Point agent configurations to self-hosted server endpoints.
 5. **`README.md` & `docs/README.md`:** Update stack overview.
 6. **`.github/workflows/deploy.yml` & `ci.yml`:**
@@ -287,7 +287,7 @@ services:
 
 ## 7. Verification & Success Criteria
 
-1. **Unit & Integration Tests:** All authentication, agent management, signaling, and WebSocket tests pass on Node.js 24 (`pnpm --filter @remote/server test`).
+1. **Unit & Integration Tests:** All authentication, agent management, signaling, and WebSocket tests pass on Node.js 24 (`pnpm --filter @ponter/server test`).
 2. **Docker Container Launch:** Container builds successfully via `docker build` and starts cleanly under all 3 compose environments.
 3. **End-to-End Terminal Session:**
    - `apps/agent` connects to `ws://localhost:8787/api/ws/agent`.

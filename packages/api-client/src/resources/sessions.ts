@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { Session } from '@remote/shared';
+import type { Session } from '@ponter/shared';
 
 export interface CreateSessionInput {
   deviceId?: string;

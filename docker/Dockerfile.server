@@ -1,8 +1,8 @@
-# Multi-stage build for the @remote/server self-hosted backend.
+# Multi-stage build for the @ponter/server self-hosted backend.
 #
 # Stage layout:
 #   base    - node:24-alpine with Corepack/pnpm boot-strapped.
-#   builder - installs all deps (incl. dev) and compiles @remote/server.
+#   builder - installs all deps (incl. dev) and compiles @ponter/server.
 #   runner  - production runtime image; native deps pre-installed, dev deps stripped.
 
 ###############################################################################
@@ -20,7 +20,7 @@ ENV NODE_ENV=production
 RUN corepack enable
 
 ###############################################################################
-# Stage 2: builder — compile @remote/server (needs full dep tree + native toolchain)
+# Stage 2: builder — compile @ponter/server (needs full dep tree + native toolchain)
 ###############################################################################
 FROM base AS builder
 
@@ -39,9 +39,9 @@ COPY apps/server/ ./apps/server/
 # `--offline` is omitted so pnpm can fetch any missing registry packages.
 RUN pnpm install --frozen-lockfile
 
-# Build @remote/server. @remote/shared is a pure type package (no build script)
+# Build @ponter/server. @ponter/shared is a pure type package (no build script)
 # that ships source directly via "main": "./src/index.ts", so it needs no build step.
-RUN pnpm --filter @remote/server build
+RUN pnpm --filter @ponter/server build
 
 ###############################################################################
 # Stage 3: runner — production image

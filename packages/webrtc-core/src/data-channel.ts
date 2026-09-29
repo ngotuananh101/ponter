@@ -1,5 +1,5 @@
 import type { RTCDataChannelLike } from './types';
-import type { DataChannelMessage, WebRTCChannelType } from '@remote/shared';
+import type { DataChannelMessage, WebRTCChannelType } from '@ponter/shared';
 
 export class DataChannelManager {
   private readonly channels = new Map<string, RTCDataChannelLike>();

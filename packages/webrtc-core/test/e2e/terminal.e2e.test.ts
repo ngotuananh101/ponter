@@ -12,7 +12,7 @@ import type {
   TerminalCreateMessage,
   TerminalDataMessage,
   TerminalResizeMessage,
-} from '@remote/shared';
+} from '@ponter/shared';
 
 /**
  * Layer 3: the whole week in one file — a Rust agent, a TypeScript offerer, a
@@ -38,7 +38,7 @@ const AGENT_BIN = join(
   'agent',
   'target',
   'debug',
-  process.platform === 'win32' ? 'remote-agent.exe' : 'remote-agent',
+  process.platform === 'win32' ? 'ponter-agent.exe' : 'ponter-agent',
 );
 const SIGNALING_DIR = join(REPO_ROOT, 'workers');
 const PORT = 8787;
@@ -171,7 +171,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     //    developer's own `.wrangler/state` and two runs cannot collide.
     //    `--persist-to` is resolved with `path.resolve(cwd, persistTo)`, so an
     //    absolute path is what makes this independent of where vitest ran.
-    tempDir = mkdtempSync(join(tmpdir(), 'ponta-e2e-'));
+    tempDir = mkdtempSync(join(tmpdir(), 'ponter-e2e-'));
 
     // 2. Migrate the SAME sqlite file `wrangler dev` will read. `wrangler dev`
     //    does not apply migrations, and both commands resolve their persistence

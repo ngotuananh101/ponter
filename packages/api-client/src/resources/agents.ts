@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { Agent } from '@remote/shared';
+import type { Agent } from '@ponter/shared';
 
 export interface CreateAgentInput {
   id: string;

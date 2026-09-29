@@ -8,7 +8,7 @@ import { agents, sessions } from '../db/schema.js';
 import { sha256Hex } from '../utils/crypto.js';
 import { NOW_SQL, recordSignal } from '../utils/signals.js';
 import { buildIceServers } from '../utils/ice.js';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
 

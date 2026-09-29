@@ -1,5 +1,5 @@
 {
-  "name": "@remote/signaling",
+  "name": "@ponter/signaling",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@remote/shared": "workspace:*",
+    "@ponter/shared": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9"
   },

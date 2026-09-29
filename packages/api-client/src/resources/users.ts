@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { User } from '@remote/shared';
+import type { User } from '@ponter/shared';
 
 export class UsersResource {
   constructor(private readonly http: HttpClient) {}

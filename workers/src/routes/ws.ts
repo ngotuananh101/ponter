@@ -7,7 +7,7 @@ import { agents, sessions } from '../db/schema';
 import { AppError } from '../middleware/error';
 import { sha256Hex } from '../utils/crypto';
 import { NOW_SQL, parseSignalMessage, recordSignal } from '../utils/signals';
-import type { SignalMessage } from '@remote/shared';
+import type { SignalMessage } from '@ponter/shared';
 
 /**
  * Live agent sockets, keyed by `agents.id`.

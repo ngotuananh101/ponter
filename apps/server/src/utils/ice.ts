@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import type { IceServerConfig } from '@remote/shared';
+import type { IceServerConfig } from '@ponter/shared';
 
 const GOOGLE_STUN = 'stun:stun.l.google.com:19302';
 

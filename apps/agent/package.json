@@ -1,5 +1,5 @@
 {
-  "name": "@remote/agent",
+  "name": "@ponter/agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",

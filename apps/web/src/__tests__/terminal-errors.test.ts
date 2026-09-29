@@ -12,7 +12,7 @@ import { useTerminalStore } from '../stores/terminal';
 // real failure occurs: peer construction.
 let failNext = true;
 
-vi.mock('@remote/webrtc-core', () => {
+vi.mock('@ponter/webrtc-core', () => {
   // The tests need to drive state changes on the peer the store just built, so
   // the class is a named declaration rather than an anonymous one in the
   // returned object — a class body cannot reference the object it lives in.
@@ -81,7 +81,7 @@ vi.mock('../services/token-storage', () => ({
  * does not have, so reaching it needs a cast through `unknown`.
  */
 async function emitPeerState(state: string): Promise<void> {
-  const mod = (await import('@remote/webrtc-core')) as unknown as {
+  const mod = (await import('@ponter/webrtc-core')) as unknown as {
     PeerConnection: { last?: { emitState: (s: string) => void } };
   };
   mod.PeerConnection.last?.emitState(state);
@@ -147,7 +147,7 @@ describe('terminal store error surfacing', () => {
     failNext = false;
     await store.retryTab(store.tabs[0]!.id);
 
-    const { createBrowserAdapter } = await import('@remote/webrtc-core');
+    const { createBrowserAdapter } = await import('@ponter/webrtc-core');
     // Two attempts, two adapter constructions: the retry built a fresh peer.
     expect(vi.mocked(createBrowserAdapter).mock.calls.length).toBe(2);
   });

@@ -6,7 +6,7 @@ Hướng dẫn chi tiết cách build, cấu hình và vận hành native Rust D
 
 ## 1. Overview
 
-Desktop agent (`remote-agent`) là một daemon nhẹ viết bằng Rust chạy trên máy tính mục tiêu bạn muốn truy cập từ xa. Các đặc điểm chính:
+Desktop agent (`ponter-agent`) là một daemon nhẹ viết bằng Rust chạy trên máy tính mục tiêu bạn muốn truy cập từ xa. Các đặc điểm chính:
 
 - **Asynchronous Runtime**: Được hỗ trợ bởi `tokio` cho async I/O low-overhead
 - **WebSocket Signaling**: Duy trì kết nối bền vững với exponential backoff và heartbeat (3 missed pings) tới `ws://<server>:8787/api/ws/agent`
@@ -24,7 +24,7 @@ Desktop agent (`remote-agent`) là một daemon nhẹ viết bằng Rust chạy 
 cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-Binary nằm tại: `apps/agent/target/debug/remote-agent`
+Binary nằm tại: `apps/agent/target/debug/ponter-agent`
 
 ### 2.2 Release Build (Optimized)
 
@@ -34,18 +34,18 @@ Binary nằm tại: `apps/agent/target/debug/remote-agent`
 cargo build --release --manifest-path apps/agent/Cargo.toml
 ```
 
-Binary nằm tại: `apps/agent/target/release/remote-agent`
+Binary nằm tại: `apps/agent/target/release/ponter-agent`
 
 ---
 
 ## 3. Command-Line Options
 
-Chạy `remote-agent --help` để xem tất cả tham số:
+Chạy `ponter-agent --help` để xem tất cả tham số:
 
 ```
-Ponta Remote Desktop Agent
+Ponter Desktop Agent
 
-Usage: remote-agent [OPTIONS] --agent-id <AGENT_ID> --server <SERVER> --credential <CREDENTIAL>
+Usage: ponter-agent [OPTIONS] --agent-id <AGENT_ID> --server <SERVER> --credential <CREDENTIAL>
 
 Options:
       --agent-id <AGENT_ID>      Unique ID của agent đã đăng ký trên platform
@@ -67,7 +67,7 @@ Options:
 
 ```bash
 # Chạy với local server:
-./apps/agent/target/debug/remote-agent \
+./apps/agent/target/debug/ponter-agent \
   --agent-id agent-myhost-01 \
   --server ws://localhost:8787/api/ws/agent \
   --credential ag_0123456789abcdef0123456789abcdef \
@@ -83,7 +83,7 @@ Options:
 ### 4.2 Production
 
 ```bash
-./apps/agent/target/release/remote-agent \
+./apps/agent/target/release/ponter-agent \
   --agent-id agent-myhost-01 \
   --server wss://your-domain.com/api/ws/agent \
   --credential ag_0123456789abcdef0123456789abcdef \
@@ -93,7 +93,7 @@ Options:
 Để bật debug logs:
 
 ```bash
-RUST_LOG=debug ./apps/agent/target/release/remote-agent ...
+RUST_LOG=debug ./apps/agent/target/release/ponter-agent ...
 ```
 
 ### 4.3 Environment Variables
@@ -117,39 +117,39 @@ RUST_LOG=info
 ### Bước 1: Cài đặt binary
 
 ```bash
-sudo cp apps/agent/target/release/remote-agent /usr/local/bin/remote-agent
-sudo chmod +x /usr/local/bin/remote-agent
+sudo cp apps/agent/target/release/ponter-agent /usr/local/bin/ponter-agent
+sudo chmod +x /usr/local/bin/ponter-agent
 ```
 
 ### Bước 2: Tạo file cấu hình môi trường
 
-Tạo file tại `/etc/ponta-remote-agent.env` (giới hạn root):
+Tạo file tại `/etc/ponter-ponter-agent.env` (giới hạn root):
 
 ```bash
-sudo bash -c 'cat > /etc/ponta-remote-agent.env << EOF
+sudo bash -c 'cat > /etc/ponter-ponter-agent.env << EOF
 AGENT_ID=agent-myhost-01
 SERVER=wss://your-domain.com/api/ws/agent
 CREDENTIAL=ag_0123456789abcdef0123456789abcdef
 STUN=stun:stun.l.google.com:19302
 RUST_LOG=info
 EOF'
-sudo chmod 600 /etc/ponta-remote-agent.env
+sudo chmod 600 /etc/ponter-ponter-agent.env
 ```
 
 ### Bước 3: Tạo systemd service
 
-Tạo file service tại `/etc/systemd/system/ponta-remote-agent.service`:
+Tạo file service tại `/etc/systemd/system/ponter-ponter-agent.service`:
 
 ```ini
 [Unit]
-Description=Ponta Remote Access Desktop Agent
+Description=Ponter Desktop Agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/ponta-remote-agent.env
-ExecStart=/usr/local/bin/remote-agent \
+EnvironmentFile=/etc/ponter-ponter-agent.env
+ExecStart=/usr/local/bin/ponter-agent \
   --agent-id ${AGENT_ID} \
   --server ${SERVER} \
   --credential ${CREDENTIAL} \
@@ -166,14 +166,14 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable ponta-remote-agent
-sudo systemctl start ponta-remote-agent
+sudo systemctl enable ponter-ponter-agent
+sudo systemctl start ponter-ponter-agent
 
 # Kiểm tra trạng thái
-sudo systemctl status ponta-remote-agent
+sudo systemctl status ponter-ponter-agent
 
 # Xem logs
-sudo journalctl -u ponta-remote-agent -f
+sudo journalctl -u ponter-ponter-agent -f
 ```
 
 ---
@@ -197,12 +197,12 @@ macOS daemon deployment sẽ được hỗ trợ trong Phase 3.
 Agent credential (`ag_<32 hex>`) cấp quyền truy cập máy tính cho người dùng đã xác thực. Lưu trữ với quyền hạn chế (`chmod 600`):
 
 ```bash
-chmod 600 /etc/ponta-remote-agent.env
+chmod 600 /etc/ponter-ponter-agent.env
 ```
 
 ### Process Isolation
 
-Agent khởi chạy lệnh bằng quyền người dùng chạy process `remote-agent`. **Không chạy agent với quyền `root`** trừ khi có nhu cầu quản trị hệ thống rõ rệt.
+Agent khởi chạy lệnh bằng quyền người dùng chạy process `ponter-agent`. **Không chạy agent với quyền `root`** trừ khi có nhu cầu quản trị hệ thống rõ rệt.
 
 ### PTY Boundary
 
@@ -231,7 +231,7 @@ Agent ép buộc tối đa 10 phiên PTY đồng thời trên mỗi host để b
 1. Kiểm tra URL server chính xác: `ws://localhost:8787/api/ws/agent` (local) hoặc `wss://domain.com/api/ws/agent` (production)
 2. Xác nhận credential hợp lệ - đăng nhập và tạo agent mới trong dashboard
 3. Kiểm tra firewall: port 8787 (local) hoặc 443 (WSS) phải mở
-4. Xem log: `RUST_LOG=debug ./remote-agent ...`
+4. Xem log: `RUST_LOG=debug ./ponter-agent ...`
 
 ### Issue: WebRTC connection fails
 

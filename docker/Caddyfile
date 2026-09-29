@@ -1,4 +1,4 @@
-# Caddyfile — reverse proxy for the @remote/server backend.
+# Caddyfile — reverse proxy for the @ponter/server backend.
 #
 # Assumes this file is mounted at /etc/caddy/Caddyfile (see docker-compose.prod.yml).
 # Caddy automatically provisions Let's Encrypt TLS certificates for the domain
