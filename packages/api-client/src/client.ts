@@ -10,6 +10,7 @@ import { UsersResource } from './resources/users';
 import { DevicesResource } from './resources/devices';
 import { AgentsResource } from './resources/agents';
 import { SessionsResource } from './resources/sessions';
+import { WebrtcResource } from './resources/webrtc';
 
 export class HttpClient {
   readonly baseUrl: string;
@@ -177,6 +178,7 @@ export class ApiClient {
   readonly devices: DevicesResource;
   readonly agents: AgentsResource;
   readonly sessions: SessionsResource;
+  readonly webrtc: WebrtcResource;
 
   constructor(config: ApiClientConfig) {
     this.http = new HttpClient(config);
@@ -185,5 +187,6 @@ export class ApiClient {
     this.devices = new DevicesResource(this.http);
     this.agents = new AgentsResource(this.http);
     this.sessions = new SessionsResource(this.http);
+    this.webrtc = new WebrtcResource(this.http);
   }
 }

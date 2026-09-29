@@ -50,7 +50,13 @@ export const useTerminalStore = defineStore('terminal', () => {
         token: token ?? '',
       });
 
-      const rtcPeer = createBrowserAdapter();
+      // The server mints short-lived TURN credentials per user, so fetch the
+      // ICE list here rather than caching it at module load. Without this the
+      // RTCPeerConnection is built with an empty `iceServers` and ICE can only
+      // ever succeed on a LAN.
+      const iceServers = await apiClient.webrtc.getIceServers();
+
+      const rtcPeer = createBrowserAdapter({ iceServers });
 
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
