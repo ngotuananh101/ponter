@@ -69,7 +69,7 @@ docker compose -f docker-compose.local.yml up --build
 
 Server sẽ chạy tại `http://localhost:8787`. 
 
-> **Scenario 1 là ngoại lệ duy nhất còn build từ source.** Image được publish sẵn bởi CI lên Docker Hub (`ngotuananh101/ponter:latest`) và Scenario 2/3 chỉ `pull` image đó — nên không cần build lại trên máy deploy. Scenario 1 giữ `--build` để thấy đúng code local, kể cả phần chưa commit. Xem [Deploy phiên bản mới](#deploy-phien-ban-moi).
+> **Scenario 1 là ngoại lệ duy nhất còn build từ source.** Image được publish sẵn bởi CI lên Docker Hub (`<tên Docker Hub của bạn>/ponter:latest`) và Scenario 2/3 chỉ `pull` image đó — nên không cần build lại trên máy deploy. Scenario 1 giữ `--build` để thấy đúng code local, kể cả phần chưa commit. Xem [Deploy phiên bản mới](#deploy-phien-ban-moi).
 
 **Health check:**
 ```bash
@@ -125,18 +125,28 @@ Caddy sẽ tự động yêu cầu chứng chỉ Let's Encrypt cho `DOMAIN`. Má
 
 ## 3.1 Deploy phiên bản mới
 
-Các Scenario 2 và 3 chạy image `ngotuananh101/ponter:latest` được build và publish bởi workflow **Docker Publish** (`.github/workflows/docker-publish.yml`).
+Các Scenario 2 và 3 chạy image đã build sẵn, được publish bởi workflow **Docker Publish** (`.github/workflows/docker-publish.yml`).
+
+**Bước 0 — Trỏ compose tới image của bạn.** Tài khoản Docker Hub không trùng với tên GitHub, nên namespace lấy từ secret `DOCKERHUB_USERNAME` mà workflow đọc, còn Compose đọc biến `DOCKERHUB_IMAGE` trong `docker/.env`. Đặt bằng tên Docker Hub của bạn:
+
+```bash
+cd docker
+# trong .env (tạo từ .env.example):
+DOCKERHUB_IMAGE=ten-dockerhub-cua-ban/ponter
+```
 
 **Bước 1 — Publish image:** trên GitHub, vào Actions → *Docker Publish* → *Run workflow*, chọn branch cần build.
 
 Workflow build `linux/amd64` và `linux/arm64` trên hai runner native riêng rồi gộp thành một manifest multi-arch, nên cùng một image chạy được trên VPS x86 lẫn máy ARM (Oracle Cloud, Ampere, Raspberry Pi) mà không cần QEMU.
 
+Image được push lên `<ten-dockerhub-cua-ban>/ponter`. **Phải tạo repo đó trên Docker Hub trước** — Docker Hub không tự tạo repo khi push vào tên chưa tồn tại, mà trả về lỗi authorization.
+
 Sinh ra hai tag:
 
-| Tag                              | Khi nào được cập nhật | Dùng để                                            |
-| -------------------------------- | --------------------- | -------------------------------------------------- |
-| `ngotuananh101/ponter:latest`    | Chỉ khi chạy trên `main` | Tag mà các file compose trỏ tới.                |
-| `ngotuananh101/ponter:sha-<sha>` | Mỗi lần chạy          | Ghim một build cụ thể, hoặc rollback về bản trước. |
+| Tag                                             | Khi nào được cập nhật | Dùng để                                            |
+| ----------------------------------------------- | --------------------- | -------------------------------------------------- |
+| `<ten-dockerhub-cua-ban>/ponter:latest`         | Chỉ khi chạy trên `main` | Tag mà các file compose trỏ tới.                |
+| `<ten-dockerhub-cua-ban>/ponter:sha-<sha>`      | Mỗi lần chạy          | Ghim một build cụ thể, hoặc rollback về bản trước. |
 
 Chạy từ feature branch chỉ sinh tag `sha-`, nên thử nghiệm không thể làm dịch chuyển image mà production đang dùng.
 

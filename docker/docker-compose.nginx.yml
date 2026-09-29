@@ -18,7 +18,7 @@
 #   See `docker/nginx.conf.example` for the reverse proxy and WebSocket upgrade configuration.
 services:
   server:
-    image: ngotuananh101/ponter:latest
+    image: ${DOCKERHUB_IMAGE:-ngotuananh101/ponter}:latest
     container_name: ponter-server-prod
     restart: always
     environment:

@@ -2,7 +2,7 @@ name: Docker Publish
 
 # Build the @ponter/server image once in CI and push it to Docker Hub, so a
 # deployment host never has to build from source. Compose files in docker/
-# reference `ngotuananh101/ponter:latest`; the only thing left to do on the
+# reference `<tên Docker Hub của bạn>/ponter:latest`; the only thing left to do on the
 # host is `docker compose pull && docker compose up -d`.
 #
 # Manual trigger by design: this is a deploy-affecting action (it moves the
@@ -28,7 +28,12 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: ngotuananh101/ponter
+  # The image name is derived from the Docker Hub username secret rather than
+  # hardcoded, because the Docker Hub account is not the same identifier as the
+  # GitHub one. The repository name stays fixed; only the namespace follows the
+  # credential. Override the repo half with a DOCKERHUB_REPOSITORY variable if
+  # it ever needs to differ from `ponter`.
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || 'ponter' }}
 
 jobs:
   build:

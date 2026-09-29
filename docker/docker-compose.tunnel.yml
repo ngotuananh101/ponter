@@ -20,7 +20,7 @@
 #   - DNS record pointing your domain to the tunnel.
 services:
   server:
-    image: ngotuananh101/ponter:latest
+    image: ${DOCKERHUB_IMAGE:-ngotuananh101/ponter}:latest
     container_name: ponter-server-tunnel
     restart: unless-stopped
     environment:

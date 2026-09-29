@@ -99,20 +99,21 @@ When your VPS already has Nginx running on ports 80/443:
 
 ## Environment Variables
 
-| Variable                   | Required    | Default               | Description                                    |
-| -------------------------- | ----------- | --------------------- | ---------------------------------------------- |
-| `PORT`                     | No          | `8787`                | Server listen port (inside container).         |
-| `DATABASE_PATH`            | No          | `/app/data/remote.db` | SQLite database file.                          |
-| `JWT_SECRET`               | Yes         | —                     | HS256 secret for access tokens. Min 32 chars.  |
-| `REFRESH_TOKEN_SECRET`     | Yes         | —                     | HS256 secret for refresh tokens. Min 32 chars. |
-| `CORS_ORIGIN`              | No          | `*`                   | CORS allow-origin for the API.                 |
-| `JWT_EXPIRES_IN`           | No          | `900` (15m)           | Access token TTL.                              |
-| `REFRESH_TOKEN_EXPIRES_IN` | No          | `604800` (7d)         | Refresh token TTL.                             |
-| `TURN_SECRET`              | Prod only   | —                     | Shared secret for Coturn long-term auth.       |
-| `TURN_URL`                 | Prod only   | `turn:${DOMAIN}:3478` | TURN URL advertised to clients.                |
-| `STUN_URL`                 | Prod only   | `stun:${DOMAIN}:3478` | STUN URL advertised to clients.                |
-| `DOMAIN`                   | Prod only   | —                     | Your public domain for Caddy TLS + TURN realm. |
-| `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only | —                     | Cloudflare Tunnel token.                       |
+| Variable                   | Required    | Default               | Description                                                                                                 |
+| -------------------------- | ----------- | --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `PORT`                     | No          | `8787`                | Server listen port (inside container).                                                                      |
+| `DATABASE_PATH`            | No          | `/app/data/remote.db` | SQLite database file.                                                                                       |
+| `JWT_SECRET`               | Yes         | —                     | HS256 secret for access tokens. Min 32 chars.                                                               |
+| `REFRESH_TOKEN_SECRET`     | Yes         | —                     | HS256 secret for refresh tokens. Min 32 chars.                                                              |
+| `CORS_ORIGIN`              | No          | `*`                   | CORS allow-origin for the API.                                                                              |
+| `JWT_EXPIRES_IN`           | No          | `900` (15m)           | Access token TTL.                                                                                           |
+| `REFRESH_TOKEN_EXPIRES_IN` | No          | `604800` (7d)         | Refresh token TTL.                                                                                          |
+| `TURN_SECRET`              | Prod only   | —                     | Shared secret for Coturn long-term auth.                                                                    |
+| `TURN_URL`                 | Prod only   | `turn:${DOMAIN}:3478` | TURN URL advertised to clients.                                                                             |
+| `STUN_URL`                 | Prod only   | `stun:${DOMAIN}:3478` | STUN URL advertised to clients.                                                                             |
+| `DOMAIN`                   | Prod only   | —                     | Your public domain for Caddy TLS + TURN realm.                                                              |
+| `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only | —                     | Cloudflare Tunnel token.                                                                                    |
+| `DOCKERHUB_IMAGE`          | Deploy only | —                     | Image to pull, e.g. `your-dockerhub-username/ponter`. Not used by `docker-compose.local.yml`, which builds. |
 
 ## Building Locally
 
@@ -130,18 +131,28 @@ podman build -f docker/Dockerfile.server -t ponter-server:test .
 
 ## Deploying a new version
 
-The three deployment setups (tunnel / prod / nginx) run `ngotuananh101/ponter:latest`, published by the **Docker Publish** GitHub Actions workflow. `docker-compose.local.yml` is the exception — it builds from source so local development reflects uncommitted edits.
+The three deployment setups (tunnel / prod / nginx) pull the published image instead of building it. `docker-compose.local.yml` is the exception — it builds from source so local development reflects uncommitted edits.
+
+**0. Point the deployment at your image.** The Docker Hub account is not the same identifier as the GitHub one, so the namespace comes from the `DOCKERHUB_USERNAME` secret the workflow reads, while Compose reads `DOCKERHUB_IMAGE` from `docker/.env`. Set it to your Docker Hub username:
+
+```bash
+cd docker
+# in .env (created from .env.example):
+DOCKERHUB_IMAGE=your-dockerhub-username/ponter
+```
 
 **1. Publish the image.** In GitHub, go to Actions → _Docker Publish_ → _Run workflow_. Pick the branch to build from.
 
 The workflow builds `linux/amd64` and `linux/arm64` on separate native runners and merges them into one multi-arch manifest, so the same image works on an x86 VPS and an ARM machine (Oracle Cloud, Ampere, Raspberry Pi) without QEMU emulation.
 
+The image is pushed as `<your-dockerhub-username>/ponter`. Create that repository on Docker Hub first — pushes to a name that does not exist are rejected rather than auto-created.
+
 Two tags are produced:
 
-| Tag                              | When it moves           | Use                                                          |
-| -------------------------------- | ----------------------- | ------------------------------------------------------------ |
-| `ngotuananh101/ponter:latest`    | Only for runs on `main` | What the compose files point at.                             |
-| `ngotuananh101/ponter:sha-<sha>` | Every run               | Pinning a specific build, or rolling back to an earlier one. |
+| Tag                                          | When it moves           | Use                                                          |
+| -------------------------------------------- | ----------------------- | ------------------------------------------------------------ |
+| `<your-dockerhub-username>/ponter:latest`    | Only for runs on `main` | What the compose files point at.                             |
+| `<your-dockerhub-username>/ponter:sha-<sha>` | Every run               | Pinning a specific build, or rolling back to an earlier one. |
 
 A run from a feature branch publishes only the `sha-` tag, so experimenting cannot move the image production resolves.
 
