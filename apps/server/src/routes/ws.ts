@@ -7,6 +7,7 @@ import type { Database } from '../db/client.js';
 import { agents, sessions } from '../db/schema.js';
 import { sha256Hex } from '../utils/crypto.js';
 import { NOW_SQL, recordSignal } from '../utils/signals.js';
+import { buildIceServers } from '../utils/ice.js';
 import type { SignalMessage } from '@remote/shared';
 
 const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
@@ -129,6 +130,18 @@ export function createAgentWebSocketServer(): WebSocketServer {
         },
       };
       agentConnections.set(agentId, connection);
+
+      // Hand the agent its ICE configuration. An agent cannot call
+      // `GET /api/webrtc/ice-servers` — that route authenticates a user JWT,
+      // while this socket is authenticated by the agent credential — so without
+      // this push the agent builds its RTCPeerConnection with no STUN/TURN and
+      // only reaches a browser on the same LAN.
+      socket.send(
+        JSON.stringify({
+          type: 'ice-servers',
+          data: { iceServers: buildIceServers(userId) },
+        }),
+      );
 
       // Mark online immediately so a freshly connected agent is not reported offline.
       await db

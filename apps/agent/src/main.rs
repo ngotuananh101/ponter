@@ -157,11 +157,11 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
 
     loop {
         match SignalClient::connect(&cli.server, credential, &cli.agent_id).await {
-            Ok((client, inbound_rx, outbound_tx)) => {
+            Ok((client, inbound_rx, outbound_tx, ice_rx)) => {
                 tracing::info!("connected to the signaling server");
                 delay = signal::BACKOFF_INITIAL;
 
-                let sessions = supervise_sessions(inbound_rx, outbound_tx, cli, shell);
+                let sessions = supervise_sessions(inbound_rx, outbound_tx, ice_rx, cli, shell);
                 tokio::select! {
                     // The socket ended. A clean close and a fatal error both
                     // mean "reconnect"; only the log line differs.
@@ -228,10 +228,28 @@ fn classify(message: signal::SignalMessage) -> Inbound {
 async fn supervise_sessions(
     mut inbound: tokio::sync::mpsc::Receiver<signal::SignalMessage>,
     outbound: tokio::sync::mpsc::Sender<signal::SignalMessage>,
+    mut ice_rx: tokio::sync::mpsc::Receiver<Vec<signal::IceServerEntry>>,
     cli: &Cli,
     shell: &str,
 ) -> Result<()> {
     let mut active: Option<String> = None;
+
+    // The server pushes ICE configuration on connect. It is read here rather
+    // than in `run_one_session` because it arrives before any offer and has to
+    // be in hand by the time the first peer connection is built. `recv()` is
+    // bounded by the connect: if the server pushes nothing — an older server,
+    // or a deployment with no TURN — the frame never arrives and the loop
+    // below still works, but it must not block waiting for it. A short
+    // timeout keeps that first offer from being delayed indefinitely.
+    let pushed_ice: Vec<signal::IceServerEntry> =
+        match tokio::time::timeout(std::time::Duration::from_millis(500), ice_rx.recv()).await {
+            Ok(Some(entries)) => {
+                tracing::info!(servers = entries.len(), "received ICE configuration");
+                entries
+            }
+            Ok(None) => Vec::new(),
+            Err(_) => Vec::new(),
+        };
 
     // A `loop`/`let ... else`, NOT `while let Some(..) = inbound.recv().await`.
     // In edition 2021 the scrutinee's temporaries live for the whole `while let`
@@ -269,7 +287,7 @@ async fn supervise_sessions(
                         session_id = %offer.session_id,
                         "refusing a second concurrent session (ADR-14)",
                     );
-                    let peer = rtc::build_peer(&cli.stun).await?;
+                    let peer = rtc::build_peer(&pushed_ice, &cli.stun).await?;
                     rtc::refuse_offer(&peer, &offer, &outbound).await?;
                     let _ = peer.close().await;
                     continue;
@@ -278,7 +296,9 @@ async fn supervise_sessions(
                 active = Some(offer.session_id.clone());
                 tracing::info!(session_id = %offer.session_id, "session starting");
 
-                if let Err(e) = run_one_session(&offer, &mut inbound, &outbound, cli, shell).await {
+                if let Err(e) =
+                    run_one_session(&offer, &mut inbound, &outbound, &pushed_ice, cli, shell).await
+                {
                     tracing::warn!(
                         error = %e,
                         session_id = %offer.session_id,
@@ -309,10 +329,11 @@ async fn run_one_session(
     offer: &signal::SignalOffer,
     inbound: &mut tokio::sync::mpsc::Receiver<signal::SignalMessage>,
     outbound: &tokio::sync::mpsc::Sender<signal::SignalMessage>,
+    pushed_ice: &[signal::IceServerEntry],
     cli: &Cli,
     shell: &str,
 ) -> Result<()> {
-    let peer = rtc::build_peer(&cli.stun).await?;
+    let peer = rtc::build_peer(pushed_ice, &cli.stun).await?;
 
     // Register the outbound forwarder BEFORE the local description exists:
     // gathering starts the moment `set_local_description` runs, and a handler

@@ -15,18 +15,45 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
-use crate::signal::{IceCandidateSignal, SignalAnswer, SignalMessage, SignalOffer};
+use crate::signal::{IceCandidateSignal, IceServerEntry, SignalAnswer, SignalMessage, SignalOffer};
 
 /// The one channel label this agent accepts. ADR-09: exact label, nothing else.
 pub const TERMINAL_LABEL: &str = "terminal";
+
+/// Map the pushed `ice-servers` entries onto the crate's ICE server type.
+///
+/// An empty input means the server offered nothing, which is a valid
+/// deployment (no TURN configured). The caller then keeps its own `--stun`
+/// value rather than building a peer with no ICE server at all.
+pub fn ice_servers_from_entries(entries: &[IceServerEntry]) -> Vec<RTCIceServer> {
+    entries
+        .iter()
+        .filter(|entry| !entry.urls.is_empty())
+        .map(|entry| RTCIceServer {
+            urls: entry.urls.clone(),
+            username: entry.username.clone().unwrap_or_default(),
+            credential: entry.credential.clone().unwrap_or_default(),
+        })
+        .collect()
+}
 
 /// Build the peer connection.
 ///
 /// mDNS is disabled: headless hosts and containers frequently have no mDNS
 /// responder, and leaving it on produces unresolvable `.local` candidates.
-/// Loopback needs no ICE server at all (Week 4 F4); `stun_url` is configuration
-/// with a public default, and an empty string is the loopback/air-gapped path.
-pub async fn build_peer(stun_url: &str) -> Result<Arc<RTCPeerConnection>> {
+/// Loopback needs no ICE server at all (Week 4 F4); an empty `pushed` list and
+/// an empty `stun_url` together are the loopback/air-gapped path.
+///
+/// `pushed` is the `ice-servers` frame the server sent when this agent
+/// connected. It takes precedence over `stun_url` because it carries the
+/// short-lived TURN credentials, and the server is the only party that can
+/// mint them: the agent authenticates with its own credential and cannot call
+/// `GET /api/webrtc/ice-servers`, which wants a user JWT. `stun_url` stays as
+/// the fallback for a server that pushes nothing.
+pub async fn build_peer(
+    pushed: &[IceServerEntry],
+    stun_url: &str,
+) -> Result<Arc<RTCPeerConnection>> {
     let mut media = MediaEngine::default();
     media
         .register_default_codecs()
@@ -44,14 +71,13 @@ pub async fn build_peer(stun_url: &str) -> Result<Arc<RTCPeerConnection>> {
         .with_setting_engine(setting)
         .build();
 
-    let ice_servers = if stun_url.is_empty() {
-        Vec::new()
-    } else {
-        vec![RTCIceServer {
+    let mut ice_servers = ice_servers_from_entries(pushed);
+    if ice_servers.is_empty() && !stun_url.is_empty() {
+        ice_servers = vec![RTCIceServer {
             urls: vec![stun_url.to_string()],
             ..Default::default()
-        }]
-    };
+        }];
+    }
 
     let config = RTCConfiguration {
         ice_servers,
@@ -349,5 +375,58 @@ mod tests {
         // `sdp_mid` is `None` → JSON `null`, not `""`.
         assert_eq!(json["data"]["sdpMid"], serde_json::Value::Null);
         assert_eq!(json["data"]["sdpMLineIndex"], 0);
+    }
+
+    #[test]
+    fn turn_entry_from_the_pushed_frame_becomes_a_credentialed_ice_server() {
+        // The pushed `ice-servers` frame is the agent's only source of TURN
+        // configuration: it cannot call `GET /api/webrtc/ice-servers`, which
+        // authenticates a user JWT. If this mapping drops the credentials, the
+        // agent offers a TURN server it cannot authenticate to and ICE falls
+        // back to failing.
+        let entries = vec![IceServerEntry {
+            urls: vec![
+                "stun:stun.example.com:19302".to_string(),
+                "turn:turn.example.com:3478?transport=udp".to_string(),
+            ],
+            username: Some("1700000000:user-1".to_string()),
+            credential: Some("cred-abc".to_string()),
+        }];
+
+        let servers = ice_servers_from_entries(&entries);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls.len(), 2);
+        assert_eq!(
+            servers[0].username, "1700000000:user-1",
+            "TURN credentials must survive the mapping"
+        );
+        assert_eq!(servers[0].credential, "cred-abc");
+    }
+
+    #[test]
+    fn stun_only_entries_map_without_credentials() {
+        let entries = vec![IceServerEntry {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            username: None,
+            credential: None,
+        }];
+
+        let servers = ice_servers_from_entries(&entries);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(
+            servers[0].urls,
+            vec!["stun:stun.l.google.com:19302".to_string()]
+        );
+        assert!(servers[0].username.is_empty());
+        assert!(servers[0].credential.is_empty());
+    }
+
+    #[test]
+    fn an_empty_pushed_list_falls_back_to_the_configured_stun_url() {
+        // A deployment with no TURN may push nothing at all; the agent must
+        // still get the `--stun` value it was started with rather than an
+        // empty ICE server list.
+        let servers = ice_servers_from_entries(&[]);
+        assert!(servers.is_empty(), "no pushed entries means no override");
     }
 }

@@ -127,6 +127,54 @@ pub fn parse_inbound(raw: &str) -> Result<Option<SignalMessage>> {
     }
 }
 
+/// One ICE server entry, mirroring `IceServerConfig` in
+/// `packages/shared/src/types/webrtc.ts`.
+///
+/// `urls` is a list because the server advertises a TURN entry as two URLs
+/// (UDP and TCP transports) under one credential pair.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IceServerEntry {
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub credential: Option<String>,
+}
+
+/// The payload of the `ice-servers` frame.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IceServersPayload {
+    #[serde(default)]
+    ice_servers: Vec<IceServerEntry>,
+}
+
+/// The `ice-servers` frame, pushed by the server on connect.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum IceServersFrame {
+    IceServers { data: IceServersPayload },
+}
+
+/// Parse the `ice-servers` frame the server pushes when the agent connects.
+///
+/// Returns `Ok(None)` for any frame that is not an `ice-servers` frame, so the
+/// caller can fall through to `parse_inbound` for signaling. Kept separate
+/// rather than folded into `parse_inbound` because that function's
+/// `SignalMessage` return type is the RTC task's queue, and ICE configuration
+/// is not a signal.
+pub fn parse_ice_servers(raw: &str) -> Result<Option<Vec<IceServerEntry>>> {
+    if raw.len() > MAX_INBOUND_FRAME_BYTES {
+        bail!("inbound frame exceeds {MAX_INBOUND_FRAME_BYTES} bytes");
+    }
+    match serde_json::from_str::<IceServersFrame>(raw) {
+        Ok(IceServersFrame::IceServers { data }) => Ok(Some(data.ice_servers)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Inbound frame cap, matching the Worker's `MAX_INBOUND_FRAME_BYTES`
 /// (Task 4). Checked before `serde_json` so a hostile peer cannot make the
 /// agent allocate an object graph proportional to the frame.
@@ -157,6 +205,10 @@ pub struct SignalClient {
         >,
     >,
     inbound_tx: mpsc::Sender<SignalMessage>,
+    /// The `ice-servers` frame the server pushes on connect, forwarded to the
+    /// RTC task. Capacity 1 and it is written exactly once per connection, so
+    /// a `try_send` that reports full is a real duplicate frame.
+    ice_tx: mpsc::Sender<Vec<IceServerEntry>>,
     /// Taken by `run(self)` — hence `Option`. `connect` fills it; nothing else
     /// reads it, and a second `run` fails loudly rather than silently dropping
     /// every outbound frame.
@@ -176,6 +228,7 @@ impl SignalClient {
         Self,
         mpsc::Receiver<SignalMessage>,
         mpsc::Sender<SignalMessage>,
+        mpsc::Receiver<Vec<IceServerEntry>>,
     )> {
         let mut request = url.into_client_request().context("invalid signaling URL")?;
         request.headers_mut().insert(
@@ -199,13 +252,17 @@ impl SignalClient {
         // locking.
         let (outbound_tx, outbound_rx) = mpsc::channel::<SignalMessage>(32);
 
+        // ICE configuration: the server pushes one frame per connection.
+        let (ice_tx, ice_rx) = mpsc::channel::<Vec<IceServerEntry>>(1);
+
         let client = Self {
             sink,
             stream,
             inbound_tx,
+            ice_tx,
             outbound_rx: Some(outbound_rx),
         };
-        Ok((client, inbound_rx, outbound_tx))
+        Ok((client, inbound_rx, outbound_tx, ice_rx))
     }
 
     /// Read + write + ping loop. Returns `Ok(())` on a clean close and `Err` on
@@ -259,21 +316,40 @@ impl SignalClient {
                     let Some(frame) = frame else { return Ok(()) };  // clean close
                     match frame.context("inbound read failed")? {
                         Message::Text(text) => {
-                            match parse_inbound(&text) {
-                                Ok(Some(message)) => {
-                                    // A full inbound queue means the RTC task is
-                                    // wedged; dropping is correct (the Worker's
-                                    // D1 row is the delivery guarantee).
-                                    let _ = self.inbound_tx.try_send(message);
+                            // The pushed ICE configuration is not a signal, so
+                            // it is matched first: `parse_inbound` would drop it
+                            // and the agent would build its peer with no TURN.
+                            match parse_ice_servers(&text) {
+                                Ok(Some(entries)) => {
+                                    // A duplicate push is not fatal — the first
+                                    // one already configured the peer.
+                                    if self.ice_tx.try_send(entries).is_err() {
+                                        tracing::debug!("ignoring a duplicate ice-servers frame");
+                                    }
                                 }
-                                Ok(None) => {}
+                                Ok(None) => match parse_inbound(&text) {
+                                    Ok(Some(message)) => {
+                                        // A full inbound queue means the RTC task is
+                                        // wedged; dropping is correct (the Worker's
+                                        // D1 row is the delivery guarantee).
+                                        let _ = self.inbound_tx.try_send(message);
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        // Never log the body: an SDP is
+                                        // session-identifying.
+                                        tracing::warn!(
+                                            error = %e,
+                                            bytes = text.len(),
+                                            "dropping malformed inbound frame",
+                                        );
+                                    }
+                                },
                                 Err(e) => {
-                                    // Never log the body: an SDP is
-                                    // session-identifying.
                                     tracing::warn!(
                                         error = %e,
                                         bytes = text.len(),
-                                        "dropping malformed inbound frame",
+                                        "dropping oversize inbound frame",
                                     );
                                 }
                             }
@@ -373,5 +449,60 @@ mod tests {
     fn oversize_frame_is_rejected_before_parsing() {
         let huge = "x".repeat(MAX_INBOUND_FRAME_BYTES + 1);
         assert!(parse_inbound(&huge).is_err());
+    }
+
+    #[test]
+    fn parses_the_pushed_ice_servers_frame() {
+        // The server pushes this on connect because the agent cannot call
+        // `GET /api/webrtc/ice-servers` (that route authenticates a user JWT,
+        // while this socket is authenticated by the agent credential).
+        let raw = r#"{"type":"ice-servers","data":{"iceServers":[{"urls":["stun:stun.example.com:19302"]},{"urls":["turn:turn.example.com:3478?transport=udp","turn:turn.example.com:3478?transport=tcp"],"username":"1700000000:user-1","credential":"cred-abc"}]}}"#;
+
+        let parsed = parse_ice_servers(raw).expect("frame must parse");
+        let Some(entries) = parsed else {
+            panic!("expected an ice-servers frame");
+        };
+        assert_eq!(entries.len(), 2);
+
+        let stun = &entries[0];
+        assert_eq!(stun.urls, vec!["stun:stun.example.com:19302".to_string()]);
+        assert!(stun.username.is_none());
+        assert!(stun.credential.is_none());
+
+        let turn = &entries[1];
+        assert_eq!(turn.urls.len(), 2);
+        assert_eq!(turn.username.as_deref(), Some("1700000000:user-1"));
+        assert_eq!(turn.credential.as_deref(), Some("cred-abc"));
+    }
+
+    #[test]
+    fn parses_a_stun_only_ice_servers_frame() {
+        // The no-TURN deployment pushes one STUN entry with the credential
+        // fields absent, not empty strings.
+        let raw = r#"{"type":"ice-servers","data":{"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}}"#;
+
+        let parsed = parse_ice_servers(raw).expect("frame must parse");
+        let Some(entries) = parsed else {
+            panic!("expected an ice-servers frame");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].urls,
+            vec!["stun:stun.l.google.com:19302".to_string()]
+        );
+        assert!(entries[0].username.is_none());
+    }
+
+    #[test]
+    fn an_ice_servers_frame_is_not_taken_as_one() {
+        // A control frame must not be mistaken for ICE configuration, and
+        // `parse_inbound` must still return `None` for it rather than
+        // feeding the RTC task something that is not a signal.
+        assert!(parse_ice_servers(r#"{"type":"pong"}"#)
+            .expect("pong parses")
+            .is_none());
+        assert!(parse_inbound(r#"{"type":"pong"}"#)
+            .expect("pong parses")
+            .is_none());
     }
 }
