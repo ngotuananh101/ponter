@@ -8,13 +8,13 @@
 # this Caddyfile terminates TLS and reverse-proxies all API / WebSocket traffic
 # to the server container.
 
+# Global options block (must be first, without any key)
 {
-	# Global options: ACME account email for Let's Encrypt.
-	# Override via the CADDY_ACMEEMAIL environment variable if needed.
-	email you@example.com
+	# ACME account email for Let's Encrypt certificates.
+	# email you@example.com
 }
 
-# Catch-all: terminate TLS and forward everything to the server container.
-{
+# Site block: use DOMAIN from environment, fallback to localhost if unset
+{$DOMAIN:localhost} {
 	reverse_proxy server:8787
 }
