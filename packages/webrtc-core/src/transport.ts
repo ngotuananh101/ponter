@@ -6,6 +6,17 @@ export interface RESTPollingTransportOptions {
   sessionId: string;
   token: string;
   fetch?: typeof fetch;
+  /**
+   * Called on a 401 to obtain a fresh access token, or `null` when the refresh
+   * itself failed.
+   *
+   * The transport cannot refresh on its own: token storage and the refresh
+   * endpoint live in the app, not in this package, so the caller injects the
+   * capability. Without it a session outliving its access token hits a hard 401
+   * with no recovery — the poll loop backs off to its cap and retries forever
+   * while the user watches a tab that never opens.
+   */
+  onUnauthorized?: () => Promise<string | null>;
   initialIntervalMs?: number;
   maxIntervalMs?: number;
 }
@@ -26,8 +37,9 @@ interface RawPollResponse {
 export class RESTPollingTransport implements SignalTransport {
   private readonly baseUrl: string;
   private readonly sessionId: string;
-  private readonly token: string;
+  private token: string;
   private readonly customFetch: typeof fetch;
+  private readonly onUnauthorized?: () => Promise<string | null>;
   private readonly initialIntervalMs: number;
   private readonly maxIntervalMs: number;
 
@@ -42,9 +54,34 @@ export class RESTPollingTransport implements SignalTransport {
     this.sessionId = options.sessionId;
     this.token = options.token;
     this.customFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.onUnauthorized = options.onUnauthorized;
     this.initialIntervalMs = options.initialIntervalMs ?? 200;
     this.maxIntervalMs = options.maxIntervalMs ?? 2000;
     this.currentIntervalMs = this.initialIntervalMs;
+  }
+
+  /**
+   * Run `attempt`, and on a 401 refresh the token and run it exactly once more.
+   *
+   * One retry, never a loop: a refresh that cannot fix the problem (a revoked
+   * token, a disabled account) would otherwise turn a hard 401 into a hot loop
+   * hammering the server. A failed refresh rethrows the original 401 so the
+   * caller sees the real failure rather than a synthesized one.
+   */
+  private async withTokenRefresh(
+    attempt: (token: string) => Promise<Response>,
+  ): Promise<Response> {
+    const res = await attempt(this.token);
+    if (res.status !== 401 || !this.onUnauthorized) {
+      return res;
+    }
+
+    const fresh = await this.onUnauthorized();
+    if (!fresh) {
+      return res;
+    }
+    this.token = fresh;
+    return attempt(fresh);
   }
 
   async send(msg: SignalMessage): Promise<void> {
@@ -65,19 +102,21 @@ export class RESTPollingTransport implements SignalTransport {
         break;
     }
 
-    const res = await this.customFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.token}`,
-      },
-      // The transport is session-scoped, so it stamps the session id onto the
-      // wire payload. `PeerConnection` builds signals without one because the
-      // spec's `PeerConnectionOptions` carries no sessionId; re-assigning an
-      // existing key preserves its position, so payloads that already carry the
-      // correct id serialize identically.
-      body: JSON.stringify({ ...msg.data, sessionId: this.sessionId }),
-    });
+    const res = await this.withTokenRefresh((token) =>
+      this.customFetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        // The transport is session-scoped, so it stamps the session id onto the
+        // wire payload. `PeerConnection` builds signals without one because the
+        // spec's `PeerConnectionOptions` carries no sessionId; re-assigning an
+        // existing key preserves its position, so payloads that already carry the
+        // correct id serialize identically.
+        body: JSON.stringify({ ...msg.data, sessionId: this.sessionId }),
+      }),
+    );
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -128,12 +167,14 @@ export class RESTPollingTransport implements SignalTransport {
         : '';
       const url = `${this.baseUrl}/api/signal/poll/${encodeURIComponent(this.sessionId)}${query}`;
 
-      const res = await this.customFetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-        },
-      });
+      const res = await this.withTokenRefresh((token) =>
+        this.customFetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+      );
 
       if (!res.ok) {
         // Back off on error

@@ -405,17 +405,22 @@ async fn run_one_session(
                             }
                         };
                     let sh = create.shell.unwrap_or_else(|| shell_for_dispatch.clone());
-                    if let Err(e) = manager_for_dispatch
+                    let spawn = manager_for_dispatch
                         .spawn_session(
-                            create.terminal_id,
+                            create.terminal_id.clone(),
                             &sh,
                             create.cols,
                             create.rows,
                             frame_tx_for_dispatch.clone(),
                         )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to spawn terminal session");
+                        .await;
+                    tracing::warn!(
+                        error = ?spawn.as_ref().err().map(|e| e.to_string()),
+                        "spawn terminal session finished"
+                    );
+                    // A refused spawn must reach the browser, not just the log.
+                    if let Some(frame) = spawn_failure_frame(&create.terminal_id, spawn) {
+                        let _ = frame_tx_for_dispatch.send(frame).await;
                     }
                 }
                 "terminal-resize" => {
@@ -631,6 +636,36 @@ async fn run_one_session(
 /// ADR-14 refuses those at the supervisor, and reaching this point with one
 /// would mean the routing above is wrong, so it is logged rather than silently
 /// dropped.
+///
+/// Turn a `spawn_session` result into a `terminal-error` frame, or nothing.
+///
+/// A spawn failure used to be a `tracing::warn!` and nothing else, which left
+/// the browser showing a terminal that opened and stayed blank forever — it
+/// could not tell a missing shell from a slow one, and had no channel to ask.
+/// The data channel is the only thing the browser can read, so the refusal has
+/// to travel over it.
+///
+/// The session cap is separated from a genuine spawn failure because they mean
+/// different things to a user: one is "this terminal is broken", the other is
+/// "this host is at capacity".
+fn spawn_failure_frame(terminal_id: &str, result: Result<()>) -> Option<String> {
+    let error = result.err()?;
+    let code = if error
+        .to_string()
+        .contains("maximum concurrent PTY sessions")
+    {
+        pty::PtyErrorCode::SessionLimitReached
+    } else {
+        pty::PtyErrorCode::SpawnFailed
+    };
+    Some(pty::frame_pty_error(
+        terminal_id,
+        code,
+        &error.to_string(),
+        pty::now_ms(),
+    ))
+}
+
 async fn apply_if_candidate(
     peer: &Arc<RTCPeerConnection>,
     pending: &mut Vec<RTCIceCandidateInit>,
@@ -930,5 +965,44 @@ mod tests {
     async fn pty_manager_send_input_false_for_unknown_id() {
         let manager = PtyManager::new(10);
         assert!(!manager.send_input("no-such-session", b"x".to_vec()).await);
+    }
+
+    #[test]
+    fn a_failed_spawn_becomes_a_frame_the_browser_can_show() {
+        // The bug: `spawn_session` failing was only a `tracing::warn!`, so the
+        // browser saw a terminal that opened and stayed blank forever, with no
+        // way to distinguish a missing shell from a slow one. The browser has
+        // no other channel for this — the data channel is all it has.
+        let frame = spawn_failure_frame("t1", Err(anyhow::anyhow!("no such shell: /nope")))
+            .expect("a failed spawn must produce a frame");
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value["type"], "terminal-error");
+        assert_eq!(value["payload"]["terminalId"], "t1");
+        assert_eq!(value["payload"]["code"], "pty-spawn-failed");
+        assert!(value["payload"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no such shell"));
+    }
+
+    #[test]
+    fn hitting_the_session_cap_is_reported_distinctly_from_a_spawn_failure() {
+        // Both are refusals, but they mean different things to a user: one is
+        // "this terminal is broken", the other is "this host is at capacity",
+        // and the browser may want to say so differently.
+        let frame = spawn_failure_frame(
+            "t7",
+            Err(anyhow::anyhow!(
+                "exceeded maximum concurrent PTY sessions (10)"
+            )),
+        )
+        .expect("a refused spawn must produce a frame");
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value["payload"]["code"], "session-limit-reached");
+    }
+
+    #[test]
+    fn a_successful_spawn_sends_no_error_frame() {
+        assert!(spawn_failure_frame("t1", Ok(())).is_none());
     }
 }

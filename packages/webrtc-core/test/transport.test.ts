@@ -395,4 +395,88 @@ describe('RESTPollingTransport', () => {
 
     transport.close();
   });
+
+  it('refreshes the token and retries when the offer POST returns 401', async () => {
+    // The bug: the transport uses a raw fetch, not the api-client that has
+    // refresh-and-retry. The token is captured once at construction, so a
+    // session that outlives the access token got a hard 401 with no recovery —
+    // the user saw the tab sit in "connecting" forever with no error.
+    const calls: Array<{ url: string; token: string | null }> = [];
+    const fetchSpy = vi.fn(async (_url: string, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>)?.['Authorization'];
+      calls.push({
+        url: String(_url),
+        token: auth?.replace('Bearer ', '') ?? null,
+      });
+      if (auth === 'Bearer stale') {
+        return new Response('{}', { status: 401 });
+      }
+      return new Response(JSON.stringify({ id: 'sig_1' }), { status: 201 });
+    });
+
+    const refresh = vi.fn(async () => 'fresh');
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'stale',
+      fetch: fetchSpy as unknown as typeof fetch,
+      onUnauthorized: refresh,
+    });
+
+    const msg: SignalMessage = {
+      type: 'offer',
+      data: { sessionId: 'sess_1', sdp: 'v=0', capabilities: ['terminal'] },
+    };
+    await transport.send(msg);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(calls.map((c) => c.token)).toEqual(['stale', 'fresh']);
+  });
+
+  it('gives up after one refresh attempt instead of looping on 401', async () => {
+    // An infinite refresh loop would turn a revoked token into a hot loop
+    // hammering the server, which is worse than the original failure.
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
+    const refresh = vi.fn(async () => 'still-stale');
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'stale',
+      fetch: fetchSpy as unknown as typeof fetch,
+      onUnauthorized: refresh,
+    });
+
+    await expect(
+      transport.send({
+        type: 'offer',
+        data: { sessionId: 'sess_1', sdp: 'v=0', capabilities: ['terminal'] },
+      }),
+    ).rejects.toThrow(/401/);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a failed refresh rather than retrying with the same stale token', async () => {
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
+    const refresh = vi.fn(async () => null);
+
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 'sess_1',
+      token: 'stale',
+      fetch: fetchSpy as unknown as typeof fetch,
+      onUnauthorized: refresh,
+    });
+
+    await expect(
+      transport.send({
+        type: 'offer',
+        data: { sessionId: 'sess_1', sdp: 'v=0', capabilities: ['terminal'] },
+      }),
+    ).rejects.toThrow(/401/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 });

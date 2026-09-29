@@ -44,6 +44,58 @@ pub struct DataChannelMessage<T> {
     pub timestamp: i64,
 }
 
+/// Why a terminal could not be produced, on the wire.
+///
+/// Without this the agent can only `tracing::warn!` and the browser is left
+/// staring at a terminal that opened and stayed blank, with no way to tell a
+/// missing shell from a slow one. The spellings are a wire contract — the
+/// browser switches on them — so they are pinned by a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyErrorCode {
+    SpawnFailed,
+    SessionLimitReached,
+}
+
+impl PtyErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SpawnFailed => "pty-spawn-failed",
+            Self::SessionLimitReached => "session-limit-reached",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalErrorMessage {
+    pub terminal_id: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// Encode a terminal failure as a `terminal-error` frame.
+///
+/// Same shape and same clock-injection as [`frame_pty_output`], for the same
+/// reason: framing stays pure so it can be tested.
+pub fn frame_pty_error(
+    terminal_id: &str,
+    code: PtyErrorCode,
+    message: &str,
+    timestamp_ms: i64,
+) -> String {
+    let message = DataChannelMessage {
+        r#type: "terminal-error".to_string(),
+        channel: "terminal".to_string(),
+        payload: TerminalErrorMessage {
+            terminal_id: terminal_id.to_string(),
+            code: code.as_str().to_string(),
+            message: message.to_string(),
+        },
+        timestamp: timestamp_ms,
+    };
+    serde_json::to_string(&message).expect("a frame of strings cannot fail to serialize")
+}
+
 /// Encode raw PTY bytes as a `terminal-data` frame.
 ///
 /// `timestamp` is passed in rather than read from the clock here so the framing
@@ -520,5 +572,38 @@ mod tests {
             "expected echo output, got {:?}",
             String::from_utf8_lossy(&collected),
         );
+    }
+
+    #[test]
+    fn terminal_error_frame_names_the_failure_and_the_terminal() {
+        // A PTY that cannot be spawned is currently a `tracing::warn!` on the
+        // agent and nothing at all in the browser: the user sees a terminal
+        // that opened and stays blank forever. This frame is the only channel
+        // by which the agent can tell the browser that.
+        let frame = frame_pty_error(
+            "t1",
+            PtyErrorCode::SpawnFailed,
+            "no such shell: /nope",
+            1_700_000_000_000,
+        );
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value["type"], "terminal-error");
+        assert_eq!(value["channel"], "terminal");
+        assert_eq!(value["payload"]["terminalId"], "t1");
+        assert_eq!(value["payload"]["code"], "pty-spawn-failed");
+        assert_eq!(value["payload"]["message"], "no such shell: /nope");
+    }
+
+    #[test]
+    fn every_pty_error_code_has_the_kebab_case_wire_spelling() {
+        // The browser switches on these strings, so the spellings are a wire
+        // contract. A rename here is a breaking change nobody would notice.
+        let pairs = [
+            (PtyErrorCode::SpawnFailed, "pty-spawn-failed"),
+            (PtyErrorCode::SessionLimitReached, "session-limit-reached"),
+        ];
+        for (code, wire) in pairs {
+            assert_eq!(code.as_str(), wire);
+        }
     }
 }

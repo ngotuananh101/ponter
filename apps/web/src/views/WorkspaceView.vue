@@ -17,6 +17,7 @@ import {
   Radio,
   ShieldCheck,
   Keyboard,
+  RefreshCw,
 } from '@lucide/vue';
 
 const route = useRoute();
@@ -122,6 +123,7 @@ onUnmounted(() => {
         :active-tab-id="terminalStore.activeTabId"
         @select-tab="terminalStore.setActiveTab"
         @close-tab="terminalStore.closeTab"
+        @retry-tab="terminalStore.retryTab"
         @new-tab="sidebarOpen = true"
       />
 
@@ -132,6 +134,33 @@ onUnmounted(() => {
             :key="terminalStore.activeTab.id"
             :session="toRaw(terminalStore.activeTab.session) as TerminalSession"
           />
+
+          <!-- A connection failure used to be a silent unhandled rejection.
+               Without this the user clicked an agent, saw nothing happen, and
+               had no way to tell an offline agent from a blocked port. -->
+          <div
+            v-if="terminalStore.activeTab.status === 'error'"
+            class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
+          >
+            <p class="text-sm text-destructive font-semibold">
+              Could not connect to {{ terminalStore.activeTab.title }}
+            </p>
+            <p
+              class="text-xs text-muted-foreground font-mono max-w-lg break-words"
+            >
+              {{ terminalStore.activeTab.error }}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              class="text-xs flex items-center gap-2 border-border/80"
+              :data-test="`retry-error-${terminalStore.activeTab.id}`"
+              @click="terminalStore.retryTab(terminalStore.activeTab.id)"
+            >
+              <RefreshCw class="w-3.5 h-3.5" />
+              Retry connection
+            </Button>
+          </div>
         </template>
 
         <!-- Empty State Cockpit -->

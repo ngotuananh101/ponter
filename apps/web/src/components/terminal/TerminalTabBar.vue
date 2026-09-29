@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Plus, X } from '@lucide/vue';
+import { Plus, RefreshCw, X } from '@lucide/vue';
 
 defineProps<{
   tabs: Array<{ id: string; title: string; status: string }>;
@@ -9,6 +9,7 @@ defineProps<{
 defineEmits<{
   (e: 'selectTab', tabId: string): void;
   (e: 'closeTab', tabId: string): void;
+  (e: 'retryTab', tabId: string): void;
   (e: 'newTab'): void;
 }>();
 </script>
@@ -39,6 +40,15 @@ defineEmits<{
           }"
         />
         <span class="truncate max-w-[130px] font-mono">{{ tab.title }}</span>
+        <button
+          v-if="tab.status === 'error'"
+          :data-test="`retry-tab-${tab.id}`"
+          class="hover:text-foreground hover:bg-muted rounded p-0.5 transition-colors opacity-70 group-hover:opacity-100"
+          title="Retry connection"
+          @click.stop="$emit('retryTab', tab.id)"
+        >
+          <RefreshCw class="w-3.5 h-3.5" />
+        </button>
         <button
           :data-test="`close-tab-${tab.id}`"
           class="hover:text-destructive hover:bg-destructive/10 rounded p-0.5 transition-colors opacity-70 group-hover:opacity-100"

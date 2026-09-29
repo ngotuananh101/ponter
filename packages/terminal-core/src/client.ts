@@ -5,6 +5,7 @@ import type {
   TerminalResizeMessage,
   TerminalCloseMessage,
   TerminalExitMessage,
+  TerminalErrorMessage,
 } from '@remote/shared';
 import { TerminalSession } from './session';
 import type { TerminalSessionOptions } from './types';
@@ -40,6 +41,20 @@ export class TerminalClient {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly errorListeners: Array<(message: string) => void> = [];
+
+  /**
+   * Subscribe to terminal failures the agent reports over the data channel.
+   *
+   * Returns an unsubscribe function, matching `TerminalSession.onStateChange`.
+   */
+  onError(handler: (message: string) => void): () => void {
+    this.errorListeners.push(handler);
+    return () => {
+      const idx = this.errorListeners.indexOf(handler);
+      if (idx >= 0) this.errorListeners.splice(idx, 1);
+    };
+  }
 
   constructor(
     public readonly agentId: string,
@@ -184,6 +199,16 @@ export class TerminalClient {
       const session = this.sessions.get(payload.terminalId);
       if (session) {
         session.markExited(payload.exitCode);
+      }
+    } else if (msg.type === 'terminal-error') {
+      // Without this the agent's refusal to spawn a shell was invisible here:
+      // the terminal opened and stayed blank with no way to tell a missing
+      // shell from a slow one.
+      const payload = msg.payload as TerminalErrorMessage;
+      if (this.sessions.has(payload.terminalId)) {
+        for (const listener of [...this.errorListeners]) {
+          listener(payload.message);
+        }
       }
     }
   }

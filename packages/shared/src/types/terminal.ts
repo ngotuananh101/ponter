@@ -39,3 +39,15 @@ export interface TerminalExitMessage {
   terminalId: string;
   exitCode?: number;
 }
+
+/**
+ * A terminal the agent could not produce.
+ *
+ * Codes are the agent's `PtyErrorCode`: `pty-spawn-failed`,
+ * `session-limit-reached`.
+ */
+export interface TerminalErrorMessage {
+  terminalId: string;
+  code: string;
+  message: string;
+}

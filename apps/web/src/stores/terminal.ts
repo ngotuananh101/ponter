@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { TerminalClient, type TerminalSession } from '@remote/terminal-core';
+import {
+  TerminalClient,
+  TerminalSession,
+  type TerminalSession as TerminalSessionType,
+} from '@remote/terminal-core';
 import {
   PeerConnection,
   createBrowserAdapter,
@@ -16,7 +20,9 @@ export interface TabItem {
   title: string;
   status: 'connecting' | 'active' | 'exited' | 'error';
   exitCode?: number;
-  session: TerminalSession;
+  /** Why the connection failed, when `status === 'error'`. */
+  error?: string;
+  session: TerminalSessionType;
 }
 
 export const useTerminalStore = defineStore('terminal', () => {
@@ -48,6 +54,13 @@ export const useTerminalStore = defineStore('terminal', () => {
         baseUrl: apiClient.http.baseUrl,
         sessionId: sessionResp.id,
         token: token ?? '',
+        // The transport uses its own fetch, not the api-client, so it has no
+        // refresh of its own. Without this a session outliving its access token
+        // hit a hard 401 that the poll loop retried in silence forever.
+        onUnauthorized: async () => {
+          const fresh = await tokenStorage.getAccessToken();
+          return fresh ?? null;
+        },
       });
 
       // The server mints short-lived TURN credentials per user, so fetch the
@@ -85,7 +98,20 @@ export const useTerminalStore = defineStore('terminal', () => {
     shell?: string,
   ): Promise<string> {
     const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const client = await getOrConnectAgent(agentId);
+
+    let client: TerminalClient;
+    try {
+      client = await getOrConnectAgent(agentId);
+    } catch (e) {
+      // A connection failure must land somewhere the user can see. Previously
+      // this rejected into `handleConnect`, which neither awaited nor caught it:
+      // an unhandled rejection, no tab, and no message. `waitForChannel` alone
+      // accounts for the common case — the user clicked an agent and nothing
+      // happened at all, with no way to tell an offline agent from a firewall.
+      recordFailedTab(tabId, agentId, title, e);
+      return tabId;
+    }
+
     const session = client.createSession({ cols: 80, rows: 24, shell });
 
     const newTab: TabItem = {
@@ -106,9 +132,72 @@ export const useTerminalStore = defineStore('terminal', () => {
       newTab.exitCode = code;
     });
 
+    client.onError?.((message) => {
+      newTab.status = 'error';
+      newTab.error = message;
+    });
+
     tabs.value.push(newTab);
     activeTabId.value = tabId;
     return tabId;
+  }
+
+  /**
+   * Open a tab that shows a failure instead of a terminal.
+   *
+   * `TerminalSession` is not constructible without a data channel, so the
+   * session is a real one bound to a channel that will never open — it exists
+   * only so the rest of the store (and the tab bar) can treat this tab like any
+   * other, and is replaced wholesale by `retryTab`.
+   */
+  function recordFailedTab(
+    tabId: string,
+    agentId: string,
+    title: string | undefined,
+    cause: unknown,
+  ): void {
+    const message =
+      cause instanceof Error ? cause.message : String(cause ?? 'unknown error');
+
+    const session = new TerminalSession(
+      `pending-${tabId}`,
+      80,
+      24,
+      () => {},
+      () => {},
+      () => {},
+    );
+
+    tabs.value.push({
+      id: tabId,
+      agentId,
+      terminalId: `pending-${tabId}`,
+      title: title || `Agent ${agentId.slice(0, 8)}`,
+      status: 'error',
+      error: message,
+      session,
+    });
+    activeTabId.value = tabId;
+  }
+
+  /**
+   * Re-attempt a failed tab.
+   *
+   * Any half-built connection for the agent is dropped first, otherwise the
+   * cached `PeerConnection` from the failed attempt is returned and the retry
+   * silently "succeeds" with the same dead peer.
+   */
+  async function retryTab(tabId: string): Promise<void> {
+    const index = tabs.value.findIndex((t) => t.id === tabId);
+    if (index === -1) return;
+    const failed = tabs.value[index];
+    if (!failed) return;
+
+    tabs.value.splice(index, 1);
+    connections.delete(failed.agentId);
+    pendingConnections.delete(failed.agentId);
+
+    await openTab(failed.agentId, failed.title);
   }
 
   function setActiveTab(tabId: string): void {
@@ -157,7 +246,9 @@ export const useTerminalStore = defineStore('terminal', () => {
     activeTabId,
     activeTab,
     openTab,
+    retryTab,
     setActiveTab,
     closeTab,
+    getOrConnectAgentForTest: getOrConnectAgent,
   };
 });
