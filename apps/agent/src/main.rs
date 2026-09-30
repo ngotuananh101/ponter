@@ -414,10 +414,21 @@ async fn run_one_session(
                             frame_tx_for_dispatch.clone(),
                         )
                         .await;
-                    tracing::warn!(
-                        error = ?spawn.as_ref().err().map(|e| e.to_string()),
-                        "spawn terminal session finished"
-                    );
+                    // Success is the normal path and must not read as a warning;
+                    // only a refused spawn is worth a `warn!`. Both branches log
+                    // the terminal id so a multi-session host can tell which
+                    // shell the line belongs to.
+                    match &spawn {
+                        Ok(()) => tracing::debug!(
+                            terminal_id = %create.terminal_id,
+                            "spawn terminal session finished"
+                        ),
+                        Err(e) => tracing::warn!(
+                            terminal_id = %create.terminal_id,
+                            error = %e,
+                            "spawn terminal session failed"
+                        ),
+                    }
                     // A refused spawn must reach the browser, not just the log.
                     if let Some(frame) = spawn_failure_frame(&create.terminal_id, spawn) {
                         let _ = frame_tx_for_dispatch.send(frame).await;
