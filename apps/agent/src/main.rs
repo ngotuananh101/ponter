@@ -142,39 +142,109 @@ async fn main() -> Result<()> {
     run_with_reconnect(&cli, &credential, &shell).await
 }
 
+/// The CLI values a running session needs, owned.
+///
+/// `run_with_reconnect` starts the session supervisor with `tokio::spawn` so
+/// that a dropped signaling socket cannot cancel a live session (see that
+/// function). A spawned task must be `'static`, so the `&Cli` and `&str` the
+/// supervisor used to borrow are copied into this struct once.
+#[derive(Clone)]
+struct SessionConfig {
+    stun: String,
+    cols: u16,
+    rows: u16,
+    shell: String,
+}
+
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
 ///
 /// The agent is a long-lived daemon, so a dropped socket is an ordinary event:
-/// a laptop that slept, a Worker isolate recycled, a flaky link. Exiting on the
+/// a laptop that slept, a server that restarted, a flaky link. Exiting on the
 /// first disconnect would mean a user has to re-run the agent by hand after
 /// every hiccup, which is the behaviour §5.5.5 exists to prevent.
+///
+/// **The session outlives the socket.** Signaling is only needed to establish
+/// the peer connection; once ICE has connected, the DataChannel is
+/// peer-to-peer. The supervisor therefore runs as a spawned task whose
+/// lifetime is independent of any one socket, and each reconnect only rebuilds
+/// the socket and re-attaches its senders. Before this, the supervisor was a
+/// future inside the same `select!` as `client.run()`: a socket that died
+/// cancelled it, the live `PeerConnection` was left with nobody applying its
+/// ICE candidates, and the session degraded `connected → disconnected →
+/// failed` a minute later.
 ///
 /// The backoff resets on a successful connect rather than on a successful
 /// session, because the failure being backed off from is the handshake itself —
 /// a server that is down would otherwise be hammered at the maximum rate.
 async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<()> {
+    // Connection-independent channels, created ONCE and owned for the whole
+    // process: the supervisor owns the receiver ends, and every reconnect only
+    // rebuilds the socket and re-attaches its senders. This is what lets a
+    // signal the live session produces — an answer, an ICE candidate — survive
+    // a socket that dies mid-session instead of being stranded in a channel
+    // whose only reader was just dropped.
+    let (inbound_tx, inbound_rx) = mpsc::channel::<signal::SignalMessage>(32);
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<signal::SignalMessage>(32);
+    let (ice_tx, ice_rx) = mpsc::channel::<Vec<signal::IceServerEntry>>(1);
+
+    // Moved into the supervisor exactly once, on the first successful connect.
+    // `Option` because a bare move inside the loop would be rejected.
+    let mut inbound_rx = Some(inbound_rx);
+    let mut outbound_tx = Some(outbound_tx);
+    let mut ice_rx = Some(ice_rx);
+
+    let cfg = SessionConfig {
+        stun: cli.stun.clone(),
+        cols: cli.cols,
+        rows: cli.rows,
+        shell: shell.to_string(),
+    };
+
     let mut delay = signal::BACKOFF_INITIAL;
+    let mut supervisor: Option<tokio::task::JoinHandle<Result<()>>> = None;
 
     loop {
-        match SignalClient::connect(&cli.server, credential, &cli.agent_id).await {
-            Ok((client, inbound_rx, outbound_tx, ice_rx)) => {
+        match SignalClient::connect(&cli.server, credential, inbound_tx.clone(), ice_tx.clone())
+            .await
+        {
+            Ok(mut client) => {
                 tracing::info!("connected to the signaling server");
                 delay = signal::BACKOFF_INITIAL;
 
-                let sessions = supervise_sessions(inbound_rx, outbound_tx, ice_rx, cli, shell);
+                // Start the supervisor on the first connect, not before: it
+                // reads the `ice-servers` frame that connect triggers, and that
+                // frame is what configures every peer it builds.
+                if supervisor.is_none() {
+                    supervisor = Some(tokio::spawn(supervise_sessions(
+                        inbound_rx.take().expect("supervisor is started once"),
+                        outbound_tx.take().expect("supervisor is started once"),
+                        ice_rx.take().expect("supervisor is started once"),
+                        cfg.clone(),
+                    )));
+                }
+                let sessions = supervisor.as_mut().expect("supervisor is started above");
+
                 tokio::select! {
                     // The socket ended. A clean close and a fatal error both
-                    // mean "reconnect"; only the log line differs.
-                    result = client.run() => {
+                    // mean "reconnect"; only the log line differs. Nothing
+                    // here touches the supervisor — it lives in its own task
+                    // across reconnects, so a live PeerConnection keeps being
+                    // serviced while the socket is down. A dead socket simply
+                    // stops delivering candidates until the next one connects;
+                    // the ICE layer already connected is unaffected.
+                    result = client.run(&mut outbound_rx) => {
                         if let Err(e) = result {
                             tracing::warn!(error = %e, "signaling socket ended with an error");
                         }
                     }
                     // The supervisor only returns on a fatal internal error.
-                    result = sessions => result?,
+                    result = sessions => {
+                        return result.context("the session supervisor panicked")?;
+                    }
                     _ = shutdown_signal() => {
+                        supervisor.as_ref().expect("started").abort(); // ADR-12 teardown
                         tracing::info!("shutdown signal received");
-                        return Ok(());                              // ADR-12 teardown
+                        return Ok(());
                     }
                 }
             }
@@ -185,6 +255,9 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             _ = shutdown_signal() => {
+                if let Some(handle) = supervisor.take() {
+                    handle.abort();
+                }
                 tracing::info!("shutdown signal received while backing off");
                 return Ok(());
             }
@@ -225,12 +298,14 @@ fn classify(message: signal::SignalMessage) -> Inbound {
 /// receives a fresh per-session channel that this loop forwards into, which
 /// also means the loop can drop a candidate addressed to a session that is not
 /// live without the session ever seeing it.
+///
+/// `cfg` is owned (not borrowed) because the loop runs in a spawned task whose
+/// lifetime is independent of any one socket: `tokio::spawn` requires `'static`.
 async fn supervise_sessions(
     mut inbound: tokio::sync::mpsc::Receiver<signal::SignalMessage>,
     outbound: tokio::sync::mpsc::Sender<signal::SignalMessage>,
     mut ice_rx: tokio::sync::mpsc::Receiver<Vec<signal::IceServerEntry>>,
-    cli: &Cli,
-    shell: &str,
+    cfg: SessionConfig,
 ) -> Result<()> {
     let mut active: Option<String> = None;
 
@@ -255,9 +330,15 @@ async fn supervise_sessions(
     // In edition 2021 the scrutinee's temporaries live for the whole `while let`
     // body, so the `&mut inbound` the future borrows would still be held when
     // `run_one_session` asks for it again — a borrow error, not a warning.
+    //
+    // The channel never closes in this design: the caller owns the sender and
+    // re-attaches it to every fresh socket, so a disconnect does not end the
+    // loop — and a live session's candidates simply stop arriving while the
+    // socket is down, then resume on the next one. `None` here therefore means
+    // the whole agent is shutting down, not that a single socket died.
     loop {
         let Some(message) = inbound.recv().await else {
-            // The socket closed. Nothing to supervise any more.
+            // Every sender gone. The only way this happens is process teardown.
             return Ok(());
         };
 
@@ -287,7 +368,7 @@ async fn supervise_sessions(
                         session_id = %offer.session_id,
                         "refusing a second concurrent session (ADR-14)",
                     );
-                    let peer = rtc::build_peer(&pushed_ice, &cli.stun).await?;
+                    let peer = rtc::build_peer(&pushed_ice, &cfg.stun).await?;
                     rtc::refuse_offer(&peer, &offer, &outbound).await?;
                     let _ = peer.close().await;
                     continue;
@@ -297,7 +378,7 @@ async fn supervise_sessions(
                 tracing::info!(session_id = %offer.session_id, "session starting");
 
                 if let Err(e) =
-                    run_one_session(&offer, &mut inbound, &outbound, &pushed_ice, cli, shell).await
+                    run_one_session(&offer, &mut inbound, &outbound, &pushed_ice, &cfg).await
                 {
                     tracing::warn!(
                         error = %e,
@@ -325,15 +406,16 @@ async fn supervise_sessions(
 /// Borrows `inbound` for the session's whole lifetime, so every candidate the
 /// peer trickles lands here rather than in the idle loop above. That is the
 /// point: the buffer below must be the same object that receives them.
+///
+/// `cfg` is owned because the supervisor runs in a spawned `'static` task.
 async fn run_one_session(
     offer: &signal::SignalOffer,
     inbound: &mut tokio::sync::mpsc::Receiver<signal::SignalMessage>,
     outbound: &tokio::sync::mpsc::Sender<signal::SignalMessage>,
     pushed_ice: &[signal::IceServerEntry],
-    cli: &Cli,
-    shell: &str,
+    cfg: &SessionConfig,
 ) -> Result<()> {
-    let peer = rtc::build_peer(pushed_ice, &cli.stun).await?;
+    let peer = rtc::build_peer(pushed_ice, &cfg.stun).await?;
 
     // Register the outbound forwarder BEFORE the local description exists:
     // gathering starts the moment `set_local_description` runs, and a handler
@@ -376,9 +458,9 @@ async fn run_one_session(
     let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<String>(64);
     let manager_for_dispatch = manager.clone();
     let frame_tx_for_dispatch = frame_tx.clone();
-    let shell_for_dispatch = shell.to_string();
-    let cli_cols = cli.cols;
-    let cli_rows = cli.rows;
+    let shell_for_dispatch = cfg.shell.clone();
+    let cli_cols = cfg.cols;
+    let cli_rows = cfg.rows;
     tokio::spawn(async move {
         while let Some(text) = dispatch_rx.recv().await {
             let envelope: pty::DataChannelMessage<serde_json::Value> =
@@ -568,6 +650,12 @@ async fn run_one_session(
     // whole time. Candidates must keep flowing here — a peer that trickled
     // slowly would otherwise stall behind this wait, because nothing else is
     // reading `inbound` while it runs.
+    //
+    // `inbound` never closes while the agent runs — the sender lives in the
+    // reconnect loop and is re-attached to every fresh socket — so a `None`
+    // here means the whole agent is shutting down, not that one socket died.
+    // A dead socket simply stops delivering candidates until the next one
+    // connects; the ICE layer already connected is unaffected.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         tokio::select! {
@@ -576,12 +664,10 @@ async fn run_one_session(
             biased;
 
             candidate = inbound.recv() => {
-                match candidate {
-                    Some(message) => apply_if_candidate(&peer, &mut pending, message).await?,
-                    None => anyhow::bail!(
-                        "the signaling socket closed before the terminal channel opened"
-                    ),
-                }
+                let Some(message) = candidate else {
+                    anyhow::bail!("the inbound channel closed while waiting for the terminal channel");
+                };
+                apply_if_candidate(&peer, &mut pending, message).await?;
             }
 
             result = &mut open_rx => {
@@ -615,6 +701,11 @@ async fn run_one_session(
         }
     });
 
+    // The session loop. `inbound` stays open across reconnects (see above), so
+    // the loop keeps the live peer serviced while the socket is down: late
+    // ICE candidates resume on the next socket instead of being dropped with
+    // a dead session. The only ways out are the pump ending (channel gone),
+    // the hourly cap, or a real shutdown request — NOT the socket.
     let manager_for_teardown = manager.clone();
     let session_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
     let reason = loop {
@@ -623,7 +714,7 @@ async fn run_one_session(
             message = inbound.recv() => {
                 match message {
                     Some(message) => apply_if_candidate(&peer, &mut pending, message).await?,
-                    None => break "the signaling socket closed",
+                    None => break "the agent is shutting down",
                 }
             }
             _ = tokio::time::sleep_until(session_deadline) => break "the 1h session cap",
@@ -1015,5 +1106,67 @@ mod tests {
     #[test]
     fn a_successful_spawn_sends_no_error_frame() {
         assert!(spawn_failure_frame("t1", Ok(())).is_none());
+    }
+
+    /// Regression for the production failure of 2026-09-30: a signaling socket
+    /// that died while a session was live cancelled the whole supervisor (it
+    /// shared a `tokio::select!` with `client.run()`), so the live
+    /// `PeerConnection` lost its candidate feed and degraded
+    /// `connected → disconnected → failed` a minute later. In this design the
+    /// channels outlive any one socket: the sender halves sit in the reconnect
+    /// loop and are re-attached to every fresh socket, so no single socket's
+    /// death can close the queue the live session reads from.
+    ///
+    /// The test simulates exactly that event — an owned sender is dropped
+    /// (which is what killing a socket's `SignalClient` does to its senders)
+    /// while a sibling clone stays alive in the reconnect loop — and asserts the
+    /// session's queue stays open: the live session must keep receiving
+    /// candidates once the next socket re-attaches.
+    #[tokio::test]
+    async fn a_dead_socket_cannot_close_the_live_session_queue() {
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<signal::SignalMessage>(32);
+
+        // The first socket holds one clone; the reconnect loop holds this one.
+        let first_socket_tx = inbound_tx.clone();
+
+        let offer = signal::SignalMessage::Offer(signal::SignalOffer {
+            session_id: "sess-live".to_string(),
+            sdp: "v=0".to_string(),
+            capabilities: vec![crate::rtc::TERMINAL_LABEL.to_string()],
+        });
+
+        // The offer arrives on the first socket...
+        first_socket_tx
+            .send(offer)
+            .await
+            .expect("queue accepts the offer");
+        // ...then the socket dies. Only its own sender is dropped.
+        drop(first_socket_tx);
+        // The reconnect loop's clone is still alive, so the queue stays open.
+        let received = inbound_rx.recv().await;
+        assert!(
+            received.is_some(),
+            "dropping one socket's sender must not close the queue the live \
+             session reads from — the reconnect loop still holds a clone"
+        );
+
+        // The next socket re-attaches with another clone, and late candidates
+        // resume instead of being dropped with a dead session.
+        let second_socket_tx = inbound_tx.clone();
+        let candidate = signal::SignalMessage::IceCandidate(signal::IceCandidateSignal {
+            session_id: "sess-live".to_string(),
+            candidate: "candidate:1 1 udp 1 127.0.0.1 5000 typ host".to_string(),
+            sdp_mid: None,
+            sdp_mline_index: Some(0),
+        });
+        second_socket_tx
+            .send(candidate)
+            .await
+            .expect("queue accepts a late candidate after re-attach");
+        let received = inbound_rx.recv().await;
+        assert!(
+            matches!(received, Some(signal::SignalMessage::IceCandidate(_))),
+            "a late candidate must reach the live session after re-attach"
+        );
     }
 }

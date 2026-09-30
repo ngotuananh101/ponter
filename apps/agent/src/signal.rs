@@ -209,10 +209,6 @@ pub struct SignalClient {
     /// RTC task. Capacity 1 and it is written exactly once per connection, so
     /// a `try_send` that reports full is a real duplicate frame.
     ice_tx: mpsc::Sender<Vec<IceServerEntry>>,
-    /// Taken by `run(self)` — hence `Option`. `connect` fills it; nothing else
-    /// reads it, and a second `run` fails loudly rather than silently dropping
-    /// every outbound frame.
-    outbound_rx: Option<mpsc::Receiver<SignalMessage>>,
 }
 
 impl SignalClient {
@@ -220,16 +216,19 @@ impl SignalClient {
     /// `Authorization` header and **never** in the query string: a URL is
     /// logged by every proxy and by Cloudflare's own request log, and the
     /// credential is the one secret that must never appear in one (ADR-13).
+    ///
+    /// The inbound/ICE senders are **passed in**, not created here, because
+    /// they belong to the connection-independent session machinery: the
+    /// supervisor owns the receivers and must keep them across a reconnect, so
+    /// the channels are created once in `run_with_reconnect` and only the
+    /// socket is rebuilt per attempt. The outbound receiver is likewise owned by
+    /// the caller and lent to [`run`].
     pub async fn connect(
         url: &str,
         credential: &str,
-        _agent_id: &str,
-    ) -> Result<(
-        Self,
-        mpsc::Receiver<SignalMessage>,
-        mpsc::Sender<SignalMessage>,
-        mpsc::Receiver<Vec<IceServerEntry>>,
-    )> {
+        inbound_tx: mpsc::Sender<SignalMessage>,
+        ice_tx: mpsc::Sender<Vec<IceServerEntry>>,
+    ) -> Result<Self> {
         let mut request = url.into_client_request().context("invalid signaling URL")?;
         request.headers_mut().insert(
             "Authorization",
@@ -243,37 +242,27 @@ impl SignalClient {
 
         let (sink, stream) = ws.split();
 
-        // Inbound: socket -> mpsc -> rtc task. The read loop never awaits RTC
-        // work, so a slow SDP parse cannot stall the socket and trip the peer's
-        // ICE timeout.
-        let (inbound_tx, inbound_rx) = mpsc::channel::<SignalMessage>(32);
-
-        // Outbound: rtc task -> mpsc -> write loop. One owner of `sink`, so no
-        // locking.
-        let (outbound_tx, outbound_rx) = mpsc::channel::<SignalMessage>(32);
-
-        // ICE configuration: the server pushes one frame per connection.
-        let (ice_tx, ice_rx) = mpsc::channel::<Vec<IceServerEntry>>(1);
-
-        let client = Self {
+        Ok(Self {
             sink,
             stream,
             inbound_tx,
             ice_tx,
-            outbound_rx: Some(outbound_rx),
-        };
-        Ok((client, inbound_rx, outbound_tx, ice_rx))
+        })
     }
 
     /// Read + write + ping loop. Returns `Ok(())` on a clean close and `Err` on
     /// a fatal condition; the supervisor in `main.rs` decides whether that is a
     /// reconnect or an exit.
-    pub async fn run(mut self) -> Result<()> {
-        let mut outbound_rx = self
-            .outbound_rx
-            .take()
-            .context("run() called twice on one client")?;
-
+    ///
+    /// `outbound_rx` is **borrowed**, not consumed, and belongs to the caller
+    /// across reconnects: the session task keeps its `outbound_tx`, and the
+    /// next socket's `run()` resumes draining the same channel. An answer or a
+    /// candidate produced during a disconnect is therefore delivered on
+    /// whichever socket is current instead of being stranded in a channel whose
+    /// only reader just died. The inbound side needs no such treatment — the
+    /// caller owns that receiver, so a fresh socket's `run()` resumes writing
+    /// to the same queue.
+    pub async fn run(&mut self, outbound_rx: &mut mpsc::Receiver<SignalMessage>) -> Result<()> {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         // Skip the immediate first tick: connecting already wrote `is_online`,
         // and a ping at t=0 is noise.
