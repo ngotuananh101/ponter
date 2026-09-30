@@ -219,8 +219,8 @@ pnpm --filter @ponter/web exec wrangler deploy
 | `JWT_EXPIRES_IN` | No | `900` (15m) | Access token TTL (giây). |
 | `REFRESH_TOKEN_EXPIRES_IN` | No | `604800` (7d) | Refresh token TTL (giây). |
 | `TURN_SECRET` | Prod only | — | Shared secret cho Coturn long-term auth. |
-| `TURN_URL` | Prod only | `turn:${DOMAIN}:3478` | TURN URL quảng bá cho clients. |
-| `STUN_URL` | Prod only | `stun:${DOMAIN}:3478` | STUN URL quảng bá cho clients. |
+| `TURN_URL` | Prod only | `turn:${DOMAIN}:3478` | TURN URL quảng bá cho clients. Ghi đè trong `.env` để dùng IP thay cho domain. |
+| `STUN_URL` | Prod only | `stun:${DOMAIN}:3478` | STUN URL quảng bá cho clients. Ghi đè trong `.env` để dùng IP thay cho domain. |
 | `DOMAIN` | Prod only | — | Domain công cộng cho Caddy TLS + TURN realm. |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
 | `VITE_API_URL` | Web only | `http://localhost:8787` | API URL cho web frontend. |

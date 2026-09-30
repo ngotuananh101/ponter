@@ -236,8 +236,8 @@ services:
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
       - CORS_ORIGIN=https://${DOMAIN}
       - TURN_SECRET=${TURN_SECRET}
-      - TURN_URL=turn:${DOMAIN}:3478
-      - STUN_URL=stun:${DOMAIN}:3478
+      - TURN_URL=${TURN_URL:-turn:${DOMAIN}:3478}
+      - STUN_URL=${STUN_URL:-stun:${DOMAIN}:3478}
     volumes:
       - ./data:/app/data
 

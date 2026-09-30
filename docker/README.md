@@ -109,8 +109,8 @@ When your VPS already has Nginx running on ports 80/443:
 | `JWT_EXPIRES_IN`           | No          | `900` (15m)           | Access token TTL.                                                                                           |
 | `REFRESH_TOKEN_EXPIRES_IN` | No          | `604800` (7d)         | Refresh token TTL.                                                                                          |
 | `TURN_SECRET`              | Prod only   | —                     | Shared secret for Coturn long-term auth.                                                                    |
-| `TURN_URL`                 | Prod only   | `turn:${DOMAIN}:3478` | TURN URL advertised to clients.                                                                             |
-| `STUN_URL`                 | Prod only   | `stun:${DOMAIN}:3478` | STUN URL advertised to clients.                                                                             |
+| `TURN_URL`                 | Prod only   | `turn:${DOMAIN}:3478` | TURN URL advertised to clients. Override in `.env` to use an IP instead of the domain.                      |
+| `STUN_URL`                 | Prod only   | `stun:${DOMAIN}:3478` | STUN URL advertised to clients. Override in `.env` to use an IP instead of the domain.                      |
 | `DOMAIN`                   | Prod only   | —                     | Your public domain for Caddy TLS + TURN realm.                                                              |
 | `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only | —                     | Cloudflare Tunnel token.                                                                                    |
 | `DOCKERHUB_IMAGE`          | Deploy only | —                     | Image to pull, e.g. `your-dockerhub-username/ponter`. Not used by `docker-compose.local.yml`, which builds. |
