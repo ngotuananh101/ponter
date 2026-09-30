@@ -55,12 +55,13 @@ export const useTerminalStore = defineStore('terminal', () => {
         sessionId: sessionResp.id,
         token: token ?? '',
         // The transport uses its own fetch, not the api-client, so it has no
-        // refresh of its own. Without this a session outliving its access token
-        // hit a hard 401 that the poll loop retried in silence forever.
-        onUnauthorized: async () => {
-          const fresh = await tokenStorage.getAccessToken();
-          return fresh ?? null;
-        },
+        // refresh of its own. This callback must actually hit
+        // `/api/auth/refresh`: reading the stored token back (what it used to
+        // do) returns the same expired value, and the poll loop then backs off
+        // to its cap and 401s forever. A failed refresh resolves to `null`
+        // (tokens already cleared, `onAuthError` notified) so the loop backs
+        // off instead of crashing.
+        onUnauthorized: async () => apiClient.http.refreshAccessToken(),
       });
 
       // The server mints short-lived TURN credentials per user, so fetch the

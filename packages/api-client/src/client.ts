@@ -114,6 +114,33 @@ export class HttpClient {
   }
 
   /**
+   * Refresh the access token and return it, or `null` when the refresh failed.
+   *
+   * Public because the signaling transport polls outside `request()` and
+   * cannot use the automatic 401 retry: it needs to hand a fresh token to its
+   * own fetch. Unlike `request()`, a failure here resolves to `null` instead
+   * of throwing — the caller's retry loop backs off, while a thrown error
+   * would surface as an unhandled rejection in a fire-and-forget poll.
+   *
+   * Shares `refreshPromise` with `request()`'s retry path, so a poll and a
+   * regular request hitting 401 at the same moment trigger one refresh.
+   */
+  async refreshAccessToken(): Promise<string | null> {
+    this.refreshPromise ??= this.doRefresh();
+
+    try {
+      await this.refreshPromise;
+    } catch {
+      // `doRefresh` already cleared the tokens and notified `onAuthError`.
+      return null;
+    } finally {
+      this.refreshPromise = null;
+    }
+
+    return await this.storage.getAccessToken();
+  }
+
+  /**
    * Clear stored tokens and notify the auth listener.
    *
    * Both refresh failure paths must do exactly this before rejecting, so it
