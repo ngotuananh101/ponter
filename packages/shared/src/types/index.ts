@@ -31,4 +31,11 @@ export type {
   SignalMessage,
   AgentErrorCode,
   AgentSocketMessage,
+  BrowserErrorCode,
+  BrowserMessageInit,
+  BrowserSocketMessage,
 } from './signaling.js';
+
+// `parseBrowserMessage` is a function, so it is re-exported by value rather
+// than through the `export type` block above.
+export { parseBrowserMessage } from './signaling.js';
