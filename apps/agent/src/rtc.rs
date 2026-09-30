@@ -22,19 +22,52 @@ pub const TERMINAL_LABEL: &str = "terminal";
 
 /// Map the pushed `ice-servers` entries onto the crate's ICE server type.
 ///
+/// `turn:` URLs carrying `transport=tcp` are dropped (see
+/// [`is_unusable_turn_tcp`]), and an entry left with no URLs is dropped with
+/// them — an ICE server with an empty URL list is not a server. The server
+/// advertises both transports because browsers support TURN/TCP, so the agent
+/// filters its own copy rather than asking the server to degrade the
+/// browser's list.
+///
 /// An empty input means the server offered nothing, which is a valid
 /// deployment (no TURN configured). The caller then keeps its own `--stun`
 /// value rather than building a peer with no ICE server at all.
 pub fn ice_servers_from_entries(entries: &[IceServerEntry]) -> Vec<RTCIceServer> {
     entries
         .iter()
-        .filter(|entry| !entry.urls.is_empty())
-        .map(|entry| RTCIceServer {
-            urls: entry.urls.clone(),
-            username: entry.username.clone().unwrap_or_default(),
-            credential: entry.credential.clone().unwrap_or_default(),
+        .filter_map(|entry| {
+            let urls: Vec<String> = entry
+                .urls
+                .iter()
+                .filter(|url| !is_unusable_turn_tcp(url))
+                .cloned()
+                .collect();
+            if urls.is_empty() {
+                return None;
+            }
+            Some(RTCIceServer {
+                urls,
+                username: entry.username.clone().unwrap_or_default(),
+                credential: entry.credential.clone().unwrap_or_default(),
+            })
         })
         .collect()
+}
+
+/// Whether this URL must be dropped before the crate sees it.
+///
+/// webrtc-rs 0.13's `gather_candidates_relay` implements only TURN over UDP
+/// (`agent_gather.rs`: the `ProtoType::Udp && SchemeType::Turn` arm); a
+/// `turn:` URL with `transport=tcp` falls into its "Unable to handle URL"
+/// warning and is skipped, once per gather. The server mints both transports
+/// for the browser, which does support TURN/TCP, so the agent filters its own
+/// copy instead.
+///
+/// This does **not** rescue a network where UDP is blocked: the crate has no
+/// TURN/TCP client to fall back to. It only removes an attempt that could
+/// never succeed and the warning it logs.
+fn is_unusable_turn_tcp(url: &str) -> bool {
+    url.starts_with("turn:") && url.contains("transport=tcp")
 }
 
 /// Build the peer connection.
@@ -388,6 +421,7 @@ mod tests {
             urls: vec![
                 "stun:stun.example.com:19302".to_string(),
                 "turn:turn.example.com:3478?transport=udp".to_string(),
+                "turn:turn.example.com:3478?transport=tcp".to_string(),
             ],
             username: Some("1700000000:user-1".to_string()),
             credential: Some("cred-abc".to_string()),
@@ -395,12 +429,70 @@ mod tests {
 
         let servers = ice_servers_from_entries(&entries);
         assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].urls.len(), 2);
+        assert_eq!(
+            servers[0].urls.len(),
+            2,
+            "TURN/TCP is dropped: webrtc-rs 0.13 cannot gather it"
+        );
         assert_eq!(
             servers[0].username, "1700000000:user-1",
             "TURN credentials must survive the mapping"
         );
         assert_eq!(servers[0].credential, "cred-abc");
+    }
+
+    #[test]
+    fn turn_tcp_urls_are_dropped_but_stun_and_turn_udp_survive() {
+        // webrtc-rs 0.13's `gather_candidates_relay` handles only
+        // `turn:` over UDP; every other transport hits
+        // "Unable to handle URL in gather_candidates_relay" and is skipped.
+        // The server pushes `?transport=tcp` too because browsers do support
+        // TURN/TCP, so the agent filters its own copy instead of asking the
+        // server to degrade the browser's list. Keeping the URL would only
+        // produce a WARN per gather and an attempt that can never succeed.
+        let entries = vec![IceServerEntry {
+            urls: vec![
+                "stun:stun.example.com:19302".to_string(),
+                "turn:turn.example.com:3478?transport=udp".to_string(),
+                "turn:turn.example.com:3478?transport=tcp".to_string(),
+            ],
+            username: Some("1700000000:user-1".to_string()),
+            credential: Some("cred-abc".to_string()),
+        }];
+
+        let servers = ice_servers_from_entries(&entries);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(
+            servers[0].urls,
+            vec![
+                "stun:stun.example.com:19302".to_string(),
+                "turn:turn.example.com:3478?transport=udp".to_string(),
+            ],
+            "STUN and TURN/UDP must survive; TURN/TCP must not"
+        );
+    }
+
+    #[test]
+    fn a_turn_entry_left_with_no_usable_urls_is_dropped_entirely() {
+        // The server could one day push a TCP-only entry; after the filter
+        // its URL list is empty, and an ICE server with no URLs is not a
+        // server — it must be dropped rather than mapped to an empty entry.
+        let entries = vec![
+            IceServerEntry {
+                urls: vec!["turn:turn.example.com:3478?transport=tcp".to_string()],
+                username: Some("1700000000:user-1".to_string()),
+                credential: Some("cred-abc".to_string()),
+            },
+            IceServerEntry {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                username: None,
+                credential: None,
+            },
+        ];
+
+        let servers = ice_servers_from_entries(&entries);
+        assert_eq!(servers.len(), 1, "the TCP-only entry must be dropped");
+        assert_eq!(servers[0].urls, vec!["stun:stun.l.google.com:19302"]);
     }
 
     #[test]
