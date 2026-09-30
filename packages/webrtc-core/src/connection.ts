@@ -38,6 +38,19 @@ export class PeerConnection {
   private remoteDescriptionSet = false;
   private isClosed = false;
   private readonly pendingCandidates: RTCIceCandidateInit[] = [];
+  /**
+   * Whether the handshake description has been applied in each direction.
+   *
+   * Signaling delivery is at-least-once (ADR-03), so a poll can redeliver the
+   * same row: `handleSignal` must tolerate a second, identical offer or
+   * answer. An answerer answers each distinct offer once and drops repeats —
+   * a repeat would rebuild the local description and POST a second answer —
+   * while an offerer drops a second answer outright. Without the guard the
+   * browser throws `InvalidStateError: Called in wrong state: stable`, which
+   * is the error this exists to prevent.
+   */
+  private offerApplied = false;
+  private answerApplied = false;
 
   /**
    * Read-only view of the pre-remote-description candidate buffer, for tests
@@ -169,6 +182,8 @@ export class PeerConnection {
 
       case 'offer': {
         if (this.options.role !== 'answerer') return;
+        if (this.offerApplied) return;
+        this.offerApplied = true;
         const offerDesc = toSessionDescriptionInit(msg.data, 'offer');
         await this.peer.setRemoteDescription(offerDesc);
         this.remoteDescriptionSet = true;
@@ -187,6 +202,8 @@ export class PeerConnection {
 
       case 'answer': {
         if (this.options.role !== 'offerer') return;
+        if (this.answerApplied) return;
+        this.answerApplied = true;
         const answerDesc = toSessionDescriptionInit(msg.data, 'answer');
         await this.peer.setRemoteDescription(answerDesc);
         this.remoteDescriptionSet = true;

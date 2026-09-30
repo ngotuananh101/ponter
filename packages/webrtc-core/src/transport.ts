@@ -47,6 +47,20 @@ export class RESTPollingTransport implements SignalTransport {
   private cursor: string | null = null;
   private isClosed = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * True while one `poll()` fetch is in flight.
+   *
+   * `send()` calls `reschedule(0)` so a reply is picked up promptly, but a
+   * trickled ICE candidate completes a `send()` while the previous poll is
+   * still awaiting its response. Without this guard the timer fires a second
+   * `poll()` with the same cursor, both polls return the same DB row (signals
+   * are never consumed on read), and the answer is delivered twice — the
+   * offerer then calls `setRemoteDescription(answer)` on an already-stable
+   * peer (`InvalidStateError: Called in wrong state: stable`). The flag makes
+   * overlapping polls serialize: the redundant one reschedules and returns,
+   * and the in-flight poll's own `finally` schedules the next round.
+   */
+  private pollInFlight = false;
   private readonly subscribers: Array<(msg: SignalMessage) => void> = [];
 
   constructor(options: RESTPollingTransportOptions) {
@@ -160,6 +174,13 @@ export class RESTPollingTransport implements SignalTransport {
 
   private async poll(): Promise<void> {
     if (this.isClosed) return;
+    if (this.pollInFlight) {
+      // A redundant wake-up raced an in-flight poll (see `pollInFlight`): drop
+      // it rather than fetching the same cursor twice. The in-flight poll's
+      // `finally` schedules the next round, so no round is lost.
+      return;
+    }
+    this.pollInFlight = true;
 
     try {
       const query = this.cursor
@@ -214,6 +235,7 @@ export class RESTPollingTransport implements SignalTransport {
         this.maxIntervalMs,
       );
     } finally {
+      this.pollInFlight = false;
       if (!this.isClosed) {
         this.reschedule(this.currentIntervalMs);
       }
