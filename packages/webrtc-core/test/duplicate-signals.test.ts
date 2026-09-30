@@ -110,9 +110,7 @@ class ScriptedPeer implements RTCPeerConnectionLike {
 
   async setLocalDescription(): Promise<void> {}
 
-  async setRemoteDescription(
-    desc: RTCSessionDescriptionInit,
-  ): Promise<void> {
+  async setRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void> {
     // Mirror the real RTCPeerConnection contract: applying a remote answer
     // while already stable is an InvalidStateError.
     const last = this.setRemoteCalls[this.setRemoteCalls.length - 1];
