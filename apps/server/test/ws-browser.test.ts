@@ -397,6 +397,26 @@ describe('browser WS upgrade', () => {
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.close();
   });
+
+  // The ticket in the query string is a credential: the server must never put
+  // it in a log line, where it would outlive the 15s TTL it was minted with.
+  it('logs a rejected upgrade without the ticket value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { port } = await startOnEphemeral();
+    const status = await attemptUpgrade(
+      port,
+      `/api/ws/browser?ticket=${encodeURIComponent('not-a-real-ticket')}`,
+    );
+    expect(status).toBe(401);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = warn.mock.calls.flat().join(' ');
+    expect(logged).toContain('401');
+    expect(logged).toContain('/api/ws/browser');
+    expect(logged).not.toContain('not-a-real-ticket');
+
+    warn.mockRestore();
+  });
 });
 
 describe('browser subscribe + replay', () => {

@@ -477,6 +477,12 @@ export async function handleBrowserUpgrade(
   options: BrowserWebSocketOptions = {},
 ): Promise<boolean> {
   const reject = (status: number, reason: string): false => {
+    // The request URL carries the ticket, so log the path alone. A 401/403 on
+    // this route is worth seeing in an incident (a misconfigured proxy, a
+    // rotated secret), but the credential itself must not outlive its 15s TTL
+    // in a log aggregator.
+    const path = (request.url ?? '').split('?')[0] ?? '';
+    console.warn(`[browser-ws] upgrade rejected: ${status} ${path}`);
     socket.write(
       `HTTP/1.1 ${status} ${reason}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n`,
     );

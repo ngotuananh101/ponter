@@ -226,6 +226,78 @@ describe('WebSocketSignalTransport', () => {
 
       transport.close();
     });
+
+    it('retries a transient mint failure (network error) instead of falling back at once', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      let failing = true;
+      const fetchSpy = vi.fn(async () => {
+        if (failing) throw new TypeError('fetch failed');
+        return new Response(JSON.stringify({ ticket: 'tkt_late' }), {
+          status: 200,
+        });
+      });
+      const fallback = {
+        send: vi.fn(async () => {}),
+        subscribe: vi.fn(() => () => {}),
+        close: vi.fn(),
+      };
+
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fallback,
+        fetch: fetchSpy as unknown as typeof fetch,
+      });
+
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+
+      // A restarting server is a transient failure: the first mint fails, the
+      // transport backs off, and the retry succeeds — no fallback, no socket
+      // abandoned while the server comes back.
+      expect(fallback.subscribe).not.toHaveBeenCalled();
+      expect(FakeWebSocket.instances).toHaveLength(0);
+
+      failing = false;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      expect(lastSocket().url).toContain('ticket=tkt_late');
+
+      transport.close();
+    });
+
+    it('falls back after maxRetries consecutive transient mint failures', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const fetchSpy = vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      });
+      const fallback = {
+        send: vi.fn(async () => {}),
+        subscribe: vi.fn(() => () => {}),
+        close: vi.fn(),
+      };
+
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fallback,
+        maxRetries: 1,
+        fetch: fetchSpy as unknown as typeof fetch,
+      });
+
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fallback.subscribe).not.toHaveBeenCalled();
+
+      // One retry, then the budget is spent.
+      await vi.advanceTimersByTimeAsync(200);
+      expect(fallback.subscribe).toHaveBeenCalledTimes(1);
+      expect(FakeWebSocket.instances).toHaveLength(0);
+
+      transport.close();
+    });
   });
 
   describe('subscribe and queue', () => {
@@ -263,6 +335,42 @@ describe('WebSocketSignalTransport', () => {
       const frames = socket.sentFrames();
       expect(frames).toHaveLength(2);
       expect(frames[1]).toMatchObject({ type: 'signal', data: { type: 'offer' } });
+
+      transport.close();
+    });
+
+    it('stamps the transport sessionId onto signals built with an empty one', async () => {
+      // `PeerConnection` builds every signal with `sessionId: ''` (it has no
+      // sessionId option), and the REST transport re-stamps it in `send()`.
+      // The socket path must do the same: the server's `normalizeBrowserFrame`
+      // rejects an empty sessionId with VALIDATION_ERROR, so an unstamped
+      // offer never reaches the agent and the channel never opens.
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fetch: okTicketFetch() as unknown as typeof fetch,
+      });
+
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = lastSocket();
+      socket.open();
+      socket.deliver({
+        type: 'subscribed',
+        data: { sessionId: 'sess_1', after: null, hasMore: false },
+      });
+
+      const unstamped: SignalMessage = {
+        type: 'offer',
+        data: { sessionId: '', sdp: 'v=0', capabilities: ['terminal'] },
+      };
+      await transport.send(unstamped);
+
+      expect(socket.sentFrames()[1]).toMatchObject({
+        type: 'signal',
+        data: { type: 'offer', data: { sessionId: 'sess_1' } },
+      });
 
       transport.close();
     });
@@ -488,6 +596,57 @@ describe('WebSocketSignalTransport', () => {
     });
   });
 
+  describe('server error frames', () => {
+    it('fans error codes out to onServerError handlers', async () => {
+      const seen: string[] = [];
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fetch: okTicketFetch() as unknown as typeof fetch,
+      });
+
+      transport.onServerError((code) => seen.push(code));
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = lastSocket();
+      socket.open();
+
+      // NOT_FOUND first: after SESSION_TERMINATED the transport hands the
+      // session off and stops reading this socket, so that code is the last
+      // one a handler can observe on this connection.
+      socket.deliver({ type: 'error', code: 'NOT_FOUND' });
+      socket.deliver({ type: 'error', code: 'SESSION_TERMINATED' });
+
+      expect(seen).toEqual(['NOT_FOUND', 'SESSION_TERMINATED']);
+
+      transport.close();
+    });
+
+    it('unsubscribes an onServerError handler', async () => {
+      const seen: string[] = [];
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fetch: okTicketFetch() as unknown as typeof fetch,
+      });
+
+      const off = transport.onServerError((code) => seen.push(code));
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = lastSocket();
+      socket.open();
+
+      off();
+      socket.deliver({ type: 'error', code: 'NOT_FOUND' });
+
+      expect(seen).toEqual([]);
+
+      transport.close();
+    });
+  });
+
   describe('fallback', () => {
     it('delegates to the fallback after maxRetries and flushes pending signals', async () => {
       vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -608,8 +767,7 @@ describe('WebSocketSignalTransport', () => {
       transport.close();
     });
 
-    it('hands a SESSION_TERMINATED frame to the fallback without reconnecting', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    it('hands a SESSION_TERMINATED frame to the fallback without reconnecting', async () => {      vi.spyOn(Math, 'random').mockReturnValue(0.5);
       const fallback = {
         send: vi.fn(async () => {}),
         subscribe: vi.fn(() => () => {}),

@@ -12,6 +12,7 @@ Hướng dẫn triển khai nền tảng Remote Access. Backend (`@ponter/server
    - [Scenario 1: Local LAN](#scenario-1-local-lan)
    - [Scenario 2: Homelab (Cloudflare Tunnel)](#scenario-2-homelab-cloudflare-tunnel)
    - [Scenario 3: Production VPS (Caddy + Coturn)](#scenario-3-production-vps-caddy--coturn)
+   - [Browser WebSocket Signaling (proxy & idle timeouts)](#31-browser-websocket-signaling-proxy--idle-timeouts)
 4. [Deploying the Web Frontend to Cloudflare Pages](#4-deploying-the-web-frontend-to-cloudflare-pages)
    - [Configure Environment Variables](#41-configure-environment-variables)
    - [Build and Deploy](#42-build-and-deploy)
@@ -45,7 +46,7 @@ Production deployment bao gồm các thành phần sau:
 2. **Backend Server (`@ponter/server`)**:
    - **Runtime**: Node.js 24 LTS + @hono/node-server + `ws` library
    - **Database**: SQLite (better-sqlite3 + Drizzle ORM) với WAL mode
-   - **WebSocket**: In-memory `Map<agentId, AgentConnection>` dispatcher
+   - **WebSocket**: hai kênh — `/api/ws/agent` (agent ↔ server) và `/api/ws/browser` (browser signaling, push thay cho poll)
    - **Token Revocation**: SQLite table `revoked_tokens` (thay thế Cloudflare KV)
    - **ICE Servers**: Dynamic STUN/TURN credentials qua `GET /api/webrtc/ice-servers`
    - **Containerization**: Docker multi-stage image
@@ -169,6 +170,48 @@ curl https://<your-domain>/health
 
 ---
 
+## 3.1 Browser WebSocket Signaling (proxy & idle timeouts)
+
+Browser signaling dùng WebSocket thay cho REST polling. Tab mint một ticket qua `POST /api/ws/ticket` (TTL 15s, one-time) rồi mở `GET /api/ws/browser?ticket=...`; server đẩy signal tới tab ngay khi signal được ghi, không còn vòng poll 200ms–2000ms. REST (`/api/signal/*`) vẫn hoạt động và là fallback khi WS thất bại.
+
+Bật đường WS cho web bằng biến build-time `VITE_BROWSER_WS_SIGNALING` (mặc định `false`):
+
+```env
+# apps/web/.env.production
+VITE_API_URL=https://your-domain.com
+VITE_BROWSER_WS_SIGNALING=true
+```
+
+Đây là biến **build-time**: một bundle chỉ mang một giá trị cho toàn bộ user, nên muốn bật/tắt phải rebuild + redeploy frontend (xem [mục 4](#4-deploying-the-web-frontend-to-cloudflare-pages)).
+
+### Vì sao cần cấu hình proxy/Docker
+
+Socket signaling **im lặng khi không có signal đang bay** — đó là trạng thái bình thường khi terminal đang mở. Mọi tầng ở giữa (reverse proxy, Cloudflare Tunnel, Docker) đều có idle timeout mặc định, và hết hạn thì socket bị cắt giữa phiên. Ba chỗ đã được cấu hình sẵn trong repo:
+
+| Tầng | Cấu hình | File |
+|---|---|---|
+| Caddy (Scenario 3) | matcher `path /api/ws/*` + `transport http { read_buffer 65536; keepalive 300s }` | `docker/Caddyfile` |
+| Cloudflare Tunnel (Scenario 2) | `originRequest.maxIdleDuration: 300s` | `docker/cloudflared/config.yml` (mount read-only, truyền qua `--config`) |
+| Docker (cả 3 scenario) | `stop_grace_period: 15s` cho service `server` | `docker/docker-compose.*.yml` |
+
+- **Caddy** phải tách block `/api/ws/*` để đặt `keepalive 300s`; mặc định của Caddy thấp hơn và sẽ cắt socket im lặng.
+- **Cloudflare Tunnel**: `maxIdleDuration` **không có biến môi trường tương đương** — phải nằm trong `config.yml` và cloudflared phải được chạy với `--config /etc/cloudflared/config.yml`. Chỉ dùng `TUNNEL_TOKEN` (không `--config`) sẽ bỏ qua file này.
+- **Docker**: mặc định 10s rồi `SIGKILL`. Server có graceful shutdown (đóng mọi signaling socket bằng close code 1001 rồi drain `server.close`); `stop_grace_period: 15s` cho nó thời gian hoàn tất, nên một lần redeploy không trông giống như mạng bị rớt với mọi tab/agent đang kết nối.
+
+### Xác minh
+
+Sau khi deploy, xác nhận socket sống qua một khoảng im lặng (để terminal mở, không thao tác ~2 phút) rồi kiểm tra tab vẫn kết nối trong DevTools → Network → WS (`/api/ws/browser`). Nếu socket bị đóng định kỳ, tăng `maxIdleDuration`/`keepalive` tương ứng và đảm bảo proxy đang dùng đúng file cấu hình.
+
+Kiểm tra graceful shutdown thủ công:
+
+```bash
+docker compose -f docker-compose.prod.yml stop server
+docker compose -f docker-compose.prod.yml logs server | tail -20
+# Log phải cho thấy socket đóng với code 1001; container thoát 0, không bị SIGKILL.
+```
+
+---
+
 ## 4. Deploying the Web Frontend to Cloudflare Pages
 
 Frontend `apps/web` là Vue 3 SPA được triển khai như static assets trên Cloudflare Pages. Đây là phần duy nhất của hệ thống sử dụng Cloudflare.
@@ -224,6 +267,7 @@ pnpm --filter @ponter/web exec wrangler deploy
 | `DOMAIN` | Prod only | — | Domain công cộng cho Caddy TLS + TURN realm. |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
 | `VITE_API_URL` | Web only | `http://localhost:8787` | API URL cho web frontend. |
+| `VITE_BROWSER_WS_SIGNALING` | Web only | `false` | Bật signaling qua WebSocket (`/api/ws/browser`) thay vì REST poll. Build-time — rebuild để đổi. Xem [mục 3.1](#31-browser-websocket-signaling-proxy--idle-timeouts). |
 
 ---
 
@@ -271,6 +315,12 @@ CORS_ORIGIN=https://your-app.pages.dev
    sqlite3 data/remote.db "SELECT id, user_id FROM agents;"
    ```
 3. Xem log server để tìm lỗi xác thực.
+
+### Issue: Browser signaling socket (`/api/ws/browser`) keeps disconnecting
+
+**Cause**: Một tầng proxy/tunnel ở giữa cắt kết nối im lặng theo idle timeout mặc định.
+
+**Solution**: Xem [mục 3.1](#31-browser-websocket-signaling-proxy--idle-timeouts). Kiểm tra Caddy đang dùng block `/api/ws/*` với `keepalive 300s`, và Cloudflare Tunnel đang chạy với `--config /etc/cloudflared/config.yml` (chỉ `TUNNEL_TOKEN` sẽ bỏ qua `maxIdleDuration`).
 
 ### Issue: GitHub Actions deploy fails with "This Worker does not exist"
 

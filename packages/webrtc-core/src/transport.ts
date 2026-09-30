@@ -1,5 +1,5 @@
 import type { SignalTransport } from './types';
-import type { SignalMessage } from '@ponter/shared';
+import type { BrowserErrorCode, SignalMessage } from '@ponter/shared';
 
 export interface RESTPollingTransportOptions {
   baseUrl: string;
@@ -341,6 +341,13 @@ export class WebSocketSignalTransport implements SignalTransport {
   /** UUID of the last signal frame delivered, sent as `after` on subscribe. */
   private lastCursor: string | null = null;
   private readonly subscribers: Array<(msg: SignalMessage) => void> = [];
+  /**
+   * Transport-level error frames (`error{code}`) are not `SignalMessage`s, so
+   * they cannot go through `subscribers`; `PeerConnection` would drop them.
+   * This is where a tab learns that its session is gone instead of waiting on
+   * a handshake that can no longer complete.
+   */
+  private readonly errorHandlers: Array<(code: BrowserErrorCode) => void> = [];
   /** Set once the fallback takes over; every call delegates from then on. */
   private activeTransport: SignalTransport | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -377,6 +384,21 @@ export class WebSocketSignalTransport implements SignalTransport {
     };
   }
 
+  /**
+   * Observe transport-level error frames (`error{code}`).
+   *
+   * `SignalTransport.subscribe` carries `SignalMessage`s only; a tab that
+   * wants to distinguish "the session ended" from "the network is slow" needs
+   * this second channel. Returns an unsubscribe function.
+   */
+  onServerError(handler: (code: BrowserErrorCode) => void): () => void {
+    this.errorHandlers.push(handler);
+    return () => {
+      const idx = this.errorHandlers.indexOf(handler);
+      if (idx >= 0) this.errorHandlers.splice(idx, 1);
+    };
+  }
+
   async send(msg: SignalMessage): Promise<void> {
     if (this.isClosed) {
       throw new Error('Transport closed');
@@ -384,13 +406,31 @@ export class WebSocketSignalTransport implements SignalTransport {
     if (this.activeTransport) {
       return this.activeTransport.send(msg);
     }
+    const stamped = this.stampSession(msg);
     if (this.open && this.ws && !this.awaitingAck) {
       // Fire-and-forget: the socket is the delivery mechanism, and a signal
       // handed over once must never be handed over again (D6).
-      this.ws.send(JSON.stringify({ type: 'signal', data: msg }));
+      this.ws.send(JSON.stringify({ type: 'signal', data: stamped }));
       return;
     }
-    this.pending.push(msg);
+    this.pending.push(stamped);
+  }
+
+  /**
+   * Stamp the transport's `sessionId` onto the signal payload.
+   *
+   * `PeerConnection` builds every signal with `sessionId: ''` — it carries no
+   * sessionId option (the REST transport re-stamps in its own `send`). Without
+   * this the server's `normalizeBrowserFrame` sees an empty sessionId and
+   * answers `VALIDATION_ERROR`, so the offer never reaches the agent and the
+   * channel never opens. Re-assigning an existing key preserves its position,
+   * so a payload that already carries the correct id serializes identically.
+   */
+  private stampSession(msg: SignalMessage): SignalMessage {
+    return {
+      ...msg,
+      data: { ...msg.data, sessionId: this.sessionId },
+    } as SignalMessage;
   }
 
   close(): void {
@@ -416,21 +456,32 @@ export class WebSocketSignalTransport implements SignalTransport {
    * (`withTokenRefresh`): a 401 triggers exactly one `onUnauthorized()` and
    * one retry, and a refresh that cannot produce a token hands the session to
    * the fallback instead of looping.
+   *
+   * A network error or a 5xx, though, is what a restarting server looks like:
+   * that is a *transient* failure and is retried on the same backoff ladder as
+   * a dropped socket. Only a failure the server will keep answering the same
+   * way (no token, 401, other 4xx) hands over immediately.
    */
   private async connect(): Promise<void> {
     if (this.isClosed || this.activeTransport) return;
 
     let ticket: string | null = null;
+    let transient = false;
     try {
       ticket = await this.mintTicket();
     } catch {
-      ticket = null;
+      // Network error or 5xx: the request never produced an answer.
+      transient = true;
     }
 
     if (this.isClosed) return;
 
     if (!ticket) {
-      this.handOffToFallback();
+      if (transient) {
+        this.scheduleReconnect();
+      } else {
+        this.handOffToFallback();
+      }
       return;
     }
 
@@ -459,6 +510,13 @@ export class WebSocketSignalTransport implements SignalTransport {
     return `${wsBase}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
   }
 
+  /**
+   * Mint a ticket, or `null` when the server answered in a way a retry cannot
+   * fix (no token, 401 without a working refresh, other 4xx).
+   *
+   * A thrown error means the request never produced a usable answer (network
+   * failure, 5xx) — the caller treats it as transient.
+   */
   private async mintTicket(): Promise<string | null> {
     const token = await this.getToken();
     if (!token) return null;
@@ -474,6 +532,11 @@ export class WebSocketSignalTransport implements SignalTransport {
       const fresh = await this.onUnauthorized();
       if (!fresh) return null;
       res = await attempt(fresh);
+    }
+    if (res.status >= 500) {
+      // The server is up but broken (or a proxy answered for a restarting
+      // upstream): same class as a dropped socket.
+      throw new Error(`ticket endpoint answered HTTP ${res.status}`);
     }
     if (!res.ok) return null;
 
@@ -518,6 +581,12 @@ export class WebSocketSignalTransport implements SignalTransport {
         return;
       }
       case 'error': {
+        const code = frame.code as BrowserErrorCode | undefined;
+        if (code) {
+          for (const handler of [...this.errorHandlers]) {
+            handler(code);
+          }
+        }
         if (frame.code === 'SESSION_TERMINATED') {
           // The session cannot complete; a reconnect would only replay the
           // same verdict. Hand over or stop.
@@ -544,6 +613,17 @@ export class WebSocketSignalTransport implements SignalTransport {
     this.open = false;
     this.awaitingAck = false;
     this.ws = null;
+    this.scheduleReconnect();
+  }
+
+  /**
+   * Schedule the next connection attempt on the backoff ladder, or hand over
+   * once the budget is spent.
+   *
+   * Shared by the two transient-failure paths — a dropped socket and a failed
+   * ticket mint — so a restarting server costs one ladder, not two.
+   */
+  private scheduleReconnect(): void {
     if (this.isClosed || this.activeTransport) return;
 
     if (!this.reconnectEnabled || this.retries >= this.maxRetries) {

@@ -96,6 +96,28 @@ export const useTerminalStore = defineStore('terminal', () => {
         channelLabels: ['terminal'],
       });
 
+      // A terminated session is pushed as an `error` frame, which never
+      // reaches `PeerConnection` (it carries no `SignalMessage`). Without this
+      // hook the tab would sit on "connecting" until `waitForChannel` timed
+      // out with no explanation — the REST transport would only discover the
+      // same fact on its next poll.
+      if (transport instanceof WebSocketSignalTransport) {
+        transport.onServerError((code) => {
+          if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+          const message =
+            code === 'SESSION_TERMINATED'
+              ? 'Session terminated: the agent disconnected or the session was closed.'
+              : 'Session not found on the server.';
+          for (const tab of tabs.value) {
+            if (tab.agentId !== agentId) continue;
+            tab.status = 'error';
+            tab.error = message;
+          }
+          connections.delete(agentId);
+          pendingConnections.delete(agentId);
+        });
+      }
+
       await peer.start();
 
       // ICE failure used to be observed by nobody. The only symptom was a tab

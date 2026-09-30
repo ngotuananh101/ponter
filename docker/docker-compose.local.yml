@@ -21,6 +21,11 @@ services:
       dockerfile: docker/Dockerfile.server
     image: ponter-server:local
     container_name: ponter-server-local
+    # Docker's default is 10s, then SIGKILL — too short for the server's
+    # graceful shutdown (close every signaling socket with 1001, then drain
+    # `server.close`). 15s covers that with headroom; a redeploy stops looking
+    # like a network drop to every connected browser and agent.
+    stop_grace_period: 15s
     ports:
       - '8787:8787'
     environment:

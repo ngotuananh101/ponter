@@ -23,6 +23,11 @@ services:
     image: ${DOCKERHUB_IMAGE:-ngotuananh101/ponter}:latest
     container_name: ponter-server-tunnel
     restart: unless-stopped
+    # Docker's default is 10s, then SIGKILL — too short for the server's
+    # graceful shutdown (close every signaling socket with 1001, then drain
+    # `server.close`). 15s covers that with headroom; a redeploy stops looking
+    # like a network drop to every connected browser and agent.
+    stop_grace_period: 15s
     environment:
       - PORT=8787
       - DATABASE_PATH=/app/data/remote.db
@@ -36,8 +41,15 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
-    command: tunnel run
+    # `--config` is required for `originRequest` to apply: the token-only form
+    # (`tunnel run` with TUNNEL_TOKEN) ignores per-service options, so the
+    # WebSocket idle timeout would stay at Cloudflare's default and a browser
+    # signaling socket would be dropped mid-session. `maxIdleDuration: 300s`
+    # lives in ./cloudflared/config.yml (it has no env-var equivalent).
+    command: tunnel --config /etc/cloudflared/config.yml run
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
     depends_on:
       - server

@@ -27,6 +27,11 @@ services:
     image: ${DOCKERHUB_IMAGE:-ngotuananh101/ponter}:latest
     container_name: ponter-server-prod
     restart: always
+    # Docker's default is 10s, then SIGKILL — too short for the server's
+    # graceful shutdown (close every signaling socket with 1001, then drain
+    # `server.close`). 15s covers that with headroom; a redeploy stops looking
+    # like a network drop to every connected browser and agent.
+    stop_grace_period: 15s
     environment:
       - PORT=8787
       - DATABASE_PATH=/app/data/remote.db

@@ -1,0 +1,19 @@
+# Cloudflare Tunnel origin settings.
+#
+# Mounted read-only at /etc/cloudflared/config.yml and passed to cloudflared
+# with `--config` (see docker-compose.tunnel.yml). The token-only invocation
+# (`tunnel run` with TUNNEL_TOKEN) ignores this file, so the flag is what makes
+# these settings take effect.
+#
+# `maxIdleDuration` is the reason this file exists. Cloudflare's edge closes an
+# idle proxied connection after ~100s by default; a browser signaling socket is
+# quiet whenever no signal is in flight (which is the common case once a
+# terminal is open), so without this the socket would be torn down mid-session
+# and the tab would reconnect on a timer for no reason. 300s keeps the socket
+# alive across realistic idle gaps while still reaping genuinely dead ones. The
+# server's own pong watchdog (90s, D8) is the authoritative liveness check.
+#
+# There is no environment-variable equivalent for `originRequest`, which is why
+# this is a file rather than another compose `environment:` entry.
+originRequest:
+  maxIdleDuration: 300s
