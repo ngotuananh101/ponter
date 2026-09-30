@@ -44,6 +44,14 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (
     },
   );
 
+  // Scope separation, REST side. A ws-ticket is a validly signed
+  // `type: 'access'` JWT, so without this guard it would authenticate every
+  // REST route until its 15s TTL lapsed — and the ticket travels in a query
+  // string, which is exactly the channel most likely to leak.
+  if (payload.scope === 'ws-ticket') {
+    throw new AppError('WS ticket rejected by REST', 401, 'UNAUTHORIZED');
+  }
+
   c.set('user', user);
   c.set('tokenPayload', payload);
 

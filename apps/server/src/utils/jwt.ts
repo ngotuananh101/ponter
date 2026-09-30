@@ -41,6 +41,17 @@ export interface TokenPayload {
   type: 'access' | 'refresh';
   jti: string;
   exp: number;
+  /**
+   * Namespaces a token beyond its `type`.
+   *
+   * A ws-ticket is a short-lived `type: 'access'` JWT carrying
+   * `scope: 'ws-ticket'`. Both directions of the separation are enforced:
+   * `authMiddleware` rejects any token with this scope, and `verifyWsTicket`
+   * accepts nothing else. Without the first half the ticket would
+   * authenticate REST calls; without the second, a normal access token would
+   * work as a ticket.
+   */
+  scope?: string;
   [key: string]: unknown;
 }
 
@@ -179,6 +190,37 @@ export async function signRefreshToken(
 
   const token = await sign(payload, secret);
   return { token, jti, exp };
+}
+
+/**
+ * Mint a one-time WebSocket ticket.
+ *
+ * The browser WebSocket API cannot set an `Authorization` header, so the
+ * ticket travels in the query string — where it can end up in proxy access
+ * logs. The TTL is deliberately short (15s) and the caller registers the
+ * `jti` in the one-time registry, so a leaked ticket is worth at most one
+ * already-consumed upgrade. The returned `jti` is what the caller registers;
+ * the ticket itself is opaque.
+ */
+export async function signWsTicket(
+  userId: string,
+  username: string,
+  secret: string,
+  expiresInSeconds = 15,
+): Promise<{ ticket: string; jti: string; exp: number }> {
+  const jti = crypto.randomUUID();
+  const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+  const payload: TokenPayload = {
+    sub: userId,
+    username,
+    type: 'access',
+    scope: 'ws-ticket',
+    jti,
+    exp,
+  };
+
+  const ticket = await sign(payload, secret);
+  return { ticket, jti, exp };
 }
 
 export async function verifyToken(

@@ -1,16 +1,32 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { eq, and, inArray } from 'drizzle-orm';
+import { Hono } from 'hono';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
 import type { Database } from '../db/client.js';
+import type { AppContext } from '../types.js';
 import { agents, sessions } from '../db/schema.js';
 import { sha256Hex } from '../utils/crypto.js';
 import { NOW_SQL, recordSignal } from '../utils/signals.js';
 import { buildIceServers } from '../utils/ice.js';
-import type { SignalMessage } from '@ponter/shared';
+import { signWsTicket } from '../utils/jwt.js';
+import type { TokenPayload } from '../utils/jwt.js';
+import { verifyWsTicket } from '../utils/auth.js';
+import { registerWsTicket, consumeWsTicket } from '../utils/ws-ticket.js';
+import { getAllowedOrigins } from '../utils/cors.js';
+import { getJwtSecret } from '../utils/env.js';
+import { authMiddleware } from '../middleware/auth.js';
+import type {
+  SignalMessage,
+  BrowserMessageInit,
+  BrowserSocketMessage,
+} from '@ponter/shared';
 
 const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
+
+/** Replay page size. Mirrors the REST poll's cap (`signal.ts:210`). */
+const REPLAY_LIMIT = 200;
 
 export interface AgentConnection {
   agentId: string;
@@ -41,6 +57,352 @@ export function pushToAgent(agentId: string, message: SignalMessage): boolean {
     return false;
   }
 }
+
+/**
+ * Subscription state for one session on one browser socket.
+ *
+ * `replaying` means a replay query is in flight and live pushes must be
+ * buffered; `live` means pushes may go straight to the socket. The window is
+ * the only moment ordering can break — a push that lands mid-replay would
+ * otherwise overtake the replayed rows — so the state flips synchronously
+ * before the first `await` and only back after the buffer is drained.
+ *
+ * `replayedIds` spans every page of a paginated replay, which is what makes
+ * the dedup correct across `hasMore` rounds.
+ */
+export interface BrowserSubscription {
+  state: 'replaying' | 'live';
+  replayedIds: Set<string>;
+  buffer: BrowserSocketMessage[];
+}
+
+export interface BrowserConnection {
+  userId: string;
+  socket: WebSocket;
+  send: (data: string) => void;
+  subscriptions: Map<string, BrowserSubscription>;
+  lastPongAt: number;
+}
+
+export const browserConnections = new Map<string, Set<BrowserConnection>>();
+
+/**
+ * Best-effort delivery of a message to every browser socket of a user that is
+ * subscribed to the session.
+ *
+ * While a subscription is `replaying`, the message is buffered instead of
+ * sent: the replay is the older history, and sending now would deliver it out
+ * of order. Never throws — a browser that is mid-disconnect is an ordinary
+ * outcome, and the signal is already durable in the DB (pollable via REST).
+ *
+ * `exclude` is the sender's own connection when the message originated from
+ * a browser signal frame: a peer must not receive its own signal back, which
+ * for an offerer would mean re-applying its own offer.
+ */
+export function pushToBrowser(
+  userId: string,
+  sessionId: string,
+  msg: BrowserSocketMessage,
+  exclude?: BrowserConnection,
+): boolean {
+  const set = browserConnections.get(userId);
+  if (!set) return false;
+
+  let delivered = false;
+  for (const connection of set) {
+    if (connection === exclude) continue;
+    const subscription = connection.subscriptions.get(sessionId);
+    if (!subscription) continue;
+    try {
+      if (subscription.state === 'replaying') {
+        subscription.buffer.push(msg);
+      } else {
+        connection.send(JSON.stringify(msg));
+      }
+      delivered = true;
+    } catch {
+      // Best-effort: a failing socket must not break the other subscribers.
+    }
+  }
+  return delivered;
+}
+
+interface ReplayRow {
+  id: string;
+  sessionId: string;
+  type: string;
+  payload: string;
+  createdAt: string;
+}
+
+/**
+ * Replay the signals a (re)subscribing browser missed, then ack.
+ *
+ * Ordering is enforced by construction: the subscription is flipped to
+ * `replaying` before the first await, so any push that races the query is
+ * buffered; after the page is sent, the buffer is drained with ids that were
+ * already in the page removed (a live push for a row that the replay also
+ * returned must be delivered exactly once).
+ *
+ * A cursor whose row no longer exists (reaped by cleanup after the 5-minute
+ * TTL) must NOT fall back to replaying the session from the beginning — the
+ * time bound keeps the window honest. The client treats a missing old signal
+ * as normal; a terminated session arrives as a live push.
+ */
+export async function handleBrowserSubscribe(
+  connection: BrowserConnection,
+  sessionId: string,
+  after: string | null,
+  db: Database,
+): Promise<void> {
+  let subscription = connection.subscriptions.get(sessionId);
+  if (!subscription) {
+    subscription = { state: 'replaying', replayedIds: new Set(), buffer: [] };
+    connection.subscriptions.set(sessionId, subscription);
+  } else {
+    // Re-subscribe (pagination or client retry): keep replayedIds and the
+    // buffer, so dedup spans pages and buffered pushes stay in order.
+    subscription.state = 'replaying';
+  }
+
+  // One statement covers both cases: with `after` NULL the subquery matches
+  // no row, COALESCE yields 0, and the comparison accepts every rowid.
+  const rows = await db.all<ReplayRow>(sql`
+    SELECT id, session_id AS "sessionId", type, payload, created_at AS "createdAt"
+    FROM signals
+    WHERE session_id = ${sessionId}
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+      AND created_at > datetime('now', '-5 minutes')
+      AND rowid > COALESCE((SELECT rowid FROM signals WHERE id = ${after} AND session_id = ${sessionId}), 0)
+    ORDER BY rowid ASC
+    LIMIT ${REPLAY_LIMIT + 1}
+  `);
+
+  const hasMore = rows.length > REPLAY_LIMIT;
+  const page = hasMore ? rows.slice(0, REPLAY_LIMIT) : rows;
+
+  for (const row of page) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      continue; // A corrupt payload cannot be delivered as a signal.
+    }
+    const message = parseSignalMessage({ type: row.type, data: payload });
+    if (!message) continue;
+    subscription.replayedIds.add(row.id);
+    connection.send(
+      JSON.stringify({ type: 'signal', data: message, id: row.id }),
+    );
+  }
+
+  const lastRow = page.length > 0 ? page[page.length - 1] : undefined;
+  const lastId = lastRow ? lastRow.id : (after ?? null);
+
+  if (hasMore) {
+    // More pages follow. Stay in `replaying`: pushes keep buffering, and the
+    // buffer is drained only when the final page lands, so a push that is
+    // newer than this page cannot overtake the next one.
+    connection.send(
+      JSON.stringify({
+        type: 'subscribed',
+        data: { sessionId, after: lastId, hasMore: true },
+      }),
+    );
+    return;
+  }
+
+  const buffered = subscription.buffer.splice(0);
+  for (const frame of buffered) {
+    if (frame.type === 'signal') {
+      if (subscription.replayedIds.has(frame.id)) continue;
+      subscription.replayedIds.add(frame.id);
+    }
+    connection.send(JSON.stringify(frame));
+  }
+
+  // No await between draining the buffer and flipping to `live`: on a
+  // single-threaded event loop this is the atomic handoff from replay to
+  // live delivery.
+  subscription.state = 'live';
+  connection.send(
+    JSON.stringify({
+      type: 'subscribed',
+      data: { sessionId, after: lastId, hasMore: false },
+    }),
+  );
+}
+
+/**
+ * Validate and normalize one inbound browser frame.
+ *
+ * Deliberately a local mirror of `parseBrowserMessage` in `@ponter/shared`
+ * rather than an import: the shared package ships TypeScript source, and the
+ * production image runs `node apps/server/dist/index.js` — a runtime import
+ * of it would fail at startup. The server has no other runtime dependency on
+ * shared, and this keeps it that way.
+ */
+function normalizeBrowserFrame(frame: unknown): BrowserMessageInit | null {
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) {
+    return null;
+  }
+
+  const envelope = frame as { type?: unknown; data?: unknown };
+
+  if (envelope.type === 'ping') {
+    return { type: 'ping' };
+  }
+
+  if (envelope.type === 'subscribe') {
+    const data = envelope.data as Record<string, unknown> | undefined;
+    if (!data || typeof data.sessionId !== 'string' || !data.sessionId) {
+      return null;
+    }
+    if (data.after === undefined || data.after === null) {
+      return { type: 'subscribe', data: { sessionId: data.sessionId } };
+    }
+    if (typeof data.after !== 'string' || !data.after) {
+      return null;
+    }
+    return {
+      type: 'subscribe',
+      data: { sessionId: data.sessionId, after: data.after },
+    };
+  }
+
+  if (envelope.type !== 'signal') {
+    return null;
+  }
+
+  const message = parseSignalMessage(envelope.data);
+  if (!message) return null;
+  return { type: 'signal', data: message };
+}
+
+/** Handle one inbound frame from a browser socket. Never throws. */
+async function handleBrowserMessage(
+  raw: unknown,
+  connection: BrowserConnection,
+  db: Database,
+): Promise<void> {
+  const sendError = (code: string): void => {
+    connection.send(JSON.stringify({ type: 'error', code }));
+  };
+
+  try {
+    if (typeof raw !== 'string' && !Buffer.isBuffer(raw)) return;
+    const data = Buffer.isBuffer(raw) ? raw.toString() : raw;
+
+    // Size is checked before parsing.
+    if (data.length > MAX_INBOUND_FRAME_BYTES) {
+      sendError('MALFORMED_JSON');
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      sendError('MALFORMED_JSON');
+      return;
+    }
+
+    const frame = normalizeBrowserFrame(parsed);
+    if (!frame) {
+      sendError('VALIDATION_ERROR');
+      return;
+    }
+
+    if (frame.type === 'ping') {
+      connection.send(JSON.stringify({ type: 'pong' }));
+      return;
+    }
+
+    if (frame.type === 'subscribe') {
+      const session = await db
+        .select({ id: sessions.id, userId: sessions.userId })
+        .from(sessions)
+        .where(eq(sessions.id, frame.data.sessionId))
+        .get();
+
+      // Tenancy: another user's session is indistinguishable from a missing
+      // one, so both answer NOT_FOUND.
+      if (!session || session.userId !== connection.userId) {
+        sendError('NOT_FOUND');
+        return;
+      }
+
+      await handleBrowserSubscribe(
+        connection,
+        frame.data.sessionId,
+        frame.data.after ?? null,
+        db,
+      );
+      return;
+    }
+
+    // frame.type === 'signal'
+    const message = frame.data;
+    const session = await db
+      .select({
+        id: sessions.id,
+        userId: sessions.userId,
+        agentId: sessions.agentId,
+        status: sessions.status,
+      })
+      .from(sessions)
+      .where(eq(sessions.id, message.data.sessionId))
+      .get();
+
+    // Ownership, an agent to forward to, and a session that can still carry
+    // signals are all required.
+    if (!session || session.userId !== connection.userId || !session.agentId) {
+      sendError('NOT_FOUND');
+      return;
+    }
+
+    if (session.status !== 'pending' && session.status !== 'active') {
+      sendError('SESSION_TERMINATED');
+      return;
+    }
+
+    const inserted = await recordSignal(db, message);
+    if (!inserted) {
+      sendError('INTERNAL_SERVER_ERROR');
+      return;
+    }
+
+    // Fire-and-forget to the agent, mirroring the REST routes.
+    pushToAgent(session.agentId, message);
+
+    // Fan out to this user's other browser sockets subscribed to the session,
+    // but never echo back to the sender.
+    pushToBrowser(
+      connection.userId,
+      message.data.sessionId,
+      { type: 'signal', data: message, id: inserted.id },
+      connection,
+    );
+  } catch (err) {
+    console.error('[browser-ws] message handler failed:', err);
+    sendError('INTERNAL_SERVER_ERROR');
+  }
+}
+
+/** The ticket-mint router, mounted by `app.ts` at `/api/ws`. */
+export const wsTicketRouter = new Hono<AppContext>();
+
+wsTicketRouter.post('/ticket', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const { ticket, jti } = await signWsTicket(
+    user.id,
+    user.username,
+    getJwtSecret(),
+    15,
+  );
+  registerWsTicket(jti);
+  return c.json({ ticket, expiresIn: 15 });
+});
 
 /**
  * Handle the WebSocket upgrade for an agent connection.
@@ -94,6 +456,163 @@ export async function handleAgentUpgrade(
   });
 
   return true;
+}
+
+/**
+ * Handle the WebSocket upgrade for a browser connection.
+ *
+ * The ticket travels in the query string (the browser WebSocket API cannot
+ * set headers), so the checks here are the only gate: a valid, unconsumed,
+ * ws-scoped ticket AND an allowed Origin (CSWSH). Every failure writes a raw
+ * HTTP response and destroys the socket — the handshake never completes, so
+ * no WebSocket-level close code is available.
+ *
+ * The URL is never logged: it contains the ticket.
+ */
+export async function handleBrowserUpgrade(
+  request: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  wss: WebSocketServer,
+  options: BrowserWebSocketOptions = {},
+): Promise<boolean> {
+  const reject = (status: number, reason: string): false => {
+    socket.write(
+      `HTTP/1.1 ${status} ${reason}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n`,
+    );
+    socket.destroy();
+    return false;
+  };
+
+  let ticket: string | null = null;
+  try {
+    const url = new URL(request.url ?? '', 'http://localhost');
+    ticket = url.searchParams.get('ticket');
+  } catch {
+    return reject(401, 'Unauthorized');
+  }
+
+  if (!ticket) {
+    return reject(401, 'Unauthorized');
+  }
+
+  let payload: TokenPayload;
+  try {
+    payload = await verifyWsTicket(ticket, getJwtSecret());
+  } catch {
+    return reject(401, 'Unauthorized');
+  }
+
+  // One-time: a consumed or unknown jti is indistinguishable from an invalid
+  // ticket, and the response is the same 401.
+  if (!consumeWsTicket(payload.jti)) {
+    return reject(401, 'Unauthorized');
+  }
+
+  const allowed = getAllowedOrigins();
+  if (allowed !== '*') {
+    const origin = request.headers.origin;
+    if (!origin || !allowed.includes(origin)) {
+      return reject(403, 'Forbidden');
+    }
+  }
+
+  const userId = payload.sub;
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request, userId, options);
+  });
+  return true;
+}
+
+export interface BrowserWebSocketOptions {
+  /** How often the server sends a protocol-level ping. */
+  pingIntervalMs?: number;
+  /** How long without a pong before the socket is closed with 4408. */
+  pongTimeoutMs?: number;
+}
+
+/**
+ * Create the WebSocketServer that owns browser connections.
+ *
+ * Liveness uses protocol-level `ws.ping()`, not an application frame: the
+ * browser answers pings in the WebSocket implementation itself (RFC 6455),
+ * so a backgrounded tab whose JS is throttled still answers. An app-level
+ * ping would wait on throttled JS and declare a healthy tab dead.
+ */
+export function createBrowserWebSocketServer(
+  options: BrowserWebSocketOptions = {},
+): WebSocketServer {
+  const pingIntervalMs = options.pingIntervalMs ?? 30_000;
+  const pongTimeoutMs = options.pongTimeoutMs ?? 90_000;
+  const wss = new WebSocketServer({ noServer: true });
+
+  wss.on(
+    'connection',
+    (socket: WebSocket, _request: IncomingMessage, userId?: string) => {
+      if (!userId) {
+        socket.close(4401, 'Unauthorized');
+        return;
+      }
+
+      const connection: BrowserConnection = {
+        userId,
+        socket,
+        send: (data: string) => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(data);
+          }
+        },
+        subscriptions: new Map(),
+        lastPongAt: Date.now(),
+      };
+
+      let set = browserConnections.get(userId);
+      if (!set) {
+        set = new Set();
+        browserConnections.set(userId, set);
+      }
+      set.add(connection);
+
+      const keepalive = setInterval(() => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (Date.now() - connection.lastPongAt > pongTimeoutMs) {
+          socket.close(4408, 'Pong timeout');
+          return;
+        }
+        try {
+          socket.ping();
+        } catch {
+          // A socket that cannot be pinged is about to emit 'close'.
+        }
+      }, pingIntervalMs);
+      // Do not hold the event loop open on the timer's account alone.
+      keepalive.unref?.();
+
+      socket.on('pong', () => {
+        connection.lastPongAt = Date.now();
+      });
+
+      socket.on('message', (rawMsg: unknown) => {
+        void handleBrowserMessage(rawMsg, connection, getDb(process.env.DATABASE_PATH));
+      });
+
+      socket.on('close', () => {
+        clearInterval(keepalive);
+        const currentSet = browserConnections.get(userId);
+        if (!currentSet) return;
+        currentSet.delete(connection);
+        if (currentSet.size === 0) {
+          browserConnections.delete(userId);
+        }
+      });
+    },
+  );
+
+  wss.on('error', (err: Error) => {
+    console.error('[BrowserWebSocketServer] error:', err);
+  });
+
+  return wss;
 }
 
 /**
@@ -170,8 +689,11 @@ export function createAgentWebSocketServer(): WebSocketServer {
           .set({ isOnline: false })
           .where(eq(agents.id, agentId));
 
-        // End sessions bound to this agent that are still active.
-        await db
+        // End sessions bound to this agent that are still active, and tell
+        // each browser waiting on one that the handshake can no longer
+        // complete — otherwise the tab sits on "connecting" until its own
+        // timeout, with no way to tell a dead agent from a slow one.
+        const terminated = await db
           .update(sessions)
           .set({ status: 'terminated', endedAt: NOW_SQL, updatedAt: NOW_SQL })
           .where(
@@ -179,7 +701,15 @@ export function createAgentWebSocketServer(): WebSocketServer {
               eq(sessions.agentId, agentId),
               inArray(sessions.status, ['pending', 'active']),
             ),
-          );
+          )
+          .returning({ id: sessions.id, userId: sessions.userId });
+
+        for (const row of terminated) {
+          pushToBrowser(row.userId, row.id, {
+            type: 'error',
+            code: 'SESSION_TERMINATED',
+          });
+        }
       });
     },
   );
@@ -295,6 +825,15 @@ async function handleInboundMessage(
     );
     return;
   }
+
+  // Fan the agent's signal out to every browser socket subscribed to this
+  // session. This is the browser-side replacement for polling: the row is
+  // durable, but a waiting tab should not have to ask for it.
+  pushToBrowser(session.userId, message.data.sessionId, {
+    type: 'signal',
+    data: message,
+    id: inserted.id,
+  });
 
   // Echo the accepted signal so the agent can correlate it with the DB row.
   connection.socket.send(JSON.stringify({ type: 'signal', data: message }));

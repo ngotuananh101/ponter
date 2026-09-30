@@ -3,6 +3,7 @@ import type { AppContext } from './types.js';
 import { cors } from 'hono/cors';
 import { errorHandler } from './middleware/error.js';
 import { getDb } from './db/client.js';
+import { getAllowedOrigins } from './utils/cors.js';
 import auth from './routes/auth.js';
 import users from './routes/users.js';
 import agents from './routes/agents.js';
@@ -10,17 +11,15 @@ import devices from './routes/devices.js';
 import sessions from './routes/sessions.js';
 import signalRoutes from './routes/signal.js';
 import webrtcRoutes from './routes/webrtc.js';
+import { wsTicketRouter } from './routes/ws.js';
 
 export function createApp() {
   const app = new Hono<AppContext>();
-  const corsOrigin = process.env.CORS_ORIGIN?.trim();
+  const corsOrigin = getAllowedOrigins();
   app.use(
     '*',
     cors({
-      origin:
-        corsOrigin && corsOrigin !== '*'
-          ? corsOrigin.split(',').map((o) => o.trim())
-          : '*',
+      origin: corsOrigin,
       allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type', 'Authorization'],
     }),
@@ -46,6 +45,9 @@ export function createApp() {
   app.route('/api/sessions', sessions);
   app.route('/api/signal', signalRoutes);
   app.route('/api/webrtc', webrtcRoutes);
+  // `POST /api/ws/ticket` — a router of its own because `auth` mounts under
+  // `/api/auth`, where the same route would be `/api/auth/ws/ticket`.
+  app.route('/api/ws', wsTicketRouter);
 
   return app;
 }

@@ -4,6 +4,7 @@ import type { AppContext } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
 import { sessions, devices, agents } from '../db/schema.js';
+import { pushToBrowser } from './ws.js';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
@@ -141,6 +142,12 @@ router.delete('/:id', async (c) => {
       updatedAt: sql`(datetime('now'))`,
     })
     .where(eq(sessions.id, sessionId));
+
+  // Tell any browser waiting on this session's handshake that it is over.
+  pushToBrowser(user.id, sessionId, {
+    type: 'error',
+    code: 'SESSION_TERMINATED',
+  });
 
   return c.json({ success: true });
 });

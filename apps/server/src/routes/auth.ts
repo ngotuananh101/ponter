@@ -14,35 +14,12 @@ import { AppError } from '../middleware/error.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { verifyTokenForUser } from '../utils/auth.js';
 import { toPublicUser } from '../utils/user.js';
+import { getJwtSecret, getRefreshSecret } from '../utils/env.js';
 
 const auth = new Hono<AppContext>();
 
 const MIN_USERNAME_LENGTH = 3;
 const MIN_PASSWORD_LENGTH = 8;
-
-function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new AppError(
-      'JWT_SECRET is not configured',
-      500,
-      'INTERNAL_SERVER_ERROR',
-    );
-  }
-  return secret;
-}
-
-function getRefreshSecret(): string {
-  const secret = process.env.REFRESH_TOKEN_SECRET;
-  if (!secret) {
-    throw new AppError(
-      'REFRESH_TOKEN_SECRET is not configured',
-      500,
-      'INTERNAL_SERVER_ERROR',
-    );
-  }
-  return secret;
-}
 
 function getAccessTokenTtl(): number {
   const raw = process.env.JWT_EXPIRES_IN;
