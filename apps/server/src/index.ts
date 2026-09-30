@@ -111,7 +111,7 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
     if (url === '/api/ws/agent' || url.startsWith('/api/ws/agent?')) {
       // Authentication happens inside handleAgentUpgrade before the WS handshake.
       // If auth fails, it sends an HTTP 401 and destroys the socket.
-      void getDb(); // ensure DB is initialized
+      void getDb(process.env.DATABASE_PATH); // ensure DB is initialized
       void handleAgentUpgrade(_req, socket as Duplex, head, wss);
     } else {
       socket.destroy();
@@ -167,6 +167,12 @@ export function startServer(port?: number) {
   const portNum = port ?? (Number(process.env.PORT) || 8080);
   const { server } = createSignalingServer();
 
+  // Open the database before listening, so a path that cannot be opened fails
+  // at startup rather than as a 500 on the first request. The handle is reused
+  // by the cleanup timer below: a second `getDb()` would only return the same
+  // singleton.
+  const db = getDb(process.env.DATABASE_PATH);
+
   server.listen(portNum);
   server.on('listening', () => {
     const addr = server.address();
@@ -178,7 +184,7 @@ export function startServer(port?: number) {
     console.error('[server] fatal error:', err);
   });
 
-  startCleanup(getDb(), CLEANUP_INTERVAL_MS);
+  startCleanup(db, CLEANUP_INTERVAL_MS);
 
   return server;
 }

@@ -64,7 +64,12 @@ export async function handleAgentUpgrade(
     return false;
   }
 
-  const db = getDb();
+  // Explicit path, not the bare default: `getDb` is a singleton, so this call
+  // must agree with the path `startServer` opened. An argument-less call here
+  // would seed `:memory:` for a server that never reached the eager open (a
+  // test, or an upgrade before `startServer`), and every credential lookup
+  // would then miss.
+  const db = getDb(process.env.DATABASE_PATH);
   const credentialHash = await sha256Hex(raw);
 
   const agent = await db

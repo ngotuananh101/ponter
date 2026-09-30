@@ -90,7 +90,26 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
   sqlite.exec(createTables);
 }
 
-export function getDb(dbPath: string = ':memory:'): Database {
+/**
+ * The path `getDb()` opens when the caller names none.
+ *
+ * `DATABASE_PATH`, not `:memory:`. `getDb` is a singleton, so the *first* call
+ * wins — and the first call is not always a request: `startServer` opens the
+ * database before it listens. With a `:memory:` default, an argument-less call
+ * there seeded an in-memory database, every later `getDb(DATABASE_PATH)`
+ * silently reused it, and the process ran normally while losing every row on
+ * restart. A minted agent credential lived only in RAM, so the agent's next
+ * handshake after a restart came back as a bare 401.
+ *
+ * Defaulting to the configured path makes an argument-less call the correct
+ * call. A test that wants an in-memory database still passes `':memory:'`
+ * explicitly, which every existing fixture already does.
+ */
+function defaultDbPath(): string {
+  return process.env.DATABASE_PATH || ':memory:';
+}
+
+export function getDb(dbPath: string = defaultDbPath()): Database {
   // Singleton: if a database instance already exists (e.g. set up by a test
   // fixture or the app bootstrap), reuse it so every request shares the same
   // connection. Pass a different path or call `closeDb()` first to force a new one.

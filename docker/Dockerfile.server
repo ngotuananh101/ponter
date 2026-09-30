@@ -52,7 +52,10 @@ WORKDIR /app
 
 # Native build toolchain required to compile better-sqlite3 in pnpm install --prod
 # (Node.js 24 on Alpine musl has no prebuilt binary available upstream).
-RUN apk add --no-cache python3 make g++ gcc
+# `su-exec` is the privilege-drop helper the entrypoint uses: BusyBox's
+# `setpriv` only handles capabilities (no --reuid/--regid) and util-linux is a
+# heavy dependency for one flag set.
+RUN apk add --no-cache python3 make g++ gcc su-exec
 
 # Copy native deps needed at runtime.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
@@ -70,8 +73,13 @@ COPY --from=builder /app/packages/ ./packages/
 # create the directory tree that SQLite's parent must exist).
 RUN mkdir -p /app/data && chown -R node:node /app/data
 
-# Run as non-root user for security hardening.
-USER node
+# The entrypoint takes ownership of the (possibly bind-mounted) data directory
+# and then drops to `node`. It therefore starts as root — the server process
+# itself still runs unprivileged. See docker/entrypoint.sh for the full
+# reasoning; in short, a bind mount replaces the baked-in ownership, so a
+# `./data` not owned by UID 1000 makes SQLite fail with SQLITE_CANTOPEN.
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Data directory for SQLite files.
 VOLUME /app/data
@@ -80,5 +88,6 @@ ENV PORT=8787
 
 EXPOSE 8787
 
-# The server entrypoint — starts the Node.js HTTP/WebSocket server.
+# The entrypoint drops privileges to `node` before exec'ing the server.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["node", "apps/server/dist/index.js"]
