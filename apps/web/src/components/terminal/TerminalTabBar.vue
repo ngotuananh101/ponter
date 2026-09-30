@@ -16,7 +16,7 @@ defineEmits<{
 
 <template>
   <div
-    class="flex items-center bg-card/95 border-b border-border px-2 h-10 overflow-x-auto select-none"
+    class="flex h-10 flex-shrink-0 items-center bg-card/95 border-b border-border px-2 overflow-x-auto select-none"
   >
     <div class="flex items-center gap-1 flex-1 overflow-x-auto">
       <div

@@ -90,7 +90,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-background">
+  <div class="flex h-full min-h-0 w-full flex-1 overflow-hidden bg-background">
     <!-- Collapsible Agent Sidebar -->
     <WorkspaceSidebar v-show="sidebarOpen" @connect-agent="handleConnect" />
 
@@ -117,7 +117,7 @@ onUnmounted(() => {
     </button>
 
     <!-- Workspace Main Cockpit -->
-    <div class="flex-1 flex flex-col h-full overflow-hidden min-w-0">
+    <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
       <TerminalTabBar
         :tabs="terminalStore.tabs"
         :active-tab-id="terminalStore.activeTabId"
@@ -127,8 +127,8 @@ onUnmounted(() => {
         @new-tab="sidebarOpen = true"
       />
 
-      <!-- Terminal Body -->
-      <div class="flex-1 relative overflow-hidden bg-[#090d16]">
+      <!-- Terminal Body: the only scrollable region in the shell -->
+      <div class="relative min-h-0 flex-1 overflow-hidden bg-[#090d16]">
         <template v-if="terminalStore.activeTab">
           <XtermTerminal
             :key="terminalStore.activeTab.id"

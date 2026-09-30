@@ -45,8 +45,11 @@ onMounted(() => {
   <aside
     class="w-64 bg-card/95 border-r border-border flex flex-col h-full select-none flex-shrink-0 z-20"
   >
-    <!-- Header -->
-    <div class="p-3 border-b border-border flex items-center justify-between">
+    <!-- Header: matches the tab-strip height (h-10) so the sidebar and
+         terminal headers share one continuous baseline. -->
+    <div
+      class="h-10 flex-shrink-0 px-3 border-b border-border flex items-center justify-between"
+    >
       <div class="flex items-center gap-2">
         <Server class="w-4 h-4 text-primary" />
         <span

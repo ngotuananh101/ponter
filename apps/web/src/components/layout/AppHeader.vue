@@ -16,6 +16,24 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Terminal, LayoutDashboard, ShieldCheck, LogOut } from '@lucide/vue';
 
+const props = withDefaults(
+  defineProps<{
+    /**
+     * Full-bleed mode: the header bar spans the viewport edge to edge so it
+     * aligns with app-shell pages (workspace). Regular pages keep the
+     * centered content column.
+     */
+    fluid?: boolean;
+  }>(),
+  { fluid: false },
+);
+
+const headerInnerClass = computed(() =>
+  props.fluid
+    ? 'flex h-14 w-full items-center justify-between px-4 sm:px-6'
+    : 'container mx-auto flex h-14 items-center justify-between px-4 sm:px-6',
+);
+
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
@@ -35,9 +53,7 @@ async function handleLogout() {
   <header
     class="border-b border-border/80 bg-card/90 backdrop-blur-md sticky top-0 z-40 transition-colors"
   >
-    <div
-      class="container mx-auto flex h-14 items-center justify-between px-4 sm:px-6"
-    >
+    <div :class="headerInnerClass">
       <div class="flex items-center gap-6">
         <router-link
           to="/"
