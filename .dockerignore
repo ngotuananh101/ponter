@@ -59,6 +59,5 @@ apps/agent/
 apps/web/
 apps/mobile/
 apps/desktop/
-workers/
 tests/
 scripts/

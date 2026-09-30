@@ -34,12 +34,7 @@ export default tseslint.config(
     },
   },
   {
-    files: [
-      'packages/**/*.ts',
-      'apps/**/*.ts',
-      'apps/**/*.vue',
-      'workers/**/*.ts',
-    ],
+    files: ['packages/**/*.ts', 'apps/**/*.ts', 'apps/**/*.vue'],
     rules: {
       '@typescript-eslint/no-unused-vars': [
         'error',

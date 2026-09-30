@@ -45,7 +45,6 @@ ponter/
 │   ├── webrtc-core/       # WebRTC connection orchestration & DataChannel management
 │   └── ui-components/     # Shared Vue 3 UI component library
 ├── docker/                # Docker packaging: Dockerfile + 3 Compose setups (local, tunnel, prod)
-├── workers/               # Legacy Cloudflare Worker (deprecated - use apps/server instead)
 └── docs/
     ├── ARCHITECTURE.md    # Master architecture specification
     ├── README.md          # Documentation index

@@ -46,7 +46,6 @@ ponter/
 │   ├── Caddyfile
 │   ├── .env.example
 │   └── README.md
-├── workers/               # Legacy Cloudflare Worker (deprecated)
 ├── docs/
 │   ├── ARCHITECTURE.md    # Master architecture specification
 │   ├── README.md          # Documentation index (this file)

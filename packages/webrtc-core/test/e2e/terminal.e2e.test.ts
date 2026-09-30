@@ -15,12 +15,13 @@ import type {
 } from '@ponter/shared';
 
 /**
- * Layer 3: the whole week in one file — a Rust agent, a TypeScript offerer, a
- * real Worker, and real PTY bytes over a real DTLS/SCTP connection.
+ * Layer 3: the whole week in one file — a Rust agent, a TypeScript offerer, the
+ * real `@ponter/server` backend, and real PTY bytes over a real DTLS/SCTP
+ * connection.
  *
- * Linux-only. The Rust binary is built for the host, the Worker binds a local
- * port, and `iceServers: []` means loopback host candidates must be enough. On
- * any other platform the suite is SKIPPED, not failed (spec §7.3).
+ * Linux-only. The Rust binary is built for the host, the Node server binds a
+ * local port, and `iceServers: []` means loopback host candidates must be
+ * enough. On any other platform the suite is SKIPPED, not failed (spec §7.3).
  */
 const isLinux = process.platform === 'linux';
 
@@ -40,18 +41,27 @@ const AGENT_BIN = join(
   'debug',
   process.platform === 'win32' ? 'ponter-agent.exe' : 'ponter-agent',
 );
-const SIGNALING_DIR = join(REPO_ROOT, 'workers');
+const SERVER_DIR = join(REPO_ROOT, 'apps', 'server');
 const PORT = 8787;
 
 /**
- * `127.0.0.1`, not `localhost`. `wrangler dev` binds loopback IPv4 and prints
- * `Ready on http://127.0.0.1:8787`; on a host where `localhost` resolves to
- * `::1` first, the name-based URL costs a failed connect attempt per request.
+ * `127.0.0.1`, not `localhost`: the harness binds loopback IPv4, and on a host
+ * where `localhost` resolves to `::1` first the name-based URL costs a failed
+ * connect attempt per request.
  */
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const WS_URL = `ws://127.0.0.1:${PORT}/api/ws/agent`;
 
-/** Bounded wait for the Worker to answer `GET /health`. */
+/**
+ * Fixed secrets, so the server child and the assertions agree and a failure is
+ * reproducible. Both are >= 32 characters because `@ponter/server` treats an
+ * unset secret as a hard startup error and the tests it ships with use this
+ * same shape.
+ */
+const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
+const REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters';
+
+/** Bounded wait for the server to answer `GET /health`. */
 async function waitForHealth(timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = 'no attempt made';
@@ -66,19 +76,16 @@ async function waitForHealth(timeoutMs = 30_000): Promise<void> {
     await delay(250);
   }
   throw new Error(
-    `wrangler dev did not answer GET /health within ${timeoutMs}ms (last: ${lastError})` +
-      `\n--- wrangler output ---\n${wranglerOutput()}`,
+    `@ponter/server did not answer GET /health within ${timeoutMs}ms (last: ${lastError})` +
+      `\n--- server output ---\n${serverOutput()}`,
   );
 }
 
 /**
  * Spawn a child and buffer its output.
  *
- * `stdin` is `'ignore'` on purpose, and that is load-bearing for the migration
- * child: `wrangler d1 migrations apply` prompts "About to apply N migration(s)
- * … continue?" and only skips the prompt when stdin is not a terminal. An
- * ignored stdin makes it non-interactive, so the prompt auto-confirms. A piped
- * stdin that is never written would hang the harness.
+ * `stdin` is `'ignore'` on purpose: neither the server nor an agent reads it,
+ * and a piped stdin that is never written would hang the harness.
  *
  * Both output streams are buffered rather than inherited: a failing test must
  * be able to print why the child died, and inheriting would interleave it with
@@ -126,8 +133,8 @@ async function killAndWait(child: ChildProcess | null): Promise<void> {
   }
 }
 
-let wrangler: ChildProcess | null = null;
-let wranglerOutput: () => string = () => '';
+let server: ChildProcess | null = null;
+let serverOutput: () => string = () => '';
 let tempDir = '';
 
 /**
@@ -140,7 +147,7 @@ let tempDir = '';
  */
 const agents: Array<{ child: ChildProcess; output: () => string }> = [];
 
-/** The shape `POST /api/agents` returns after Task 3 (deviation D-11). */
+/** The shape `POST /api/agents` returns. */
 interface AgentCreated {
   agent: { id: string; isOnline: boolean };
   credential: string;
@@ -167,83 +174,57 @@ async function postJson<T>(
 
 describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   beforeAll(async () => {
-    // 1. A private persistence dir, so the harness never reads or writes the
-    //    developer's own `.wrangler/state` and two runs cannot collide.
-    //    `--persist-to` is resolved with `path.resolve(cwd, persistTo)`, so an
-    //    absolute path is what makes this independent of where vitest ran.
+    // 1. A private directory for the SQLite file, so the harness never reads or
+    //    writes a developer's own database and two runs cannot collide. The
+    //    server runs its `CREATE TABLE IF NOT EXISTS` migrations inline on the
+    //    first `getDb()`, so there is no separate migrate step.
     tempDir = mkdtempSync(join(tmpdir(), 'ponter-e2e-'));
 
-    // 2. Migrate the SAME sqlite file `wrangler dev` will read. `wrangler dev`
-    //    does not apply migrations, and both commands resolve their persistence
-    //    path through the same helper, so passing the identical `--persist-to`
-    //    to each is what keeps them pointed at one file.
-    const migrate = spawnLogged(
-      'pnpm',
-      [
-        'exec',
-        'wrangler',
-        'd1',
-        'migrations',
-        'apply',
-        'remote-access',
-        '--local',
-        '--persist-to',
-        tempDir,
-      ],
-      { cwd: SIGNALING_DIR },
-    );
-    const migrateExit = await new Promise<number | null>((r) =>
-      migrate.child.once('exit', r),
-    );
-    if (migrateExit !== 0) {
-      throw new Error(
-        `migrations apply exited ${migrateExit}:\n${migrate.output()}`,
-      );
-    }
+    // 2. Start the real Node server on a fixed port. A fixed port rather than a
+    //    probed free one, because the harness's `--server` flag has to name the
+    //    same number.
+    //
+    //    `tsx` transpiles the TypeScript entrypoint directly (the server ships
+    //    `tsx` as a devDependency for exactly this). It is spawned through
+    //    `pnpm exec` from `apps/server` so the workspace-local `tsx` resolves
+    //    without a hoisted global install.
+    const dev = spawnLogged('pnpm', ['exec', 'tsx', 'src/index.ts'], {
+      cwd: SERVER_DIR,
+      env: {
+        PORT: String(PORT),
+        DATABASE_PATH: join(tempDir, 'ponter-e2e.sqlite'),
+        JWT_SECRET,
+        REFRESH_TOKEN_SECRET,
+        // No TURN: the ICE server list is then a single public STUN entry. The
+        // agent prefers that pushed list over its own `--stun`, and loopback
+        // host candidates still connect through it on a LAN/CI runner.
+        TURN_SECRET: '',
+        TURN_URL: '',
+      },
+    });
+    server = dev.child;
+    serverOutput = dev.output;
 
-    // 3. Start the Worker on a fixed port. A fixed port rather than a probed
-    //    free one, because Task 6's `AGENT_SERVER` default and the harness's
-    //    `--server` flag have to agree on the same number.
-    const dev = spawnLogged(
-      'pnpm',
-      [
-        'exec',
-        'wrangler',
-        'dev',
-        '--local',
-        '--port',
-        String(PORT),
-        '--persist-to',
-        tempDir,
-      ],
-      { cwd: SIGNALING_DIR },
-    );
-    wrangler = dev.child;
-    wranglerOutput = dev.output;
-
-    // Readiness is polled rather than read from the log. `wrangler dev` does
-    // print `[wrangler:info] Ready on http://127.0.0.1:8787`, but that line's
-    // format is wrangler's to change and it says the HTTP listener is up, not
-    // that the Worker's routes answer. A 200 from `/health` says both.
+    // Readiness is polled rather than read from the log, so a 200 from
+    // `/health` proves both the listener and the routes are up.
     await waitForHealth();
   }, 120_000);
 
   afterAll(async () => {
     // Order matters: the agents first, so their socket closes do not race the
-    // Worker's shutdown, then the Worker, then the temp dir.
+    // server's shutdown, then the server, then the temp dir.
     for (const entry of agents) {
       await killAndWait(entry.child);
     }
     agents.length = 0;
-    await killAndWait(wrangler);
-    wrangler = null;
+    await killAndWait(server);
+    server = null;
     if (process.platform !== 'win32') {
       try {
         const { execSync } = await import('node:child_process');
+        // A safety net for a `tsx` child that outlived its group kill: the port
+        // is dedicated to this suite, so reaping whatever holds it is safe.
         execSync(`fuser -k -9 ${PORT}/tcp 2>/dev/null || true`);
-        execSync(
-          `pkill -9 -f "dev --local --port ${PORT}" 2>/dev/null || true`,
-        );
       } catch {}
     }
     if (tempDir) {
@@ -259,9 +240,9 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     credential: string;
     sessionId: string;
   }> {
-    // A unique suffix, not a fixed name: the local D1 file is not wiped between
-    // runs and `users.username` is UNIQUE, so a constant name makes the second
-    // `pnpm test:e2e` fail with `USERNAME_EXISTS`. Readable prefix included so a
+    // A unique suffix, not a fixed name: the SQLite file is not wiped between
+    // tests and `users.username` is UNIQUE, so a constant name makes the second
+    // `seed()` fail with `USERNAME_EXISTS`. Readable prefix included so a
     // failed run is diagnosable.
     const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
@@ -304,10 +285,9 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       [
         '--agent-id',
         agentId,
-        // The full route path (D-12). `--stun ''` disables ICE servers so the
-        // only candidates are loopback host candidates — the harness must not
-        // reach the network beyond 127.0.0.1, and Task 6's default is a public
-        // STUN server.
+        // The full route path (D-12). `--stun ''` leaves the agent's own STUN
+        // empty; the server still pushes its `ice-servers` frame, and the agent
+        // prefers that list. Loopback host candidates are what connect here.
         '--server',
         WS_URL,
         '--credential',
@@ -387,11 +367,11 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       const agentLogs = agents
         .map((a, i) => `=== AGENT #${i} ===\n${a.output()}`)
         .join('\n');
-      const wranglerLogs = wranglerOutput();
+      const serverLogs = serverOutput();
       throw new Error(
         `${err instanceof Error ? err.message : String(err)}\n` +
           `--- AGENT LOGS ---\n${agentLogs}\n` +
-          `--- WRANGLER LOGS ---\n${wranglerLogs}`,
+          `--- SERVER LOGS ---\n${serverLogs}`,
       );
     }
   }

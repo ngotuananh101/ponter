@@ -321,8 +321,7 @@ ponter/
 packages:
   - 'apps/*'
   - 'packages/*'
-  - 'workers'
-  # apps/server is self-hosted Node.js + Hono backend, not a Cloudflare Worker.
+  # apps/server is the self-hosted Node.js + Hono backend.
 
 allowBuilds:
   esbuild: true
