@@ -667,42 +667,37 @@ export type AgentErrorCode =
 Tự động hóa xác thực thông qua JWT (truy cập 15 phút, làm mới 7 ngày). Bảng `revoked_tokens` trong SQLite thay thế cho Cloudflare KV blacklist:
 
 ```typescript
-// apps/server/src/middleware/auth.ts
-import type { Context, Next } from 'hono';
-import { verifyJWT } from '../utils/jwt.js';
-import { eq } from 'drizzle-orm/expressions';
-import { revokedTokens } from '../db/schema.js';
-import { getDb } from '../db/client.js';
+// apps/server/src/middleware/auth.ts (actual implementation)
+import type { MiddlewareHandler } from 'hono';
+import type { AppContext } from '../types.js';
+import { AppError } from './error.js';
+import { verifyTokenForUser } from '../utils/auth.js';
 
-export async function authMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'Missing token' }, 401);
+const MISSING_HEADER = 'Missing or invalid Authorization header';
+
+function extractBearerToken(header: string | undefined): string {
+  if (!header?.startsWith('Bearer ')) {
+    throw new AppError(MISSING_HEADER, 401, 'UNAUTHORIZED');
   }
-
-  const token = authHeader.slice(7);
-
-  try {
-    const payload = await verifyJWT(token, c.env.JWT_SECRET);
-
-    // Check if token is revoked in SQLite
-    const db = getDb();
-    const revoked = await db
-      .select()
-      .from(revokedTokens)
-      .where(eq(revokedTokens.jti, payload.jti))
-      .get();
-
-    if (revoked) {
-      return c.json({ error: 'Token has been revoked' }, 401);
-    }
-
-    c.set('user', payload);
-    await next();
-  } catch (error) {
-    return c.json({ error: 'Invalid token' }, 401);
+  const token = header.slice('Bearer '.length).trim();
+  if (!token) {
+    throw new AppError(MISSING_HEADER, 401, 'UNAUTHORIZED');
   }
+  return token;
 }
+
+export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => {
+  const token = extractBearerToken(c.req.header('Authorization'));
+  const { payload, user } = await verifyTokenForUser(
+    c, token, process.env.JWT_SECRET!, 'access',
+    { invalid: { message: 'Invalid or expired token', code: 'UNAUTHORIZED' },
+      wrongType: { message: 'Invalid token type', code: 'UNAUTHORIZED' },
+      revoked: { message: 'Token has been revoked', code: 'UNAUTHORIZED' },
+      inactive: { message: 'User is inactive or not found', code: 'UNAUTHORIZED' } });
+  c.set('user', user);
+  c.set('tokenPayload', payload);
+  await next();
+};
 ```
 
 ### 7.2 E2EE Implementation
