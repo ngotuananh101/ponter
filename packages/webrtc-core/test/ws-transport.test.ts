@@ -451,6 +451,102 @@ describe('WebSocketSignalTransport', () => {
       transport.close();
     });
 
+    it('requests the next replay page while the server reports hasMore', async () => {
+      // A replay that hits the server's 200-row page limit arrives as
+      // `subscribed{hasMore: true}`, and the server STAYS in `replaying`,
+      // buffering every live push. If the client ignores `hasMore` it never
+      // asks for page 2, so it receives no further signal for the rest of the
+      // session — a silent hang with no error. The client must re-subscribe
+      // from the last id it actually received, and must NOT flush its pending
+      // queue yet (the subscription is not live until the final page).
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fetch: okTicketFetch() as unknown as typeof fetch,
+      });
+
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = lastSocket();
+      socket.open();
+
+      // Page 1: one signal, then the ack that says more pages follow.
+      socket.deliver({ type: 'signal', data: offer, id: 'sig_200' });
+      socket.deliver({
+        type: 'subscribed',
+        data: { sessionId: 'sess_1', after: 'sig_200', hasMore: true },
+      });
+
+      expect(socket.sentFrames()).toEqual([
+        { type: 'subscribe', data: { sessionId: 'sess_1', after: null } },
+        { type: 'subscribe', data: { sessionId: 'sess_1', after: 'sig_200' } },
+      ]);
+
+      // A send during pagination is queued, not fired: the server is not live.
+      await transport.send(offer);
+      expect(socket.sentFrames()).toHaveLength(2);
+
+      // Final page: replay is complete, so the queue flushes.
+      socket.deliver({
+        type: 'subscribed',
+        data: { sessionId: 'sess_1', after: 'sig_205', hasMore: false },
+      });
+
+      const frames = socket.sentFrames();
+      expect(frames).toHaveLength(3);
+      expect(frames[2]).toMatchObject({ type: 'signal', data: { type: 'offer' } });
+
+      transport.close();
+    });
+
+    it('ignores a late open from a socket that is no longer current', async () => {
+      // Every socket callback must confirm it still owns `this.ws`. A stray
+      // `onopen` from a superseded socket would set `awaitingAck = true` on the
+      // CURRENT connection and never clear it (the dead socket sends no ack),
+      // so every later `send()` would queue forever — a silent hang.
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fetch: okTicketFetch() as unknown as typeof fetch,
+      });
+
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const first = lastSocket();
+      first.open();
+      first.deliver({
+        type: 'subscribed',
+        data: { sessionId: 'sess_1', after: null, hasMore: false },
+      });
+
+      // Drop the first socket and let the reconnect build a second one.
+      first.serverClose();
+      await vi.advanceTimersByTimeAsync(1000);
+      const second = lastSocket();
+      expect(second).not.toBe(first);
+      second.open();
+      second.deliver({
+        type: 'subscribed',
+        data: { sessionId: 'sess_1', after: null, hasMore: false },
+      });
+
+      const before = second.sentFrames().length;
+      // The dead socket's open event arrives late; it must be a no-op.
+      first.open();
+      await transport.send(offer);
+
+      const frames = second.sentFrames();
+      expect(frames).toHaveLength(before + 1);
+      expect(frames[before]).toMatchObject({
+        type: 'signal',
+        data: { type: 'offer' },
+      });
+
+      transport.close();
+    });
+
     it('ignores pong frames and keeps fanning out signal frames', async () => {
       const handler = vi.fn();
       const transport = new WebSocketSignalTransport({

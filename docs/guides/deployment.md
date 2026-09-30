@@ -12,7 +12,7 @@ Hướng dẫn triển khai nền tảng Remote Access. Backend (`@ponter/server
    - [Scenario 1: Local LAN](#scenario-1-local-lan)
    - [Scenario 2: Homelab (Cloudflare Tunnel)](#scenario-2-homelab-cloudflare-tunnel)
    - [Scenario 3: Production VPS (Caddy + Coturn)](#scenario-3-production-vps-caddy--coturn)
-   - [Browser WebSocket Signaling (proxy & idle timeouts)](#31-browser-websocket-signaling-proxy--idle-timeouts)
+   - [Browser WebSocket Signaling (proxy & idle timeouts)](#32-browser-websocket-signaling-proxy--idle-timeouts)
 4. [Deploying the Web Frontend to Cloudflare Pages](#4-deploying-the-web-frontend-to-cloudflare-pages)
    - [Configure Environment Variables](#41-configure-environment-variables)
    - [Build and Deploy](#42-build-and-deploy)
@@ -170,7 +170,7 @@ curl https://<your-domain>/health
 
 ---
 
-## 3.1 Browser WebSocket Signaling (proxy & idle timeouts)
+## 3.2 Browser WebSocket Signaling (proxy & idle timeouts)
 
 Browser signaling dùng WebSocket thay cho REST polling. Tab mint một ticket qua `POST /api/ws/ticket` (TTL 15s, one-time) rồi mở `GET /api/ws/browser?ticket=...`; server đẩy signal tới tab ngay khi signal được ghi, không còn vòng poll 200ms–2000ms. REST (`/api/signal/*`) vẫn hoạt động và là fallback khi WS thất bại.
 
@@ -258,7 +258,7 @@ pnpm --filter @ponter/web exec wrangler deploy
 | `DATABASE_PATH` | No | `/app/data/remote.db` | Đường dẫn file SQLite. |
 | `JWT_SECRET` | Yes | — | HMAC secret cho access tokens. Tối thiểu 32 ký tự. |
 | `REFRESH_TOKEN_SECRET` | Yes | — | HMAC secret cho refresh tokens. Tối thiểu 32 ký tự. |
-| `CORS_ORIGIN` | No | `*` | CORS allow-origin cho API. |
+| `CORS_ORIGIN` | No | `*` | CORS allow-origin cho API. **Đặt tường minh trong production**: `*` vừa cho phép mọi origin qua CORS, vừa **tắt** Origin check của WebSocket signaling (`/api/ws/browser` — CSWSH defense, xem [mục 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts)). |
 | `JWT_EXPIRES_IN` | No | `900` (15m) | Access token TTL (giây). |
 | `REFRESH_TOKEN_EXPIRES_IN` | No | `604800` (7d) | Refresh token TTL (giây). |
 | `TURN_SECRET` | Prod only | — | Shared secret cho Coturn long-term auth. |
@@ -267,7 +267,7 @@ pnpm --filter @ponter/web exec wrangler deploy
 | `DOMAIN` | Prod only | — | Domain công cộng cho Caddy TLS + TURN realm. |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
 | `VITE_API_URL` | Web only | `http://localhost:8787` | API URL cho web frontend. |
-| `VITE_BROWSER_WS_SIGNALING` | Web only | `false` | Bật signaling qua WebSocket (`/api/ws/browser`) thay vì REST poll. Build-time — rebuild để đổi. Xem [mục 3.1](#31-browser-websocket-signaling-proxy--idle-timeouts). |
+| `VITE_BROWSER_WS_SIGNALING` | Web only | `false` | Bật signaling qua WebSocket (`/api/ws/browser`) thay vì REST poll. Build-time — rebuild để đổi. Xem [mục 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts). |
 
 ---
 
@@ -320,7 +320,7 @@ CORS_ORIGIN=https://your-app.pages.dev
 
 **Cause**: Một tầng proxy/tunnel ở giữa cắt kết nối im lặng theo idle timeout mặc định.
 
-**Solution**: Xem [mục 3.1](#31-browser-websocket-signaling-proxy--idle-timeouts). Kiểm tra Caddy đang dùng block `/api/ws/*` với `keepalive 300s`, và Cloudflare Tunnel đang chạy với `--config /etc/cloudflared/config.yml` (chỉ `TUNNEL_TOKEN` sẽ bỏ qua `maxIdleDuration`).
+**Solution**: Xem [mục 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts). Kiểm tra Caddy đang dùng block `/api/ws/*` với `keepalive 300s`, và Cloudflare Tunnel đang chạy với `--config /etc/cloudflared/config.yml` (chỉ `TUNNEL_TOKEN` sẽ bỏ qua `maxIdleDuration`).
 
 ### Issue: GitHub Actions deploy fails with "This Worker does not exist"
 

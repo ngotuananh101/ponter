@@ -293,8 +293,11 @@ async function handleBrowserMessage(
     if (typeof raw !== 'string' && !Buffer.isBuffer(raw)) return;
     const data = Buffer.isBuffer(raw) ? raw.toString() : raw;
 
-    // Size is checked before parsing.
-    if (data.length > MAX_INBOUND_FRAME_BYTES) {
+    // Size is checked before parsing, in BYTES. `string.length` counts UTF-16
+    // code units, so a frame of astral characters passes a length check while
+    // its on-the-wire size is nearly double the limit — measuring bytes is what
+    // bounds the payload handed to `JSON.parse`.
+    if (Buffer.byteLength(data, 'utf8') > MAX_INBOUND_FRAME_BYTES) {
       sendError('MALFORMED_JSON');
       return;
     }
@@ -743,8 +746,8 @@ async function handleInboundMessage(
 
   const data = Buffer.isBuffer(raw) ? raw.toString() : raw;
 
-  // Size is checked before parsing.
-  if (data.length > MAX_INBOUND_FRAME_BYTES) {
+  // Size is checked before parsing, in BYTES (see `handleBrowserMessage`).
+  if (Buffer.byteLength(data, 'utf8') > MAX_INBOUND_FRAME_BYTES) {
     connection.socket.send(
       JSON.stringify({ type: 'error', code: 'MALFORMED_JSON' }),
     );

@@ -824,6 +824,32 @@ describe('browser live push', () => {
     ws.close();
   });
 
+  it('rejects an oversized frame measured in bytes, not UTF-16 code units', async () => {
+    // The guard's whole job is to stop a large payload before `JSON.parse`.
+    // Measuring `string.length` counts UTF-16 code units: a frame of astral
+    // characters (2 code units, 4 UTF-8 bytes each) stays under the limit as a
+    // string while its on-the-wire bytes are nearly double it — so the check
+    // passes and the oversized payload is parsed anyway. Measure bytes.
+    const { port, app } = await startOnEphemeral();
+    const ticket = await mintTicket(app, token);
+    const ws = connectBrowser(port, ticket);
+    await waitOpen(ws);
+    const frames = collectFrames(ws);
+    // Valid JSON: an unknown field is ignored by `normalizeBrowserFrame`, so a
+    // bypass is observable as a `pong` (the frame was parsed and accepted)
+    // rather than an error. 70_000 emoji = 140_000 UTF-16 code units (< 256 KiB
+    // as a string) but 280_000 UTF-8 bytes (> 256 KiB on the wire).
+    const pad = '\u{1F600}'.repeat(70_000);
+    expect(pad.length).toBeLessThan(256 * 1024);
+    expect(Buffer.byteLength(pad, 'utf8')).toBeGreaterThan(256 * 1024);
+    const raw = JSON.stringify({ type: 'ping', pad });
+    expect(Buffer.byteLength(raw, 'utf8')).toBeGreaterThan(256 * 1024);
+    ws.send(raw);
+    const err = await waitFor(() => frames.find((f) => f.type === 'error'));
+    expect(err.code).toBe('MALFORMED_JSON');
+    ws.close();
+  });
+
   it('replies VALIDATION_ERROR to an unknown frame type', async () => {
     const { port, app } = await startOnEphemeral();
     const ticket = await mintTicket(app, token);

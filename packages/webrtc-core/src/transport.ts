@@ -488,7 +488,11 @@ export class WebSocketSignalTransport implements SignalTransport {
     const socket = new WebSocket(this.wsUrl(ticket));
     this.ws = socket;
     socket.onopen = () => {
-      if (this.isClosed) return;
+      // A superseded socket can still fire `open` after `this.ws` was replaced.
+      // Without this guard the stale open would set `awaitingAck` on the live
+      // connection and send the subscribe frame into a dead socket — the ack
+      // never arrives, and every later `send()` queues forever.
+      if (this.isClosed || socket !== this.ws) return;
       this.open = true;
       this.retries = 0;
       this.sendSubscribeFrame(socket);
@@ -567,6 +571,18 @@ export class WebSocketSignalTransport implements SignalTransport {
     switch (frame.type) {
       case 'subscribed': {
         this.awaitingAck = false;
+        const ack = frame.data as { hasMore?: boolean } | undefined;
+        if (ack?.hasMore) {
+          // The replay was paged (server hit its 200-row limit) and the server
+          // is STILL in `replaying`, buffering every live push until the final
+          // page arrives. Ask for the next page from the last id received —
+          // `sendSubscribeFrame` sends `after: this.lastCursor`, which every
+          // `signal` frame advanced. Do NOT flush `pending` here: the
+          // subscription is not live yet, so anything sent now would be
+          // replayed back to us on the final page.
+          this.sendSubscribeFrame(socket);
+          return;
+        }
         this.flushPending(socket);
         return;
       }
