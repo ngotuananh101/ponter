@@ -31,6 +31,21 @@ function handleConnect(agent: Agent) {
   );
 }
 
+/**
+ * Open another shell for the agent currently on screen, falling back to the
+ * first tab's agent. With no tab open there is no agent to reuse, so the
+ * sidebar is revealed for the user to pick one.
+ */
+function handleNewTab() {
+  const agentId =
+    terminalStore.activeTab?.agentId ?? terminalStore.tabs[0]?.agentId;
+  if (agentId) {
+    terminalStore.openTab(agentId);
+  } else {
+    sidebarOpen.value = true;
+  }
+}
+
 function handleSendKey(char: string) {
   if (terminalStore.activeTab) {
     terminalStore.activeTab.session.write(char);
@@ -43,13 +58,10 @@ function handleKeyDown(event: KeyboardEvent) {
 
   if (event.defaultPrevented) return;
 
-  // Ctrl+Shift+T or Cmd+Shift+T: open new tab for first available agent
+  // Ctrl+Shift+T or Cmd+Shift+T: open a new shell for the active agent
   if (ctrlOrCmd && event.shiftKey && event.key === 'T') {
     event.preventDefault();
-    const firstAgent = terminalStore.tabs[0]?.agentId;
-    if (firstAgent) {
-      terminalStore.openTab(firstAgent);
-    }
+    handleNewTab();
     return;
   }
 
@@ -124,7 +136,7 @@ onUnmounted(() => {
         @select-tab="terminalStore.setActiveTab"
         @close-tab="terminalStore.closeTab"
         @retry-tab="terminalStore.retryTab"
-        @new-tab="sidebarOpen = true"
+        @new-tab="handleNewTab"
       />
 
       <!-- Terminal Body: the only scrollable region in the shell -->
