@@ -9,6 +9,7 @@ import {
   PeerConnection,
   createBrowserAdapter,
   RESTPollingTransport,
+  WebSocketSignalTransport,
 } from '@ponter/webrtc-core';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
@@ -50,19 +51,37 @@ export const useTerminalStore = defineStore('terminal', () => {
 
       const sessionResp = await apiClient.sessions.create({ agentId });
 
-      const transport = new RESTPollingTransport({
-        baseUrl: apiClient.http.baseUrl,
-        sessionId: sessionResp.id,
-        token: token ?? '',
-        // The transport uses its own fetch, not the api-client, so it has no
-        // refresh of its own. This callback must actually hit
-        // `/api/auth/refresh`: reading the stored token back (what it used to
-        // do) returns the same expired value, and the poll loop then backs off
-        // to its cap and 401s forever. A failed refresh resolves to `null`
-        // (tokens already cleared, `onAuthError` notified) so the loop backs
-        // off instead of crashing.
-        onUnauthorized: async () => apiClient.http.refreshAccessToken(),
-      });
+      // Signaling transport is selected at build time. WebSocket is the new
+      // push path; the REST poller stays reachable both as the default while
+      // the flag is off and as the WebSocket transport's own fallback.
+      const useWsSignaling =
+        import.meta.env.VITE_BROWSER_WS_SIGNALING === 'true';
+
+      // The transport uses its own fetch, not the api-client, so it has no
+      // refresh of its own. This callback must actually hit
+      // `/api/auth/refresh`: reading the stored token back (what it used to
+      // do) returns the same expired value, and the poll loop then backs off
+      // to its cap and 401s forever. A failed refresh resolves to `null`
+      // (tokens already cleared, `onAuthError` notified) so the loop backs
+      // off instead of crashing.
+      const restTransport = () =>
+        new RESTPollingTransport({
+          baseUrl: apiClient.http.baseUrl,
+          sessionId: sessionResp.id,
+          token: token ?? '',
+          onUnauthorized: async () => apiClient.http.refreshAccessToken(),
+        });
+
+      const transport = useWsSignaling
+        ? new WebSocketSignalTransport({
+            baseUrl: apiClient.http.baseUrl,
+            sessionId: sessionResp.id,
+            getToken: () => tokenStorage.getAccessToken(),
+            onUnauthorized: async () => apiClient.http.refreshAccessToken(),
+            reconnect: true,
+            fallback: restTransport(),
+          })
+        : restTransport();
 
       // The server mints short-lived TURN credentials per user, so fetch the
       // ICE list here rather than caching it at module load. Without this the

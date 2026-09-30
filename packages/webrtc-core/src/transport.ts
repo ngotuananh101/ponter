@@ -280,3 +280,323 @@ export class RESTPollingTransport implements SignalTransport {
     }
   }
 }
+
+export interface WebSocketSignalTransportOptions {
+  baseUrl: string;
+  sessionId: string;
+  /** Lấy access token hiện tại (để mint ticket). Trả null nếu không có. */
+  getToken: () => Promise<string | null>;
+  /**
+   * Called on 401 when minting the ticket — refresh the access token, return
+   * `null` if the refresh itself failed.
+   */
+  onUnauthorized?: () => Promise<string | null>;
+  /** Bật reconnect (mặc định true). false → dùng cho test hoặc fallback-only. */
+  reconnect?: boolean;
+  /** Chuyển hẳn sang transport này sau khi WS thất bại N lần. */
+  fallback?: SignalTransport;
+  fetch?: typeof fetch;
+  /** Số lần thử lại tối đa trước khi chuyển sang fallback. Mặc định 5. */
+  maxRetries?: number;
+}
+
+/** Trần của backoff — trùng `maxIntervalMs` của `RESTPollingTransport`. */
+const WS_MAX_BACKOFF_MS = 2000;
+const WS_INITIAL_BACKOFF_MS = 200;
+
+/**
+ * The WebSocket signaling transport for the browser tab.
+ *
+ * Replaces the 200ms–2000ms poll loop with a push socket: the tab mints a
+ * short-lived ticket over REST, opens `/api/ws/browser`, and the server pushes
+ * signals as they are recorded. The REST `SignalTransport` remains as a
+ * `fallback`, so a proxy that refuses the upgrade degrades to the old path
+ * instead of breaking the session.
+ *
+ * Two invariants shape the reconnect logic:
+ *
+ * 1. The queue holds only signals that were never handed to a socket. A signal
+ *    that was sent while `OPEN` is the server's from then on; the reconnect
+ *    replays from `lastCursor` and the dedup is the signal id. Re-sending a
+ *    delivered signal would make the peer call `setRemoteDescription` on an
+ *    already-stable connection (D6).
+ * 2. `lastCursor` is the signal UUID the server attached to the frame, never a
+ *    client-side counter: it is the same id the REST poll cursor uses, so a
+ *    fallback handover resumes exactly where the socket left off.
+ */
+export class WebSocketSignalTransport implements SignalTransport {
+  private readonly baseUrl: string;
+  private readonly sessionId: string;
+  private readonly getToken: () => Promise<string | null>;
+  private readonly onUnauthorized?: () => Promise<string | null>;
+  private readonly reconnectEnabled: boolean;
+  private readonly fallback?: SignalTransport;
+  private readonly customFetch: typeof fetch;
+  private readonly maxRetries: number;
+
+  private ws: WebSocket | null = null;
+  /** Signals never handed to a socket. Never cleared on close (D6). */
+  private pending: SignalMessage[] = [];
+  private retries = 0;
+  /** UUID of the last signal frame delivered, sent as `after` on subscribe. */
+  private lastCursor: string | null = null;
+  private readonly subscribers: Array<(msg: SignalMessage) => void> = [];
+  /** Set once the fallback takes over; every call delegates from then on. */
+  private activeTransport: SignalTransport | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private isClosed = false;
+  /** True while the server's `subscribed` ack has not arrived yet. */
+  private awaitingAck = false;
+  /** True while the socket is open — gates immediate sends and dedup. */
+  private open = false;
+
+  constructor(options: WebSocketSignalTransportOptions) {
+    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.sessionId = options.sessionId;
+    this.getToken = options.getToken;
+    this.onUnauthorized = options.onUnauthorized;
+    this.reconnectEnabled = options.reconnect ?? true;
+    this.fallback = options.fallback;
+    this.customFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.maxRetries = options.maxRetries ?? 5;
+  }
+
+  subscribe(handler: (msg: SignalMessage) => void): () => void {
+    if (this.activeTransport) {
+      // After handoff the fallback owns delivery, so a late subscriber must
+      // land there rather than on a socket that will never open again.
+      return this.activeTransport.subscribe(handler);
+    }
+    this.subscribers.push(handler);
+    if (!this.ws && !this.isClosed) {
+      void this.connect();
+    }
+    return () => {
+      const idx = this.subscribers.indexOf(handler);
+      if (idx >= 0) this.subscribers.splice(idx, 1);
+    };
+  }
+
+  async send(msg: SignalMessage): Promise<void> {
+    if (this.isClosed) {
+      throw new Error('Transport closed');
+    }
+    if (this.activeTransport) {
+      return this.activeTransport.send(msg);
+    }
+    if (this.open && this.ws && !this.awaitingAck) {
+      // Fire-and-forget: the socket is the delivery mechanism, and a signal
+      // handed over once must never be handed over again (D6).
+      this.ws.send(JSON.stringify({ type: 'signal', data: msg }));
+      return;
+    }
+    this.pending.push(msg);
+  }
+
+  close(): void {
+    this.isClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    try {
+      this.ws?.close(1000, 'normal');
+    } catch {
+      // The socket may already be closing; close() must stay idempotent.
+    }
+    this.ws = null;
+    this.subscribers.length = 0;
+    this.activeTransport?.close();
+  }
+
+  /**
+   * Mint a ticket and open the socket.
+   *
+   * The mint runs the same one-retry-on-401 dance as `RESTPollingTransport`
+   * (`withTokenRefresh`): a 401 triggers exactly one `onUnauthorized()` and
+   * one retry, and a refresh that cannot produce a token hands the session to
+   * the fallback instead of looping.
+   */
+  private async connect(): Promise<void> {
+    if (this.isClosed || this.activeTransport) return;
+
+    let ticket: string | null = null;
+    try {
+      ticket = await this.mintTicket();
+    } catch {
+      ticket = null;
+    }
+
+    if (this.isClosed) return;
+
+    if (!ticket) {
+      this.handOffToFallback();
+      return;
+    }
+
+    const socket = new WebSocket(this.wsUrl(ticket));
+    this.ws = socket;
+    socket.onopen = () => {
+      if (this.isClosed) return;
+      this.open = true;
+      this.retries = 0;
+      this.sendSubscribeFrame(socket);
+    };
+    socket.onmessage = (event: MessageEvent) => {
+      this.handleFrame(socket, event.data as string);
+    };
+    socket.onclose = () => {
+      this.handleDisconnect();
+    };
+    socket.onerror = () => {
+      // `close` always follows an error in the browser; the reconnect is
+      // driven from `onclose` alone so a failed open cannot double-schedule.
+    };
+  }
+
+  private wsUrl(ticket: string): string {
+    const wsBase = this.baseUrl.replace(/^http/, 'ws');
+    return `${wsBase}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
+  }
+
+  private async mintTicket(): Promise<string | null> {
+    const token = await this.getToken();
+    if (!token) return null;
+
+    const attempt = async (t: string): Promise<Response> =>
+      this.customFetch(`${this.baseUrl}/api/ws/ticket`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}` },
+      });
+
+    let res = await attempt(token);
+    if (res.status === 401 && this.onUnauthorized) {
+      const fresh = await this.onUnauthorized();
+      if (!fresh) return null;
+      res = await attempt(fresh);
+    }
+    if (!res.ok) return null;
+
+    const body = (await res.json()) as { ticket?: string };
+    return body.ticket ?? null;
+  }
+
+  private sendSubscribeFrame(socket: WebSocket): void {
+    this.awaitingAck = true;
+    socket.send(
+      JSON.stringify({
+        type: 'subscribe',
+        data: { sessionId: this.sessionId, after: this.lastCursor },
+      }),
+    );
+  }
+
+  private handleFrame(socket: WebSocket, raw: string): void {
+    if (this.isClosed || socket !== this.ws) return;
+
+    let frame: Record<string, unknown>;
+    try {
+      frame = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    switch (frame.type) {
+      case 'subscribed': {
+        this.awaitingAck = false;
+        this.flushPending(socket);
+        return;
+      }
+      case 'signal': {
+        const id = typeof frame.id === 'string' ? frame.id : null;
+        if (id) this.lastCursor = id;
+        const msg = frame.data as SignalMessage | undefined;
+        if (!msg) return;
+        for (const sub of [...this.subscribers]) {
+          sub(msg);
+        }
+        return;
+      }
+      case 'error': {
+        if (frame.code === 'SESSION_TERMINATED') {
+          // The session cannot complete; a reconnect would only replay the
+          // same verdict. Hand over or stop.
+          this.handOffToFallback();
+        }
+        return;
+      }
+      default:
+        // `pong` and anything unknown need no handling.
+        return;
+    }
+  }
+
+  /** Send queued signals now that replay is complete. */
+  private flushPending(socket: WebSocket): void {
+    const queued = this.pending;
+    this.pending = [];
+    for (const msg of queued) {
+      socket.send(JSON.stringify({ type: 'signal', data: msg }));
+    }
+  }
+
+  private handleDisconnect(): void {
+    this.open = false;
+    this.awaitingAck = false;
+    this.ws = null;
+    if (this.isClosed || this.activeTransport) return;
+
+    if (!this.reconnectEnabled || this.retries >= this.maxRetries) {
+      this.handOffToFallback();
+      return;
+    }
+
+    const delay =
+      Math.min(
+        WS_INITIAL_BACKOFF_MS * 2 ** this.retries,
+        WS_MAX_BACKOFF_MS,
+      ) +
+      (Math.random() * 100 - 50);
+    this.retries += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, delay);
+  }
+
+  /**
+   * Hand the session to the fallback transport, permanently.
+   *
+   * The fallback's `subscribe` is registered directly with the caller's
+   * handlers, and queued never-sent signals go over it once. A session that
+   * already burned `maxRetries` reconnects must not keep trying the socket
+   * while the REST path is sitting there working.
+   */
+  private handOffToFallback(): void {
+    if (this.activeTransport || this.isClosed) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    try {
+      this.ws?.close(1000, 'normal');
+    } catch {
+      // Already closed.
+    }
+    this.ws = null;
+
+    if (!this.fallback) return;
+
+    this.activeTransport = this.fallback;
+    for (const sub of [...this.subscribers]) {
+      this.fallback.subscribe(sub);
+    }
+    const queued = this.pending;
+    this.pending = [];
+    for (const msg of queued) {
+      void this.fallback.send(msg).catch(() => {
+        // The REST transport's own retry policy owns delivery from here.
+      });
+    }
+  }
+}
