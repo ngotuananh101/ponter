@@ -106,4 +106,30 @@ onBeforeUnmount(() => {
 .terminal-container :deep(.xterm) {
   height: 100%;
 }
+
+/* xterm owns its own scroll container (`.xterm-viewport` with
+   `overflow-y: scroll`), so it cannot be wrapped in the shadcn `ScrollArea`.
+   Restyle the native bar to match the ScrollArea used by the sidebar and tab
+   strip: thin, rounded, low-contrast until hovered. */
+.terminal-container :deep(.xterm-viewport) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.terminal-container :deep(.xterm-viewport::-webkit-scrollbar) {
+  width: 8px;
+}
+
+.terminal-container :deep(.xterm-viewport::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+.terminal-container :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
+  background-color: var(--border);
+  border-radius: 9999px;
+}
+
+.terminal-container :deep(.xterm-viewport::-webkit-scrollbar-thumb:hover) {
+  background-color: var(--muted-foreground);
+}
 </style>

@@ -5,6 +5,7 @@ import type { Agent } from '@ponter/shared';
 import { Terminal, RefreshCw, Server, Search } from '@lucide/vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 defineEmits<{
   (e: 'connectAgent', agent: Agent): void;
@@ -89,51 +90,59 @@ onMounted(() => {
     </div>
 
     <!-- Agent list -->
-    <div class="flex-1 overflow-y-auto p-2 space-y-1">
-      <div
-        v-if="filteredAgents.length === 0"
-        class="text-xs text-center py-8 text-muted-foreground space-y-1"
-      >
-        <p>
-          {{
-            agents.length === 0 ? 'No agents registered' : 'No matching agents'
-          }}
-        </p>
-      </div>
-      <div
-        v-for="a in filteredAgents"
-        :key="a.id"
-        class="group flex items-center justify-between p-2 rounded-md hover:bg-muted/70 cursor-pointer transition-all border border-transparent hover:border-border/60 text-xs"
-        @click="$emit('connectAgent', a)"
-      >
-        <div class="flex items-center gap-2 truncate">
-          <span class="relative flex h-2 w-2 flex-shrink-0">
-            <span
-              v-if="a.isOnline"
-              class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
-            ></span>
-            <span
-              class="relative inline-flex rounded-full h-2 w-2"
-              :class="a.isOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'"
-            ></span>
-          </span>
-          <div class="flex flex-col truncate">
-            <span
-              class="truncate font-medium text-foreground group-hover:text-primary transition-colors"
-            >
-              {{ a.hostname || a.id }}
-            </span>
-            <span class="text-[10px] text-muted-foreground font-mono truncate">
-              {{ a.platform || 'Linux' }} · {{ a.id.slice(0, 8) }}
-            </span>
-          </div>
+    <ScrollArea class="min-h-0 flex-1">
+      <div class="p-2 space-y-1">
+        <div
+          v-if="filteredAgents.length === 0"
+          class="text-xs text-center py-8 text-muted-foreground space-y-1"
+        >
+          <p>
+            {{
+              agents.length === 0
+                ? 'No agents registered'
+                : 'No matching agents'
+            }}
+          </p>
         </div>
         <div
-          class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
+          v-for="a in filteredAgents"
+          :key="a.id"
+          class="group flex items-center justify-between p-2 rounded-md hover:bg-muted/70 cursor-pointer transition-all border border-transparent hover:border-border/60 text-xs"
+          @click="$emit('connectAgent', a)"
         >
-          <Terminal class="w-3.5 h-3.5" />
+          <div class="flex items-center gap-2 truncate">
+            <span class="relative flex h-2 w-2 flex-shrink-0">
+              <span
+                v-if="a.isOnline"
+                class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
+              ></span>
+              <span
+                class="relative inline-flex rounded-full h-2 w-2"
+                :class="
+                  a.isOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+                "
+              ></span>
+            </span>
+            <div class="flex flex-col truncate">
+              <span
+                class="truncate font-medium text-foreground group-hover:text-primary transition-colors"
+              >
+                {{ a.hostname || a.id }}
+              </span>
+              <span
+                class="text-[10px] text-muted-foreground font-mono truncate"
+              >
+                {{ a.platform || 'Linux' }} · {{ a.id.slice(0, 8) }}
+              </span>
+            </div>
+          </div>
+          <div
+            class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
+          >
+            <Terminal class="w-3.5 h-3.5" />
+          </div>
         </div>
       </div>
-    </div>
+    </ScrollArea>
   </aside>
 </template>
