@@ -3,23 +3,60 @@ import type { AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { createAgentWebSocketServer, handleAgentUpgrade } from './routes/ws.js';
+import {
+  createAgentWebSocketServer,
+  createBrowserWebSocketServer,
+  handleAgentUpgrade,
+  handleBrowserUpgrade,
+  agentConnections,
+  browserConnections,
+} from './routes/ws.js';
+import type { BrowserWebSocketOptions } from './routes/ws.js';
 import { getDb } from './db/client.js';
 import type { Database } from './db/client.js';
 import { runCleanup } from './utils/cleanup.js';
 
+export type SignalingServerOptions = BrowserWebSocketOptions;
+
 /**
  * Create a fully-wired signaling HTTP server, including the WebSocket upgrade
- * handler for `/api/ws/agent`.
+ * handler for `/api/ws/agent` and `/api/ws/browser`.
  *
  * Returns both the Hono app (for `app.fetch` / unit tests) and the raw
  * `http.Server` (for WebSocket attachment and for listening on an ephemeral
  * port in tests).
  */
-export function createSignalingServer() {
+export function createSignalingServer(options: SignalingServerOptions = {}) {
   const app = createApp();
-  const server = createServerFromApp(app);
+  const server = createServerFromApp(app, options);
   return { app, server };
+}
+
+/**
+ * Close every live signaling socket with 1001 ("going away").
+ *
+ * Called from the shutdown handler so a redeploy does not look like a network
+ * drop to the clients: 1001 tells the browser transport to reconnect with
+ * backoff rather than treat the socket as broken, and it gives a subscribed
+ * tab a chance to see the close before the process exits.
+ */
+export function closeAllSignalingSockets(): void {
+  for (const connection of agentConnections.values()) {
+    try {
+      connection.socket.close(1001, 'Server shutting down');
+    } catch {
+      // Already closing.
+    }
+  }
+  for (const set of browserConnections.values()) {
+    for (const connection of set) {
+      try {
+        connection.socket.close(1001, 'Server shutting down');
+      } catch {
+        // Already closing.
+      }
+    }
+  }
 }
 
 /**
@@ -30,8 +67,12 @@ export function createSignalingServer() {
  * Authentication for the WebSocket upgrade happens before the handshake
  * completes, so an invalid credential results in an HTTP 401 response.
  */
-function createServerFromApp(app: ReturnType<typeof createApp>): Server {
+function createServerFromApp(
+  app: ReturnType<typeof createApp>,
+  options: SignalingServerOptions = {},
+): Server {
   const wss = createAgentWebSocketServer();
+  const browserWss = createBrowserWebSocketServer(options);
 
   const server = createServer(async (req, res) => {
     // Ensure the database is initialized before handling requests.
@@ -105,7 +146,7 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
     }
   });
 
-  // Handle upgrade events: only intercept `/api/ws/agent`, destroy the rest.
+  // Handle upgrade events: intercept the two WebSocket paths, destroy the rest.
   server.on('upgrade', (_req, socket, head) => {
     const url = _req.url ?? '';
     if (url === '/api/ws/agent' || url.startsWith('/api/ws/agent?')) {
@@ -113,6 +154,19 @@ function createServerFromApp(app: ReturnType<typeof createApp>): Server {
       // If auth fails, it sends an HTTP 401 and destroys the socket.
       void getDb(process.env.DATABASE_PATH); // ensure DB is initialized
       void handleAgentUpgrade(_req, socket as Duplex, head, wss);
+    } else if (
+      url === '/api/ws/browser' ||
+      url.startsWith('/api/ws/browser?')
+    ) {
+      // Ticket + Origin checks happen inside handleBrowserUpgrade.
+      void getDb(process.env.DATABASE_PATH);
+      void handleBrowserUpgrade(
+        _req,
+        socket as Duplex,
+        head,
+        browserWss,
+        options,
+      );
     } else {
       socket.destroy();
     }
@@ -184,7 +238,42 @@ export function startServer(port?: number) {
     console.error('[server] fatal error:', err);
   });
 
-  startCleanup(db, CLEANUP_INTERVAL_MS);
+  const cleanup = startCleanup(db, CLEANUP_INTERVAL_MS);
+
+  /**
+   * Graceful shutdown, driven by Docker's SIGTERM.
+   *
+   * Without a handler the process dies on the signal and every WebSocket
+   * connection in this process dies with it mid-frame — browsers then all
+   * reconnect at once against a server that is still starting. Closing the
+   * sockets first (1001) lets each client back off deliberately, and waiting
+   * for `server.close` drains in-flight requests.
+   *
+   * The forced-exit timer is the backstop: a connection that refuses to close
+   * must not keep the container from stopping until Docker's SIGKILL.
+   */
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[server] received ${signal}, shutting down gracefully`);
+
+    cleanup.stop();
+    closeAllSignalingSockets();
+
+    const forced = setTimeout(() => {
+      console.error('[server] shutdown timed out, forcing exit');
+      process.exit(1);
+    }, 10_000);
+    forced.unref?.();
+
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
   return server;
 }

@@ -59,6 +59,12 @@ vi.mock('@ponter/webrtc-core', () => {
       return { peer: {} };
     }),
     RESTPollingTransport: class {},
+    // The store branches on `transport instanceof WebSocketSignalTransport` to
+    // attach its `onServerError` hook. Accessing an export the mock does not
+    // define throws in vitest, so the class must be present even though these
+    // tests run with the WS flag off (the store then picks RESTPollingTransport
+    // and the `instanceof` is simply false).
+    WebSocketSignalTransport: class {},
   };
 });
 

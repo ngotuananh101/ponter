@@ -16,5 +16,28 @@
 
 # Site block: use DOMAIN from environment, fallback to localhost if unset
 {$DOMAIN:localhost} {
+	# Browser/agent WebSocket traffic gets its own upstream transport block.
+	#
+	# Caddy 2 proxies the Upgrade handshake transparently for every path, so the
+	# matcher is not what makes WS work — the explicit block is about the two
+	# knobs that decide whether a long-lived socket survives:
+	#
+	#   - `read_buffer 65536` sizes the per-connection read buffer so a burst of
+	#     ICE candidates / terminal frames is not read one small chunk at a time.
+	#   - `keepalive 300s` keeps the upstream connection pool entry warm; the
+	#     server's keepalive pings every 30s, so a shorter idle timeout would
+	#     reap a connection the server still believes is live.
+	#
+	# The path matcher (`/api/ws/*`) mirrors the two upgrade routes the server
+	# actually serves (`/api/ws/agent`, `/api/ws/browser`).
+	@ws path /api/ws/*
+	reverse_proxy @ws server:8787 {
+		transport http {
+			read_buffer 65536
+			keepalive 300s
+		}
+	}
+
+	# Everything else (REST API) uses the default proxy transport.
 	reverse_proxy server:8787
 }

@@ -45,6 +45,12 @@ jobs:
         run: pnpm --filter @ponter/web build
         env:
           VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL || 'http://localhost:8787' }}
+          # Global flip of browser WebSocket signaling (no canary: the flag is
+          # build-time, so one bundle carries one value for every user). Kept
+          # overridable by a repo variable so rollback is a setting change plus a
+          # re-run, not an edit to this file; the default is the flipped state.
+          # See docs/guides/deployment.md §3.1.
+          VITE_BROWSER_WS_SIGNALING: ${{ vars.VITE_BROWSER_WS_SIGNALING || secrets.VITE_BROWSER_WS_SIGNALING || 'true' }}
 
       - name: Deploy to Cloudflare (Static Assets)
         run: pnpm --filter @ponter/web exec wrangler deploy

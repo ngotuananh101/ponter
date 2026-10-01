@@ -37,6 +37,27 @@ export interface AuthenticatedUser {
 }
 
 /**
+ * Verify a ws-ticket, and nothing else.
+ *
+ * The mirror of the `authMiddleware` guard: that rejects `scope === 'ws-ticket'`
+ * so a ticket can never be spent as an access token, and this rejects every
+ * token without the scope so an access token can never be spent as a ticket.
+ * A failure here is a thrown `Error` rather than an `AppError` because the
+ * caller is a WebSocket upgrade, which answers with a raw HTTP status line
+ * instead of Hono's JSON error shape.
+ */
+export async function verifyWsTicket(
+  rawToken: string,
+  secret: string,
+): Promise<TokenPayload> {
+  const payload = await verifyToken(rawToken, secret);
+  if (payload.type !== 'access' || payload.scope !== 'ws-ticket') {
+    throw new Error('Invalid ws-ticket');
+  }
+  return payload;
+}
+
+/**
  * Verify a raw token and return the active user it identifies.
  *
  * The order of the checks is deliberate and security-relevant:

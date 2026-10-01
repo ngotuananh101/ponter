@@ -46,3 +46,186 @@ export type AgentSocketMessage =
   | { type: 'pong' }
   | { type: 'signal'; data: SignalMessage }
   | { type: 'error'; code: AgentErrorCode };
+
+/**
+ * Browser signaling socket — the counterpart of `AgentSocketMessage`.
+ *
+ * `SESSION_TERMINATED` exists only here: the agent socket has no reason to
+ * hear that its own session ended, while a browser tab must be told to stop
+ * waiting on a handshake that can no longer complete.
+ */
+export type BrowserErrorCode =
+  | 'MALFORMED_JSON'
+  | 'VALIDATION_ERROR'
+  | 'NOT_FOUND'
+  | 'UNAUTHORIZED'
+  | 'TICKET_EXPIRED'
+  | 'SESSION_TERMINATED'
+  | 'INTERNAL_SERVER_ERROR';
+
+/** Client -> Server. `after` = UUID of the last signal already seen. */
+export type BrowserMessageInit =
+  | { type: 'subscribe'; data: { sessionId: string; after?: string | null } }
+  | { type: 'signal'; data: SignalMessage }
+  | { type: 'ping' };
+
+/** Server -> Client. Same envelope convention as `AgentSocketMessage`. */
+export type BrowserSocketMessage =
+  | { type: 'pong' }
+  | { type: 'signal'; data: SignalMessage; id: string }
+  | {
+      type: 'subscribed';
+      data: { sessionId: string; after: string | null; hasMore: boolean };
+    }
+  | { type: 'error'; code: BrowserErrorCode };
+
+/**
+ * Parse and normalize one inbound browser frame.
+ *
+ * Mirrors the agent socket's validator: size is the caller's concern (the
+ * frame limit is a transport concern), this rejects anything that is not a
+ * well-formed frame of a known type. Signal payloads are normalized to the
+ * same shape `recordSignal` writes, so a frame that survives this function
+ * can be persisted without a second validation pass.
+ */
+export function parseBrowserMessage(raw: string): BrowserMessageInit | null {
+  let frame: unknown;
+  try {
+    frame = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) {
+    return null;
+  }
+
+  const envelope = frame as { type?: unknown; data?: unknown };
+
+  switch (envelope.type) {
+    case 'ping':
+      return { type: 'ping' };
+    case 'subscribe':
+      return parseSubscribe(envelope.data);
+    case 'signal': {
+      const message = parseSignalMessage(envelope.data);
+      return message ? { type: 'signal', data: message } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** A non-empty string, or `null` for anything else. */
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
+function parseSubscribe(raw: unknown): BrowserMessageInit | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+    return null;
+  const data = raw as Record<string, unknown>;
+
+  const sessionId = asString(data.sessionId);
+  if (!sessionId) return null;
+
+  const after = data.after;
+  if (after === undefined || after === null) {
+    return { type: 'subscribe', data: { sessionId } };
+  }
+  const cursor = asString(after);
+  return cursor
+    ? { type: 'subscribe', data: { sessionId, after: cursor } }
+    : null;
+}
+
+/** Normalize a signal payload, mirroring the server's `parseSignalMessage`. */
+function parseSignalMessage(frame: unknown): SignalMessage | null {
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) {
+    return null;
+  }
+
+  switch ((frame as Record<string, unknown>).type) {
+    case 'offer':
+      return parseOffer(frame);
+    case 'answer':
+      return parseAnswer(frame);
+    case 'ice-candidate':
+      return parseIceCandidate(frame);
+    default:
+      return null;
+  }
+}
+
+/** The inner `data` object of a signal payload, when it is a plain object. */
+function signalData(frame: unknown): Record<string, unknown> | null {
+  const payload = (frame as Record<string, unknown>).data;
+  if (
+    typeof payload !== 'object' ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    return null;
+  }
+  return payload as Record<string, unknown>;
+}
+
+function parseOffer(frame: unknown): SignalMessage | null {
+  const inner = signalData(frame);
+  if (!inner) return null;
+
+  const sessionId = asString(inner.sessionId);
+  const sdp = asString(inner.sdp);
+  if (!sessionId || !sdp) return null;
+
+  const capabilities = Array.isArray(inner.capabilities)
+    ? inner.capabilities.filter((c): c is string => typeof c === 'string')
+    : [];
+  return { type: 'offer', data: { sessionId, sdp, capabilities } };
+}
+
+function parseAnswer(frame: unknown): SignalMessage | null {
+  const inner = signalData(frame);
+  if (!inner) return null;
+
+  const sessionId = asString(inner.sessionId);
+  const sdp = asString(inner.sdp);
+  if (!sessionId || !sdp) return null;
+
+  return {
+    type: 'answer',
+    data: { sessionId, sdp, approved: inner.approved !== false },
+  };
+}
+
+function parseIceCandidate(frame: unknown): SignalMessage | null {
+  const inner = signalData(frame);
+  if (!inner) return null;
+
+  const sessionId = asString(inner.sessionId);
+  const candidate = asString(inner.candidate);
+  if (!sessionId || !candidate) return null;
+
+  return {
+    type: 'ice-candidate',
+    data: {
+      sessionId,
+      candidate,
+      sdpMid: typeof inner.sdpMid === 'string' ? inner.sdpMid : null,
+      sdpMLineIndex: parseSdpMLineIndex(inner.sdpMLineIndex),
+    },
+  };
+}
+
+/** `sdpMLineIndex` is a non-negative 16-bit integer, or `null`. */
+function parseSdpMLineIndex(value: unknown): number | null {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 65535
+  ) {
+    return null;
+  }
+  return value;
+}

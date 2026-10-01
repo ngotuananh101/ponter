@@ -162,6 +162,20 @@ Khi trình duyệt gửi offer (`POST /api/signal/offer`), `pushToAgent` sẽ ng
 
 **Reconnect logic**: Khi một agent kết nối mới với credential hợp lệ, kết nối cũ sẽ bị đóng với mã 4409 ("Replaced by new connection"). Bảng `agent_connections` luôn duy trì một entry duy nhất cho mỗi `agentId`. Khi socket đóng, entry bị xóa và trạng thái `is_online` trong database được cập nhật thành `false`.
 
+### 2.2.1 Browser Signaling Socket (`/api/ws/browser`)
+
+Chiều ngược lại — server đẩy signal tới browser — cũng dùng WebSocket, thay cho vòng poll `GET /api/signal/poll/:sessionId` (200ms–2000ms). `RESTPollingTransport` vẫn tồn tại và là **fallback** khi WebSocket thất bại.
+
+- **Ticket one-time**: browser không set được `Authorization` header cho WebSocket, nên nó mint một ticket qua `POST /api/ws/ticket` (JWT `type: 'access'`, `scope: 'ws-ticket'`, TTL 15s) rồi mở `GET /api/ws/browser?ticket=...`. `jti` được đăng ký trong registry in-memory (`utils/ws-ticket.ts`) và **consume đúng một lần** ở upgrade, nên ticket lộ qua access log không mở được socket thứ hai.
+- **Scope separation hai chiều**: `authMiddleware` từ chối mọi token `scope === 'ws-ticket'` (ticket không dùng được như access token), và `verifyWsTicket` chỉ chấp nhận ticket (access token không dùng được như ticket).
+- **Origin check (CSWSH)**: vì xác thực nằm ở query string, `handleBrowserUpgrade` so `Origin` với `CORS_ORIGIN` — cùng policy với REST. Khi `CORS_ORIGIN='*'` thì bỏ qua allowlist.
+- **Subscribe + replay**: client gửi `subscribe{sessionId, after}`; server replay các signal bỏ lỡ theo `rowid` (cursor trên wire là UUID `id`), giới hạn 200/trang (`hasMore` để phân trang) và chỉ trong 5 phút gần nhất. Trong lúc replay, live push cho session đó được **buffer** rồi flush sau, dedup theo `id` — đảm bảo không trùng/không sai thứ tự.
+- **Liveness**: server `ws.ping()` mỗi 30s (browser tự trả pong ở tầng giao thức, không phụ thuộc JS bị throttle ở tab background); quá 90s không pong → `close(4408)`.
+- **Fan-out**: `browserConnections: Map<userId, Set<BrowserConnection>>`; `pushToBrowser` gửi tới mọi tab đang subscribe session (trừ socket gửi), và `DELETE /api/sessions/:id` đẩy `error{SESSION_TERMINATED}` để tab đang chờ handshake biết dừng.
+- **Close codes**: 4401 (unauthorized), 4408 (pong timeout), 4409 (agent socket bị thay). Trần frame vào 256KB.
+- **Flag build-time**: `VITE_BROWSER_WS_SIGNALING` (`'true'` để bật). WebSocket transport tự reconnect với backoff + jitter và chuyển hẳn sang REST fallback sau `maxRetries`.
+- **Graceful shutdown**: SIGTERM đóng mọi signaling socket bằng close code 1001 rồi drain `server.close`; compose đặt `stop_grace_period: 15s` để Docker không SIGKILL giữa chừng.
+
 ### 2.3 SQLite Persistence với better-sqlite3
 
 - **Đường dẫn database**: Cấu hình qua biến môi trường `DATABASE_PATH` (mặc định `/app/data/remote.db`).
@@ -199,7 +213,11 @@ sequenceDiagram
     S->>DB: Create session record
     S-->>C: sessionId
 
-    C->>S: POST /api/signal/offer
+    C->>S: POST /api/ws/ticket
+    S-->>C: ticket (one-time, 15s)
+    C->>S: GET /api/ws/browser?ticket=...
+    C->>S: subscribe {sessionId}
+    C->>S: signal offer
     S->>DB: Persist offer in signals table
     S->>H: WebSocket pushToAgent (in-memory, <1ms)
 
@@ -207,7 +225,7 @@ sequenceDiagram
     H->>H: Generate SDP answer
     H->>S: WebSocket signal (answer)
     S->>DB: Persist answer in signals table
-    S-->>C: Forward answer via polling or WebSocket
+    S-->>C: Push answer over /api/ws/browser (or REST poll fallback)
 
     Note over C,H: Phase 4: ICE & P2P
     C->>H: ICE candidates (via server relay)
@@ -623,6 +641,10 @@ GET    /api/webrtc/ice-servers     # Dynamic ICE server config (TURN credentials
 
 # Agent WebSocket
 GET    /api/ws/agent               # Agent WebSocket (Bearer ag_ credential, not JWT)
+
+# Browser WebSocket signaling
+POST   /api/ws/ticket              # Mint one-time WS ticket (Bearer JWT, TTL 15s)
+GET    /api/ws/browser?ticket=...  # Browser signaling socket (subscribe/replay/push)
 ```
 
 ### 6.3 Agent WebSocket Protocol
@@ -657,6 +679,38 @@ export type AgentErrorCode =
 - Credential stored as SHA-256 hex digest in `agents.credential_hash`
 - WebSocket handshake enforces tenancy: `session.userId == agent.userId` AND `session.agentId == agent.id`
 - Unauthenticated requests receive HTTP 401 before upgrade completes
+
+### 6.4 Browser WebSocket Protocol
+
+```typescript
+// packages/shared/src/types/signaling.ts
+
+// Client -> Server
+export type BrowserMessageInit =
+  | { type: 'subscribe'; data: { sessionId: string; after?: string | null } }
+  | { type: 'signal'; data: SignalMessage }
+  | { type: 'ping' };
+
+// Server -> Client
+export type BrowserSocketMessage =
+  | { type: 'pong' }
+  | { type: 'signal'; data: SignalMessage; id: string }
+  | { type: 'subscribed'; data: { sessionId: string; after: string | null; hasMore: boolean } }
+  | { type: 'error'; code: BrowserErrorCode };
+
+export type BrowserErrorCode =
+  | 'MALFORMED_JSON' | 'VALIDATION_ERROR' | 'NOT_FOUND'
+  | 'UNAUTHORIZED' | 'TICKET_EXPIRED' | 'SESSION_TERMINATED'
+  | 'INTERNAL_SERVER_ERROR';
+```
+
+**Handshake flow:**
+1. Browser mints `POST /api/ws/ticket` (Bearer access token) → one-time ticket, TTL 15s
+2. Browser opens `ws://<host>/api/ws/browser?ticket=...`; server verifies the ticket signature, its `scope === 'ws-ticket'`, the Origin allowlist, and consumes the `jti` (one-time)
+3. Browser sends `subscribe{sessionId, after}`; server replays missed signals (rowid order, ≤200/page, ≤5 min) and acks `subscribed`
+4. Browser sends `signal` frames; server persists + `pushToAgent`, and fans out to the user's other subscribed sockets
+5. Server pushes `signal` frames to the tab as the agent produces them — no poll loop
+6. `error{SESSION_TERMINATED}` is pushed when the session ends (e.g. `DELETE /api/sessions/:id`)
 
 ---
 
