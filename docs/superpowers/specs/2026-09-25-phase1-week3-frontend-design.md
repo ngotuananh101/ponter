@@ -29,6 +29,8 @@ Week 2 delivered a working backend (`workers/signaling`, 46 tests passing) expos
 - WebRTC, terminal, desktop streaming, and file manager UI (Phases 2–4).
 - WebAuthn (backend returns HTTP 501; Phase 5).
 - E2EE encryption/decryption of payloads (Phase 5) — Week 3 generates and stores the keypair only.
+  **Read before Phase 5:** `docs/security/2026-10-01-e2ee-zero-trust-audit.md` (adversarially
+  verified findings + Phase 5 work list).
 - `packages/ui-components` extraction (deferred until `apps/desktop` needs the same components).
 - Desktop and mobile applications.
 - A flash-free dark-mode boot (an inline pre-hydration script); Week 3 accepts a possible first-paint flash (ADR-08).

@@ -49,7 +49,8 @@ foundation both peers will share.
 - **`packages/terminal-core`**, xterm.js, screen capture, H.265, file transfer — Weeks 5-11.
 - **E2EE payload encryption** (`EncryptionManager`, `ARCHITECTURE.md:1056-1120`). Phase 5. Note
   that `packages/crypto` currently has no `encrypt.ts`; the `EncryptionManager` in the
-  architecture document is documentation-only.
+  architecture document is documentation-only. **Read before Phase 5:**
+  `docs/security/2026-10-01-e2ee-zero-trust-audit.md` (adversarially verified findings + Phase 5 work list).
 - **Session UI in `apps/web`.** Week 4 ships no new views; the web app is not wired to signaling.
 
 ---

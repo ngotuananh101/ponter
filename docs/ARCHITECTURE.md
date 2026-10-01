@@ -756,6 +756,8 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => 
 
 ### 7.2 E2EE Implementation
 
+> **⚠️ Trạng thái thực tế (2026-10-01):** phần dưới đây là **thiết kế mục tiêu**, chưa được hiện thực. `packages/crypto/src/encrypt.ts` và class `EncryptionManager` **chưa tồn tại** trong mã nguồn. E2EE tầng ứng dụng là hạng mục chính của **Phase 5 (Tuần 12-14)** — work list đã được audit adversarial xác minh: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md).
+
 ```typescript
 // packages/crypto/src/encrypt.ts
 export class EncryptionManager {
@@ -921,6 +923,16 @@ gantt
 - [ ] Kết nối data channel với terminal
 - [ ] Implement multi-tab terminal
 - [ ] Handle resize events
+
+### Phase 5: E2EE & Security & Polish (Tuần 12-14)
+
+> **Đọc trước khi bắt đầu Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — audit adversarial E2EE/Zero-Trust (28 findings đã xác minh kèm evidence file:line) và work list chi tiết (WS1-WS5).
+
+- [ ] **WS1 — Application-layer E2EE:** hiện thực `EncryptionManager` (ECDH P-256 + AES-GCM-256), wire vào terminal-core và Rust agent
+- [ ] **WS2 — Peer identity & signaling integrity:** xác minh DTLS fingerprint ngoài băng, keypair thật cho agent, chống MITM signaling
+- [ ] **WS3 — Agent session hardening:** shell allowlist, enforce cờ `approved`, xử lý WS close code, validate `candidate.session_id`
+- [ ] **WS4 — Auth hardening:** login rate-limit, refresh token rotation, JWT secret startup validation, WS revocation, siết `CORS_ORIGIN`
+- [ ] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, bỏ default secret
 
 ---
 

@@ -9,6 +9,7 @@ Welcome to the Ponter technical documentation.
 ### 1. Architecture & Specifications
 
 - **[Master Architecture Document](ARCHITECTURE.md)**: Comprehensive system architecture, security invariants, data models, protocols, and roadmap.
+- **[Security Audit — E2EE & Zero-Trust (2026-10-01)](security/2026-10-01-e2ee-zero-trust-audit.md)**: Adversarially verified audit findings (28 confirmed gaps with file:line evidence) and the Phase 5 (E2EE & Security & Polish) work list.
 - **[Design Specifications](superpowers/specs/)**: Detailed architectural design documents and ADRs created for implementation milestones.
 - **[Implementation Plans](superpowers/plans/)**: Step-by-step implementation plans executed across the monorepo.
 

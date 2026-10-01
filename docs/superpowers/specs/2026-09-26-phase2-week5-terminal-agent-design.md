@@ -95,7 +95,8 @@ signaling*, *Tích hợp portable-pty*, *Xử lý terminal I/O*, *Implement sess
 - **File transfer.** **Owner: Phase 4, Weeks 10-11** (`ARCHITECTURE.md:1232`).
 - **E2EE payload encryption (`EncryptionManager`).** **Owner: Phase 5, Weeks 12-14.** Note that
   `packages/crypto` still has no `encrypt.ts`; the `EncryptionManager` in the architecture
-  document remains documentation-only.
+  document remains documentation-only. **Read before Phase 5:**
+  `docs/security/2026-10-01-e2ee-zero-trust-audit.md` (adversarially verified findings + Phase 5 work list).
 - **TURN provisioning.** No TURN server is deployed; loopback needs neither STUN nor TURN
   (Week 4 ADR-05). **Owner: Phase 6 / release hardening** (`ARCHITECTURE.md:1275`).
 
