@@ -313,8 +313,12 @@ function normalizeBrowserFrame(frame: unknown): BrowserMessageInit | null {
   return { type: 'signal', data: message };
 }
 
-/** The session columns both signal paths check before recording a signal. */
-async function loadSignalSession(db: Database, sessionId: string) {
+/**
+ * The session columns both signal paths check before recording a signal.
+ *
+ * Synchronous: better-sqlite3's `.get()` never awaits, so neither does this.
+ */
+function loadSignalSession(db: Database, sessionId: string) {
   return db
     .select({
       id: sessions.id,
@@ -394,7 +398,7 @@ async function handleBrowserMessage(
 
     // frame.type === 'signal'
     const message = frame.data;
-    const session = await loadSignalSession(db, message.data.sessionId);
+    const session = loadSignalSession(db, message.data.sessionId);
 
     // Ownership, an agent to forward to, and a session that can still carry
     // signals are all required.
@@ -840,7 +844,7 @@ async function handleInboundMessage(
     return;
   }
 
-  const session = await loadSignalSession(db, message.data.sessionId);
+  const session = loadSignalSession(db, message.data.sessionId);
 
   // Tenancy is BOTH halves. An agentless session is also rejected.
   if (
