@@ -35,21 +35,31 @@ export function mockFetchResponse(body: unknown, status = 200): typeof fetch {
 }
 
 /**
- * A data channel that records nothing and keeps the `readyState` it was built
- * with. It exists for tests that exercise the signaling path, not the channel:
- * a refusal test needs `waitForChannel` to keep waiting (so the refusal is what
- * ends the wait), while a duplicate-delivery test wants the channel to read as
- * usable.
+ * A data channel that records nothing. It exists for tests that exercise the
+ * signaling path, not the channel: a refusal test needs `waitForChannel` to
+ * keep waiting (so the refusal is what ends the wait), while a
+ * duplicate-delivery test wants the channel to read as usable.
+ *
+ * `close()` acknowledges instantly — a fake remote has no SCTP handshake to
+ * run, and `PeerConnection.close()` waits for the channel to reach `closed`
+ * before tearing the transport down. Tests that need the acknowledgement to
+ * still be pending inject their own channel via `channelFactory`.
  */
 export class FakeChannel implements RTCDataChannelLike {
+  public readyState: RTCDataChannelLike['readyState'];
+
   constructor(
     readonly label: string,
-    readonly readyState: RTCDataChannelLike['readyState'] = 'connecting',
-  ) {}
+    readyState: RTCDataChannelLike['readyState'] = 'connecting',
+  ) {
+    this.readyState = readyState;
+  }
 
   send(): void {}
 
-  close(): void {}
+  close(): void {
+    this.readyState = 'closed';
+  }
 
   onMessage(): void {}
 
@@ -64,6 +74,12 @@ export interface ScriptedPeerOptions {
    * application, and a test that never sends two answers is unaffected.
    */
   enforceStableAnswer?: boolean;
+  /**
+   * Builds the channels returned by `createDataChannel`. Defaults to a
+   * `FakeChannel`, which acknowledges its close instantly; tests that exercise
+   * the closing handshake inject a channel whose acknowledgement they control.
+   */
+  channelFactory?: (label: string) => RTCDataChannelLike;
 }
 
 /**
@@ -73,6 +89,9 @@ export interface ScriptedPeerOptions {
  */
 export class ScriptedPeer implements RTCPeerConnectionLike {
   readonly setRemoteCalls: RTCSessionDescriptionInit[] = [];
+
+  /** How many times `close()` was called; the fake has no other teardown. */
+  closeCalls = 0;
 
   constructor(private readonly options: ScriptedPeerOptions = {}) {}
 
@@ -102,7 +121,7 @@ export class ScriptedPeer implements RTCPeerConnectionLike {
   async addIceCandidate(): Promise<void> {}
 
   createDataChannel(label: string): RTCDataChannelLike {
-    return new FakeChannel(label);
+    return this.options.channelFactory?.(label) ?? new FakeChannel(label);
   }
 
   onIceCandidate(): void {}
@@ -115,7 +134,9 @@ export class ScriptedPeer implements RTCPeerConnectionLike {
     return {} as unknown as RTCStatsReport;
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+  }
 }
 
 export interface StubTransport {

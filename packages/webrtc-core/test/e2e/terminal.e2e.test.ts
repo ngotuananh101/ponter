@@ -274,14 +274,26 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     // the peer, which closes the data channel and the whole connection.
     await offerer.close();
 
-    // The agent must observe that close and end the session. Today it never
-    // does: nothing in the session loop watches the data channel or the peer
-    // state, so this log line only appears at the 1h cap or on shutdown.
-    await waitFor(
-      () => agent.output().includes('session ended'),
-      'the agent to end the session after its peer closed',
-      20_000,
-    );
+    // The agent must observe that close and end the session. The close signal
+    // is the SCTP stream reset of the data channel: if the offerer tears the
+    // transport down before the reset leaves, the agent sees nothing and only
+    // notices ~30s later when ICE fails — past this test's timeout. So this
+    // assertion guards both halves: the agent reacts to the close, and the
+    // offerer gives the reset a chance to be acknowledged first.
+    try {
+      await waitFor(
+        () => agent.output().includes('session ended'),
+        'the agent to end the session after its peer closed',
+        20_000,
+      );
+    } catch (error) {
+      // The agent log is the evidence that matters when this fails: on a
+      // losing race it shows no close signal at all, only ICE going quiet.
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n` +
+          `--- agent output ---\n${agent.output()}`,
+      );
+    }
 
     // The reopened tab: a new session for the same agent. Without the fix the
     // offer is dropped by the still-running session and `waitForChannel`

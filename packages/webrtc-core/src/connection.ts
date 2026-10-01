@@ -32,6 +32,16 @@ import {
  */
 export const MAX_PENDING_CANDIDATES = 64;
 
+/**
+ * How long `close()` waits for data channels to acknowledge their SCTP stream
+ * reset (RFC 6525) before tearing the transport down anyway.
+ *
+ * The acknowledgement is a round trip, and a lost reset is retransmitted on
+ * the SCTP RTO (3s), so 5s covers one loss on a healthy link. Waiting longer
+ * only delays teardown against a peer that is already gone.
+ */
+export const CHANNEL_CLOSE_TIMEOUT_MS = 5000;
+
 export class PeerConnection {
   public readonly dataChannels = new DataChannelManager();
 
@@ -176,8 +186,20 @@ export class PeerConnection {
 
     this.unsubscribeTransport();
     this.transport.close();
+
+    // Closing a data channel starts the SCTP stream reset (RFC 6525) — and
+    // for the Rust agent, receiving that reset is what ends its session. The
+    // reset leaves asynchronously, so stopping the transport right away raced
+    // it: when `peer.close()` closed ICE first, `ice.send()` dropped the
+    // reset silently and the agent saw nothing until ICE itself failed ~30s
+    // later. Wait (bounded) for the reset to be acknowledged before stopping
+    // the transport; `peer.close()` stays the fallback for a peer that is
+    // already gone.
+    const closing = this.dataChannels.all();
     this.dataChannels.closeAll();
     this.pendingCandidates.length = 0;
+    await this.awaitChannelsClosed(closing);
+
     await this.peer.close();
   }
 
@@ -258,6 +280,25 @@ export class PeerConnection {
         // one and keeping the others is strictly better than dropping the tail.
         console.error('[PeerConnection] failed to add ICE candidate', error);
       }
+    }
+  }
+
+  /**
+   * Wait (bounded) for channels to finish the SCTP closing handshake.
+   *
+   * A channel only reaches `closed` once the remote acknowledges the stream
+   * reset — the same event by which the remote learns the session is over —
+   * so this is the deterministic point past which the reset has arrived.
+   * When the bound expires the transport is torn down anyway: the peer is
+   * gone and has nothing left to acknowledge with.
+   */
+  private async awaitChannelsClosed(
+    channels: RTCDataChannelLike[],
+  ): Promise<void> {
+    const deadline = Date.now() + CHANNEL_CLOSE_TIMEOUT_MS;
+    while (channels.some((channel) => channel.readyState !== 'closed')) {
+      if (Date.now() > deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 30));
     }
   }
 }
