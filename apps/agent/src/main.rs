@@ -10,7 +10,7 @@ mod rtc;
 mod signal;
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -19,10 +19,8 @@ use base64::Engine;
 use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::data_channel::{DataChannel, DataChannelEvent};
+use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit};
 
 use crate::signal::SignalClient;
 
@@ -397,15 +395,6 @@ async fn run_one_session(
     pushed_ice: &[signal::IceServerEntry],
     cfg: &SessionConfig,
 ) -> Result<()> {
-    let peer = rtc::build_peer(pushed_ice, &cfg.stun).await?;
-
-    // Register the outbound forwarder BEFORE the local description exists:
-    // gathering starts the moment `set_local_description` runs, and a handler
-    // registered after it misses the host candidates emitted in that tick.
-    // Without this the agent never sends a candidate and ICE never completes —
-    // the browser alone cannot form a pair.
-    rtc::forward_candidates(&peer, offer.session_id.clone(), outbound.clone());
-
     // End-of-session signal. The session loop below watches `inbound` (which
     // stays open across socket reconnects) and the pty pump, so a peer that
     // dies without a clean close used to leave the session — and its ADR-14
@@ -422,17 +411,25 @@ async fn run_one_session(
     // first reason wins, and a full channel means the loop is already woken.
     let (end_tx, mut end_rx) = mpsc::channel::<&'static str>(1);
 
-    {
-        let end_tx = end_tx.clone();
-        peer.on_peer_connection_state_change(Box::new(move |state| {
-            let end_tx = end_tx.clone();
-            Box::pin(async move {
-                if state == RTCPeerConnectionState::Failed {
-                    let _ = end_tx.try_send("the peer connection failed");
-                }
-            })
-        }));
-    }
+    // In 0.21 the callbacks are not registered on the connection: the handler
+    // goes into the builder and `build()` refuses without one. So the handler
+    // — and everything it needs — is created before the peer. `on_ice_candidate`
+    // now lives here too, which is what the old code achieved by registering
+    // `forward_candidates` before `set_local_description`: the handler is
+    // attached from the first moment the peer exists, so it cannot miss the
+    // host candidates emitted when gathering starts.
+    let channel: Arc<OnceLock<Arc<dyn DataChannel>>> = Arc::new(OnceLock::new());
+    let (open_tx, mut open_rx) = tokio::sync::oneshot::channel::<()>();
+    let open_tx = Arc::new(Mutex::new(Some(open_tx)));
+
+    let handler = Arc::new(rtc::SessionHandler::new(
+        offer.session_id.clone(),
+        outbound.clone(),
+        end_tx.clone(),
+        channel.clone(),
+        open_tx,
+    ));
+    let peer = rtc::build_peer(pushed_ice, &cfg.stun, handler).await?;
 
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
@@ -603,77 +600,9 @@ async fn run_one_session(
         }
     });
 
-    let channel: Arc<OnceLock<Arc<RTCDataChannel>>> = Arc::new(OnceLock::new());
-    let (open_tx, mut open_rx) = tokio::sync::oneshot::channel::<()>();
-    let open_tx = Arc::new(std::sync::Mutex::new(Some(open_tx)));
-
-    let channel_for_cb = channel.clone();
-    let open_tx_for_cb = open_tx.clone();
-
-    peer.on_data_channel(Box::new(move |dc| {
-        let channel = channel_for_cb.clone();
-        let open_tx = open_tx_for_cb.clone();
-        let dispatch_tx = dispatch_tx.clone();
-        let end_tx = end_tx.clone();
-
-        Box::pin(async move {
-            // ADR-09: the exact label, and nothing else. An unexpected channel
-            // is closed rather than ignored — leaving it half-open would let a
-            // peer keep a second channel alive past its welcome.
-            if dc.label() != rtc::TERMINAL_LABEL {
-                tracing::warn!(label = dc.label(), "refusing unexpected channel");
-                let _ = dc.close().await;
-                return;
-            }
-
-            // The browser closed the channel (the last tab closed), or its
-            // stack reset the SCTP stream — either way this session is over.
-            // Registered here, in the accept handler, rather than after the
-            // handshake: `accept_data_channels` calls this handler before
-            // `handle_open`, so a channel that closes immediately after
-            // opening cannot slip past a late registration. `try_send`, not
-            // `send`: the handler is `FnMut + Send + Sync` and must not await
-            // on a receiver the session loop owns.
-            {
-                let end_tx = end_tx.clone();
-                dc.on_close(Box::new(move || {
-                    let end_tx = end_tx.clone();
-                    Box::pin(async move {
-                        let _ = end_tx.try_send("the terminal channel closed");
-                    })
-                }));
-            }
-
-            // browser -> dispatch channel. The callback is Fn+Send+Sync, so it
-            // only forwards raw text; the spawned task above does the decoding
-            // and routing.
-            dc.on_message(Box::new(move |msg| {
-                let dispatch_tx = dispatch_tx.clone();
-                Box::pin(async move {
-                    let Ok(text) = std::str::from_utf8(&msg.data) else {
-                        tracing::debug!("ignoring a non-UTF-8 frame");
-                        return;
-                    };
-                    if dispatch_tx.send(text.to_string()).await.is_err() {
-                        tracing::debug!("dispatcher task is gone");
-                    }
-                })
-            }));
-
-            // `on_open` is `FnOnce` (spec R8), so the sender is taken out of the
-            // `Mutex` exactly once — which is right, because ADR-09 allows one
-            // channel.
-            let channel_open = channel.clone();
-            let dc_open = dc.clone();
-            dc.on_open(Box::new(move || {
-                let _ = channel_open.set(dc_open);
-                if let Some(tx) = open_tx.lock().unwrap().take() {
-                    let _ = tx.send(());
-                }
-                Box::pin(async {})
-            }));
-        })
-    }));
+    // The channel is announced by the driver through `SessionHandler`, which
+    // was built into the peer above; nothing is registered here. The handshake
+    // below waits for it; once it opens, the poll loop is spawned.
 
     // The handshake: wait for the channel to open, draining candidates the
     // whole time. Candidates must keep flowing here — a peer that trickled
@@ -733,13 +662,48 @@ async fn run_one_session(
         .context("the terminal channel vanished after opening")?
         .clone();
 
+    // Watch the channel for its lifetime. In 0.21 there is no `on_message` /
+    // `on_close` registration: the driver delivers events through `poll()`
+    // (capacity 256, retained under back-pressure, so a message that arrived
+    // while the handshake was still draining candidates is not lost). The
+    // close event ends the session: the browser closed the last tab, or its
+    // stack reset the SCTP stream — either way this session is over. That is
+    // the fix of 2026-10-01 kept intact: without this arm the finished session
+    // would hold the single ADR-14 slot until the 1h cap.
+    let dc_for_events = dc.clone();
+    let dispatch_tx_for_events = dispatch_tx.clone();
+    let end_tx_for_events = end_tx.clone();
+    let poll_task = tokio::spawn(async move {
+        while let Some(event) = dc_for_events.poll().await {
+            match event {
+                // browser -> dispatch channel. Only forwards raw text; the
+                // spawned dispatcher task does the decoding and routing.
+                DataChannelEvent::OnMessage(msg) => {
+                    let Ok(text) = std::str::from_utf8(&msg.data) else {
+                        tracing::debug!("ignoring a non-UTF-8 frame");
+                        continue;
+                    };
+                    if dispatch_tx_for_events.send(text.to_string()).await.is_err() {
+                        tracing::debug!("dispatcher task is gone");
+                        break;
+                    }
+                }
+                DataChannelEvent::OnClose => {
+                    let _ = end_tx_for_events.try_send("the terminal channel closed");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
     // PTY -> browser. One sequential loop drains the shared frame channel and
     // sends each frame over the data channel. This is the single send point for
     // all sessions, preserving frame ordering per-session (each pump task is
     // single-threaded) and keeping backpressure on a slow consumer.
     let mut pump = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = dc.send_text(frame).await {
+            if let Err(e) = dc.send_text(&frame).await {
                 // A closed channel is an ordinary end-of-session condition, not
                 // an error worth tearing the process down for.
                 tracing::debug!(error = %e, "data channel send failed");
@@ -788,6 +752,12 @@ async fn run_one_session(
     // task exits when the frame channel drains and closes.
     manager_for_teardown.close_all().await;
     drop(frame_tx);
+    // The poll loop parks in `poll()` until the driver closes its event
+    // channel. The driver holds that sender in the connection's shared map —
+    // not in the driver task — so it is only released when the peer is
+    // dropped, after which this session is gone anyway. Aborting first keeps
+    // one parked task per session from accumulating.
+    poll_task.abort();
     let _ = peer.close().await;
     Ok(())
 }
@@ -810,7 +780,7 @@ async fn run_one_session(
 /// The refusal runs in its own task: building a peer and answering must not
 /// stall the live session's candidate flow.
 async fn route_inbound(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &Arc<dyn PeerConnection>,
     session_id: &str,
     pending: &mut Vec<RTCIceCandidateInit>,
     message: signal::SignalMessage,
@@ -877,7 +847,9 @@ async fn refuse_second_offer(
         session_id = %offer.session_id,
         "refusing a second concurrent session (ADR-14)",
     );
-    let peer = rtc::build_peer(pushed_ice, &cfg.stun).await?;
+    // A peer that will only answer and close still needs a handler — 0.21's
+    // `build()` refuses without one — and none of its callbacks matter here.
+    let peer = rtc::build_peer(pushed_ice, &cfg.stun, Arc::new(rtc::NoopHandler)).await?;
     rtc::refuse_offer(&peer, offer, outbound).await?;
     let _ = peer.close().await;
     Ok(())
