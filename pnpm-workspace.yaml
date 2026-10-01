@@ -9,7 +9,12 @@ allowBuilds:
   # reka-ui -> @floating-ui/vue -> vue-demi has a postinstall script.
   # Without this, `shadcn-vue init` fails with ERR_PNPM_IGNORED_BUILDS.
   vue-demi: true
-  better-sqlite3: true
+  # better-sqlite3 13 ships prebuilt bindings for every platform we target,
+  # including linuxmusl-x64/arm64. Its implicit `node-gyp rebuild` is a no-op
+  # when a prebuild exists, but node-gyp still downloads Node headers first —
+  # which fails in network-restricted Docker builds. Deny the build so pnpm
+  # skips the script entirely; the shipped prebuilt is used at runtime.
+  better-sqlite3: false
 
 minimumReleaseAgeExclude:
   - miniflare@5.20260923.0-alpha

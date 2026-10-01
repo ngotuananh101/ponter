@@ -107,29 +107,26 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-/* xterm owns its own scroll container (`.xterm-viewport` with
-   `overflow-y: scroll`), so it cannot be wrapped in the shadcn `ScrollArea`.
-   Restyle the native bar to match the ScrollArea used by the sidebar and tab
-   strip: thin, rounded, low-contrast until hovered. */
-.terminal-container :deep(.xterm-viewport) {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-
-.terminal-container :deep(.xterm-viewport::-webkit-scrollbar) {
-  width: 8px;
-}
-
-.terminal-container :deep(.xterm-viewport::-webkit-scrollbar-track) {
-  background: transparent;
-}
-
-.terminal-container :deep(.xterm-viewport::-webkit-scrollbar-thumb) {
-  background-color: var(--border);
+/* xterm owns its own scroll container, so it cannot be wrapped in the shadcn
+   `ScrollArea`. Since xterm 6 the scrollable part is an internal
+   `.xterm-scrollable-element` whose VS Code-derived scrollbar is themed by a
+   `<style>` element xterm injects — the old `.xterm-viewport::-webkit-scrollbar`
+   rules no longer match anything. Restyle the slider to match the ScrollArea
+   used by the sidebar and tab strip: rounded, low-contrast until hovered or
+   dragged. The `:deep()` selector out-specifies xterm's injected rule, so no
+   `!important` is needed. */
+.terminal-container :deep(.xterm-scrollable-element > .scrollbar > .slider) {
+  background: var(--border);
   border-radius: 9999px;
 }
 
-.terminal-container :deep(.xterm-viewport::-webkit-scrollbar-thumb:hover) {
-  background-color: var(--muted-foreground);
+.terminal-container
+  :deep(.xterm-scrollable-element > .scrollbar > .slider:hover) {
+  background: var(--muted-foreground);
+}
+
+.terminal-container
+  :deep(.xterm-scrollable-element > .scrollbar > .slider.active) {
+  background: var(--muted-foreground);
 }
 </style>
