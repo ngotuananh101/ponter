@@ -197,7 +197,7 @@ docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Image `ngotuananh101/ponter` được build và publish bởi workflow **Docker Publish** (GitHub Actions) cho cả `linux/amd64` lẫn `linux/arm64` — máy deploy chỉ cần `pull`, không build lại. Xem [Deployment Guide](docs/guides/deployment.md#31-deploy-phien-ban-moi).
+Image `ngotuananh2101/ponter` được build và publish bởi workflow **Docker Publish** (GitHub Actions) cho cả `linux/amd64` lẫn `linux/arm64` — máy deploy chỉ cần `pull`, không build lại. Xem [Deployment Guide](docs/guides/deployment.md#31-deploy-phien-ban-moi).
 
 ### Web Frontend (Cloudflare Pages)
 

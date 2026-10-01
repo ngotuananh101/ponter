@@ -20,7 +20,7 @@
 #   - DNS record pointing your domain to the tunnel.
 services:
   server:
-    image: ${DOCKERHUB_IMAGE:-ngotuananh101/ponter}:latest
+    image: ${DOCKERHUB_IMAGE:-ngotuananh2101/ponter}:latest
     container_name: ponter-server-tunnel
     restart: unless-stopped
     # Docker's default is 10s, then SIGKILL — too short for the server's

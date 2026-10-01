@@ -24,7 +24,7 @@
 #     `GET /api/webrtc/ice-servers` using TURN_SECRET + TURN_URL + STUN_URL.
 services:
   server:
-    image: ${DOCKERHUB_IMAGE:-ngotuananh101/ponter}:latest
+    image: ${DOCKERHUB_IMAGE:-ngotuananh2101/ponter}:latest
     container_name: ponter-server-prod
     restart: always
     # Docker's default is 10s, then SIGKILL — too short for the server's

@@ -128,19 +128,19 @@ Caddy sẽ tự động yêu cầu chứng chỉ Let's Encrypt cho `DOMAIN`. Má
 
 Các Scenario 2 và 3 chạy image đã build sẵn, được publish bởi workflow **Docker Publish** (`.github/workflows/docker-publish.yml`).
 
-**Bước 0 — Trỏ compose tới image của bạn.** Tài khoản Docker Hub không trùng với tên GitHub, nên namespace lấy từ secret `DOCKERHUB_USERNAME` mà workflow đọc, còn Compose đọc biến `DOCKERHUB_IMAGE` trong `docker/.env`. Đặt bằng tên Docker Hub của bạn:
+**Bước 0 — Trỏ compose tới image của bạn.** Tài khoản Docker Hub không trùng với tên GitHub, nên namespace lấy từ secret `DOCKERHUB_USERNAME` mà workflow đọc, còn Compose đọc biến `DOCKERHUB_IMAGE` trong `docker/.env`. Giá trị mặc định đã trỏ sẵn vào repo đã publish; chỉ ghi đè khi publish dưới namespace khác:
 
 ```bash
 cd docker
 # trong .env (tạo từ .env.example):
-DOCKERHUB_IMAGE=ten-dockerhub-cua-ban/ponter
+DOCKERHUB_IMAGE=ngotuananh2101/ponter
 ```
 
 **Bước 1 — Publish image:** trên GitHub, vào Actions → *Docker Publish* → *Run workflow*, chọn branch cần build.
 
 Workflow build `linux/amd64` và `linux/arm64` trên hai runner native riêng rồi gộp thành một manifest multi-arch, nên cùng một image chạy được trên VPS x86 lẫn máy ARM (Oracle Cloud, Ampere, Raspberry Pi) mà không cần QEMU.
 
-Image được push lên `<ten-dockerhub-cua-ban>/ponter`. **Phải tạo repo đó trên Docker Hub trước** — Docker Hub không tự tạo repo khi push vào tên chưa tồn tại, mà trả về lỗi authorization.
+Image được push lên `<ten-dockerhub-cua-ban>/ponter` (hiện tại là `ngotuananh2101/ponter`). **Phải tạo repo đó trên Docker Hub trước** — Docker Hub không tự tạo repo khi push vào tên chưa tồn tại, mà trả về lỗi authorization.
 
 Sinh ra hai tag:
 
