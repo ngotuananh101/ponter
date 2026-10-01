@@ -154,10 +154,19 @@ function createServerFromApp(
       // If auth fails, it sends an HTTP 401 and destroys the socket.
       void getDb(process.env.DATABASE_PATH); // ensure DB is initialized
       void handleAgentUpgrade(_req, socket as Duplex, head, wss);
-    } else if (url === '/api/ws/browser' || url.startsWith('/api/ws/browser?')) {
+    } else if (
+      url === '/api/ws/browser' ||
+      url.startsWith('/api/ws/browser?')
+    ) {
       // Ticket + Origin checks happen inside handleBrowserUpgrade.
       void getDb(process.env.DATABASE_PATH);
-      void handleBrowserUpgrade(_req, socket as Duplex, head, browserWss, options);
+      void handleBrowserUpgrade(
+        _req,
+        socket as Duplex,
+        head,
+        browserWss,
+        options,
+      );
     } else {
       socket.destroy();
     }

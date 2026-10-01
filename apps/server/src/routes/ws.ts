@@ -149,21 +149,74 @@ interface ReplayRow {
  * time bound keeps the window honest. The client treats a missing old signal
  * as normal; a terminated session arrives as a live push.
  */
+/**
+ * The session's subscription, flipped back to `replaying` on a re-subscribe.
+ *
+ * A re-subscribe (pagination or client retry) keeps `replayedIds` and the
+ * buffer, so dedup spans pages and buffered pushes stay in order.
+ */
+function getOrResetSubscription(
+  connection: BrowserConnection,
+  sessionId: string,
+): BrowserSubscription {
+  const existing = connection.subscriptions.get(sessionId);
+  if (existing) {
+    existing.state = 'replaying';
+    return existing;
+  }
+  const created: BrowserSubscription = {
+    state: 'replaying',
+    replayedIds: new Set(),
+    buffer: [],
+  };
+  connection.subscriptions.set(sessionId, created);
+  return created;
+}
+
+/** Send one replay page, recording its ids in the subscription's dedup set. */
+function sendReplayPage(
+  subscription: BrowserSubscription,
+  connection: BrowserConnection,
+  page: ReplayRow[],
+): void {
+  for (const row of page) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      continue; // A corrupt payload cannot be delivered as a signal.
+    }
+    const message = parseSignalMessage({ type: row.type, data: payload });
+    if (!message) continue;
+    subscription.replayedIds.add(row.id);
+    connection.send(
+      JSON.stringify({ type: 'signal', data: message, id: row.id }),
+    );
+  }
+}
+
+/** Deliver pushes buffered while replaying, skipping rows already replayed. */
+function drainBuffered(
+  subscription: BrowserSubscription,
+  connection: BrowserConnection,
+): void {
+  const buffered = subscription.buffer.splice(0);
+  for (const frame of buffered) {
+    if (frame.type === 'signal') {
+      if (subscription.replayedIds.has(frame.id)) continue;
+      subscription.replayedIds.add(frame.id);
+    }
+    connection.send(JSON.stringify(frame));
+  }
+}
+
 export async function handleBrowserSubscribe(
   connection: BrowserConnection,
   sessionId: string,
   after: string | null,
   db: Database,
 ): Promise<void> {
-  let subscription = connection.subscriptions.get(sessionId);
-  if (!subscription) {
-    subscription = { state: 'replaying', replayedIds: new Set(), buffer: [] };
-    connection.subscriptions.set(sessionId, subscription);
-  } else {
-    // Re-subscribe (pagination or client retry): keep replayedIds and the
-    // buffer, so dedup spans pages and buffered pushes stay in order.
-    subscription.state = 'replaying';
-  }
+  const subscription = getOrResetSubscription(connection, sessionId);
 
   // One statement covers both cases: with `after` NULL the subquery matches
   // no row, COALESCE yields 0, and the comparison accepts every rowid.
@@ -181,23 +234,11 @@ export async function handleBrowserSubscribe(
   const hasMore = rows.length > REPLAY_LIMIT;
   const page = hasMore ? rows.slice(0, REPLAY_LIMIT) : rows;
 
-  for (const row of page) {
-    let payload: unknown;
-    try {
-      payload = JSON.parse(row.payload);
-    } catch {
-      continue; // A corrupt payload cannot be delivered as a signal.
-    }
-    const message = parseSignalMessage({ type: row.type, data: payload });
-    if (!message) continue;
-    subscription.replayedIds.add(row.id);
-    connection.send(
-      JSON.stringify({ type: 'signal', data: message, id: row.id }),
-    );
-  }
+  sendReplayPage(subscription, connection, page);
 
-  const lastRow = page.length > 0 ? page[page.length - 1] : undefined;
-  const lastId = lastRow ? lastRow.id : (after ?? null);
+  // The ack cursor: the last replayed row's id, or the caller's cursor when
+  // the page was empty.
+  const lastId = page.at(-1)?.id ?? after;
 
   if (hasMore) {
     // More pages follow. Stay in `replaying`: pushes keep buffering, and the
@@ -212,14 +253,7 @@ export async function handleBrowserSubscribe(
     return;
   }
 
-  const buffered = subscription.buffer.splice(0);
-  for (const frame of buffered) {
-    if (frame.type === 'signal') {
-      if (subscription.replayedIds.has(frame.id)) continue;
-      subscription.replayedIds.add(frame.id);
-    }
-    connection.send(JSON.stringify(frame));
-  }
+  drainBuffered(subscription, connection);
 
   // No await between draining the buffer and flipping to `live`: on a
   // single-threaded event loop this is the atomic handoff from replay to
@@ -279,6 +313,20 @@ function normalizeBrowserFrame(frame: unknown): BrowserMessageInit | null {
   return { type: 'signal', data: message };
 }
 
+/** The session columns both signal paths check before recording a signal. */
+async function loadSignalSession(db: Database, sessionId: string) {
+  return db
+    .select({
+      id: sessions.id,
+      userId: sessions.userId,
+      agentId: sessions.agentId,
+      status: sessions.status,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .get();
+}
+
 /** Handle one inbound frame from a browser socket. Never throws. */
 async function handleBrowserMessage(
   raw: unknown,
@@ -330,7 +378,7 @@ async function handleBrowserMessage(
 
       // Tenancy: another user's session is indistinguishable from a missing
       // one, so both answer NOT_FOUND.
-      if (!session || session.userId !== connection.userId) {
+      if (session?.userId !== connection.userId) {
         sendError('NOT_FOUND');
         return;
       }
@@ -346,20 +394,11 @@ async function handleBrowserMessage(
 
     // frame.type === 'signal'
     const message = frame.data;
-    const session = await db
-      .select({
-        id: sessions.id,
-        userId: sessions.userId,
-        agentId: sessions.agentId,
-        status: sessions.status,
-      })
-      .from(sessions)
-      .where(eq(sessions.id, message.data.sessionId))
-      .get();
+    const session = await loadSignalSession(db, message.data.sessionId);
 
     // Ownership, an agent to forward to, and a session that can still carry
     // signals are all required.
-    if (!session || session.userId !== connection.userId || !session.agentId) {
+    if (session?.userId !== connection.userId || !session.agentId) {
       sendError('NOT_FOUND');
       return;
     }
@@ -602,7 +641,11 @@ export function createBrowserWebSocketServer(
       });
 
       socket.on('message', (rawMsg: unknown) => {
-        void handleBrowserMessage(rawMsg, connection, getDb(process.env.DATABASE_PATH));
+        void handleBrowserMessage(
+          rawMsg,
+          connection,
+          getDb(process.env.DATABASE_PATH),
+        );
       });
 
       socket.on('close', () => {
@@ -797,16 +840,7 @@ async function handleInboundMessage(
     return;
   }
 
-  const session = await db
-    .select({
-      id: sessions.id,
-      userId: sessions.userId,
-      agentId: sessions.agentId,
-      status: sessions.status,
-    })
-    .from(sessions)
-    .where(eq(sessions.id, message.data.sessionId))
-    .get();
+  const session = await loadSignalSession(db, message.data.sessionId);
 
   // Tenancy is BOTH halves. An agentless session is also rejected.
   if (

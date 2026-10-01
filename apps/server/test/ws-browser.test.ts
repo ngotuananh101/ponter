@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createSignalingServer, closeAllSignalingSockets } from '../src/index.js';
+import {
+  createSignalingServer,
+  closeAllSignalingSockets,
+} from '../src/index.js';
 import type { SignalingServerOptions } from '../src/index.js';
 import { getDb, closeDb } from '../src/db/client.js';
 import {
@@ -108,7 +111,11 @@ async function registerAgent(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ id, hostname: 'test-host', publicKey: 'pk_agent' }),
+      body: JSON.stringify({
+        id,
+        hostname: 'test-host',
+        publicKey: 'pk_agent',
+      }),
     }),
   );
   const data = (await res.json()) as {
@@ -151,6 +158,13 @@ async function mintTicket(
   return data.ticket;
 }
 
+/** Clear per-test server state. */
+function resetConnectionState(): void {
+  agentConnections.clear();
+  browserConnections.clear();
+  closeDb();
+}
+
 function collectFrames(ws: WebSocket): AnyFrame[] {
   const frames: AnyFrame[] = [];
   ws.on('message', (data: Buffer) => {
@@ -163,7 +177,11 @@ function collectFrames(ws: WebSocket): AnyFrame[] {
   return frames;
 }
 
-function connectBrowser(port: number, ticket: string, origin?: string): WebSocket {
+function connectBrowser(
+  port: number,
+  ticket: string,
+  origin?: string,
+): WebSocket {
   const url = `ws://127.0.0.1:${port}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
   return new WebSocket(url, origin ? { origin } : {});
 }
@@ -212,6 +230,31 @@ async function sendFrame(ws: WebSocket, frame: unknown): Promise<void> {
   await wait(30);
 }
 
+/** Open a browser socket and start collecting its frames. */
+async function openBrowser(
+  port: number,
+  app: ReturnType<typeof createSignalingServer>['app'],
+  token: string,
+): Promise<{ ws: WebSocket; frames: AnyFrame[] }> {
+  const ticket = await mintTicket(app, token);
+  const ws = connectBrowser(port, ticket);
+  await waitOpen(ws);
+  return { ws, frames: collectFrames(ws) };
+}
+
+/** Open a browser socket, subscribe it, and wait for the ack. */
+async function openSubscribed(
+  port: number,
+  app: ReturnType<typeof createSignalingServer>['app'],
+  token: string,
+  sessionId: string,
+): Promise<{ ws: WebSocket; frames: AnyFrame[] }> {
+  const { ws, frames } = await openBrowser(port, app, token);
+  await sendFrame(ws, { type: 'subscribe', data: { sessionId } });
+  await waitFor(() => frames.find((f) => f.type === 'subscribed'));
+  return { ws, frames };
+}
+
 describe('browser WS ticket endpoint', () => {
   let token: string;
   let userId: string;
@@ -222,11 +265,7 @@ describe('browser WS ticket endpoint', () => {
     ({ token, userId } = await registerUser(app, 'tester'));
   });
 
-  afterEach(() => {
-    agentConnections.clear();
-    browserConnections.clear();
-    closeDb();
-  });
+  afterEach(resetConnectionState);
 
   it('rejects minting without a Bearer token with 401', async () => {
     const { app } = createSignalingServer();
@@ -434,11 +473,7 @@ describe('browser subscribe + replay', () => {
     sessionId = await createSession(app, token, agentId);
   });
 
-  afterEach(() => {
-    agentConnections.clear();
-    browserConnections.clear();
-    closeDb();
-  });
+  afterEach(resetConnectionState);
 
   async function subscribe(
     ws: WebSocket,
@@ -597,11 +632,15 @@ describe('browser subscribe + replay', () => {
     ws.close();
   });
 
-  it('rejects subscribing to another user\'s session with NOT_FOUND', async () => {
+  it("rejects subscribing to another user's session with NOT_FOUND", async () => {
     const { app } = createSignalingServer();
     const other = await registerUser(app, 'other-user');
     const otherAgent = await registerAgent(app, other.token, 'agent_other_1');
-    const otherSession = await createSession(app, other.token, otherAgent.agentId);
+    const otherSession = await createSession(
+      app,
+      other.token,
+      otherAgent.agentId,
+    );
 
     const { port, app: serverApp } = await startOnEphemeral();
     const ticket = await mintTicket(serverApp, token);
@@ -654,7 +693,10 @@ describe('browser subscribe + replay', () => {
     );
     pushToBrowser(userId, sessionId, {
       type: 'signal',
-      data: { type: 'answer', data: { sessionId, sdp: 'v=0-answer', approved: true } },
+      data: {
+        type: 'answer',
+        data: { sessionId, sdp: 'v=0-answer', approved: true },
+      },
       id: s2!.id,
     });
     await replayPromise;
@@ -685,11 +727,7 @@ describe('browser live push', () => {
     sessionId = await createSession(app, token, agentId);
   });
 
-  afterEach(() => {
-    agentConnections.clear();
-    browserConnections.clear();
-    closeDb();
-  });
+  afterEach(resetConnectionState);
 
   it('delivers an agent signal to a subscribed browser instantly, with id', async () => {
     const { port, app } = await startOnEphemeral();
@@ -707,7 +745,10 @@ describe('browser live push', () => {
 
     await sendFrame(agent, {
       type: 'signal',
-      data: { type: 'answer', data: { sessionId, sdp: 'v=0-answer', approved: true } },
+      data: {
+        type: 'answer',
+        data: { sessionId, sdp: 'v=0-answer', approved: true },
+      },
     });
 
     const pushed = await waitFor(() =>
@@ -749,11 +790,25 @@ describe('browser live push', () => {
     await waitFor(() => agentFrames.length > 0);
     await sendFrame(agent, {
       type: 'signal',
-      data: { type: 'answer', data: { sessionId, sdp: 'v=0-answer', approved: true } },
+      data: {
+        type: 'answer',
+        data: { sessionId, sdp: 'v=0-answer', approved: true },
+      },
     });
 
-    await waitFor(() => f1.find((f) => f.type === 'signal'));
-    await waitFor(() => f2.find((f) => f.type === 'signal'));
+    // Both connections must receive the same signal, with the same id — the
+    // id is the replay cursor, so a divergence would split their replay
+    // positions.
+    const onB1 = await waitFor(() =>
+      f1.find((f) => f.type === 'signal' && f.data?.type === 'answer'),
+    );
+    const onB2 = await waitFor(() =>
+      f2.find((f) => f.type === 'signal' && f.data?.type === 'answer'),
+    );
+    expect(onB1.id).toBeTruthy();
+    expect(onB2.id).toBe(onB1.id);
+    expect(onB1.data?.data?.sessionId).toBe(sessionId);
+
     b1.close();
     b2.close();
     agent.close();
@@ -775,7 +830,10 @@ describe('browser live push', () => {
 
     await sendFrame(browser, {
       type: 'signal',
-      data: { type: 'offer', data: { sessionId, sdp: 'v=0-offer', capabilities: ['terminal'] } },
+      data: {
+        type: 'offer',
+        data: { sessionId, sdp: 'v=0-offer', capabilities: ['terminal'] },
+      },
     });
 
     const toAgent = await waitFor(() =>
@@ -802,10 +860,7 @@ describe('browser live push', () => {
 
   it('answers ping with pong', async () => {
     const { port, app } = await startOnEphemeral();
-    const ticket = await mintTicket(app, token);
-    const ws = connectBrowser(port, ticket);
-    await waitOpen(ws);
-    const frames = collectFrames(ws);
+    const { ws, frames } = await openBrowser(port, app, token);
     await sendFrame(ws, { type: 'ping' });
     const pong = await waitFor(() => frames.find((f) => f.type === 'pong'));
     expect(pong).toEqual({ type: 'pong' });
@@ -814,10 +869,7 @@ describe('browser live push', () => {
 
   it('replies MALFORMED_JSON to an oversized frame without parsing it', async () => {
     const { port, app } = await startOnEphemeral();
-    const ticket = await mintTicket(app, token);
-    const ws = connectBrowser(port, ticket);
-    await waitOpen(ws);
-    const frames = collectFrames(ws);
+    const { ws, frames } = await openBrowser(port, app, token);
     ws.send('x'.repeat(256 * 1024 + 1));
     const err = await waitFor(() => frames.find((f) => f.type === 'error'));
     expect(err.code).toBe('MALFORMED_JSON');
@@ -831,10 +883,7 @@ describe('browser live push', () => {
     // string while its on-the-wire bytes are nearly double it — so the check
     // passes and the oversized payload is parsed anyway. Measure bytes.
     const { port, app } = await startOnEphemeral();
-    const ticket = await mintTicket(app, token);
-    const ws = connectBrowser(port, ticket);
-    await waitOpen(ws);
-    const frames = collectFrames(ws);
+    const { ws, frames } = await openBrowser(port, app, token);
     // Valid JSON: an unknown field is ignored by `normalizeBrowserFrame`, so a
     // bypass is observable as a `pong` (the frame was parsed and accepted)
     // rather than an error. 70_000 emoji = 140_000 UTF-16 code units (< 256 KiB
@@ -852,10 +901,7 @@ describe('browser live push', () => {
 
   it('replies VALIDATION_ERROR to an unknown frame type', async () => {
     const { port, app } = await startOnEphemeral();
-    const ticket = await mintTicket(app, token);
-    const ws = connectBrowser(port, ticket);
-    await waitOpen(ws);
-    const frames = collectFrames(ws);
+    const { ws, frames } = await openBrowser(port, app, token);
     await sendFrame(ws, { type: 'nonsense' });
     const err = await waitFor(() => frames.find((f) => f.type === 'error'));
     expect(err.code).toBe('VALIDATION_ERROR');
@@ -877,23 +923,13 @@ describe('SESSION_TERMINATED notification', () => {
     sessionId = await createSession(app, token, agentId);
   });
 
-  afterEach(() => {
-    agentConnections.clear();
-    browserConnections.clear();
-    closeDb();
-  });
+  afterEach(resetConnectionState);
 
   async function subscribeBrowser(
     port: number,
     app: ReturnType<typeof createSignalingServer>['app'],
   ): Promise<{ ws: WebSocket; frames: AnyFrame[] }> {
-    const ticket = await mintTicket(app, token);
-    const ws = connectBrowser(port, ticket);
-    await waitOpen(ws);
-    const frames = collectFrames(ws);
-    await sendFrame(ws, { type: 'subscribe', data: { sessionId } });
-    await waitFor(() => frames.find((f) => f.type === 'subscribed'));
-    return { ws, frames };
+    return openSubscribed(port, app, token, sessionId);
   }
 
   it('pushes SESSION_TERMINATED when the agent socket closes', async () => {
@@ -939,11 +975,7 @@ describe('browser keepalive and lifecycle', () => {
     ({ credential } = await registerAgent(app, token, 'agent_ka_1'));
   });
 
-  afterEach(() => {
-    agentConnections.clear();
-    browserConnections.clear();
-    closeDb();
-  });
+  afterEach(resetConnectionState);
 
   it('closes a silent browser with 4408 after the pong timeout', async () => {
     const { port, app } = await startOnEphemeral({

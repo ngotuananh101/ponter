@@ -102,94 +102,130 @@ export function parseBrowserMessage(raw: string): BrowserMessageInit | null {
 
   const envelope = frame as { type?: unknown; data?: unknown };
 
-  if (envelope.type === 'ping') {
-    return { type: 'ping' };
-  }
-
-  if (envelope.type === 'subscribe') {
-    const data = envelope.data as Record<string, unknown> | undefined;
-    if (!data || typeof data.sessionId !== 'string' || !data.sessionId) {
+  switch (envelope.type) {
+    case 'ping':
+      return { type: 'ping' };
+    case 'subscribe':
+      return parseSubscribe(envelope.data);
+    case 'signal': {
+      const message = parseSignalMessage(envelope.data);
+      return message ? { type: 'signal', data: message } : null;
+    }
+    default:
       return null;
-    }
-    if (data.after === undefined || data.after === null) {
-      return { type: 'subscribe', data: { sessionId: data.sessionId } };
-    }
-    if (typeof data.after !== 'string' || !data.after) {
-      return null;
-    }
-    return {
-      type: 'subscribe',
-      data: { sessionId: data.sessionId, after: data.after },
-    };
   }
+}
 
-  if (envelope.type !== 'signal') {
+/** A non-empty string, or `null` for anything else. */
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
+function parseSubscribe(raw: unknown): BrowserMessageInit | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
     return null;
-  }
+  const data = raw as Record<string, unknown>;
 
-  const message = parseSignalMessage(envelope.data);
-  if (!message) return null;
-  return { type: 'signal', data: message };
+  const sessionId = asString(data.sessionId);
+  if (!sessionId) return null;
+
+  const after = data.after;
+  if (after === undefined || after === null) {
+    return { type: 'subscribe', data: { sessionId } };
+  }
+  const cursor = asString(after);
+  return cursor
+    ? { type: 'subscribe', data: { sessionId, after: cursor } }
+    : null;
 }
 
 /** Normalize a signal payload, mirroring the server's `parseSignalMessage`. */
 function parseSignalMessage(frame: unknown): SignalMessage | null {
-  if (typeof frame !== 'object' || frame === null || Array.isArray(frame))
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) {
     return null;
-  const data = frame as Record<string, unknown>;
-
-  if (data.type === 'offer') {
-    const inner = data.data as Record<string, unknown> | undefined;
-    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
-      return null;
-    if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
-    const capabilities = Array.isArray(inner.capabilities)
-      ? inner.capabilities.filter((c): c is string => typeof c === 'string')
-      : [];
-    return {
-      type: 'offer',
-      data: { sessionId: inner.sessionId, sdp: inner.sdp, capabilities },
-    };
   }
 
-  if (data.type === 'answer') {
-    const inner = data.data as Record<string, unknown> | undefined;
-    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
+  switch ((frame as Record<string, unknown>).type) {
+    case 'offer':
+      return parseOffer(frame);
+    case 'answer':
+      return parseAnswer(frame);
+    case 'ice-candidate':
+      return parseIceCandidate(frame);
+    default:
       return null;
-    if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
-    return {
-      type: 'answer',
-      data: {
-        sessionId: inner.sessionId,
-        sdp: inner.sdp,
-        approved: inner.approved !== false,
-      },
-    };
   }
+}
 
-  if (data.type === 'ice-candidate') {
-    const inner = data.data as Record<string, unknown> | undefined;
-    if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
-      return null;
-    if (typeof inner.candidate !== 'string' || !inner.candidate) return null;
-    const sdpMid = typeof inner.sdpMid === 'string' ? inner.sdpMid : null;
-    const sdpMLineIndex =
-      typeof inner.sdpMLineIndex === 'number' &&
-      Number.isInteger(inner.sdpMLineIndex) &&
-      inner.sdpMLineIndex >= 0 &&
-      inner.sdpMLineIndex <= 65535
-        ? inner.sdpMLineIndex
-        : null;
-    return {
-      type: 'ice-candidate',
-      data: {
-        sessionId: inner.sessionId,
-        candidate: inner.candidate,
-        sdpMid,
-        sdpMLineIndex,
-      },
-    };
+/** The inner `data` object of a signal payload, when it is a plain object. */
+function signalData(frame: unknown): Record<string, unknown> | null {
+  const payload = (frame as Record<string, unknown>).data;
+  if (
+    typeof payload !== 'object' ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    return null;
   }
+  return payload as Record<string, unknown>;
+}
 
-  return null;
+function parseOffer(frame: unknown): SignalMessage | null {
+  const inner = signalData(frame);
+  if (!inner) return null;
+
+  const sessionId = asString(inner.sessionId);
+  const sdp = asString(inner.sdp);
+  if (!sessionId || !sdp) return null;
+
+  const capabilities = Array.isArray(inner.capabilities)
+    ? inner.capabilities.filter((c): c is string => typeof c === 'string')
+    : [];
+  return { type: 'offer', data: { sessionId, sdp, capabilities } };
+}
+
+function parseAnswer(frame: unknown): SignalMessage | null {
+  const inner = signalData(frame);
+  if (!inner) return null;
+
+  const sessionId = asString(inner.sessionId);
+  const sdp = asString(inner.sdp);
+  if (!sessionId || !sdp) return null;
+
+  return {
+    type: 'answer',
+    data: { sessionId, sdp, approved: inner.approved !== false },
+  };
+}
+
+function parseIceCandidate(frame: unknown): SignalMessage | null {
+  const inner = signalData(frame);
+  if (!inner) return null;
+
+  const sessionId = asString(inner.sessionId);
+  const candidate = asString(inner.candidate);
+  if (!sessionId || !candidate) return null;
+
+  return {
+    type: 'ice-candidate',
+    data: {
+      sessionId,
+      candidate,
+      sdpMid: typeof inner.sdpMid === 'string' ? inner.sdpMid : null,
+      sdpMLineIndex: parseSdpMLineIndex(inner.sdpMLineIndex),
+    },
+  };
+}
+
+/** `sdpMLineIndex` is a non-negative 16-bit integer, or `null`. */
+function parseSdpMLineIndex(value: unknown): number | null {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 65535
+  ) {
+    return null;
+  }
+  return value;
 }

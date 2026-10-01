@@ -1,6 +1,9 @@
+import type { Mock } from 'vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebSocketSignalTransport } from '../src/transport';
+import type { WebSocketSignalTransportOptions } from '../src/transport';
 import type { SignalMessage } from '@ponter/shared';
+import type { SignalTransport } from '../src/types';
 
 /**
  * A minimal fake for the browser `WebSocket` API.
@@ -88,10 +91,73 @@ function okTicketFetch(ticket = 'tkt_1'): ReturnType<typeof vi.fn> {
   );
 }
 
+/**
+ * Pin the transport's jitter source to a deterministic value.
+ *
+ * `randomUnit()` reads one `Uint32Array` word and divides by 2**32, so the
+ * mocked word is `value * 2**32`. Mocking the CSPRNG keeps the assertions
+ * exact without depending on `Math.random`.
+ */
+function mockRandomUnit(value: number): void {
+  const word = Math.trunc(value * 2 ** 32);
+  vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(
+    <T extends ArrayBufferView | null>(array: T): T => {
+      if (array) (array as unknown as Uint32Array)[0] = word;
+      return array;
+    },
+  );
+}
+
 const offer: SignalMessage = {
   type: 'offer',
   data: { sessionId: 'sess_1', sdp: 'v=0', capabilities: ['terminal'] },
 };
+
+interface FakeFallback extends SignalTransport {
+  send: Mock<(msg: SignalMessage) => Promise<void>>;
+  subscribe: Mock<(handler: (msg: SignalMessage) => void) => () => void>;
+  close: Mock<() => void>;
+}
+
+function makeFallback(): FakeFallback {
+  return {
+    send: vi.fn(async () => {}),
+    subscribe: vi.fn(() => () => {}),
+    close: vi.fn(),
+  };
+}
+
+/** Build a transport with the standard ticket stub. */
+function makeTransport(
+  options: Partial<WebSocketSignalTransportOptions> = {},
+): WebSocketSignalTransport {
+  return new WebSocketSignalTransport({
+    baseUrl: 'http://test',
+    sessionId: 'sess_1',
+    getToken: async () => 'access_1',
+    fetch: okTicketFetch() as unknown as typeof fetch,
+    ...options,
+  });
+}
+
+/**
+ * Open the transport's first socket and complete the subscribe handshake, so
+ * the connection is live and later frames can be delivered.
+ */
+async function openLive(
+  transport: WebSocketSignalTransport,
+  handler: (msg: SignalMessage) => void = () => {},
+): Promise<FakeWebSocket> {
+  transport.subscribe(handler);
+  await vi.advanceTimersByTimeAsync(0);
+  const socket = lastSocket();
+  socket.open();
+  socket.deliver({
+    type: 'subscribed',
+    data: { sessionId: 'sess_1', after: null, hasMore: false },
+  });
+  return socket;
+}
 
 describe('WebSocketSignalTransport', () => {
   beforeEach(() => {
@@ -170,15 +236,9 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('falls back without looping when the refresh itself fails', async () => {
-      const fetchSpy = vi.fn(
-        async () => new Response('{}', { status: 401 }),
-      );
+      const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
       const refresh = vi.fn(async () => null);
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
+      const fallback = makeFallback();
 
       const transport = new WebSocketSignalTransport({
         baseUrl: 'http://test',
@@ -204,11 +264,7 @@ describe('WebSocketSignalTransport', () => {
 
     it('falls back when there is no token to mint with', async () => {
       const fetchSpy = okTicketFetch();
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
+      const fallback = makeFallback();
 
       const transport = new WebSocketSignalTransport({
         baseUrl: 'http://test',
@@ -228,7 +284,7 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('retries a transient mint failure (network error) instead of falling back at once', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      mockRandomUnit(0.5);
       let failing = true;
       const fetchSpy = vi.fn(async () => {
         if (failing) throw new TypeError('fetch failed');
@@ -236,11 +292,7 @@ describe('WebSocketSignalTransport', () => {
           status: 200,
         });
       });
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
+      const fallback = makeFallback();
 
       const transport = new WebSocketSignalTransport({
         baseUrl: 'http://test',
@@ -268,15 +320,11 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('falls back after maxRetries consecutive transient mint failures', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      mockRandomUnit(0.5);
       const fetchSpy = vi.fn(async () => {
         throw new TypeError('fetch failed');
       });
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
+      const fallback = makeFallback();
 
       const transport = new WebSocketSignalTransport({
         baseUrl: 'http://test',
@@ -302,12 +350,7 @@ describe('WebSocketSignalTransport', () => {
 
   describe('subscribe and queue', () => {
     it('queues sends made before the socket opens and flushes after subscribed', async () => {
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -334,7 +377,10 @@ describe('WebSocketSignalTransport', () => {
 
       const frames = socket.sentFrames();
       expect(frames).toHaveLength(2);
-      expect(frames[1]).toMatchObject({ type: 'signal', data: { type: 'offer' } });
+      expect(frames[1]).toMatchObject({
+        type: 'signal',
+        data: { type: 'offer' },
+      });
 
       transport.close();
     });
@@ -345,21 +391,8 @@ describe('WebSocketSignalTransport', () => {
       // The socket path must do the same: the server's `normalizeBrowserFrame`
       // rejects an empty sessionId with VALIDATION_ERROR, so an unstamped
       // offer never reaches the agent and the channel never opens.
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
-
-      transport.subscribe(() => {});
-      await vi.advanceTimersByTimeAsync(0);
-      const socket = lastSocket();
-      socket.open();
-      socket.deliver({
-        type: 'subscribed',
-        data: { sessionId: 'sess_1', after: null, hasMore: false },
-      });
+      const transport = makeTransport();
+      const socket = await openLive(transport);
 
       const unstamped: SignalMessage = {
         type: 'offer',
@@ -376,21 +409,8 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('sends immediately when open and never re-sends a delivered signal', async () => {
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
-
-      transport.subscribe(() => {});
-      await vi.advanceTimersByTimeAsync(0);
-      const socket = lastSocket();
-      socket.open();
-      socket.deliver({
-        type: 'subscribed',
-        data: { sessionId: 'sess_1', after: null, hasMore: false },
-      });
+      const transport = makeTransport();
+      const socket = await openLive(transport);
 
       await transport.send(offer);
       expect(socket.sentFrames()).toHaveLength(2);
@@ -413,21 +433,8 @@ describe('WebSocketSignalTransport', () => {
   describe('cursor tracking', () => {
     it('tracks the last delivered signal id and sends it as `after` on resubscribe', async () => {
       const handler = vi.fn();
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
-
-      transport.subscribe(handler);
-      await vi.advanceTimersByTimeAsync(0);
-      const socket = lastSocket();
-      socket.open();
-      socket.deliver({
-        type: 'subscribed',
-        data: { sessionId: 'sess_1', after: null, hasMore: false },
-      });
+      const transport = makeTransport();
+      const socket = await openLive(transport, handler);
 
       socket.deliver({
         type: 'signal',
@@ -459,12 +466,7 @@ describe('WebSocketSignalTransport', () => {
       // session — a silent hang with no error. The client must re-subscribe
       // from the last id it actually received, and must NOT flush its pending
       // queue yet (the subscription is not live until the final page).
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -495,7 +497,10 @@ describe('WebSocketSignalTransport', () => {
 
       const frames = socket.sentFrames();
       expect(frames).toHaveLength(3);
-      expect(frames[2]).toMatchObject({ type: 'signal', data: { type: 'offer' } });
+      expect(frames[2]).toMatchObject({
+        type: 'signal',
+        data: { type: 'offer' },
+      });
 
       transport.close();
     });
@@ -505,12 +510,7 @@ describe('WebSocketSignalTransport', () => {
       // `onopen` from a superseded socket would set `awaitingAck = true` on the
       // CURRENT connection and never clear it (the dead socket sends no ack),
       // so every later `send()` would queue forever — a silent hang.
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -549,17 +549,9 @@ describe('WebSocketSignalTransport', () => {
 
     it('ignores pong frames and keeps fanning out signal frames', async () => {
       const handler = vi.fn();
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
+      const socket = await openLive(transport, handler);
 
-      transport.subscribe(handler);
-      await vi.advanceTimersByTimeAsync(0);
-      const socket = lastSocket();
-      socket.open();
       socket.deliver({ type: 'pong' });
 
       const answer: SignalMessage = {
@@ -577,13 +569,8 @@ describe('WebSocketSignalTransport', () => {
 
   describe('reconnect backoff', () => {
     it('reconnects with exponential backoff capped at 2000ms, jittered by ±50ms', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5); // zero jitter
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      mockRandomUnit(0.5); // zero jitter
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -624,13 +611,8 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('applies jitter of at most ±50ms to the backoff delay', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.99); // +49ms
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      mockRandomUnit(0.99); // +49ms
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -645,13 +627,8 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('resets the backoff after a successful connection', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      mockRandomUnit(0.5);
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -673,13 +650,7 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('does not reconnect when reconnect is false', async () => {
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        reconnect: false,
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport({ reconnect: false });
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -695,12 +666,7 @@ describe('WebSocketSignalTransport', () => {
   describe('server error frames', () => {
     it('fans error codes out to onServerError handlers', async () => {
       const seen: string[] = [];
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.onServerError((code) => seen.push(code));
       transport.subscribe(() => {});
@@ -721,12 +687,7 @@ describe('WebSocketSignalTransport', () => {
 
     it('unsubscribes an onServerError handler', async () => {
       const seen: string[] = [];
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       const off = transport.onServerError((code) => seen.push(code));
       transport.subscribe(() => {});
@@ -745,12 +706,8 @@ describe('WebSocketSignalTransport', () => {
 
   describe('fallback', () => {
     it('delegates to the fallback after maxRetries and flushes pending signals', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
+      mockRandomUnit(0.5);
+      const fallback = makeFallback();
       const transport = new WebSocketSignalTransport({
         baseUrl: 'http://test',
         sessionId: 'sess_1',
@@ -786,7 +743,7 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('closes the socket instead of retrying when there is no fallback', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      mockRandomUnit(0.5);
       const transport = new WebSocketSignalTransport({
         baseUrl: 'http://test',
         sessionId: 'sess_1',
@@ -809,19 +766,8 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('stops the queue from growing once the fallback owns the session', async () => {
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fallback,
-        maxRetries: 0,
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const fallback = makeFallback();
+      const transport = makeTransport({ fallback, maxRetries: 0 });
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -835,19 +781,8 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('delegates subscribers added after handoff to the fallback', async () => {
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fallback,
-        maxRetries: 0,
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const fallback = makeFallback();
+      const transport = makeTransport({ fallback, maxRetries: 0 });
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -863,19 +798,10 @@ describe('WebSocketSignalTransport', () => {
       transport.close();
     });
 
-    it('hands a SESSION_TERMINATED frame to the fallback without reconnecting', async () => {      vi.spyOn(Math, 'random').mockReturnValue(0.5);
-      const fallback = {
-        send: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-        close: vi.fn(),
-      };
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fallback,
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+    it('hands a SESSION_TERMINATED frame to the fallback without reconnecting', async () => {
+      mockRandomUnit(0.5);
+      const fallback = makeFallback();
+      const transport = makeTransport({ fallback });
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -896,24 +822,14 @@ describe('WebSocketSignalTransport', () => {
 
   describe('close', () => {
     it('is idempotent and does not throw before the socket is open', () => {
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       expect(() => transport.close()).not.toThrow();
       expect(() => transport.close()).not.toThrow();
     });
 
     it('closes the live socket with code 1000', async () => {
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -926,13 +842,8 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('cancels a pending reconnect', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      mockRandomUnit(0.5);
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);
@@ -948,12 +859,7 @@ describe('WebSocketSignalTransport', () => {
 
     it('stops delivering signals after close', async () => {
       const handler = vi.fn();
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.subscribe(handler);
       await vi.advanceTimersByTimeAsync(0);
@@ -966,12 +872,7 @@ describe('WebSocketSignalTransport', () => {
     });
 
     it('rejects send after close instead of queueing forever', async () => {
-      const transport = new WebSocketSignalTransport({
-        baseUrl: 'http://test',
-        sessionId: 'sess_1',
-        getToken: async () => 'access_1',
-        fetch: okTicketFetch() as unknown as typeof fetch,
-      });
+      const transport = makeTransport();
 
       transport.subscribe(() => {});
       await vi.advanceTimersByTimeAsync(0);

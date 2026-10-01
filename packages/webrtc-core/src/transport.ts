@@ -34,6 +34,18 @@ interface RawPollResponse {
   cursor: string | null;
 }
 
+/**
+ * Drop every trailing `/` from a base URL.
+ *
+ * A loop rather than `replace(/\/+$/, '')`: the regex backtracks super-linearly
+ * on a long run of slashes (S8786), and the URL is caller-supplied input.
+ */
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+  return url.slice(0, end);
+}
+
 export class RESTPollingTransport implements SignalTransport {
   private readonly baseUrl: string;
   private readonly sessionId: string;
@@ -64,7 +76,7 @@ export class RESTPollingTransport implements SignalTransport {
   private readonly subscribers: Array<(msg: SignalMessage) => void> = [];
 
   constructor(options: RESTPollingTransportOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.baseUrl = stripTrailingSlashes(options.baseUrl);
     this.sessionId = options.sessionId;
     this.token = options.token;
     this.customFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -305,6 +317,19 @@ const WS_MAX_BACKOFF_MS = 2000;
 const WS_INITIAL_BACKOFF_MS = 200;
 
 /**
+ * A uniform value in [0, 1) drawn from the platform CSPRNG.
+ *
+ * `Math.random()` is flagged by static analysis even where the value is only a
+ * reconnect jitter; `crypto.getRandomValues` is available in every target
+ * browser and in Node, and gives the same uniform distribution.
+ */
+function randomUnit(): number {
+  const buffer = new Uint32Array(1);
+  crypto.getRandomValues(buffer);
+  return (buffer[0] ?? 0) / 2 ** 32;
+}
+
+/**
  * The WebSocket signaling transport for the browser tab.
  *
  * Replaces the 200ms–2000ms poll loop with a push socket: the tab mints a
@@ -358,7 +383,7 @@ export class WebSocketSignalTransport implements SignalTransport {
   private open = false;
 
   constructor(options: WebSocketSignalTransportOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.baseUrl = stripTrailingSlashes(options.baseUrl);
     this.sessionId = options.sessionId;
     this.getToken = options.getToken;
     this.onUnauthorized = options.onUnauthorized;
@@ -569,50 +594,66 @@ export class WebSocketSignalTransport implements SignalTransport {
     }
 
     switch (frame.type) {
-      case 'subscribed': {
-        this.awaitingAck = false;
-        const ack = frame.data as { hasMore?: boolean } | undefined;
-        if (ack?.hasMore) {
-          // The replay was paged (server hit its 200-row limit) and the server
-          // is STILL in `replaying`, buffering every live push until the final
-          // page arrives. Ask for the next page from the last id received —
-          // `sendSubscribeFrame` sends `after: this.lastCursor`, which every
-          // `signal` frame advanced. Do NOT flush `pending` here: the
-          // subscription is not live yet, so anything sent now would be
-          // replayed back to us on the final page.
-          this.sendSubscribeFrame(socket);
-          return;
-        }
-        this.flushPending(socket);
+      case 'subscribed':
+        this.handleSubscribed(socket, frame);
         return;
-      }
-      case 'signal': {
-        const id = typeof frame.id === 'string' ? frame.id : null;
-        if (id) this.lastCursor = id;
-        const msg = frame.data as SignalMessage | undefined;
-        if (!msg) return;
-        for (const sub of [...this.subscribers]) {
-          sub(msg);
-        }
+      case 'signal':
+        this.handleSignalFrame(frame);
         return;
-      }
-      case 'error': {
-        const code = frame.code as BrowserErrorCode | undefined;
-        if (code) {
-          for (const handler of [...this.errorHandlers]) {
-            handler(code);
-          }
-        }
-        if (frame.code === 'SESSION_TERMINATED') {
-          // The session cannot complete; a reconnect would only replay the
-          // same verdict. Hand over or stop.
-          this.handOffToFallback();
-        }
+      case 'error':
+        this.handleErrorFrame(frame);
         return;
-      }
       default:
         // `pong` and anything unknown need no handling.
         return;
+    }
+  }
+
+  private handleSubscribed(
+    socket: WebSocket,
+    frame: Record<string, unknown>,
+  ): void {
+    this.awaitingAck = false;
+    const ack = frame.data as { hasMore?: boolean } | undefined;
+    if (ack?.hasMore) {
+      // The replay was paged (server hit its 200-row limit) and the server
+      // is STILL in `replaying`, buffering every live push until the final
+      // page arrives. Ask for the next page from the last id received —
+      // `sendSubscribeFrame` sends `after: this.lastCursor`, which every
+      // `signal` frame advanced. Do NOT flush `pending` here: the
+      // subscription is not live yet, so anything sent now would be
+      // replayed back to us on the final page.
+      this.sendSubscribeFrame(socket);
+      return;
+    }
+    this.flushPending(socket);
+  }
+
+  private handleSignalFrame(frame: Record<string, unknown>): void {
+    const id = typeof frame.id === 'string' ? frame.id : null;
+    if (id) this.lastCursor = id;
+    const msg = frame.data as SignalMessage | undefined;
+    if (!msg) return;
+    // Snapshot before dispatch: a handler may unsubscribe (or subscribe)
+    // while the loop runs, and mutating the live array mid-iteration would
+    // skip the next handler.
+    for (const sub of this.subscribers.slice()) {
+      sub(msg);
+    }
+  }
+
+  private handleErrorFrame(frame: Record<string, unknown>): void {
+    const code = frame.code as BrowserErrorCode | undefined;
+    if (code) {
+      // Same snapshot rule as `handleSignalFrame`.
+      for (const handler of this.errorHandlers.slice()) {
+        handler(code);
+      }
+    }
+    if (frame.code === 'SESSION_TERMINATED') {
+      // The session cannot complete; a reconnect would only replay the
+      // same verdict. Hand over or stop.
+      this.handOffToFallback();
     }
   }
 
@@ -647,12 +688,11 @@ export class WebSocketSignalTransport implements SignalTransport {
       return;
     }
 
+    // Jitter is an integer millisecond offset: `setTimeout` has no use for a
+    // fractional delay, and rounding keeps the ladder assertions exact.
     const delay =
-      Math.min(
-        WS_INITIAL_BACKOFF_MS * 2 ** this.retries,
-        WS_MAX_BACKOFF_MS,
-      ) +
-      (Math.random() * 100 - 50);
+      Math.min(WS_INITIAL_BACKOFF_MS * 2 ** this.retries, WS_MAX_BACKOFF_MS) +
+      Math.round(randomUnit() * 100 - 50);
     this.retries += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -684,7 +724,8 @@ export class WebSocketSignalTransport implements SignalTransport {
     if (!this.fallback) return;
 
     this.activeTransport = this.fallback;
-    for (const sub of [...this.subscribers]) {
+    // Snapshot: `subscribe` may mutate the live array.
+    for (const sub of this.subscribers.slice()) {
       this.fallback.subscribe(sub);
     }
     const queued = this.pending;

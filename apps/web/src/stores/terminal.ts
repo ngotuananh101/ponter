@@ -77,7 +77,7 @@ export const useTerminalStore = defineStore('terminal', () => {
             baseUrl: apiClient.http.baseUrl,
             sessionId: sessionResp.id,
             getToken: () => tokenStorage.getAccessToken(),
-            onUnauthorized: async () => apiClient.http.refreshAccessToken(),
+            onUnauthorized: () => apiClient.http.refreshAccessToken(),
             reconnect: true,
             fallback: restTransport(),
           })
