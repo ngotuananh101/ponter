@@ -71,7 +71,10 @@ vi.mock('@ponter/webrtc-core', () => {
 vi.mock('../services/client', () => ({
   apiClient: {
     http: { baseUrl: 'http://localhost:8787' },
-    sessions: { create: vi.fn(async () => ({ id: 'session-1' })) },
+    sessions: {
+      create: vi.fn(async () => ({ id: 'session-1' })),
+      terminate: vi.fn(async () => ({ success: true })),
+    },
     webrtc: { getIceServers: vi.fn(async () => []) },
   },
 }));
@@ -184,5 +187,37 @@ describe('terminal store error surfacing', () => {
     await emitPeerState('disconnected');
 
     expect(store.tabs[0]?.status).toBe('connecting');
+  });
+
+  it('terminates the server session when the last tab for an agent closes', async () => {
+    // The 2026-10-01 bug: `closeTab` disposed the client and closed the peer
+    // but never told the server, so the session row stayed `active` and the
+    // agent — which saw only the peer going away — held its single ADR-14
+    // slot. Reopening then hit `timeout waiting for channel "terminal"`.
+    const store = useTerminalStore();
+    failNext = false;
+    const tabId = await store.openTab('agent-1');
+
+    const { apiClient } = await import('../services/client');
+    store.closeTab(tabId);
+
+    expect(vi.mocked(apiClient.sessions.terminate)).toHaveBeenCalledWith(
+      'session-1',
+    );
+  });
+
+  it('does not terminate while another tab for the same agent is open', async () => {
+    // The connection is shared per agent; closing one of two tabs must leave
+    // the session alone, or the remaining tab's terminal would be killed
+    // server-side while its data channel is still live.
+    const store = useTerminalStore();
+    failNext = false;
+    const first = await store.openTab('agent-1');
+    await store.openTab('agent-1');
+
+    const { apiClient } = await import('../services/client');
+    store.closeTab(first);
+
+    expect(vi.mocked(apiClient.sessions.terminate)).not.toHaveBeenCalled();
   });
 });

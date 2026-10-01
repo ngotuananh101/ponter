@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
 
 use crate::signal::SignalClient;
@@ -290,8 +291,13 @@ fn classify(message: signal::SignalMessage) -> Inbound {
     }
 }
 
-/// The ADR-14 loop: take an `offer`; if a session is active, answer
-/// `approved: false` and drop it; otherwise run one session to completion.
+/// The session loop: take an `offer` and run one session to completion.
+///
+/// **ADR-14 refusals do not happen here.** `run_one_session` borrows `inbound`
+/// for the session's whole lifetime, so a second offer that arrives while a
+/// session is live is read — and refused — by `route_inbound` inside that
+/// session. This loop only ever sees offers that arrive while no session is
+/// running, which is exactly when a fresh session should start.
 ///
 /// **Candidates are routed here, not in `run_one_session`.** The channel is a
 /// single stream, so exactly one task can own it. `run_one_session` therefore
@@ -307,8 +313,6 @@ async fn supervise_sessions(
     mut ice_rx: tokio::sync::mpsc::Receiver<Vec<signal::IceServerEntry>>,
     cfg: SessionConfig,
 ) -> Result<()> {
-    let mut active: Option<String> = None;
-
     // The server pushes ICE configuration on connect. It is read here rather
     // than in `run_one_session` because it arrives before any offer and has to
     // be in hand by the time the first peer connection is built. `recv()` is
@@ -361,20 +365,6 @@ async fn supervise_sessions(
             }
 
             Inbound::Offer(offer) => {
-                if active.is_some() {
-                    // ADR-14: refuse, but with a real SDP — `POST
-                    // /api/signal/answer` rejects an empty one (spec R19).
-                    tracing::warn!(
-                        session_id = %offer.session_id,
-                        "refusing a second concurrent session (ADR-14)",
-                    );
-                    let peer = rtc::build_peer(&pushed_ice, &cfg.stun).await?;
-                    rtc::refuse_offer(&peer, &offer, &outbound).await?;
-                    let _ = peer.close().await;
-                    continue;
-                }
-
-                active = Some(offer.session_id.clone());
                 tracing::info!(session_id = %offer.session_id, "session starting");
 
                 if let Err(e) =
@@ -387,15 +377,7 @@ async fn supervise_sessions(
                     );
                 }
 
-                // `take()` consumes the `Some` so the assignment is visible to
-                // the compiler — the value tracks across `run_one_session` to
-                // the `active.is_some()` check at the top of the next loop.
-                let ended = active.take();
-                tracing::info!(
-                    session_id = %offer.session_id,
-                    ended = ended.is_some(),
-                    "session ended",
-                );
+                tracing::info!(session_id = %offer.session_id, "session ended");
             }
         }
     }
@@ -423,6 +405,34 @@ async fn run_one_session(
     // Without this the agent never sends a candidate and ICE never completes —
     // the browser alone cannot form a pair.
     rtc::forward_candidates(&peer, offer.session_id.clone(), outbound.clone());
+
+    // End-of-session signal. The session loop below watches `inbound` (which
+    // stays open across socket reconnects) and the pty pump, so a peer that
+    // dies without a clean close used to leave the session — and its ADR-14
+    // slot — running until the 1h cap: close every tab, reopen one, and the
+    // new offer was silently dropped by the still-running session, surfacing
+    // as `timeout waiting for channel "terminal" (saw state: connecting)`.
+    //
+    // Two ways a dead peer reaches us: the data channel closes (the browser
+    // closes it, or its stack resets the SCTP stream — an ABORT arrives as
+    // `ErrChunk` and the channel's read loop ends) and the peer connection
+    // fails (ICE gave up: a killed tab that never sent a close, a network
+    // cut). Either is terminal for the session, so both funnel into one
+    // channel the session loop selects on. Capacity 1 with `try_send`: the
+    // first reason wins, and a full channel means the loop is already woken.
+    let (end_tx, mut end_rx) = mpsc::channel::<&'static str>(1);
+
+    {
+        let end_tx = end_tx.clone();
+        peer.on_peer_connection_state_change(Box::new(move |state| {
+            let end_tx = end_tx.clone();
+            Box::pin(async move {
+                if state == RTCPeerConnectionState::Failed {
+                    let _ = end_tx.try_send("the peer connection failed");
+                }
+            })
+        }));
+    }
 
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
@@ -604,6 +614,7 @@ async fn run_one_session(
         let channel = channel_for_cb.clone();
         let open_tx = open_tx_for_cb.clone();
         let dispatch_tx = dispatch_tx.clone();
+        let end_tx = end_tx.clone();
 
         Box::pin(async move {
             // ADR-09: the exact label, and nothing else. An unexpected channel
@@ -613,6 +624,24 @@ async fn run_one_session(
                 tracing::warn!(label = dc.label(), "refusing unexpected channel");
                 let _ = dc.close().await;
                 return;
+            }
+
+            // The browser closed the channel (the last tab closed), or its
+            // stack reset the SCTP stream — either way this session is over.
+            // Registered here, in the accept handler, rather than after the
+            // handshake: `accept_data_channels` calls this handler before
+            // `handle_open`, so a channel that closes immediately after
+            // opening cannot slip past a late registration. `try_send`, not
+            // `send`: the handler is `FnMut + Send + Sync` and must not await
+            // on a receiver the session loop owns.
+            {
+                let end_tx = end_tx.clone();
+                dc.on_close(Box::new(move || {
+                    let end_tx = end_tx.clone();
+                    Box::pin(async move {
+                        let _ = end_tx.try_send("the terminal channel closed");
+                    })
+                }));
             }
 
             // browser -> dispatch channel. The callback is Fn+Send+Sync, so it
@@ -667,7 +696,25 @@ async fn run_one_session(
                 let Some(message) = candidate else {
                     anyhow::bail!("the inbound channel closed while waiting for the terminal channel");
                 };
-                apply_if_candidate(&peer, &mut pending, message).await?;
+                route_inbound(
+                    &peer,
+                    &offer.session_id,
+                    &mut pending,
+                    message,
+                    outbound,
+                    pushed_ice,
+                    cfg,
+                )
+                .await?;
+            }
+
+            // The channel closed (or the peer failed) before it ever opened.
+            // Without this arm the handshake would sit here for its full 20s:
+            // the `open_tx` sender is held by the accept handler, so a channel
+            // that closes without opening never drops it, and `open_rx` never
+            // resolves.
+            reason = end_rx.recv() => {
+                anyhow::bail!("the session ended during the handshake: {}", reason.unwrap_or("the peer went away"));
             }
 
             result = &mut open_rx => {
@@ -704,8 +751,9 @@ async fn run_one_session(
     // The session loop. `inbound` stays open across reconnects (see above), so
     // the loop keeps the live peer serviced while the socket is down: late
     // ICE candidates resume on the next socket instead of being dropped with
-    // a dead session. The only ways out are the pump ending (channel gone),
-    // the hourly cap, or a real shutdown request — NOT the socket.
+    // a dead session. The ways out are the pump ending (channel gone), the
+    // peer dying (channel closed / connection failed), the hourly cap, or a
+    // real shutdown request — NOT the socket.
     let manager_for_teardown = manager.clone();
     let session_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
     let reason = loop {
@@ -713,10 +761,22 @@ async fn run_one_session(
             _ = &mut pump => break "the pty pump ended",
             message = inbound.recv() => {
                 match message {
-                    Some(message) => apply_if_candidate(&peer, &mut pending, message).await?,
+                    Some(message) => route_inbound(
+                        &peer,
+                        &offer.session_id,
+                        &mut pending,
+                        message,
+                        outbound,
+                        pushed_ice,
+                        cfg,
+                    ).await?,
                     None => break "the agent is shutting down",
                 }
             }
+            // The peer is gone: its channel closed or its connection failed.
+            // This is the arm that frees the ADR-14 slot immediately instead
+            // of holding it until the 1h cap.
+            reason = end_rx.recv() => break reason.unwrap_or("the peer went away"),
             _ = tokio::time::sleep_until(session_deadline) => break "the 1h session cap",
             _ = shutdown_signal() => break "a shutdown signal",
         }
@@ -732,13 +792,97 @@ async fn run_one_session(
     Ok(())
 }
 
-/// Apply an inbound message if it is a candidate; ignore anything else.
+/// Route one inbound message to the live session.
 ///
-/// An `offer` here would be a second offer for the session already running —
-/// ADR-14 refuses those at the supervisor, and reaching this point with one
-/// would mean the routing above is wrong, so it is logged rather than silently
-/// dropped.
+/// Candidates are filtered by `session_id`: the socket is shared, and a
+/// candidate for a session that is not the live one must never be applied to
+/// the live peer — a stale tab still trickling after its session ended is how
+/// a dead peer poisons a fresh connection.
 ///
+/// An `offer` here is a second concurrent offer (ADR-14: one session per
+/// agent) or a redelivery of the live session's own offer (signaling is
+/// at-least-once). A redelivery is dropped; a genuine second offer is refused
+/// with a real answer carrying `approved: false` so the browser fails fast
+/// and visibly. Before this, both were silently dropped at `debug` level and
+/// the second tab sat on `timeout waiting for channel "terminal" (saw state:
+/// connecting)` for its full timeout with no explanation.
+///
+/// The refusal runs in its own task: building a peer and answering must not
+/// stall the live session's candidate flow.
+async fn route_inbound(
+    peer: &Arc<RTCPeerConnection>,
+    session_id: &str,
+    pending: &mut Vec<RTCIceCandidateInit>,
+    message: signal::SignalMessage,
+    outbound: &mpsc::Sender<signal::SignalMessage>,
+    pushed_ice: &[signal::IceServerEntry],
+    cfg: &SessionConfig,
+) -> Result<()> {
+    match message {
+        signal::SignalMessage::IceCandidate(candidate) => {
+            if candidate.session_id != session_id {
+                tracing::debug!(
+                    session_id = %candidate.session_id,
+                    live_session_id = session_id,
+                    "dropping a candidate for a session that is not live",
+                );
+                return Ok(());
+            }
+            let applied = rtc::apply_candidate(peer, pending, candidate).await?;
+            tracing::trace!(applied, "inbound candidate");
+        }
+
+        signal::SignalMessage::Offer(offer) => {
+            if offer.session_id == session_id {
+                tracing::debug!(
+                    session_id = %offer.session_id,
+                    "ignoring a redelivered offer for the live session",
+                );
+                return Ok(());
+            }
+            let outbound = outbound.clone();
+            let pushed = pushed_ice.to_vec();
+            let cfg = cfg.clone();
+            tokio::spawn(async move {
+                if let Err(e) = refuse_second_offer(&offer, &outbound, &pushed, &cfg).await {
+                    tracing::warn!(
+                        error = %e,
+                        session_id = %offer.session_id,
+                        "failed to refuse a second offer",
+                    );
+                }
+            });
+        }
+
+        signal::SignalMessage::Answer(_) => {
+            tracing::debug!("ignoring an answer during a session");
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a second concurrent offer (ADR-14) with a real SDP.
+///
+/// `POST /api/signal/answer` rejects an empty `sdp` (spec R19), so "refuse"
+/// cannot mean "send nothing": the refusal is a real answer carrying
+/// `approved: false`, which the browser reads and surfaces instead of waiting
+/// out its channel timeout.
+async fn refuse_second_offer(
+    offer: &signal::SignalOffer,
+    outbound: &mpsc::Sender<signal::SignalMessage>,
+    pushed_ice: &[signal::IceServerEntry],
+    cfg: &SessionConfig,
+) -> Result<()> {
+    tracing::warn!(
+        session_id = %offer.session_id,
+        "refusing a second concurrent session (ADR-14)",
+    );
+    let peer = rtc::build_peer(pushed_ice, &cfg.stun).await?;
+    rtc::refuse_offer(&peer, offer, outbound).await?;
+    let _ = peer.close().await;
+    Ok(())
+}
+
 /// Turn a `spawn_session` result into a `terminal-error` frame, or nothing.
 ///
 /// A spawn failure used to be a `tracing::warn!` and nothing else, which left
@@ -766,21 +910,6 @@ fn spawn_failure_frame(terminal_id: &str, result: Result<()>) -> Option<String> 
         &error.to_string(),
         pty::now_ms(),
     ))
-}
-
-async fn apply_if_candidate(
-    peer: &Arc<RTCPeerConnection>,
-    pending: &mut Vec<RTCIceCandidateInit>,
-    message: signal::SignalMessage,
-) -> Result<()> {
-    match message {
-        signal::SignalMessage::IceCandidate(candidate) => {
-            let applied = rtc::apply_candidate(peer, pending, candidate).await?;
-            tracing::trace!(applied, "inbound candidate");
-        }
-        other => tracing::debug!(?other, "ignoring a non-candidate frame during a session"),
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

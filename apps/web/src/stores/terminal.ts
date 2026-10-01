@@ -31,7 +31,7 @@ export const useTerminalStore = defineStore('terminal', () => {
   const activeTabId = ref<string | null>(null);
   const connections = new Map<
     string,
-    { peer: PeerConnection; client: TerminalClient }
+    { peer: PeerConnection; client: TerminalClient; sessionId: string }
   >();
   const pendingConnections = new Map<string, Promise<TerminalClient>>();
 
@@ -144,7 +144,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       await peer.waitForChannel('terminal');
 
       const client = new TerminalClient(agentId, peer.dataChannels);
-      connections.set(agentId, { peer, client });
+      connections.set(agentId, { peer, client, sessionId: sessionResp.id });
       return client;
     })();
 
@@ -299,8 +299,18 @@ export const useTerminalStore = defineStore('terminal', () => {
       const conn = connections.get(removed.agentId);
       if (conn) {
         conn.client.dispose();
-        conn.peer.close();
+        void conn.peer.close();
         connections.delete(removed.agentId);
+        // Tell the server the session is over. Without this the session row
+        // stays `active` after the tab closes, and the agent — which sees only
+        // the peer going away — is left to notice by itself. Best-effort: a
+        // failed terminate must not break the close path, and the agent now
+        // ends the session when the peer dies even if this request never
+        // lands.
+        void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+          // The session may already be terminated server-side (agent
+          // disconnect) — a rejection here is not actionable.
+        });
       }
     }
   }

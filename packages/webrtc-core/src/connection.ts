@@ -53,6 +53,18 @@ export class PeerConnection {
   private answerApplied = false;
 
   /**
+   * Why the agent declined this connection, when it did.
+   *
+   * ADR-14: one session per agent. A second concurrent offer is answered with
+   * `approved: false` and a real SDP. The SDP must NOT be applied — the agent
+   * is about to close that peer connection, and applying it flips this side to
+   * `stable`, so the next retry fails as a signaling-state error instead of
+   * reading as a refusal. The flag is surfaced from `waitForChannel` instead,
+   * where the user's tab is actually waiting.
+   */
+  private refusalReason: string | null = null;
+
+  /**
    * Read-only view of the pre-remote-description candidate buffer, for tests
    * and diagnostics. The buffer is a private detail; its *size* is not.
    */
@@ -138,6 +150,13 @@ export class PeerConnection {
       if (ch && ch.readyState === 'open') {
         return ch;
       }
+      // Fail fast on a refusal: the channel will never open, so waiting out
+      // the timeout would only delay a decision already made — and say
+      // "timeout ... (saw state: connecting)", which names neither the
+      // refusal nor its cause.
+      if (this.refusalReason) {
+        throw new Error(this.refusalReason);
+      }
       if (Date.now() > deadline) {
         throw new Error(
           `timeout waiting for channel "${label}" (saw state: ${ch ? ch.readyState : 'not registered'})`,
@@ -204,6 +223,19 @@ export class PeerConnection {
         if (this.options.role !== 'offerer') return;
         if (this.answerApplied) return;
         this.answerApplied = true;
+
+        // A refusal is a real answer carrying `approved: false` (ADR-14: one
+        // session per agent). It must not be applied: the agent is about to
+        // close that peer connection, and setting the refusal SDP as remote
+        // would flip this side to `stable` — so a retry on the same
+        // PeerConnection would fail as `InvalidStateError` instead of reading
+        // as a refusal. Record why and let `waitForChannel` fail fast.
+        if (msg.data.approved === false) {
+          this.refusalReason =
+            'the agent refused the connection (one session per agent; another session is already active)';
+          return;
+        }
+
         const answerDesc = toSessionDescriptionInit(msg.data, 'answer');
         await this.peer.setRemoteDescription(answerDesc);
         this.remoteDescriptionSet = true;
