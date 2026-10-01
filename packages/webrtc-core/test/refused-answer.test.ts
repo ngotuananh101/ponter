@@ -1,81 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { PeerConnection } from '../src/connection';
-import type {
-  RTCPeerConnectionLike,
-  RTCDataChannelLike,
-  SignalTransport,
-} from '../src/types';
-import type { SignalMessage } from '@ponter/shared';
+import { ScriptedPeer, stubTransport } from './helpers';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-class FakeChannel implements RTCDataChannelLike {
-  readonly readyState = 'connecting' as const;
-
-  constructor(readonly label: string) {}
-
-  send(): void {}
-
-  close(): void {}
-
-  onMessage(): void {}
-
-  onStateChange(): void {}
-}
-
-class ScriptedPeer implements RTCPeerConnectionLike {
-  readonly setRemoteCalls: RTCSessionDescriptionInit[] = [];
-
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'offer', sdp: 'v=0-offer' };
-  }
-
-  async createAnswer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'answer', sdp: 'v=0-answer' };
-  }
-
-  async setLocalDescription(): Promise<void> {}
-
-  async setRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void> {
-    this.setRemoteCalls.push(desc);
-  }
-
-  async addIceCandidate(): Promise<void> {}
-
-  createDataChannel(label: string): RTCDataChannelLike {
-    return new FakeChannel(label);
-  }
-
-  onIceCandidate(): void {}
-
-  onDataChannel(): void {}
-
-  onConnectionStateChange(): void {}
-
-  async getStats(): Promise<RTCStatsReport> {
-    return {} as unknown as RTCStatsReport;
-  }
-
-  async close(): Promise<void> {}
-}
-
-function stubTransport(): {
-  transport: SignalTransport;
-  deliver: (m: SignalMessage) => void;
-} {
-  let handler: ((m: SignalMessage) => void) | null = null;
-  const transport: SignalTransport = {
-    send: async () => {},
-    subscribe: (h) => {
-      handler = h;
-      return () => {
-        handler = null;
-      };
-    },
-    close: () => {},
-  };
-  return { transport, deliver: (m) => handler?.(m) };
-}
 
 /**
  * The bug this pins (2026-10-01): the agent answers a second concurrent offer

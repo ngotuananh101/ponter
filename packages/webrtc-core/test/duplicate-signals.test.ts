@@ -1,12 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RESTPollingTransport } from '../src/transport';
 import { PeerConnection } from '../src/connection';
-import type {
-  RTCPeerConnectionLike,
-  RTCDataChannelLike,
-  SignalTransport,
-} from '../src/types';
 import type { SignalMessage } from '@ponter/shared';
+import { ScriptedPeer, stubTransport } from './helpers';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -82,87 +78,6 @@ describe('overlapping polls never deliver the same signal twice', () => {
     transport.close();
   });
 });
-
-class FakeChannel implements RTCDataChannelLike {
-  readonly readyState = 'open' as const;
-
-  constructor(readonly label: string) {}
-
-  send(): void {}
-
-  close(): void {}
-
-  onMessage(): void {}
-
-  onStateChange(): void {}
-}
-
-class ScriptedPeer implements RTCPeerConnectionLike {
-  readonly setRemoteCalls: RTCSessionDescriptionInit[] = [];
-
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'offer', sdp: 'v=0-offer' };
-  }
-
-  async createAnswer(): Promise<RTCSessionDescriptionInit> {
-    return { type: 'answer', sdp: 'v=0-answer' };
-  }
-
-  async setLocalDescription(): Promise<void> {}
-
-  async setRemoteDescription(desc: RTCSessionDescriptionInit): Promise<void> {
-    // Mirror the real RTCPeerConnection contract: applying a remote answer
-    // while already stable is an InvalidStateError.
-    const last = this.setRemoteCalls[this.setRemoteCalls.length - 1];
-    if (desc.type === 'answer' && last?.type === 'answer') {
-      throw new Error(
-        "Failed to execute 'setRemoteDescription' on 'RTCPeerConnection': " +
-          'Failed to set remote answer sdp: Called in wrong state: stable',
-      );
-    }
-    this.setRemoteCalls.push(desc);
-  }
-
-  async addIceCandidate(): Promise<void> {}
-
-  createDataChannel(label: string): RTCDataChannelLike {
-    return new FakeChannel(label);
-  }
-
-  onIceCandidate(): void {}
-
-  onDataChannel(): void {}
-
-  onConnectionStateChange(): void {}
-
-  async getStats(): Promise<RTCStatsReport> {
-    return {} as unknown as RTCStatsReport;
-  }
-
-  async close(): Promise<void> {}
-}
-
-function stubTransport(): {
-  transport: SignalTransport;
-  sent: SignalMessage[];
-  deliver: (m: SignalMessage) => void;
-} {
-  const sent: SignalMessage[] = [];
-  let handler: ((m: SignalMessage) => void) | null = null;
-  const transport: SignalTransport = {
-    send: async (m) => {
-      sent.push(m);
-    },
-    subscribe: (h) => {
-      handler = h;
-      return () => {
-        handler = null;
-      };
-    },
-    close: () => {},
-  };
-  return { transport, sent, deliver: (m) => handler?.(m) };
-}
 
 describe('duplicate signals under at-least-once delivery', () => {
   it('ignores a redelivered answer instead of throwing InvalidStateError', async () => {
