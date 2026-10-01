@@ -135,6 +135,17 @@ export class DataChannelManager {
     };
   }
 
+  /**
+   * A snapshot of the registered channels.
+   *
+   * `closeAll()` empties the registry, so a caller that needs to keep
+   * watching the channels it closed (the SCTP closing handshake outlives the
+   * call) takes one of these first.
+   */
+  all(): RTCDataChannelLike[] {
+    return [...this.channels.values()];
+  }
+
   closeAll(): void {
     for (const channel of this.channels.values()) {
       try {

@@ -32,6 +32,16 @@ import {
  */
 export const MAX_PENDING_CANDIDATES = 64;
 
+/**
+ * How long `close()` waits for data channels to acknowledge their SCTP stream
+ * reset (RFC 6525) before tearing the transport down anyway.
+ *
+ * The acknowledgement is a round trip, and a lost reset is retransmitted on
+ * the SCTP RTO (3s), so 5s covers one loss on a healthy link. Waiting longer
+ * only delays teardown against a peer that is already gone.
+ */
+export const CHANNEL_CLOSE_TIMEOUT_MS = 5000;
+
 export class PeerConnection {
   public readonly dataChannels = new DataChannelManager();
 
@@ -51,6 +61,18 @@ export class PeerConnection {
    */
   private offerApplied = false;
   private answerApplied = false;
+
+  /**
+   * Why the agent declined this connection, when it did.
+   *
+   * ADR-14: one session per agent. A second concurrent offer is answered with
+   * `approved: false` and a real SDP. The SDP must NOT be applied — the agent
+   * is about to close that peer connection, and applying it flips this side to
+   * `stable`, so the next retry fails as a signaling-state error instead of
+   * reading as a refusal. The flag is surfaced from `waitForChannel` instead,
+   * where the user's tab is actually waiting.
+   */
+  private refusalReason: string | null = null;
 
   /**
    * Read-only view of the pre-remote-description candidate buffer, for tests
@@ -138,6 +160,13 @@ export class PeerConnection {
       if (ch && ch.readyState === 'open') {
         return ch;
       }
+      // Fail fast on a refusal: the channel will never open, so waiting out
+      // the timeout would only delay a decision already made — and say
+      // "timeout ... (saw state: connecting)", which names neither the
+      // refusal nor its cause.
+      if (this.refusalReason) {
+        throw new Error(this.refusalReason);
+      }
       if (Date.now() > deadline) {
         throw new Error(
           `timeout waiting for channel "${label}" (saw state: ${ch ? ch.readyState : 'not registered'})`,
@@ -157,8 +186,20 @@ export class PeerConnection {
 
     this.unsubscribeTransport();
     this.transport.close();
+
+    // Closing a data channel starts the SCTP stream reset (RFC 6525) — and
+    // for the Rust agent, receiving that reset is what ends its session. The
+    // reset leaves asynchronously, so stopping the transport right away raced
+    // it: when `peer.close()` closed ICE first, `ice.send()` dropped the
+    // reset silently and the agent saw nothing until ICE itself failed ~30s
+    // later. Wait (bounded) for the reset to be acknowledged before stopping
+    // the transport; `peer.close()` stays the fallback for a peer that is
+    // already gone.
+    const closing = this.dataChannels.all();
     this.dataChannels.closeAll();
     this.pendingCandidates.length = 0;
+    await this.awaitChannelsClosed(closing);
+
     await this.peer.close();
   }
 
@@ -204,6 +245,19 @@ export class PeerConnection {
         if (this.options.role !== 'offerer') return;
         if (this.answerApplied) return;
         this.answerApplied = true;
+
+        // A refusal is a real answer carrying `approved: false` (ADR-14: one
+        // session per agent). It must not be applied: the agent is about to
+        // close that peer connection, and setting the refusal SDP as remote
+        // would flip this side to `stable` — so a retry on the same
+        // PeerConnection would fail as `InvalidStateError` instead of reading
+        // as a refusal. Record why and let `waitForChannel` fail fast.
+        if (msg.data.approved === false) {
+          this.refusalReason =
+            'the agent refused the connection (one session per agent; another session is already active)';
+          return;
+        }
+
         const answerDesc = toSessionDescriptionInit(msg.data, 'answer');
         await this.peer.setRemoteDescription(answerDesc);
         this.remoteDescriptionSet = true;
@@ -226,6 +280,25 @@ export class PeerConnection {
         // one and keeping the others is strictly better than dropping the tail.
         console.error('[PeerConnection] failed to add ICE candidate', error);
       }
+    }
+  }
+
+  /**
+   * Wait (bounded) for channels to finish the SCTP closing handshake.
+   *
+   * A channel only reaches `closed` once the remote acknowledges the stream
+   * reset — the same event by which the remote learns the session is over —
+   * so this is the deterministic point past which the reset has arrived.
+   * When the bound expires the transport is torn down anyway: the peer is
+   * gone and has nothing left to acknowledge with.
+   */
+  private async awaitChannelsClosed(
+    channels: RTCDataChannelLike[],
+  ): Promise<void> {
+    const deadline = Date.now() + CHANNEL_CLOSE_TIMEOUT_MS;
+    while (channels.some((channel) => channel.readyState !== 'closed')) {
+      if (Date.now() > deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 30));
     }
   }
 }

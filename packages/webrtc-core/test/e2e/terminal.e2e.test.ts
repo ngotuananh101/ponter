@@ -1,7 +1,11 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PeerConnection } from '../../src/connection';
+import { WeriftAdapter } from '../../src/adapters/werift';
+import { RESTPollingTransport } from '../../src/transport';
 import {
   isLinux,
+  BASE_URL,
   setupE2E,
   teardownE2E,
   seed,
@@ -9,9 +13,11 @@ import {
   waitForAgentOnline,
   connectTerminal,
   frameBytes,
+  postJson,
   sendKeystrokes,
   sendTerminalCreate,
   sendTerminalResize,
+  waitFor,
   waitForTerminalOutput,
   agents,
 } from './harness';
@@ -241,4 +247,128 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       await offerer.close();
     }
   }, 90_000);
+
+  // The production bug of 2026-10-01: close every terminal tab, reopen one,
+  // and the browser sits on `timeout waiting for channel "terminal" (saw
+  // state: connecting)`. The agent never noticed the closed peer — its
+  // session loop watched neither the data channel nor the connection state —
+  // so the finished session held the single ADR-14 slot for up to the 1h cap,
+  // and the reopened tab's offer was silently dropped ("ignoring a
+  // non-candidate frame during a session").
+  //
+  // This is the reproduction as an assertion: closing the offerer (what
+  // `closeTab` does — dispose + peer.close) must end the agent's session, and
+  // a fresh session for the same agent must then connect.
+  it('frees the agent for the next connection after the peer closes', async () => {
+    const { token, agentId, credential, sessionId } = await seed();
+
+    const agent = spawnAgent(agentId, credential);
+    await waitForAgentOnline(token, agentId);
+
+    const { offerer, frames } = await connectTerminal(sessionId, token);
+
+    sendKeystrokes(offerer, sessionId, 'echo first-session\n');
+    await waitForTerminalOutput(frames, 'first-session');
+
+    // Simulate closing the last tab: the store disposes the client and closes
+    // the peer, which closes the data channel and the whole connection.
+    await offerer.close();
+
+    // The agent must observe that close and end the session. The close signal
+    // is the SCTP stream reset of the data channel: if the offerer tears the
+    // transport down before the reset leaves, the agent sees nothing and only
+    // notices ~30s later when ICE fails — past this test's timeout. So this
+    // assertion guards both halves: the agent reacts to the close, and the
+    // offerer gives the reset a chance to be acknowledged first.
+    try {
+      await waitFor(
+        () => agent.output().includes('session ended'),
+        'the agent to end the session after its peer closed',
+        20_000,
+      );
+    } catch (error) {
+      // The agent log is the evidence that matters when this fails: on a
+      // losing race it shows no close signal at all, only ICE going quiet.
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n` +
+          `--- agent output ---\n${agent.output()}`,
+      );
+    }
+
+    // The reopened tab: a new session for the same agent. Without the fix the
+    // offer is dropped by the still-running session and `waitForChannel`
+    // times out after 20s — exactly the user's error message.
+    const session2 = await postJson<{ id: string }>(
+      '/api/sessions',
+      { agentId },
+      token,
+    );
+
+    const { offerer: offerer2, frames: frames2 } = await connectTerminal(
+      session2.id,
+      token,
+    );
+
+    try {
+      sendKeystrokes(offerer2, session2.id, 'echo second-session\n');
+      await waitForTerminalOutput(frames2, 'second-session');
+    } finally {
+      await offerer2.close();
+    }
+  }, 120_000);
+
+  // ADR-14: one session per agent, and a refused second offer must be
+  // *refused* — a real answer with `approved: false` — not silently dropped.
+  // Before the fix the second offer vanished inside the running session's
+  // loop, so the browser had nothing to act on and burned its full 20s
+  // channel timeout with a message that named neither the refusal nor why.
+  it('refuses a second concurrent session with a fast, visible failure', async () => {
+    const { token, agentId, credential, sessionId } = await seed();
+
+    spawnAgent(agentId, credential);
+    await waitForAgentOnline(token, agentId);
+
+    const { offerer, frames } = await connectTerminal(sessionId, token);
+
+    try {
+      sendKeystrokes(offerer, sessionId, 'echo holder\n');
+      await waitForTerminalOutput(frames, 'holder');
+
+      const session2 = await postJson<{ id: string }>(
+        '/api/sessions',
+        { agentId },
+        token,
+      );
+
+      // A second, independent offerer for the same agent. `waitForChannel`
+      // must reject fast with a refusal — not sit out its timeout.
+      const transport2 = new RESTPollingTransport({
+        baseUrl: BASE_URL,
+        sessionId: session2.id,
+        token,
+      });
+      const offerer2 = new PeerConnection(
+        new WeriftAdapter({ iceServers: [] }),
+        transport2,
+        { role: 'offerer', channelLabels: ['terminal'] },
+      );
+
+      try {
+        await offerer2.start();
+        const started = Date.now();
+        await expect(
+          offerer2.waitForChannel('terminal', 20_000),
+        ).rejects.toThrow(/refus|declin/i);
+        expect(Date.now() - started).toBeLessThan(15_000);
+      } finally {
+        await offerer2.close();
+      }
+
+      // ADR-14 refuses the second session; it does not evict the first.
+      sendKeystrokes(offerer, sessionId, 'echo still-alive\n');
+      await waitForTerminalOutput(frames, 'still-alive');
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
 });
