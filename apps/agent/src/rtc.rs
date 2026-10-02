@@ -1,19 +1,25 @@
-//! WebRTC answerer. Owns one `RTCPeerConnection` for one session.
+//! WebRTC answerer. Owns one `PeerConnection` for one session.
+//!
+//! The crate here is webrtc 0.21, a sans-IO rewrite: the connection is built
+//! by [`PeerConnectionBuilder`] and driven by a background driver task, and
+//! every callback arrives on a [`PeerConnectionEventHandler`] that must be
+//! handed to the builder **before** `build()` — `build()` fails with
+//! "no event handler found" otherwise. There is no `on_*` registration API on
+//! the connection itself any more.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
-use tokio::sync::mpsc;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::setting_engine::SettingEngine;
-use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
+use rtc::ice::mdns::MulticastDnsMode;
+use rtc::peer_connection::transport::RTCDtlsRole;
+use tokio::sync::{mpsc, oneshot};
+use webrtc::data_channel::DataChannel;
+use webrtc::peer_connection::{
+    register_default_interceptors, MediaEngine, PeerConnection, PeerConnectionBuilder,
+    PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceServer,
+    RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription, Registry,
+    SettingEngineBuilder,
+};
 
 use crate::signal::{IceCandidateSignal, IceServerEntry, SignalAnswer, SignalMessage, SignalOffer};
 
@@ -56,10 +62,9 @@ pub fn ice_servers_from_entries(entries: &[IceServerEntry]) -> Vec<RTCIceServer>
 
 /// Whether this URL must be dropped before the crate sees it.
 ///
-/// webrtc-rs 0.13's `gather_candidates_relay` implements only TURN over UDP
-/// (`agent_gather.rs`: the `ProtoType::Udp && SchemeType::Turn` arm); a
-/// `turn:` URL with `transport=tcp` falls into its "Unable to handle URL"
-/// warning and is skipped, once per gather. The server mints both transports
+/// rtc 0.21's TURN relayer implements only TURN over UDP: a `turn:` URL with
+/// `transport=tcp` is skipped with "Skipping unsupported non-UDP TURN url",
+/// once per gather, and can never succeed. The server mints both transports
 /// for the browser, which does support TURN/TCP, so the agent filters its own
 /// copy instead.
 ///
@@ -74,8 +79,16 @@ fn is_unusable_turn_tcp(url: &str) -> bool {
 ///
 /// mDNS is disabled: headless hosts and containers frequently have no mDNS
 /// responder, and leaving it on produces unresolvable `.local` candidates.
-/// Loopback needs no ICE server at all (Week 4 F4); an empty `pushed` list and
-/// an empty `stun_url` together are the loopback/air-gapped path.
+///
+/// **The loopback bind is load-bearing.** 0.13 had
+/// `set_include_loopback_candidate(true)`; 0.21 has no such setting — a
+/// wildcard address is expanded to one socket per usable interface and the
+/// expansion *skips loopback*. So a wildcard-only bind produces no loopback
+/// host candidate, and the E2E harness runs with `--stun ''` and
+/// `iceServers: []` where the loopback candidate is the only way the
+/// connection can complete. Binding `127.0.0.1:0` explicitly (it goes through
+/// the non-wildcard path, which binds the address verbatim) restores it;
+/// `0.0.0.0:0` keeps the LAN/STUN path working on real hosts.
 ///
 /// `pushed` is the `ice-servers` frame the server sent when this agent
 /// connected. It takes precedence over `stun_url` because it carries the
@@ -86,7 +99,8 @@ fn is_unusable_turn_tcp(url: &str) -> bool {
 pub async fn build_peer(
     pushed: &[IceServerEntry],
     stun_url: &str,
-) -> Result<Arc<RTCPeerConnection>> {
+    handler: Arc<dyn PeerConnectionEventHandler>,
+) -> Result<Arc<dyn PeerConnection>> {
     let mut media = MediaEngine::default();
     media
         .register_default_codecs()
@@ -94,14 +108,29 @@ pub async fn build_peer(
     let registry = register_default_interceptors(Registry::new(), &mut media)
         .context("register_default_interceptors")?;
 
-    let mut setting = SettingEngine::default();
-    setting.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
-    setting.set_include_loopback_candidate(true);
-
-    let api = APIBuilder::new()
-        .with_media_engine(media)
-        .with_interceptor_registry(registry)
-        .with_setting_engine(setting)
+    let setting = SettingEngineBuilder::new()
+        .with_multicast_dns_mode(MulticastDnsMode::Disabled)
+        // The answerer must resolve `a=setup` to a concrete role, and the
+        // choice decides who can answer an SCTP INIT. rtc 0.21 builds a
+        // client-only SCTP endpoint when this side is the DTLS client: no
+        // ServerConfig, so every incoming INIT is refused ("refusing first
+        // packet due to empty server_config"), and the endpoint depends on its
+        // own INIT being answered. The peer, though, may pick its SCTP role
+        // from the ICE role rather than the DTLS role (werift: `isServer =
+        // iceRole !== "controlling"`), so an ICE-controlling offerer that is
+        // also the DTLS client still sends INIT — and with the default client
+        // answer (`a=setup:active`) both endpoints send INIT and neither
+        // answers: the session connects at ICE/DTLS and then hangs forever
+        // waiting for a channel.
+        //
+        // 0.13 papered over this with SCTP simultaneous open (webrtc-sctp 0.12
+        // answered an INIT even from COOKIE-WAIT); rtc 0.21 dropped it. The
+        // answerer taking the DTLS server role (RFC 5763 §5 allows active or
+        // passive) makes rtc build a server SCTP endpoint that accepts the
+        // peer's INIT — and it matches the production topology: the browser is
+        // the offerer, so Chrome and werift both initiate the association
+        // while this side answers.
+        .with_answering_dtls_role(RTCDtlsRole::Server)
         .build();
 
     let mut ice_servers = ice_servers_from_entries(pushed);
@@ -112,17 +141,165 @@ pub async fn build_peer(
         }];
     }
 
-    let config = RTCConfiguration {
-        ice_servers,
-        ..Default::default()
-    };
+    let config = RTCConfigurationBuilder::new()
+        .with_ice_servers(ice_servers)
+        .build();
 
-    Ok(Arc::new(
-        api.new_peer_connection(config)
-            .await
-            .context("new_peer_connection")?,
-    ))
+    let peer = PeerConnectionBuilder::new()
+        .with_configuration(config)
+        .with_media_engine(media)
+        .with_setting_engine(setting)
+        .with_interceptor_registry(registry)
+        .with_handler(handler)
+        .with_udp_addrs(vec!["0.0.0.0:0".to_string(), "127.0.0.1:0".to_string()])
+        .build()
+        .await
+        .context("build peer connection")?;
+
+    Ok(Arc::new(peer) as Arc<dyn PeerConnection>)
 }
+
+/// The event handler every session peer is built with.
+///
+/// In 0.21 the callbacks are not registered on the connection after the fact:
+/// the handler goes into the builder and `build()` refuses without one. It is
+/// therefore created before the peer and holds the channels the session loop
+/// reads.
+pub struct SessionHandler {
+    session_id: String,
+    outbound: mpsc::Sender<SignalMessage>,
+    end_tx: mpsc::Sender<&'static str>,
+    channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
+    open_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl SessionHandler {
+    pub fn new(
+        session_id: String,
+        outbound: mpsc::Sender<SignalMessage>,
+        end_tx: mpsc::Sender<&'static str>,
+        channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
+        open_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    ) -> Self {
+        Self {
+            session_id,
+            outbound,
+            end_tx,
+            channel,
+            open_tx,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for SessionHandler {
+    /// Forward one gathered candidate to the browser.
+    ///
+    /// The handler is attached by the builder before the offer is processed,
+    /// which is what the old code achieved by registering before
+    /// `set_local_description`: gathering starts the moment the local
+    /// description is set, and a handler attached later would miss the host
+    /// candidates emitted in that same tick.
+    ///
+    /// There is no gathering-complete case here any more: 0.21 does not
+    /// deliver end-of-candidates through this callback (an empty candidate
+    /// only moves the gathering state), so every event is a real candidate.
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        // `to_json` is the crate's bridge to the wire type: it produces the
+        // `candidate:`-prefixed string and the `sdpMid`/`sdpMLineIndex` pair
+        // the browser parses.
+        let init = match event.candidate.to_json() {
+            Ok(init) => prepare_outbound_candidate(init),
+            Err(e) => {
+                tracing::warn!(error = %e, "dropping an unmappable candidate");
+                return;
+            }
+        };
+        let signal = match candidate_to_wire(&self.session_id, init) {
+            Ok(signal) => signal,
+            Err(e) => {
+                tracing::warn!(error = %e, "dropping an unmappable candidate");
+                return;
+            }
+        };
+        // Never block the driver here. This callback runs on the driver task,
+        // which owns ICE consent and SCTP timers; the signaling socket can be
+        // down for minutes (reconnect backoff) while `outbound` sits full, and
+        // blocking would expire consent and drop a healthy session — the
+        // failure the dead-peer fix exists to prevent. A spawned send is
+        // best-effort like the Worker's push: a candidate that cannot be sent
+        // is a lost candidate, not a dead session — ICE retries and one lost
+        // candidate is rarely fatal.
+        let outbound = self.outbound.clone();
+        tokio::spawn(async move {
+            if outbound
+                .send(SignalMessage::IceCandidate(signal))
+                .await
+                .is_err()
+            {
+                tracing::debug!("outbound closed while sending a candidate");
+            }
+        });
+    }
+
+    /// End the session when the connection fails (ICE gave up: a killed tab
+    /// that never sent a close, a network cut). Without this the session — and
+    /// its ADR-14 slot — would run until the 1h cap.
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if state == RTCPeerConnectionState::Failed {
+            let _ = self.end_tx.try_send("the peer connection failed");
+        }
+    }
+
+    /// Accept the `terminal` channel and publish it to the session loop.
+    ///
+    /// ADR-09: the exact label, and nothing else. An unexpected channel is
+    /// closed rather than ignored — leaving it half-open would let a peer keep
+    /// a second channel alive past its welcome. A second `terminal` channel is
+    /// closed for the same reason.
+    ///
+    /// The driver announces a channel exactly when it opens (it is the
+    /// `OnOpen` event that creates this callback), so the channel is already
+    /// open here. Messages and a close that arrive before the session loop
+    /// starts polling are queued by the driver (capacity 256, retained under
+    /// back-pressure), not lost.
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        match dc.label().await {
+            Ok(label) if label == TERMINAL_LABEL => {}
+            Ok(label) => {
+                tracing::warn!(label = %label, "refusing unexpected channel");
+                let _ = dc.close().await;
+                return;
+            }
+            Err(e) => {
+                // A round-trip to the driver; it fails once the channel is
+                // gone. Nothing left to refuse at that point.
+                tracing::warn!(error = %e, "dropping an unlabelled channel");
+                return;
+            }
+        }
+
+        if let Err(second) = self.channel.set(dc) {
+            tracing::warn!("refusing a second terminal channel");
+            let _ = second.close().await;
+            return;
+        }
+        // Set before firing: the session loop reads `channel` after `open_rx`
+        // resolves, so the value must already be in place.
+        if let Some(tx) = self.open_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+/// A no-op handler for peers that never carry a session.
+///
+/// The ADR-14 refusal path builds a real peer to answer and immediately close
+/// it; `build()` requires a handler, and none of the callbacks matter there.
+pub struct NoopHandler;
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for NoopHandler {}
 
 /// Narrow a wire `sdpMLineIndex` to the `u16` the crate uses.
 ///
@@ -148,7 +325,7 @@ pub fn narrow_mline_index(raw: Option<i32>) -> Result<Option<u16>> {
 /// Called by `run_one_session` once `answer_offer` has set the remote
 /// description; the buffer is filled by `apply_candidate`.
 pub async fn flush_pending_candidates(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &Arc<dyn PeerConnection>,
     pending: &mut Vec<RTCIceCandidateInit>,
 ) -> Result<()> {
     for cand in pending.drain(..) {
@@ -179,7 +356,7 @@ pub async fn flush_pending_candidates(
 /// flag today (`routes/signal.ts` stores `approved: body.approved !== false` and
 /// nothing enforces it).
 pub async fn answer_offer(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
 ) -> Result<()> {
@@ -193,7 +370,7 @@ pub async fn answer_offer(
 /// signal that the agent declined. `POST /api/signal/answer` rejects an empty
 /// `sdp` (spec R19), so "refuse" cannot mean "send nothing".
 pub async fn refuse_offer(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
 ) -> Result<()> {
@@ -207,7 +384,7 @@ pub async fn refuse_offer(
 /// by the happy-path tests, and duplicated code there is how a refusal ends up
 /// sending something the Worker rejects.
 async fn send_answer(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     approved: bool,
     outbound: &mpsc::Sender<SignalMessage>,
@@ -233,59 +410,6 @@ async fn send_answer(
     Ok(())
 }
 
-/// Register the outbound candidate forwarder.
-///
-/// **This is what makes the connection work at all.** ICE needs a candidate
-/// pair: the browser's candidates alone are not enough, and an agent that never
-/// sends its own reaches `checking` and stops. Register it *before*
-/// `answer_offer` — gathering starts when the local description is set, and a
-/// handler registered afterwards misses the host candidates emitted in that
-/// same tick.
-///
-/// `on_ice_candidate(None)` is the gathering-complete signal (spec R4): not an
-/// error, and nothing to forward.
-pub fn forward_candidates(
-    peer: &Arc<RTCPeerConnection>,
-    session_id: String,
-    outbound: mpsc::Sender<SignalMessage>,
-) {
-    peer.on_ice_candidate(Box::new(move |candidate| {
-        let outbound = outbound.clone();
-        let session_id = session_id.clone();
-        Box::pin(async move {
-            let Some(candidate) = candidate else {
-                return; // gathering complete
-            };
-            // `on_ice_candidate` hands us an `RTCIceCandidate`; the wire type is
-            // `RTCIceCandidateInit` (serializable, spec R4). `to_json` is the
-            // crate's bridge — it produces the `candidate:`-prefixed string and
-            // the `sdpMid`/`sdpMLineIndex` pair the browser parses.
-            let init = match candidate.to_json() {
-                Ok(init) => prepare_outbound_candidate(init),
-                Err(e) => {
-                    tracing::warn!(error = %e, "dropping an unmappable candidate");
-                    return;
-                }
-            };
-            match candidate_to_wire(&session_id, init) {
-                Ok(signal) => {
-                    // Best-effort, like the Worker's push: a candidate that
-                    // cannot be sent is a lost candidate, not a dead session —
-                    // ICE retries and one lost candidate is rarely fatal.
-                    if outbound
-                        .send(SignalMessage::IceCandidate(signal))
-                        .await
-                        .is_err()
-                    {
-                        tracing::debug!("outbound closed while sending a candidate");
-                    }
-                }
-                Err(e) => tracing::warn!(error = %e, "dropping an unmappable candidate"),
-            }
-        })
-    }));
-}
-
 /// Apply one inbound candidate, buffering it if the remote description is not
 /// set yet.
 ///
@@ -295,7 +419,7 @@ pub fn forward_candidates(
 /// has processed the offer, and `add_ice_candidate` fails outright with
 /// `ErrNoRemoteDescription` (spec R3).
 pub async fn apply_candidate(
-    peer: &Arc<RTCPeerConnection>,
+    peer: &Arc<dyn PeerConnection>,
     pending: &mut Vec<RTCIceCandidateInit>,
     signal: IceCandidateSignal,
 ) -> Result<bool> {
@@ -320,7 +444,7 @@ pub async fn apply_candidate(
 
 /// Fix up an outbound `RTCIceCandidateInit` for the wire.
 ///
-/// webrtc 0.13's `to_json()` hardcodes `sdp_mid: Some("")` — a mid no m-line
+/// rtc 0.21's `to_json()` still hardcodes `sdp_mid: Some("")` — a mid no m-line
 /// has. The agent is a data-channel-only answerer with a single m-line, so the
 /// candidate is addressed by `sdpMLineIndex` alone. Setting `sdp_mid` to
 /// `None` makes the browser take the index path instead of searching for a
@@ -333,10 +457,9 @@ fn prepare_outbound_candidate(mut init: RTCIceCandidateInit) -> RTCIceCandidateI
 
 /// Convert an outbound crate candidate into the wire type.
 ///
-/// `on_ice_candidate(None)` is the gathering-complete signal (spec R4) — not an
-/// error, and not something to forward. Because the agent trickles,
-/// `gathering_complete_promise()` is **not** used; that helper is for
-/// non-trickle (blocking) gathering.
+/// There is no gathering-complete event to filter out in 0.21 — end of
+/// candidates no longer arrives through `on_ice_candidate` at all. Because the
+/// agent trickles, non-trickle (blocking) gathering helpers are not used.
 pub fn candidate_to_wire(
     session_id: &str,
     init: RTCIceCandidateInit,
@@ -391,7 +514,7 @@ mod tests {
 
     #[test]
     fn outbound_candidate_has_no_empty_mid() {
-        // webrtc 0.13's `to_json` produces `sdp_mid: Some("")` and
+        // rtc 0.21's `to_json` still produces `sdp_mid: Some("")` and
         // `sdp_mline_index: Some(0)` — the override in `prepare_outbound_candidate`
         // must strip the empty mid so the browser falls through to the
         // `sdpMLineIndex` path. This test pins that: remove the override and it
@@ -432,7 +555,7 @@ mod tests {
         assert_eq!(
             servers[0].urls.len(),
             2,
-            "TURN/TCP is dropped: webrtc-rs 0.13 cannot gather it"
+            "TURN/TCP is dropped: rtc 0.21 cannot gather it"
         );
         assert_eq!(
             servers[0].username, "1700000000:user-1",
@@ -443,12 +566,11 @@ mod tests {
 
     #[test]
     fn turn_tcp_urls_are_dropped_but_stun_and_turn_udp_survive() {
-        // webrtc-rs 0.13's `gather_candidates_relay` handles only
-        // `turn:` over UDP; every other transport hits
-        // "Unable to handle URL in gather_candidates_relay" and is skipped.
-        // The server pushes `?transport=tcp` too because browsers do support
-        // TURN/TCP, so the agent filters its own copy instead of asking the
-        // server to degrade the browser's list. Keeping the URL would only
+        // rtc 0.21's TURN relayer handles only `turn:` over UDP; every other
+        // transport hits "Skipping unsupported non-UDP TURN url" and is
+        // skipped. The server pushes `?transport=tcp` too because browsers do
+        // support TURN/TCP, so the agent filters its own copy instead of asking
+        // the server to degrade the browser's list. Keeping the URL would only
         // produce a WARN per gather and an attempt that can never succeed.
         let entries = vec![IceServerEntry {
             urls: vec![

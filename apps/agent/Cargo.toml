@@ -6,17 +6,23 @@ rust-version = "1.85"          # clap 4.6.7's MSRV is the highest in the set (sp
 
 [dependencies]
 anyhow = "1.0.104"
+async-trait = "0.1.89"
 base64 = "0.23"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 portable-pty = "0.9"
+# `rtc` is a direct dependency because webrtc 0.21 does not re-export the parts
+# of it the agent needs: `rtc::ice::mdns::MulticastDnsMode` for the setting
+# engine, and `rtc::peer_connection::...` types in tests. Version-pinned to the
+# same 0.21 line webrtc depends on so the two resolve to one crate.
+rtc = "0.21"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-webrtc = "0.13"
+webrtc = "0.21"
 
 [profile.release]
 opt-level = 3

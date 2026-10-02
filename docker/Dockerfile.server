@@ -20,13 +20,13 @@ ENV NODE_ENV=production
 RUN corepack enable
 
 ###############################################################################
-# Stage 2: builder — compile @ponter/server (needs full dep tree + native toolchain)
+# Stage 2: builder — compile @ponter/server (needs full dep tree)
 ###############################################################################
 FROM base AS builder
 
-# Native build toolchain required to compile better-sqlite3 against the
-# alpine musl libc. These are NOT carried into the runner stage.
-RUN apk add --no-cache python3 make g++ gcc
+# No native toolchain needed: better-sqlite3 13 ships prebuilt bindings for
+# linuxmusl and its build script is denied in pnpm-workspace.yaml, so nothing
+# compiles from source here.
 
 WORKDIR /app
 
@@ -50,12 +50,11 @@ FROM base AS runner
 
 WORKDIR /app
 
-# Native build toolchain required to compile better-sqlite3 in pnpm install --prod
-# (Node.js 24 on Alpine musl has no prebuilt binary available upstream).
 # `su-exec` is the privilege-drop helper the entrypoint uses: BusyBox's
 # `setpriv` only handles capabilities (no --reuid/--regid) and util-linux is a
-# heavy dependency for one flag set.
-RUN apk add --no-cache python3 make g++ gcc su-exec
+# heavy dependency for one flag set. No compiler is installed — better-sqlite3
+# 13 uses its shipped linuxmusl prebuild (see pnpm-workspace.yaml).
+RUN apk add --no-cache su-exec
 
 # Copy native deps needed at runtime.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
