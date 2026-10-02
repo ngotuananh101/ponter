@@ -146,20 +146,20 @@ describe('EditAgentDialog.vue', () => {
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
   });
 
-  it('7. Labels the capabilities group and marks the backdrop decorative', () => {
+  it('7. Groups the capabilities toggles and makes the backdrop a button', () => {
     const wrapper = mount(EditAgentDialog, {
       props: { open: true, agent: createMockAgent() },
       global: { stubs: { Teleport: true } },
     });
 
-    const group = wrapper.find('[role="group"]');
-    expect(group.exists()).toBe(true);
-    expect(group.attributes('aria-labelledby')).toBe(
-      'edit-agent-capabilities-label',
-    );
-    expect(wrapper.find('#edit-agent-capabilities-label').exists()).toBe(true);
+    const fieldset = wrapper.find('fieldset');
+    expect(fieldset.exists()).toBe(true);
+    expect(fieldset.find('legend').text()).toBe('Capabilities');
 
-    // The click-outside backdrop is decorative, not a keyboard control.
-    expect(wrapper.find('[role="presentation"]').exists()).toBe(true);
+    // The click-outside backdrop is a real button, so it is keyboard
+    // activatable and satisfies mouse/keyboard parity.
+    expect(wrapper.find('[aria-label="Close dialog"]').element.tagName).toBe(
+      'BUTTON',
+    );
   });
 });

@@ -165,13 +165,38 @@ function isStringArray(value: unknown): value is string[] {
   );
 }
 
-router.patch('/:id', async (c) => {
-  const user = c.get('user');
-  const agentId = c.req.param('id');
-  const db = c.get('db');
+/** Coerce one field's raw value to its stored column form, or reject it. */
+function normalizeField(field: UpdatableField, value: unknown): string | null {
+  if (field === 'capabilities') {
+    if (value === null) return null;
+    if (isStringArray(value)) return JSON.stringify(value);
+    throw new AppError(
+      'capabilities must be an array of strings or null',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
 
-  const body = await c.req.json<PatchBody | null>().catch(() => null);
+  if (!isNullableString(value)) {
+    throw new AppError(
+      `${field} must be a string or null`,
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+  return value;
+}
 
+/**
+ * Validate a raw PATCH body and reduce it to the column values to write.
+ *
+ * Kept out of the handler so the route reads as orchestration and the
+ * field-by-field rules live in one place. Throws `VALIDATION_ERROR` on the
+ * first violation.
+ */
+function buildPatchChanges(
+  body: unknown,
+): Partial<Record<UpdatableField, string | null>> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new AppError(
       'A JSON object body is required',
@@ -180,8 +205,10 @@ router.patch('/:id', async (c) => {
     );
   }
 
+  const record = body as Record<string, unknown>;
+
   for (const field of IMMUTABLE_FIELDS) {
-    if (field in body) {
+    if (field in record) {
       throw new AppError(
         `${field} cannot be modified`,
         400,
@@ -190,7 +217,7 @@ router.patch('/:id', async (c) => {
     }
   }
 
-  const unknownFields = Object.keys(body).filter(
+  const unknownFields = Object.keys(record).filter(
     (key) => !(UPDATABLE_FIELDS as readonly string[]).includes(key),
   );
   if (unknownFields.length > 0) {
@@ -204,37 +231,24 @@ router.patch('/:id', async (c) => {
   const changes: Partial<Record<UpdatableField, string | null>> = {};
 
   for (const field of UPDATABLE_FIELDS) {
-    if (!(field in body)) continue;
-    const value = body[field];
-
-    if (field === 'capabilities') {
-      if (value === null) {
-        changes.capabilities = null;
-      } else if (isStringArray(value)) {
-        changes.capabilities = JSON.stringify(value);
-      } else {
-        throw new AppError(
-          'capabilities must be an array of strings or null',
-          400,
-          'VALIDATION_ERROR',
-        );
-      }
-      continue;
-    }
-
-    if (!isNullableString(value)) {
-      throw new AppError(
-        `${field} must be a string or null`,
-        400,
-        'VALIDATION_ERROR',
-      );
-    }
-    changes[field] = value;
+    if (!(field in record)) continue;
+    changes[field] = normalizeField(field, record[field]);
   }
 
   if (Object.keys(changes).length === 0) {
     throw new AppError('No updatable fields provided', 400, 'VALIDATION_ERROR');
   }
+
+  return changes;
+}
+
+router.patch('/:id', async (c) => {
+  const user = c.get('user');
+  const agentId = c.req.param('id');
+  const db = c.get('db');
+
+  const body = await c.req.json<PatchBody | null>().catch(() => null);
+  const changes = buildPatchChanges(body);
 
   // Tenancy guard runs before the write: matching on both `id` and `userId`
   // means a non-owner updates no row and gets the same 404 as an absent agent,

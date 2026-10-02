@@ -58,9 +58,16 @@ async function handleConfirm() {
       v-if="open && agent"
       class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-xs animate-in fade-in duration-150"
     >
-      <!-- Decorative click-outside backdrop. It is not a keyboard control:
-           the visible Close and Cancel buttons are the accessible dismissal. -->
-      <div role="presentation" class="fixed inset-0" @click="handleClose" />
+      <!-- Click-outside backdrop as a real button: native <button> is keyboard
+           activatable, so it satisfies the mouse/keyboard parity rule without
+           a hand-rolled keydown handler. The visible Close/Cancel buttons
+           remain the primary dismissal. -->
+      <button
+        type="button"
+        aria-label="Close dialog"
+        class="fixed inset-0 cursor-default"
+        @click="handleClose"
+      />
 
       <div
         class="relative w-full max-w-md rounded-xl border border-border bg-card text-card-foreground shadow-2xl z-10 overflow-hidden"

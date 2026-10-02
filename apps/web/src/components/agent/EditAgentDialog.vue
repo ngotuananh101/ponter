@@ -108,9 +108,16 @@ async function handleSubmit() {
       v-if="open && agent"
       class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-xs animate-in fade-in duration-150"
     >
-      <!-- Decorative click-outside backdrop. It is not a keyboard control:
-           the visible Close and Cancel buttons are the accessible dismissal. -->
-      <div role="presentation" class="fixed inset-0" @click="handleClose" />
+      <!-- Click-outside backdrop as a real button: native <button> is keyboard
+           activatable, so it satisfies the mouse/keyboard parity rule without
+           a hand-rolled keydown handler. The visible Close/Cancel buttons and
+           Escape remain the primary dismissal. -->
+      <button
+        type="button"
+        aria-label="Close dialog"
+        class="fixed inset-0 cursor-default"
+        @click="handleClose"
+      />
 
       <div
         class="relative w-full max-w-lg rounded-xl border border-border bg-card text-card-foreground shadow-2xl z-10 overflow-hidden flex flex-col max-h-[90vh]"
@@ -214,21 +221,12 @@ async function handleSubmit() {
             </div>
           </div>
 
-          <!-- Capabilities: a group of toggle buttons, not a single form
-               control, so the heading is a span named by `aria-labelledby`
-               rather than a <label> (which must point at a control). -->
-          <div class="space-y-1.5">
-            <span
-              id="edit-agent-capabilities-label"
-              class="block text-xs font-semibold"
-            >
-              Capabilities
-            </span>
-            <div
-              class="flex gap-2"
-              role="group"
-              aria-labelledby="edit-agent-capabilities-label"
-            >
+          <!-- Capabilities: a native <fieldset>/<legend> groups the toggles.
+               A fieldset carries group semantics without an ARIA role, and the
+               legend names it, so assistive tech announces them as one unit. -->
+          <fieldset class="space-y-1.5">
+            <legend class="text-xs font-semibold">Capabilities</legend>
+            <div class="flex gap-2">
               <button
                 type="button"
                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
@@ -262,7 +260,7 @@ async function handleSubmit() {
                 Desktop
               </button>
             </div>
-          </div>
+          </fieldset>
 
           <!-- Actions -->
           <div class="pt-3 flex justify-end gap-2 border-t border-border/80">

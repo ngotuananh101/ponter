@@ -101,11 +101,13 @@ describe('DeleteAgentDialog.vue', () => {
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
   });
 
-  it('6. Marks the click-outside backdrop decorative', () => {
+  it('6. Makes the click-outside backdrop a keyboard-activatable button', () => {
     const wrapper = mount(DeleteAgentDialog, {
       props: { open: true, agent: createMockAgent() },
       global: { stubs: { Teleport: true } },
     });
-    expect(wrapper.find('[role="presentation"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Close dialog"]').element.tagName).toBe(
+      'BUTTON',
+    );
   });
 });
