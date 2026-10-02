@@ -8,3 +8,5 @@ docs
 .remember
 .claude
 .superpowers
+# Vendored third-party crate (xcap); keep upstream formatting as-is.
+apps/agent/vendor
