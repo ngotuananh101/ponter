@@ -1072,14 +1072,14 @@ On Linux the `xcap` build needs system development packages *before any cargo co
 ```bash
 sudo dnf install -y pipewire-devel libspa-devel mesa-libgbm-devel libdrm-devel \
   mesa-libEGL-devel clang-devel pkgconf-pkg-config libxcb-devel libXrandr-devel \
-  dbus-devel wayland-devel
+  wayland-devel
 ```
 
 Debian/Ubuntu (CI; Task 6 wires this into the workflows):
 
 ```bash
 sudo apt-get update && sudo apt-get install -y pkg-config libclang-dev libxcb1-dev \
-  libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libwayland-dev \
+  libxrandr-dev libpipewire-0.3-dev libspa-0.2-dev libwayland-dev \
   libegl-dev libgbm-dev libdrm-dev
 ```
 
@@ -3696,14 +3696,14 @@ In `.github/workflows/ci.yml`, the `rust` job builds the agent for glibc, which 
 
 ```yaml
       - name: Install system dependencies (capture stack)
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libegl-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libclang-dev libxcb1-dev libxrandr-dev libpipewire-0.3-dev libspa-0.2-dev libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
 
 Add the identical step to the **`e2e`** job, immediately before `Build the agent binary` (that job compiles the agent the harness spawns):
 
 ```yaml
       - name: Install system dependencies (capture stack)
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libegl-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libclang-dev libxcb1-dev libxrandr-dev libpipewire-0.3-dev libspa-0.2-dev libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
 
 > `nasm` is intentionally absent: `openh264-sys2`'s `try_compile_nasm` only *warns* when NASM is missing and falls back to the C path, so the build succeeds either way. Adding it would be harmless but is not required.
@@ -3714,7 +3714,7 @@ In the **`verify`** job (ubuntu-latest, glibc), add the same step after `Install
 
 ```yaml
       - name: Install system dependencies (capture stack)
-        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libegl-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libclang-dev libxcb1-dev libxrandr-dev libpipewire-0.3-dev libspa-0.2-dev libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
 
 In the **`build`** job, only the two linux-**gnu** targets need the headers. Add, immediately before the `Build` step (after the existing musl-tools step):
@@ -3724,14 +3724,14 @@ In the **`build`** job, only the two linux-**gnu** targets need the headers. Add
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libegl-dev
+          sudo apt-get install -y pkg-config libclang-dev libxcb1-dev libxrandr-dev libpipewire-0.3-dev libspa-0.2-dev libwayland-dev libegl-dev libgbm-dev libdrm-dev
 ```
 
 > The **musl** target needs nothing: `xcap`, `openh264` and `bytes` are gated behind `[target.'cfg(not(target_env = "musl"))'.dependencies]` (Task 3), so they are absent from that build. The **macOS** and **Windows** targets also need nothing — `xcap` compiles against system frameworks there. `ubuntu-24.04-arm` uses the same apt package names as `ubuntu-latest`.
 
 - [ ] **Step 8: Verify the workflows are valid YAML**
 
-Run: `pnpm dlx yaml-lint .github/workflows/ci.yml .github/workflows/build-agent.yml` (or, if `yaml-lint` is unavailable, `python3 -c "import yaml,sys; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" .github/workflows/ci.yml .github/workflows/build-agent.yml`)
+Run: `python3 -c "import yaml,sys; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" .github/workflows/ci.yml .github/workflows/build-agent.yml` (PyYAML is available on `ubuntu-latest` and on this dev host; if it were missing, `python3 -m pip install --user pyyaml` first, or use `pnpm dlx yaml-lint` / `actionlint`).
 
 Expected: no output, exit 0. This catches an indentation slip in the inserted steps, which GitHub would otherwise only surface as a workflow that never runs.
 
