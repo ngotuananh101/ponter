@@ -882,7 +882,7 @@ async fn run_desktop_session(
     pushed_ice: &[signal::IceServerEntry],
     cfg: &SessionConfig,
     pending: &mut Vec<RTCIceCandidateInit>,
-    connected_rx: tokio::sync::oneshot::Receiver<()>,
+    mut connected_rx: tokio::sync::oneshot::Receiver<()>,
     mut end_rx: mpsc::Receiver<&'static str>,
     inbound: &mut mpsc::Receiver<signal::SignalMessage>,
 ) -> Result<()> {
@@ -894,7 +894,10 @@ async fn run_desktop_session(
         DesktopSource::Screen => match desktop::ScreenSource::new().await {
             Ok(source) => Box::new(source),
             Err(e) => {
-                tracing::warn!(error = %e, "desktop capture unavailable; refusing the offer");
+                // `?e` (Debug) prints anyhow's full chain; `%e` (Display) would
+                // show only the outermost context ("opening the video recorder")
+                // and hide the platform error underneath it.
+                tracing::warn!(error = ?e, "desktop capture unavailable; refusing the offer");
                 rtc::refuse_offer(peer, offer, outbound).await?;
                 let _ = peer.close().await;
                 return Ok(());
@@ -906,14 +909,67 @@ async fn run_desktop_session(
     rtc::send_desktop_answer(peer, offer, outbound).await?;
     rtc::flush_pending_candidates(peer, pending).await?;
 
-    // Wait for the connection. Until it is `Connected` the track is unbound and
-    // every `write_sample` fails with `Error::CodecNotFound` (Task 3's test
-    // pins that failure mode), so streaming must not start before this.
-    if !matches!(
-        tokio::time::timeout(Duration::from_secs(20), connected_rx).await,
-        Ok(Ok(()))
-    ) {
-        tracing::warn!(session_id = %offer.session_id, "desktop peer did not connect within 20s");
+    // Wait for the connection, draining candidates the whole time. Until the
+    // peer is `Connected` the track is unbound and every `write_sample` fails
+    // with `Error::CodecNotFound` (Task 3's test pins that failure mode), so
+    // streaming must not start before this.
+    //
+    // Draining is load-bearing, not optional: the browser trickles its ICE
+    // candidates only after it reads the answer, and a desktop peer has no data
+    // channel to keep the session alive, so if nothing applies those candidates
+    // here the connection never forms a candidate pair — ICE sits at "no
+    // candidate pairs" and fails at the 20s deadline with a black video element.
+    // This mirrors the terminal handshake below, which drains for exactly the
+    // same reason.
+    let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let connected = loop {
+        tokio::select! {
+            // Candidates first: they are what this wait is blocked on.
+            biased;
+
+            message = inbound.recv() => {
+                let Some(message) = message else {
+                    tracing::warn!(
+                        session_id = %offer.session_id,
+                        "the agent is shutting down while waiting for the desktop peer",
+                    );
+                    break false;
+                };
+                route_inbound(
+                    peer,
+                    &offer.session_id,
+                    pending,
+                    message,
+                    outbound,
+                    pushed_ice,
+                    cfg,
+                ).await?;
+            }
+
+            // The peer is already gone (connection failed / closed before it
+            // ever connected): stop waiting immediately instead of sitting out
+            // the full 20s.
+            reason = end_rx.recv() => {
+                tracing::warn!(
+                    session_id = %offer.session_id,
+                    reason = reason.unwrap_or("the peer went away"),
+                    "the desktop session ended before the peer connected",
+                );
+                break false;
+            }
+
+            result = &mut connected_rx => {
+                break result.is_ok();
+            }
+
+            _ = tokio::time::sleep_until(connect_deadline) => {
+                tracing::warn!(session_id = %offer.session_id, "desktop peer did not connect within 20s");
+                break false;
+            }
+        }
+    };
+
+    if !connected {
         let _ = peer.close().await;
         return Ok(());
     }
@@ -1355,25 +1411,23 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn pty_manager_rejects_duplicate_spawn() {
         let manager = PtyManager::new(10);
-        let (out_tx, _out_rx) = mpsc::channel(16);
+        let (out_tx, _out_rx) = mpsc::channel::<String>(16);
 
-        #[cfg(unix)]
-        {
-            let _ = manager
-                .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx.clone())
-                .await;
-            // A second spawn with the same id returns Ok and does not increment.
-            let second = manager
-                .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx)
-                .await;
-            assert!(second.is_ok());
-            assert_eq!(manager.session_count().await, 1);
-            // Clean up so the spawned /bin/sh doesn't outlive the test.
-            manager.send_input("s1", b"exit\n".to_vec()).await;
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
+        let _ = manager
+            .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx.clone())
+            .await;
+        // A second spawn with the same id returns Ok and does not increment.
+        let second = manager
+            .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx)
+            .await;
+        assert!(second.is_ok());
+        assert_eq!(manager.session_count().await, 1);
+        // Clean up so the spawned /bin/sh doesn't outlive the test.
+        manager.send_input("s1", b"exit\n".to_vec()).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     #[tokio::test]
@@ -1398,7 +1452,7 @@ mod tests {
         {
             // On non-unix the spawn is mocked by the guard; still test the limit.
             manager
-                .spawn_session("s1".to_string(), "x", 80, 24, out_tx)
+                .spawn_session("s1".to_string(), "x", 80, 24, out_tx.clone())
                 .await
                 .ok();
             let second = manager
