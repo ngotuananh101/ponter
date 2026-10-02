@@ -223,8 +223,10 @@ async function handleSubmit() {
 
           <!-- Capabilities: a native <fieldset>/<legend> groups the toggles.
                A fieldset carries group semantics without an ARIA role, and the
-               legend names it, so assistive tech announces them as one unit. -->
-          <fieldset class="space-y-1.5">
+               legend names it, so assistive tech announces them as one unit.
+               `border-0 p-0 m-0 min-w-0` strips the browser's default fieldset
+               chrome so it lays out like the sibling fields. -->
+          <fieldset class="space-y-1.5 border-0 p-0 m-0 min-w-0">
             <legend class="text-xs font-semibold">Capabilities</legend>
             <div class="flex gap-2">
               <button
