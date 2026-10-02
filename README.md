@@ -1,6 +1,7 @@
 # Ponter
 
-[![CI](https://github.com/ngotuananh101/ponter/actions/workflows/ci.yml/badge.svg)](https://github.com/ngotuananh101/ponter/actions/workflows/ci.yml)
+[![CI (Node)](https://github.com/ngotuananh101/ponter/actions/workflows/ci-node.yml/badge.svg)](https://github.com/ngotuananh101/ponter/actions/workflows/ci-node.yml)
+[![Build Agent](https://github.com/ngotuananh101/ponter/actions/workflows/build-agent.yml/badge.svg)](https://github.com/ngotuananh101/ponter/actions/workflows/build-agent.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Turborepo](https://img.shields.io/badge/monorepo-Turborepo-ef4444.svg)](https://turbo.build)
 [![Node.js 24](https://img.shields.io/badge/runtime-Node.js%2024-68A063.svg)](https://nodejs.org)
