@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue';
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { RefreshCw } from '@lucide/vue';
 import { Button } from '@/components/ui/button';
 import { useTerminalStore } from '@/stores/terminal';
@@ -30,6 +30,12 @@ function attach() {
 }
 
 watch(() => props.tab.desktopStream, attach, { immediate: true });
+
+// `watch(..., { immediate: true })` runs before the template ref exists, so its
+// first call is a no-op. When the component remounts with the stream already
+// present (the tab is keyed by tab id, so switching away and back remounts),
+// the watcher's source never changes and would never fire — attach here instead.
+onMounted(attach);
 
 onBeforeUnmount(() => {
   // Release the decoder without touching the store's client lifecycle — the

@@ -42,6 +42,20 @@ describe('DesktopView', () => {
     expect(retry).toHaveBeenCalledWith('tab-1');
   });
 
+  it('attaches the stream to the video element on mount', () => {
+    const stream = { track: { kind: 'video' }, streams: [] };
+    const wrapper = mount(DesktopView, {
+      props: {
+        tab: desktopTab({ desktopStream: stream as never }),
+      },
+    });
+    const video = wrapper.find('video').element as HTMLVideoElement;
+    // The element must carry the stream at mount, not only after the reactive
+    // watcher fires — a remount with the stream already present is the case the
+    // watcher misses, and it is the case this asserts.
+    expect(video.srcObject).not.toBeNull();
+  });
+
   it('clears srcObject on unmount', () => {
     const wrapper = mount(DesktopView, {
       props: {
