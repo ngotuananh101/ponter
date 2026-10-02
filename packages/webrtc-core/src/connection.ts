@@ -123,7 +123,7 @@ export class PeerConnection {
     // keeps every existing mock (which has no onTrack) working untouched.
     if (this.peer.onTrack) {
       subscribeRemoteTracks(this.peer, (track, streams) => {
-        for (const listener of [...this.trackListeners]) {
+        for (const listener of this.trackListeners.slice()) {
           listener(track, streams);
         }
       });

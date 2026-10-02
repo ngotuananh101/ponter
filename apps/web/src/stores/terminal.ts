@@ -174,7 +174,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     title?: string,
     shell?: string,
   ): Promise<string> {
-    const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const tabId = `tab-${crypto.randomUUID()}`;
 
     // Reverse ADR-19 guard: if the agent already has an open desktop tab, refuse
     // before any network call. ADR-14 makes the server refuse a second session
@@ -248,7 +248,11 @@ export const useTerminalStore = defineStore('terminal', () => {
     cause: unknown,
   ): void {
     const message =
-      cause instanceof Error ? cause.message : String(cause ?? 'unknown error');
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === 'string'
+          ? cause
+          : 'unknown error';
 
     const session = new TerminalSession(
       `pending-${tabId}`,
@@ -305,7 +309,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     agentId: string,
     title?: string,
   ): Promise<string> {
-    const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const tabId = `tab-${crypto.randomUUID()}`;
 
     if (tabs.value.some((t) => t.agentId === agentId)) {
       recordDesktopErrorTab(
@@ -391,7 +395,11 @@ export const useTerminalStore = defineStore('terminal', () => {
       return tabId;
     } catch (e) {
       const message =
-        e instanceof Error ? e.message : String(e ?? 'unknown error');
+        e instanceof Error
+          ? e.message
+          : typeof e === 'string'
+            ? e
+            : 'unknown error';
       // Drop the half-built connection so a retry does not reuse a dead peer.
       const half = desktopConnections.get(agentId);
       if (half) {
@@ -445,6 +453,49 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   }
 
+  /** Close a desktop tab's connection: its client, its peer, and the server session. */
+  function closeDesktopConnection(agentId: string): void {
+    const conn = desktopConnections.get(agentId);
+    if (!conn) return;
+    conn.client.close();
+    void conn.peer.close();
+    desktopConnections.delete(agentId);
+    void apiClient.sessions.terminate(conn.sessionId).catch(() => {});
+  }
+
+  /**
+   * Close a terminal tab's connection when no other terminal tab shares the
+   * agent. A shared connection stays open so the remaining tab keeps working.
+   */
+  function closeTerminalConnection(removed: TabItem): void {
+    try {
+      removed.session?.close();
+    } catch {
+      // session may be a mock in tests, or already closed
+    }
+
+    const hasOtherTabsForAgent = tabs.value.some(
+      (t) => t.agentId === removed.agentId && t.kind === 'terminal',
+    );
+    if (hasOtherTabsForAgent) return;
+
+    const conn = connections.get(removed.agentId);
+    if (!conn) return;
+    conn.client.dispose();
+    void conn.peer.close();
+    connections.delete(removed.agentId);
+    // Tell the server the session is over. Without this the session row
+    // stays `active` after the tab closes, and the agent — which sees only
+    // the peer going away — is left to notice by itself. Best-effort: a
+    // failed terminate must not break the close path, and the agent now
+    // ends the session when the peer dies even if this request never
+    // lands.
+    void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+      // The session may already be terminated server-side (agent
+      // disconnect) — a rejection here is not actionable.
+    });
+  }
+
   function closeTab(tabId: string): void {
     const index = tabs.value.findIndex((t) => t.id === tabId);
     if (index === -1) return;
@@ -463,41 +514,9 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
 
     if (removed.kind === 'desktop') {
-      const conn = desktopConnections.get(removed.agentId);
-      if (conn) {
-        conn.client.close();
-        void conn.peer.close();
-        desktopConnections.delete(removed.agentId);
-        void apiClient.sessions.terminate(conn.sessionId).catch(() => {});
-      }
+      closeDesktopConnection(removed.agentId);
     } else {
-      try {
-        removed.session?.close();
-      } catch {
-        // session may be a mock in tests, or already closed
-      }
-
-      const hasOtherTabsForAgent = tabs.value.some(
-        (t) => t.agentId === removed.agentId && t.kind === 'terminal',
-      );
-      if (!hasOtherTabsForAgent) {
-        const conn = connections.get(removed.agentId);
-        if (conn) {
-          conn.client.dispose();
-          void conn.peer.close();
-          connections.delete(removed.agentId);
-          // Tell the server the session is over. Without this the session row
-          // stays `active` after the tab closes, and the agent — which sees only
-          // the peer going away — is left to notice by itself. Best-effort: a
-          // failed terminate must not break the close path, and the agent now
-          // ends the session when the peer dies even if this request never
-          // lands.
-          void apiClient.sessions.terminate(conn.sessionId).catch(() => {
-            // The session may already be terminated server-side (agent
-            // disconnect) — a rejection here is not actionable.
-          });
-        }
-      }
+      closeTerminalConnection(removed);
     }
   }
 

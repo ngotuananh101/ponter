@@ -110,11 +110,9 @@ export class DesktopClient {
   onConnectionStateChange(handler: (state: string) => void): () => void {
     // Lazily subscribe to the peer's connection state so handlers registered
     // before start() still receive state changes.
-    if (this.peerStateUnsubscribe === null) {
-      this.peerStateUnsubscribe = this.peer.onConnectionStateChange((state) =>
-        this.forwardState(state),
-      );
-    }
+    this.peerStateUnsubscribe ??= this.peer.onConnectionStateChange((state) =>
+      this.forwardState(state),
+    );
     this.stateListeners.push(handler);
     return () => {
       const idx = this.stateListeners.indexOf(handler);
@@ -123,7 +121,7 @@ export class DesktopClient {
   }
 
   private forwardState(state: string): void {
-    for (const listener of [...this.stateListeners]) {
+    for (const listener of this.stateListeners.slice()) {
       listener(state);
     }
   }
