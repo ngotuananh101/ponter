@@ -214,11 +214,128 @@ impl FrameSource for TestPatternSource {
 /// **Failure is reported, not lost.** The thread sends its setup outcome over
 /// a `oneshot` before the frame loop, so `new()` returns the real error
 /// (no display, missing portal, no permission) instead of a stream that never
-/// produces a frame.
+/// produces a frame. Crucially, "the recorder started" is *not* treated as
+/// success: the thread waits for the first frame before reporting `Ok`, so a
+/// ScreenCast request that the portal accepted but never feeds (denied
+/// permission, compositor never associated the stream) surfaces as an error the
+/// caller can refuse on — not a black video element that streams nothing.
 pub struct ScreenSource {
     frames: Option<Receiver<xcap::Frame>>,
     stop: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// How long `ScreenSource::new` waits for the recorder's first frame before
+/// concluding the capture is not actually delivering.
+///
+/// A granted ScreenCast stream emits an initial frame within ~100 ms of
+/// `start()` — the compositor pushes it as soon as the stream goes live — so
+/// anything on the order of seconds means the portal request was denied or the
+/// compositor never associated the stream. `start()` itself still returns `Ok`
+/// in that case, which is exactly how a denied capture used to become a silent
+/// black stream instead of a refusal. This ceiling is well under the browser's
+/// 20 s track timeout so the refusal reaches the user first.
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Waits for the first frame from a freshly started recorder.
+///
+/// Returns the frame by forwarding it to `frame_tx` (so the streaming loop
+/// still sees it) and `Ok(())`; returns `Err` when no frame arrives within
+/// `timeout`, which is the signal that capture is not actually permitted.
+/// Split out from the capture thread so both branches are unit-testable
+/// without a live display or a real portal.
+fn await_first_frame(
+    frames: &Receiver<xcap::Frame>,
+    frame_tx: &std::sync::mpsc::Sender<xcap::Frame>,
+    timeout: Duration,
+) -> std::result::Result<(), String> {
+    match frames.recv_timeout(timeout) {
+        Ok(frame) => {
+            let _ = frame_tx.send(frame);
+            Ok(())
+        }
+        Err(RecvTimeoutError::Timeout) => Err(format!(
+            "capture started but produced no frames within {timeout:?}; the \
+             ScreenCast portal permission was probably denied"
+        )),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("the capture stream ended before its first frame".to_string())
+        }
+    }
+}
+
+/// The two lifecycle calls `run_capture` makes on a recorder.
+///
+/// Exists so the capture loop's *behaviour* — refuse when the recorder starts
+/// but never feeds, stream once it does, always stop — can be tested with a
+/// fake, because `xcap::VideoRecorder` is a concrete type with no seam.
+trait CaptureRecorder {
+    fn start(&self) -> std::result::Result<(), String>;
+    fn stop(&self) -> std::result::Result<(), String>;
+}
+
+impl CaptureRecorder for xcap::VideoRecorder {
+    fn start(&self) -> std::result::Result<(), String> {
+        xcap::VideoRecorder::start(self).map_err(|e| e.to_string())
+    }
+    fn stop(&self) -> std::result::Result<(), String> {
+        xcap::VideoRecorder::stop(self).map_err(|e| e.to_string())
+    }
+}
+
+/// The body of the capture thread: start the recorder, prove it actually
+/// produces frames, then forward them until stopped.
+///
+/// Split out of `ScreenSource::new`'s closure so it can be driven directly by a
+/// test with a fake recorder. Returns nothing — the outcome travels over
+/// `ready_tx` (setup) and `frame_tx` (frames), exactly as the real thread wires
+/// them, so the test exercises the production control flow, not a copy of it.
+fn run_capture<R: CaptureRecorder>(
+    recorder: R,
+    frames: Receiver<xcap::Frame>,
+    ready_tx: oneshot::Sender<std::result::Result<(), String>>,
+    frame_tx: std::sync::mpsc::Sender<xcap::Frame>,
+    stop_rx: std::sync::mpsc::Receiver<()>,
+    first_frame_timeout: Duration,
+) {
+    if let Err(e) = recorder.start() {
+        let _ = ready_tx.send(Err(format!("starting capture: {e}")));
+        return;
+    }
+
+    // `start()` returning Ok only means the portal accepted the request — on
+    // Wayland it says nothing about whether frames will ever arrive. Wait for
+    // the first one before reporting success, so a denied/never-fed ScreenCast
+    // becomes a clean refusal instead of a stream that silently produces no RTP.
+    if let Err(message) = await_first_frame(&frames, &frame_tx, first_frame_timeout) {
+        let _ = ready_tx.send(Err(message));
+        if let Err(e) = recorder.stop() {
+            tracing::warn!(error = %e, "stopping the screen recorder failed");
+        }
+        return;
+    }
+    let _ = ready_tx.send(Ok(()));
+
+    // Forward frames until stopped. `recv_timeout` keeps the loop responsive to
+    // the stop signal while the recorder is idle.
+    loop {
+        match frames.recv_timeout(Duration::from_millis(100)) {
+            Ok(frame) => {
+                if frame_tx.send(frame).is_err() {
+                    break; // ScreenSource dropped
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+    }
+
+    if let Err(e) = recorder.stop() {
+        tracing::warn!(error = %e, "stopping the screen recorder failed");
+    }
 }
 
 impl ScreenSource {
@@ -240,32 +357,14 @@ impl ScreenSource {
                     }
                 };
                 let (recorder, frames) = recorder;
-                if let Err(e) = recorder.start() {
-                    let _ = ready_tx.send(Err(format!("starting capture: {e}")));
-                    return;
-                }
-                let _ = ready_tx.send(Ok(()));
-
-                // Forward frames until stopped. `recv_timeout` keeps the loop
-                // responsive to the stop signal while the recorder is idle.
-                loop {
-                    match frames.recv_timeout(Duration::from_millis(100)) {
-                        Ok(frame) => {
-                            if frame_tx.send(frame).is_err() {
-                                break; // ScreenSource dropped
-                            }
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    }
-                    if stop_rx.try_recv().is_ok() {
-                        break;
-                    }
-                }
-
-                if let Err(e) = recorder.stop() {
-                    tracing::warn!(error = %e, "stopping the screen recorder failed");
-                }
+                run_capture(
+                    recorder,
+                    frames,
+                    ready_tx,
+                    frame_tx,
+                    stop_rx,
+                    FIRST_FRAME_TIMEOUT,
+                );
             })
             .context("spawning the desktop capture thread")?;
 
@@ -627,17 +726,207 @@ mod tests {
         source.stop();
     }
 
+    #[test]
+    fn await_first_frame_forwards_the_first_frame_and_succeeds() {
+        let (tx, rx) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel::<xcap::Frame>();
+        tx.send(xcap::Frame::new(8, 6, vec![1u8; 8 * 6 * 4]))
+            .unwrap();
+
+        await_first_frame(&rx, &frame_tx, Duration::from_secs(1))
+            .expect("a queued frame is an immediate success");
+
+        // The frame must be forwarded, not swallowed: the streaming loop still
+        // needs to see it after `new()` reports ready.
+        let forwarded = frame_rx.try_recv().expect("the first frame is forwarded");
+        assert_eq!((forwarded.width, forwarded.height), (8, 6));
+    }
+
+    #[test]
+    fn await_first_frame_reports_an_error_when_no_frame_ever_arrives() {
+        // The regression this pins: a recorder that `start()`s successfully but
+        // never delivers a frame (a denied ScreenCast permission) must be an
+        // error, not a silent black stream. Before the wait existed, `new()`
+        // returned `Ok` here and the browser timed out 20s later.
+        let (_tx, rx) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (frame_tx, _frame_rx) = std::sync::mpsc::channel::<xcap::Frame>();
+
+        let err = await_first_frame(&rx, &frame_tx, Duration::from_millis(50))
+            .expect_err("no frame within the timeout must be an error");
+        assert!(
+            err.contains("produced no frames"),
+            "the error must name the missing-frame failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn await_first_frame_reports_an_error_when_the_stream_ends_first() {
+        let (tx, rx) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (frame_tx, _frame_rx) = std::sync::mpsc::channel::<xcap::Frame>();
+        drop(tx);
+
+        let err = await_first_frame(&rx, &frame_tx, Duration::from_secs(1))
+            .expect_err("a disconnected stream must be an error");
+        assert!(
+            err.contains("ended before its first frame"),
+            "the error must name the early-end failure, got: {err}"
+        );
+    }
+
+    /// A recorder whose `start` outcome and stop are fully controlled, so the
+    /// "started fine but never produced a frame" case can be reproduced without
+    /// a display or a portal.
+    struct FakeRecorder {
+        start_result: std::result::Result<(), String>,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CaptureRecorder for FakeRecorder {
+        fn start(&self) -> std::result::Result<(), String> {
+            self.start_result.clone()
+        }
+        fn stop(&self) -> std::result::Result<(), String> {
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// The regression for the production bug: a recorder that `start()`s
+    /// successfully but never feeds a frame (denied ScreenCast permission) must
+    /// make `run_capture` report an error, not sit forwarding nothing forever.
+    /// Before the first-frame wait, this path reported `Ok(())` and the browser
+    /// timed out 20s later.
+    #[test]
+    fn run_capture_refuses_when_the_recorder_starts_but_never_feeds() {
+        let (ready_tx, mut ready_rx) = oneshot::channel();
+        let (_frame_in, frames) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (frame_tx, _frame_out) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (_stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let recorder = FakeRecorder {
+            start_result: Ok(()),
+            stopped: stopped.clone(),
+        };
+
+        run_capture(
+            recorder,
+            frames,
+            ready_tx,
+            frame_tx,
+            stop_rx,
+            Duration::from_millis(50),
+        );
+
+        let outcome = ready_rx
+            .try_recv()
+            .expect("run_capture must report a setup outcome");
+        let message = outcome.expect_err("a recorder that never feeds must be refused");
+        assert!(
+            message.contains("produced no frames"),
+            "the refusal must name the missing-frame failure, got: {message}"
+        );
+        assert!(
+            stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "the recorder must be stopped on the refusal path"
+        );
+    }
+
+    /// The happy path: once a first frame arrives the setup reports `Ok`, the
+    /// frame reaches the streaming loop, and the recorder is stopped on exit.
+    #[test]
+    fn run_capture_streams_the_first_frame_then_stops() {
+        let (ready_tx, mut ready_rx) = oneshot::channel();
+        let (frame_in, frames) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (frame_tx, frame_out) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let recorder = FakeRecorder {
+            start_result: Ok(()),
+            stopped: stopped.clone(),
+        };
+
+        frame_in
+            .send(xcap::Frame::new(4, 4, vec![9u8; 64]))
+            .unwrap();
+        stop_tx.send(()).unwrap();
+
+        run_capture(
+            recorder,
+            frames,
+            ready_tx,
+            frame_tx,
+            stop_rx,
+            Duration::from_secs(1),
+        );
+
+        assert!(
+            ready_rx.try_recv().expect("a setup outcome").is_ok(),
+            "a feeding recorder must be accepted"
+        );
+        let forwarded = frame_out
+            .try_recv()
+            .expect("the first frame must reach the streaming loop");
+        assert_eq!((forwarded.width, forwarded.height), (4, 4));
+        assert!(
+            stopped.load(std::sync::atomic::Ordering::SeqCst),
+            "the recorder must be stopped when the loop exits"
+        );
+    }
+
+    #[test]
+    fn run_capture_reports_a_start_failure_without_waiting_for_a_frame() {
+        let (ready_tx, mut ready_rx) = oneshot::channel();
+        let (_frame_in, frames) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (frame_tx, _frame_out) = std::sync::mpsc::channel::<xcap::Frame>();
+        let (_stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let recorder = FakeRecorder {
+            start_result: Err("no portal".to_string()),
+            stopped: stopped.clone(),
+        };
+
+        run_capture(
+            recorder,
+            frames,
+            ready_tx,
+            frame_tx,
+            stop_rx,
+            Duration::from_secs(5),
+        );
+
+        let message = ready_rx
+            .try_recv()
+            .expect("a setup outcome")
+            .expect_err("a failed start must be reported");
+        assert!(
+            message.contains("starting capture: no portal"),
+            "the error must carry the start failure, got: {message}"
+        );
+    }
+
     /// `ScreenSource::new` must not panic or hang on a headless machine; it
     /// either returns a source or a clean error. Needs a live display, so it
     /// is ignored by default and run manually on the dev machine.
+    ///
+    /// This is the end-to-end regression for the Wayland black-screen bug: a
+    /// capture that connects to PipeWire but never delivers a frame used to
+    /// pass here vacuously (the old body only asserted *if* a frame arrived).
+    /// It now requires a real frame, so the vendored `xcap` lifetime fix —
+    /// keeping the portal ScreenCast session alive — is what makes it green.
     #[tokio::test]
     #[ignore = "needs a live display; run manually on the dev machine"]
     async fn screen_source_smoke_on_a_live_display() {
         let mut source = ScreenSource::new().await.expect("live display");
-        let frame = source.next_frame().unwrap();
-        if let Some(frame) = frame {
-            assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
-        }
+        let frame = source
+            .next_frame()
+            .unwrap()
+            .expect("a live display must deliver at least one frame");
+        assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+        assert!(
+            frame.width > 0 && frame.height > 0,
+            "the delivered frame must have real dimensions"
+        );
         source.stop();
     }
 

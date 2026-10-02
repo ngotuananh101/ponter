@@ -34,6 +34,14 @@ bytes = "1"
 openh264 = "0.9.8"     # vendored Cisco source; no network at build time
 xcap = "0.9.8"
 
+# `xcap` 0.9.8 drops the portal ScreenCast session at the end of
+# `WaylandVideoRecorder::new()`, which tears the session down before PipeWire
+# ever attaches — the Wayland capture then delivers zero frames (black stream).
+# Vendored with a lifetime fix; see `vendor/xcap/PATCH.md`. Remove this once a
+# release carries the fix upstream.
+[patch.crates-io]
+xcap = { path = "vendor/xcap" }
+
 [profile.release]
 opt-level = 3
 lto = true
