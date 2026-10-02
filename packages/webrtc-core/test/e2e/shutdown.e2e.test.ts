@@ -112,7 +112,10 @@ describe.skipIf(!isLinux)('agent shutdown', () => {
       });
       agent.child.kill('SIGINT');
 
-      const result = await Promise.race([exited, delay(5_000).then(() => null)]);
+      const result = await Promise.race([
+        exited,
+        delay(5_000).then(() => null),
+      ]);
 
       expect(
         result,
