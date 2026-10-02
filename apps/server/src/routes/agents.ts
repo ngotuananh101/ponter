@@ -10,20 +10,14 @@ import {
   toPublicAgent,
   type PublicAgent,
 } from '../utils/agent.js';
+// The one live-socket map, owned by the WebSocket layer. Importing it here —
+// rather than keeping a second, never-populated map — is what makes the
+// `socketPresent` flag reflect reality. `ws.ts` does not import this module, so
+// there is no cycle.
+import { agentConnections } from './ws.js';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
-
-/**
- * Live agent sockets, keyed by `agents.id`.
- *
- * Module scope within the single Node.js process: WebSocket connections and HTTP
- * requests share the same process, so this map is reliable here (unlike the
- * multi-isolate Workers deployment). WebSocket handling is wired up in a later
- * task; the map is declared now so `toPublicAgent` can accept a socket-present
- * flag without callers needing to know the source.
- */
-export const agentConnections = new Map<string, unknown>();
 
 router.get('/', async (c) => {
   const user = c.get('user');
@@ -123,6 +117,164 @@ router.get('/:id', async (c) => {
   }
 
   return c.json(toPublicAgent(agent, agentConnections.has(agent.id)));
+});
+
+/**
+ * The mutable subset of an agent's metadata.
+ *
+ * Identity and lifecycle columns (`id`, `user_id`, `public_key`, `is_online`,
+ * `last_ping_at`, `created_at`, `credential_hash`) are not updatable through
+ * this route: the first three identify the agent and its key material, and the
+ * last four are owned by the server. Rejecting them explicitly — rather than
+ * ignoring them — stops a caller from believing a `publicKey` rotation took
+ * effect when it did not.
+ */
+const UPDATABLE_FIELDS = [
+  'hostname',
+  'platform',
+  'osVersion',
+  'agentVersion',
+  'capabilities',
+] as const;
+
+type UpdatableField = (typeof UPDATABLE_FIELDS)[number];
+
+type PatchBody = Partial<Record<UpdatableField, unknown>>;
+
+/** Fields a caller may never set; their presence is a 400, not a silent no-op. */
+const IMMUTABLE_FIELDS = [
+  'id',
+  'userId',
+  'publicKey',
+  'isOnline',
+  'lastHeartbeat',
+  'createdAt',
+] as const;
+
+/**
+ * A nullable string field: `null` clears it, a string sets it, anything else is
+ * invalid. Absent keys are handled by the caller (they mean "leave unchanged").
+ */
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  );
+}
+
+/** Coerce one field's raw value to its stored column form, or reject it. */
+function normalizeField(field: UpdatableField, value: unknown): string | null {
+  if (field === 'capabilities') {
+    if (value === null) return null;
+    if (isStringArray(value)) return JSON.stringify(value);
+    throw new AppError(
+      'capabilities must be an array of strings or null',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  if (!isNullableString(value)) {
+    throw new AppError(
+      `${field} must be a string or null`,
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+  return value;
+}
+
+/**
+ * Validate a raw PATCH body and reduce it to the column values to write.
+ *
+ * Kept out of the handler so the route reads as orchestration and the
+ * field-by-field rules live in one place. Throws `VALIDATION_ERROR` on the
+ * first violation.
+ */
+function buildPatchChanges(
+  body: unknown,
+): Partial<Record<UpdatableField, string | null>> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new AppError(
+      'A JSON object body is required',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  const record = body as Record<string, unknown>;
+
+  for (const field of IMMUTABLE_FIELDS) {
+    if (field in record) {
+      throw new AppError(
+        `${field} cannot be modified`,
+        400,
+        'VALIDATION_ERROR',
+      );
+    }
+  }
+
+  const unknownFields = Object.keys(record).filter(
+    (key) => !(UPDATABLE_FIELDS as readonly string[]).includes(key),
+  );
+  if (unknownFields.length > 0) {
+    throw new AppError(
+      `Unknown field(s): ${unknownFields.join(', ')}`,
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  const changes: Partial<Record<UpdatableField, string | null>> = {};
+
+  for (const field of UPDATABLE_FIELDS) {
+    if (!(field in record)) continue;
+    changes[field] = normalizeField(field, record[field]);
+  }
+
+  if (Object.keys(changes).length === 0) {
+    throw new AppError('No updatable fields provided', 400, 'VALIDATION_ERROR');
+  }
+
+  return changes;
+}
+
+router.patch('/:id', async (c) => {
+  const user = c.get('user');
+  const agentId = c.req.param('id');
+  const db = c.get('db');
+
+  const body = await c.req.json<PatchBody | null>().catch(() => null);
+  const changes = buildPatchChanges(body);
+
+  // Tenancy guard runs before the write: matching on both `id` and `userId`
+  // means a non-owner updates no row and gets the same 404 as an absent agent,
+  // so cross-tenant existence is not leaked.
+  const existing = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.userId, user.id)))
+    .get();
+
+  if (!existing) {
+    throw new AppError('Agent not found', 404, 'NOT_FOUND');
+  }
+
+  const updated = await db
+    .update(agents)
+    .set(changes)
+    .where(and(eq(agents.id, agentId), eq(agents.userId, user.id)))
+    .returning()
+    .get();
+
+  if (!updated) {
+    throw new AppError('Agent not found', 404, 'NOT_FOUND');
+  }
+
+  return c.json(toPublicAgent(updated, agentConnections.has(agentId)));
 });
 
 router.delete('/:id', async (c) => {

@@ -548,6 +548,199 @@ describe('Agents, Devices & Sessions REST API', () => {
       });
       expect(res.status).toBe(404);
     });
+
+    describe('PATCH /api/agents/:id', () => {
+      /** Register an agent as `token` and return the created row. */
+      async function seedAgent(
+        app: ReturnType<typeof createApp>,
+        overrides: Record<string, unknown> = {},
+      ): Promise<AgentResponse> {
+        const res = await app.request('/api/agents', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            id: 'agent_patch',
+            hostname: 'old-host',
+            platform: 'linux',
+            osVersion: '22.04',
+            agentVersion: '0.1.0',
+            publicKey: 'pk_patch',
+            capabilities: ['terminal'],
+            ...overrides,
+          }),
+        });
+        expect(res.status).toBe(201);
+        const { agent } = (await res.json()) as { agent: AgentResponse };
+        return agent;
+      }
+
+      function patch(
+        app: ReturnType<typeof createApp>,
+        id: string,
+        body: unknown,
+        bearer = token,
+      ): Promise<Response> {
+        return app.request(`/api/agents/${id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${bearer}`,
+          },
+          body: JSON.stringify(body),
+        });
+      }
+
+      it('updates mutable metadata and returns the projected agent', async () => {
+        const app = createApp();
+        await seedAgent(app);
+
+        const res = await patch(app, 'agent_patch', {
+          hostname: 'new-host',
+          osVersion: '24.04',
+          agentVersion: '0.2.0',
+          capabilities: ['terminal', 'desktop'],
+        });
+
+        expect(res.status).toBe(200);
+        const updated = (await res.json()) as AgentResponse;
+        expect(updated.hostname).toBe('new-host');
+        expect(updated.osVersion).toBe('24.04');
+        expect(updated.agentVersion).toBe('0.2.0');
+        expect(updated.capabilities).toEqual(['terminal', 'desktop']);
+        // Immutable identity fields survive untouched.
+        expect(updated.id).toBe('agent_patch');
+        expect(updated.publicKey).toBe('pk_patch');
+        expect(updated.userId).toBe(userId);
+        expect(Object.keys(updated)).not.toContain('credentialHash');
+
+        // The change is persisted, not just echoed.
+        const getRes = await app.request('/api/agents/agent_patch', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const fetched = (await getRes.json()) as AgentResponse;
+        expect(fetched.hostname).toBe('new-host');
+        expect(fetched.capabilities).toEqual(['terminal', 'desktop']);
+      });
+
+      it('clears capabilities when passed null', async () => {
+        const app = createApp();
+        await seedAgent(app);
+
+        const res = await patch(app, 'agent_patch', { capabilities: null });
+
+        expect(res.status).toBe(200);
+        const updated = (await res.json()) as AgentResponse;
+        expect(updated.capabilities).toEqual([]);
+      });
+
+      it('rejects identity/lifecycle fields with 400 VALIDATION_ERROR', async () => {
+        const app = createApp();
+        await seedAgent(app);
+
+        for (const body of [
+          { publicKey: 'pk_attacker' },
+          { id: 'agent_other' },
+          { userId: 'someone-else' },
+          { isOnline: true },
+          { lastHeartbeat: '2026-01-01 00:00:00' },
+          { createdAt: '2020-01-01 00:00:00' },
+        ]) {
+          const res = await patch(app, 'agent_patch', body);
+          expect(res.status).toBe(400);
+          const err = (await res.json()) as ErrorResponse;
+          expect(err.code).toBe('VALIDATION_ERROR');
+        }
+
+        // Nothing was mutated by the rejected attempts.
+        const getRes = await app.request('/api/agents/agent_patch', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const fetched = (await getRes.json()) as AgentResponse;
+        expect(fetched.publicKey).toBe('pk_patch');
+        expect(fetched.hostname).toBe('old-host');
+      });
+
+      it('rejects an empty or unknown-only body with 400 VALIDATION_ERROR', async () => {
+        const app = createApp();
+        await seedAgent(app);
+
+        for (const body of [{}, { somethingElse: 'x' }, null]) {
+          const res = await patch(app, 'agent_patch', body);
+          expect(res.status).toBe(400);
+          const err = (await res.json()) as ErrorResponse;
+          expect(err.code).toBe('VALIDATION_ERROR');
+        }
+      });
+
+      it('rejects wrong field types with 400 VALIDATION_ERROR', async () => {
+        const app = createApp();
+        await seedAgent(app);
+
+        for (const body of [
+          { hostname: 123 },
+          { capabilities: 'terminal' },
+          { capabilities: [1, 2] },
+          { platform: false },
+        ]) {
+          const res = await patch(app, 'agent_patch', body);
+          expect(res.status).toBe(400);
+          const err = (await res.json()) as ErrorResponse;
+          expect(err.code).toBe('VALIDATION_ERROR');
+        }
+      });
+
+      it('rejects a cross-tenant PATCH with 404', async () => {
+        const app = createApp();
+        await seedAgent(app);
+
+        const otherRes = await app.request('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'patch_other',
+            password: 'Password123!',
+            publicKey: 'pk_patch_other',
+          }),
+        });
+        const other = (await otherRes.json()) as AuthResponse;
+
+        const res = await patch(
+          app,
+          'agent_patch',
+          { hostname: 'hijacked' },
+          other.token,
+        );
+        expect(res.status).toBe(404);
+
+        const getRes = await app.request('/api/agents/agent_patch', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const fetched = (await getRes.json()) as AgentResponse;
+        expect(fetched.hostname).toBe('old-host');
+      });
+
+      it('rejects a PATCH on a non-existent agent with 404', async () => {
+        const app = createApp();
+        const res = await patch(app, 'agent_missing', { hostname: 'x' });
+        expect(res.status).toBe(404);
+        const err = (await res.json()) as ErrorResponse;
+        expect(err.code).toBe('NOT_FOUND');
+      });
+
+      it('rejects an unauthenticated PATCH with 401', async () => {
+        const app = createApp();
+        await seedAgent(app);
+        const res = await app.request('/api/agents/agent_patch', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hostname: 'x' }),
+        });
+        expect(res.status).toBe(401);
+      });
+    });
   });
 
   describe('isAgentOnline boundary (unit)', () => {
