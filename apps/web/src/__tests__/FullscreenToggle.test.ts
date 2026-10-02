@@ -37,4 +37,35 @@ describe('FullscreenToggle.vue', () => {
     expect(button.attributes('aria-label')).toContain('Exit fullscreen');
     expect(button.attributes('title')).toBe('Exit fullscreen');
   });
+
+  // The two placements want opposite treatments, and the tab strip (the only
+  // caller) uses the inline one. A regression that dropped the variant branch
+  // would leave the button absolutely positioned over the terminal instead of
+  // sitting beside "+", so pin both shapes.
+  it('floats over the session by default (overlay variant)', () => {
+    const wrapper = mount(FullscreenToggle, {
+      props: { active: false, supported: true },
+    });
+
+    const button = wrapper.find('[data-test="fullscreen-toggle"]');
+    expect(button.classes()).toContain('absolute');
+    expect(button.classes()).toContain('backdrop-blur-sm');
+    expect(button.classes()).not.toContain('flex-shrink-0');
+  });
+
+  it('renders as a flat inline control in the tab strip', () => {
+    const wrapper = mount(FullscreenToggle, {
+      props: { active: false, supported: true, variant: 'inline' },
+    });
+
+    const button = wrapper.find('[data-test="fullscreen-toggle"]');
+    // Inline sits in flow beside "+": no absolute positioning, no floating
+    // surface — just the flat hover treatment the neighbouring buttons use.
+    expect(button.classes()).not.toContain('absolute');
+    expect(button.classes()).toContain('flex-shrink-0');
+    expect(button.classes()).toContain('hover:bg-muted');
+    expect(button.classes()).not.toContain('backdrop-blur-sm');
+    // The inline icon is sized to match the "+" (w-4), not the overlay's w-3.5.
+    expect(button.find('svg').classes()).toContain('w-4');
+  });
 });
