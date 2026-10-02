@@ -924,6 +924,26 @@ gantt
 - [ ] Implement multi-tab terminal
 - [ ] Handle resize events
 
+### Phase 3: Desktop Streaming (Tuần 7-9)
+
+> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8-9 (chất lượng hình ảnh, điều khiển chuột/phím, hardening) là hạng mục sắp tới.
+
+#### Tuần 7: Desktop Streaming — lát cắt mỏng (đã xong)
+- [x] `packages/webrtc-core` — seam media tuỳ chọn (`addTransceiver`/`onTrack`) + `media-channel.ts` (đóng ADR-06)
+- [x] `packages/desktop-core` — `DesktopClient` không phụ thuộc DOM
+- [x] Agent Rust — `desktop.rs` (capture → downscale → openh264) + nhánh trả lời desktop trong `rtc.rs`
+- [x] Web — tab desktop trong workspace, độc quyền theo agent (ADR-19)
+- [x] E2E cross-language (`desktop.e2e.test.ts`) + demo thủ công trên Chrome
+
+#### Tuần 8-9: Chất lượng & tương tác (sắp tới)
+- [ ] Tăng chất lượng/khung hình, adaptive bitrate
+- [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
+- [ ] Chọn màn hình/cửa sổ, codec phần cứng
+
+### Phase 4: File Transfer (Tuần 10-11)
+
+> **Chưa thiết kế.** Mục này được giữ chỗ để lộ trình không nhảy cóc từ Phase 3 sang Phase 5; nội dung chi tiết sẽ bổ sung khi có spec riêng.
+
 ### Phase 5: E2EE & Security & Polish (Tuần 12-14)
 
 > **Đọc trước khi bắt đầu Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — audit adversarial E2EE/Zero-Trust (28 findings đã xác minh kèm evidence file:line) và work list chi tiết (WS1-WS5).
@@ -1054,7 +1074,8 @@ cargo build --release --target x86_64-unknown-linux-gnu
 | Metric | Target | Method |
 |--------|--------|--------|
 | Terminal Latency | < 10ms | P2P DataChannel |
-| Desktop FPS | 60fps | Hardware H.265 |
+| Desktop stream (Week 7) | ~720p @ 15fps, view-only | Software H.264 (openh264) |
+| Desktop stream (Phase 3 target) | 60fps | Hardware H.265 |
 | File Transfer | > 10MB/s | Parallel chunks |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |
