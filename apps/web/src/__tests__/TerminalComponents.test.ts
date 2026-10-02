@@ -112,6 +112,8 @@ vi.mock('@/services/client', () => ({
   apiClient: {
     agents: {
       list: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
     },
   },
 }));
@@ -156,7 +158,12 @@ describe('WorkspaceSidebar.vue', () => {
   it('shows the Monitor button only for agents advertising desktop', async () => {
     const wrapper = mount(WorkspaceSidebar, {
       props: {},
-      global: { stubs: { ScrollArea: { template: '<div><slot /></div>' } } },
+      global: {
+        stubs: {
+          Teleport: true,
+          ScrollArea: { template: '<div><slot /></div>' },
+        },
+      },
     });
     // Drive the agent list through the mocked api client used by this suite.
     await flushPromises();
@@ -170,5 +177,124 @@ describe('WorkspaceSidebar.vue', () => {
     await wrapper.find('[data-test="connect-desktop-a1"]').trigger('click');
     expect(wrapper.emitted('connectDesktop')).toBeTruthy();
     expect(wrapper.emitted('connectAgent')).toBeFalsy();
+  });
+
+  it('opens the edit dialog prefilled for the clicked agent', async () => {
+    const wrapper = mount(WorkspaceSidebar, {
+      props: {},
+      global: {
+        stubs: {
+          Teleport: true,
+          ScrollArea: { template: '<div><slot /></div>' },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="edit-agent-a1"]').exists()).toBe(true);
+    await wrapper.find('[data-test="edit-agent-a1"]').trigger('click');
+    await flushPromises();
+
+    // The edit dialog is open with a1's hostname prefilled.
+    expect(wrapper.find('#edit-agent-hostname').exists()).toBe(true);
+    expect(
+      (wrapper.find('#edit-agent-hostname').element as HTMLInputElement).value,
+    ).toBe('host-a');
+
+    // Editing must not also fire a connect action (the row click is stopped).
+    expect(wrapper.emitted('connectAgent')).toBeFalsy();
+    expect(wrapper.emitted('connectDesktop')).toBeFalsy();
+  });
+
+  it('opens the delete dialog for the clicked agent', async () => {
+    const wrapper = mount(WorkspaceSidebar, {
+      props: {},
+      global: {
+        stubs: {
+          Teleport: true,
+          ScrollArea: { template: '<div><slot /></div>' },
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-test="delete-agent-a2"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="delete-agent-confirm"]').exists()).toBe(
+      true,
+    );
+    expect(wrapper.text()).toContain('host-b');
+    expect(wrapper.emitted('connectAgent')).toBeFalsy();
+  });
+
+  it('removes the agent from the list after a successful delete', async () => {
+    const { apiClient } = await import('@/services/client');
+    vi.mocked(apiClient.agents.delete).mockResolvedValueOnce({ success: true });
+
+    const wrapper = mount(WorkspaceSidebar, {
+      props: {},
+      global: {
+        stubs: {
+          Teleport: true,
+          ScrollArea: { template: '<div><slot /></div>' },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="delete-agent-a2"]').exists()).toBe(true);
+    await wrapper.find('[data-test="delete-agent-a2"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-test="delete-agent-confirm"]').trigger('click');
+    await flushPromises();
+
+    expect(apiClient.agents.delete).toHaveBeenCalledWith('a2');
+    expect(wrapper.find('[data-test="delete-agent-a2"]').exists()).toBe(false);
+    // The other agent is untouched.
+    expect(wrapper.find('[data-test="delete-agent-a1"]').exists()).toBe(true);
+  });
+
+  it('reflects an edited agent in the list after a successful update', async () => {
+    const { apiClient } = await import('@/services/client');
+    vi.mocked(apiClient.agents.update).mockResolvedValueOnce({
+      id: 'a1',
+      userId: 'u1',
+      hostname: 'renamed-host',
+      platform: 'linux',
+      osVersion: '6.5',
+      agentVersion: '0.1.0',
+      publicKey: 'pk-a',
+      isOnline: true,
+      lastHeartbeat: null,
+      capabilities: ['terminal', 'desktop'],
+      createdAt: new Date().toISOString(),
+    });
+
+    const wrapper = mount(WorkspaceSidebar, {
+      props: {},
+      global: {
+        stubs: {
+          Teleport: true,
+          ScrollArea: { template: '<div><slot /></div>' },
+        },
+      },
+    });
+    await flushPromises();
+
+    await wrapper.find('[data-test="edit-agent-a1"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('#edit-agent-hostname').setValue('renamed-host');
+    await wrapper.find('[data-test="edit-agent-submit"]').trigger('click');
+    await flushPromises();
+
+    expect(apiClient.agents.update).toHaveBeenCalledWith('a1', {
+      hostname: 'renamed-host',
+      platform: 'linux',
+      osVersion: '6.5',
+      agentVersion: '0.1.0',
+      capabilities: ['terminal', 'desktop'],
+    });
+    expect(wrapper.text()).toContain('renamed-host');
   });
 });
