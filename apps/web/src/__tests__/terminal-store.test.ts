@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vi } from 'vitest';
+import { watch, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
 import type { TerminalSession } from '@ponter/terminal-core';
@@ -164,14 +165,28 @@ describe('useTerminalStore', () => {
     );
   });
 
-  it('openDesktopTab mutates the tab through the proxy so the stream reaches the view', async () => {
+  it('openDesktopTab mutates the tab through the proxy so a watcher fires', async () => {
     const store = useTerminalStore();
     desktopStart.mockResolvedValueOnce({
       track: { kind: 'video' },
       streams: [],
     });
-    const tabId = await store.openDesktopTab('ag-4', 'Host 4');
 
+    // A read-back assertion would pass even on the raw-object bug (the mutated
+    // raw object is the same reference stored in the array). What the view
+    // actually depends on is reactivity, so pin that: a watcher must fire.
+    let fired = 0;
+    const stop = watch(
+      () => store.tabs.find((t) => t.kind === 'desktop')?.desktopStream,
+      () => {
+        fired++;
+      },
+    );
+    const tabId = await store.openDesktopTab('ag-4', 'Host 4');
+    await nextTick();
+    stop();
+
+    expect(fired).toBeGreaterThan(0);
     const tab = store.tabs.find((t) => t.id === tabId);
     expect(tab?.status).toBe('active');
     expect(tab?.desktopStream?.track).toEqual({ kind: 'video' });
