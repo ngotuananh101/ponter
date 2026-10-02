@@ -5,6 +5,16 @@
 //! only to let integration tests import the modules, and the PTY echo test
 //! needs the real binary path anyway (spec §5.4.1).
 
+// Desktop streaming is unavailable on musl (see Cargo.toml): the module is
+// compiled out entirely, so the musl artifact stays terminal-only.
+//
+// The allow is temporary: Task 4 wires the module into the session loop, and
+// this repository's `cargo clippy --all-targets -- -D warnings` gate fails on
+// the dead_code warnings an unwired module produces (verified — in a binary
+// crate even `pub` items are dead-code-checked).
+#[cfg(not(target_env = "musl"))]
+#[allow(dead_code)]
+mod desktop;
 mod pty;
 mod rtc;
 mod signal;
