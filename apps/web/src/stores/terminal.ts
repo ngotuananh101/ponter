@@ -467,7 +467,7 @@ export const useTerminalStore = defineStore('terminal', () => {
    * Close a terminal tab's connection when no other terminal tab shares the
    * agent. A shared connection stays open so the remaining tab keeps working.
    */
-  function closeTerminalConnection(removed: TabItem): void {
+  function closeTerminalConnection(removed: (typeof tabs.value)[number]): void {
     try {
       removed.session?.close();
     } catch {
