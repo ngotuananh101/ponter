@@ -2,13 +2,14 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
 import type { Agent } from '@ponter/shared';
-import { Terminal, RefreshCw, Server, Search } from '@lucide/vue';
+import { Terminal, Monitor, RefreshCw, Server, Search } from '@lucide/vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 defineEmits<{
   (e: 'connectAgent', agent: Agent): void;
+  (e: 'connectDesktop', agent: Agent): void;
 }>();
 
 const agents = ref<Agent[]>([]);
@@ -136,10 +137,24 @@ onMounted(() => {
               </span>
             </div>
           </div>
-          <div
-            class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
-          >
-            <Terminal class="w-3.5 h-3.5" />
+          <div class="flex items-center gap-1">
+            <button
+              class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
+              title="Open terminal"
+              :data-test="`connect-terminal-${a.id}`"
+              @click.stop="$emit('connectAgent', a)"
+            >
+              <Terminal class="w-3.5 h-3.5" />
+            </button>
+            <button
+              v-if="a.capabilities.includes('desktop')"
+              class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
+              title="Open desktop stream"
+              :data-test="`connect-desktop-${a.id}`"
+              @click.stop="$emit('connectDesktop', a)"
+            >
+              <Monitor class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       </div>

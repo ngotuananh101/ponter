@@ -11,19 +11,25 @@ import {
   RESTPollingTransport,
   WebSocketSignalTransport,
 } from '@ponter/webrtc-core';
+import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
 
 export interface TabItem {
   id: string;
   agentId: string;
+  /** Discriminates the tab body and which connection map owns its lifecycle. */
+  kind: 'terminal' | 'desktop';
   terminalId: string;
   title: string;
   status: 'connecting' | 'active' | 'exited' | 'error';
   exitCode?: number;
   /** Why the connection failed, when `status === 'error'`. */
   error?: string;
-  session: TerminalSessionType;
+  /** Terminal tabs only. */
+  session?: TerminalSessionType;
+  /** Desktop tabs only: the render data. The client/peer live in `desktopConnections`. */
+  desktopStream?: DesktopStream;
 }
 
 export const useTerminalStore = defineStore('terminal', () => {
@@ -35,9 +41,48 @@ export const useTerminalStore = defineStore('terminal', () => {
   >();
   const pendingConnections = new Map<string, Promise<TerminalClient>>();
 
+  // Desktop clients are kept apart from terminal connections so a desktop
+  // client is never handed to the terminal flow and vice versa. The tab holds
+  // only `desktopStream` (render data); lifecycle stays here.
+  const desktopConnections = new Map<
+    string,
+    { peer: PeerConnection; client: DesktopClient; sessionId: string }
+  >();
+
   const activeTab = computed(() =>
     tabs.value.find((t) => t.id === activeTabId.value),
   );
+
+  /**
+   * Build the signaling transport for a session. Shared by the terminal and
+   * desktop flows so the WS/REST selection and the refresh callback cannot
+   * drift apart between them.
+   */
+  async function createSignalingTransport(
+    sessionId: string,
+  ): Promise<WebSocketSignalTransport | RESTPollingTransport> {
+    const token = await tokenStorage.getAccessToken();
+    const useWsSignaling = import.meta.env.VITE_BROWSER_WS_SIGNALING === 'true';
+
+    const restTransport = () =>
+      new RESTPollingTransport({
+        baseUrl: apiClient.http.baseUrl,
+        sessionId,
+        token: token ?? '',
+        onUnauthorized: async () => apiClient.http.refreshAccessToken(),
+      });
+
+    return useWsSignaling
+      ? new WebSocketSignalTransport({
+          baseUrl: apiClient.http.baseUrl,
+          sessionId,
+          getToken: () => tokenStorage.getAccessToken(),
+          onUnauthorized: () => apiClient.http.refreshAccessToken(),
+          reconnect: true,
+          fallback: restTransport(),
+        })
+      : restTransport();
+  }
 
   async function getOrConnectAgent(agentId: string): Promise<TerminalClient> {
     const existing = connections.get(agentId);
@@ -47,41 +92,9 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (pending) return pending;
 
     const connectionPromise = (async () => {
-      const token = await tokenStorage.getAccessToken();
-
       const sessionResp = await apiClient.sessions.create({ agentId });
 
-      // Signaling transport is selected at build time. WebSocket is the new
-      // push path; the REST poller stays reachable both as the default while
-      // the flag is off and as the WebSocket transport's own fallback.
-      const useWsSignaling =
-        import.meta.env.VITE_BROWSER_WS_SIGNALING === 'true';
-
-      // The transport uses its own fetch, not the api-client, so it has no
-      // refresh of its own. This callback must actually hit
-      // `/api/auth/refresh`: reading the stored token back (what it used to
-      // do) returns the same expired value, and the poll loop then backs off
-      // to its cap and 401s forever. A failed refresh resolves to `null`
-      // (tokens already cleared, `onAuthError` notified) so the loop backs
-      // off instead of crashing.
-      const restTransport = () =>
-        new RESTPollingTransport({
-          baseUrl: apiClient.http.baseUrl,
-          sessionId: sessionResp.id,
-          token: token ?? '',
-          onUnauthorized: async () => apiClient.http.refreshAccessToken(),
-        });
-
-      const transport = useWsSignaling
-        ? new WebSocketSignalTransport({
-            baseUrl: apiClient.http.baseUrl,
-            sessionId: sessionResp.id,
-            getToken: () => tokenStorage.getAccessToken(),
-            onUnauthorized: () => apiClient.http.refreshAccessToken(),
-            reconnect: true,
-            fallback: restTransport(),
-          })
-        : restTransport();
+      const transport = await createSignalingTransport(sessionResp.id);
 
       // The server mints short-lived TURN credentials per user, so fetch the
       // ICE list here rather than caching it at module load. Without this the
@@ -109,7 +122,7 @@ export const useTerminalStore = defineStore('terminal', () => {
               ? 'Session terminated: the agent disconnected or the session was closed.'
               : 'Session not found on the server.';
           for (const tab of tabs.value) {
-            if (tab.agentId !== agentId) continue;
+            if (tab.agentId !== agentId || tab.kind !== 'terminal') continue;
             tab.status = 'error';
             tab.error = message;
           }
@@ -131,7 +144,7 @@ export const useTerminalStore = defineStore('terminal', () => {
           'Connection failed: no direct route to the agent (ICE). Check that ' +
           'TURN is reachable, or that the agent is not behind a blocking NAT.';
         for (const tab of tabs.value) {
-          if (tab.agentId !== agentId) continue;
+          if (tab.agentId !== agentId || tab.kind !== 'terminal') continue;
           tab.status = 'error';
           tab.error = message;
         }
@@ -163,6 +176,19 @@ export const useTerminalStore = defineStore('terminal', () => {
   ): Promise<string> {
     const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
+    // Reverse ADR-19 guard: if the agent already has an open desktop tab, refuse
+    // before any network call. ADR-14 makes the server refuse a second session
+    // anyway, but the user should see why without a round-trip.
+    if (tabs.value.some((t) => t.agentId === agentId && t.kind === 'desktop')) {
+      recordFailedTab(
+        tabId,
+        agentId,
+        title,
+        'Close the desktop stream before opening a terminal.',
+      );
+      return tabId;
+    }
+
     let client: TerminalClient;
     try {
       client = await getOrConnectAgent(agentId);
@@ -171,7 +197,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       // this rejected into `handleConnect`, which neither awaited nor caught it:
       // an unhandled rejection, no tab, and no message. `waitForChannel` alone
       // accounts for the common case — the user clicked an agent and nothing
-      // happened at all, with no way to tell an offline agent from a firewall.
+      // happened.
       recordFailedTab(tabId, agentId, title, e);
       return tabId;
     }
@@ -181,6 +207,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     const newTab: TabItem = {
       id: tabId,
       agentId,
+      kind: 'terminal',
       terminalId: session.id,
       title: title || `Agent ${agentId.slice(0, 8)}`,
       status: 'connecting',
@@ -235,6 +262,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     tabs.value.push({
       id: tabId,
       agentId,
+      kind: 'terminal',
       terminalId: `pending-${tabId}`,
       title: title || `Agent ${agentId.slice(0, 8)}`,
       status: 'error',
@@ -242,6 +270,144 @@ export const useTerminalStore = defineStore('terminal', () => {
       session,
     });
     activeTabId.value = tabId;
+  }
+
+  /**
+   * A desktop tab that shows a failure instead of a video element.
+   */
+  function recordDesktopErrorTab(
+    tabId: string,
+    agentId: string,
+    title: string | undefined,
+    message: string,
+  ): void {
+    tabs.value.push({
+      id: tabId,
+      agentId,
+      kind: 'desktop',
+      terminalId: '',
+      title: title || `Agent ${agentId.slice(0, 8)}`,
+      status: 'error',
+      error: message,
+    });
+    activeTabId.value = tabId;
+  }
+
+  /**
+   * Open a view-only desktop stream tab (ADR-18/ADR-19).
+   *
+   * Exclusivity is enforced client-side per agent: one session per agent at a
+   * time (ADR-14 makes the server refuse a second anyway, but the user should
+   * see why before any network call). The check is deliberately before
+   * `sessions.create`, so a rejected click costs nothing.
+   */
+  async function openDesktopTab(
+    agentId: string,
+    title?: string,
+  ): Promise<string> {
+    const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    if (tabs.value.some((t) => t.agentId === agentId)) {
+      recordDesktopErrorTab(
+        tabId,
+        agentId,
+        title,
+        'This agent already has an open session tab (one session per agent). Close it first.',
+      );
+      return tabId;
+    }
+
+    try {
+      const sessionResp = await apiClient.sessions.create({ agentId });
+      const transport = await createSignalingTransport(sessionResp.id);
+      const iceServers = await apiClient.webrtc.getIceServers();
+      const rtcPeer = createBrowserAdapter({ iceServers });
+
+      // No data channel: desktop is media-only, so `channelLabels: []` and the
+      // capability/media options drive the offer.
+      const peer = new PeerConnection(rtcPeer, transport, {
+        role: 'offerer',
+        channelLabels: [],
+        capabilities: ['desktop'],
+        media: { video: true },
+      });
+
+      if (transport instanceof WebSocketSignalTransport) {
+        transport.onServerError((code) => {
+          if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+          const message =
+            code === 'SESSION_TERMINATED'
+              ? 'Session terminated: the agent disconnected or the session was closed.'
+              : 'Session not found on the server.';
+          for (const tab of tabs.value) {
+            if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
+            tab.status = 'error';
+            tab.error = message;
+          }
+          desktopConnections.delete(agentId);
+        });
+      }
+
+      peer.onConnectionStateChange((state) => {
+        if (state !== 'failed') return;
+        const message =
+          'Connection failed: no direct route to the agent (ICE). Check that ' +
+          'TURN is reachable, or that the agent is not behind a blocking NAT.';
+        for (const tab of tabs.value) {
+          if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
+          tab.status = 'error';
+          tab.error = message;
+        }
+        desktopConnections.delete(agentId);
+      });
+
+      const client = new DesktopClient(agentId, peer);
+      desktopConnections.set(agentId, {
+        peer,
+        client,
+        sessionId: sessionResp.id,
+      });
+
+      const tab: TabItem = {
+        id: tabId,
+        agentId,
+        kind: 'desktop',
+        terminalId: '',
+        title: title || `Agent ${agentId.slice(0, 8)}`,
+        status: 'connecting',
+      };
+      tabs.value.push(tab);
+      activeTabId.value = tabId;
+
+      const stream = await client.start();
+      // Mutate through the proxy (find on tabs.value) so Vue's reactivity
+      // watchers fire. Mutating the raw local `tab` object after push does not
+      // notify — `DesktopView`'s `watch` on `desktopStream` would never fire.
+      const live = tabs.value.find((t) => t.id === tabId);
+      if (live) {
+        live.desktopStream = stream;
+        live.status = 'active';
+      }
+      return tabId;
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : String(e ?? 'unknown error');
+      // Drop the half-built connection so a retry does not reuse a dead peer.
+      const half = desktopConnections.get(agentId);
+      if (half) {
+        half.client.close();
+        void half.peer.close();
+        desktopConnections.delete(agentId);
+      }
+      const existing = tabs.value.find((t) => t.id === tabId);
+      if (existing) {
+        existing.status = 'error';
+        existing.error = message;
+      } else {
+        recordDesktopErrorTab(tabId, agentId, title, message);
+      }
+      return tabId;
+    }
   }
 
   /**
@@ -258,10 +424,19 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (!failed) return;
 
     tabs.value.splice(index, 1);
-    connections.delete(failed.agentId);
-    pendingConnections.delete(failed.agentId);
-
-    await openTab(failed.agentId, failed.title);
+    if (failed.kind === 'desktop') {
+      const conn = desktopConnections.get(failed.agentId);
+      if (conn) {
+        conn.client.close();
+        void conn.peer.close();
+        desktopConnections.delete(failed.agentId);
+      }
+      await openDesktopTab(failed.agentId, failed.title);
+    } else {
+      connections.delete(failed.agentId);
+      pendingConnections.delete(failed.agentId);
+      await openTab(failed.agentId, failed.title);
+    }
   }
 
   function setActiveTab(tabId: string): void {
@@ -277,12 +452,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     const removed = tabs.value.splice(index, 1)[0];
     if (!removed) return;
 
-    try {
-      removed.session.close();
-    } catch {
-      // session may be a mock in tests, or already closed
-    }
-
+    // Re-select the active tab first so the branch below runs for both kinds.
     if (activeTabId.value === tabId) {
       if (tabs.value.length > 0) {
         const newActive = tabs.value[Math.max(0, index - 1)];
@@ -292,25 +462,41 @@ export const useTerminalStore = defineStore('terminal', () => {
       }
     }
 
-    const hasOtherTabsForAgent = tabs.value.some(
-      (t) => t.agentId === removed.agentId,
-    );
-    if (!hasOtherTabsForAgent) {
-      const conn = connections.get(removed.agentId);
+    if (removed.kind === 'desktop') {
+      const conn = desktopConnections.get(removed.agentId);
       if (conn) {
-        conn.client.dispose();
+        conn.client.close();
         void conn.peer.close();
-        connections.delete(removed.agentId);
-        // Tell the server the session is over. Without this the session row
-        // stays `active` after the tab closes, and the agent — which sees only
-        // the peer going away — is left to notice by itself. Best-effort: a
-        // failed terminate must not break the close path, and the agent now
-        // ends the session when the peer dies even if this request never
-        // lands.
-        void apiClient.sessions.terminate(conn.sessionId).catch(() => {
-          // The session may already be terminated server-side (agent
-          // disconnect) — a rejection here is not actionable.
-        });
+        desktopConnections.delete(removed.agentId);
+        void apiClient.sessions.terminate(conn.sessionId).catch(() => {});
+      }
+    } else {
+      try {
+        removed.session?.close();
+      } catch {
+        // session may be a mock in tests, or already closed
+      }
+
+      const hasOtherTabsForAgent = tabs.value.some(
+        (t) => t.agentId === removed.agentId && t.kind === 'terminal',
+      );
+      if (!hasOtherTabsForAgent) {
+        const conn = connections.get(removed.agentId);
+        if (conn) {
+          conn.client.dispose();
+          void conn.peer.close();
+          connections.delete(removed.agentId);
+          // Tell the server the session is over. Without this the session row
+          // stays `active` after the tab closes, and the agent — which sees only
+          // the peer going away — is left to notice by itself. Best-effort: a
+          // failed terminate must not break the close path, and the agent now
+          // ends the session when the peer dies even if this request never
+          // lands.
+          void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+            // The session may already be terminated server-side (agent
+            // disconnect) — a rejection here is not actionable.
+          });
+        }
       }
     }
   }
@@ -320,6 +506,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     activeTabId,
     activeTab,
     openTab,
+    openDesktopTab,
     retryTab,
     setActiveTab,
     closeTab,
