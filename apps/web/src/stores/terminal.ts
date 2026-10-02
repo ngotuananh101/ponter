@@ -46,12 +46,37 @@ function toErrorMessage(cause: unknown): string {
   return 'unknown error';
 }
 
+/** An unsubscribe returned by every `on*` subscription in the transport stack. */
+type Unsubscribe = () => void;
+
+/**
+ * Detach a connection's event subscriptions. The transport/peer callbacks are
+ * scoped to an **agent id**, not a tab: a stale `onConnectionStateChange` from
+ * a discarded peer would still iterate `tabs.value` and could mark a *new* tab
+ * for the same agent as failed. Unsubscribing on teardown is what stops that.
+ * Best-effort — one bad unsubscribe must not abort the rest of the teardown.
+ */
+function runUnsubscribers(unsubscribers: readonly Unsubscribe[]): void {
+  for (const unsubscribe of unsubscribers) {
+    try {
+      unsubscribe();
+    } catch {
+      // A subscription that refuses to detach is not worth failing the close.
+    }
+  }
+}
+
 export const useTerminalStore = defineStore('terminal', () => {
   const tabs = ref<TabItem[]>([]);
   const activeTabId = ref<string | null>(null);
   const connections = new Map<
     string,
-    { peer: PeerConnection; client: TerminalClient; sessionId: string }
+    {
+      peer: PeerConnection;
+      client: TerminalClient;
+      sessionId: string;
+      unsubscribers: Unsubscribe[];
+    }
   >();
   const pendingConnections = new Map<string, Promise<TerminalClient>>();
 
@@ -60,7 +85,12 @@ export const useTerminalStore = defineStore('terminal', () => {
   // only `desktopStream` (render data); lifecycle stays here.
   const desktopConnections = new Map<
     string,
-    { peer: PeerConnection; client: DesktopClient; sessionId: string }
+    {
+      peer: PeerConnection;
+      client: DesktopClient;
+      sessionId: string;
+      unsubscribers: Unsubscribe[];
+    }
   >();
 
   const activeTab = computed(() =>
@@ -141,73 +171,104 @@ export const useTerminalStore = defineStore('terminal', () => {
       setInitStep(agentId, 'terminal', 'session');
       const sessionResp = await apiClient.sessions.create({ agentId });
 
-      const transport = await createSignalingTransport(sessionResp.id);
+      // Everything after the session exists is fallible, and the server has
+      // already reserved the agent's single session slot (ADR-14). Without this
+      // guard a rejection in `peer.start()` / `waitForChannel` would leave that
+      // slot held by a session nobody can reach — the tab is set to `error`, but
+      // the session is invisible to every teardown path because it never
+      // reached `connections`.
+      const unsubscribers: Unsubscribe[] = [];
+      // Hoisted so the catch can close whatever was built before the failure.
+      let peer: PeerConnection | null = null;
+      try {
+        const transport = await createSignalingTransport(sessionResp.id);
 
-      // The server mints short-lived TURN credentials per user, so fetch the
-      // ICE list here rather than caching it at module load. Without this the
-      // RTCPeerConnection is built with an empty `iceServers` and ICE can only
-      // ever succeed on a LAN.
-      setInitStep(agentId, 'terminal', 'ice');
-      const iceServers = await apiClient.webrtc.getIceServers();
+        // The server mints short-lived TURN credentials per user, so fetch the
+        // ICE list here rather than caching it at module load. Without this the
+        // RTCPeerConnection is built with an empty `iceServers` and ICE can only
+        // ever succeed on a LAN.
+        setInitStep(agentId, 'terminal', 'ice');
+        const iceServers = await apiClient.webrtc.getIceServers();
 
-      const rtcPeer = createBrowserAdapter({ iceServers });
+        const rtcPeer = createBrowserAdapter({ iceServers });
 
-      const peer = new PeerConnection(rtcPeer, transport, {
-        role: 'offerer',
-        channelLabels: ['terminal'],
-      });
-
-      // A terminated session is pushed as an `error` frame, which never
-      // reaches `PeerConnection` (it carries no `SignalMessage`). Without this
-      // hook the tab would sit on "connecting" until `waitForChannel` timed
-      // out with no explanation — the REST transport would only discover the
-      // same fact on its next poll.
-      if (transport instanceof WebSocketSignalTransport) {
-        transport.onServerError((code) => {
-          if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
-          const message =
-            code === 'SESSION_TERMINATED'
-              ? 'Session terminated: the agent disconnected or the session was closed.'
-              : 'Session not found on the server.';
-          for (const tab of tabs.value) {
-            if (tab.agentId !== agentId || tab.kind !== 'terminal') continue;
-            tab.status = 'error';
-            tab.error = message;
-          }
-          connections.delete(agentId);
-          pendingConnections.delete(agentId);
+        peer = new PeerConnection(rtcPeer, transport, {
+          role: 'offerer',
+          channelLabels: ['terminal'],
         });
-      }
 
-      await peer.start();
-      setInitStep(agentId, 'terminal', 'negotiating');
-
-      // ICE failure used to be observed by nobody. The only symptom was a tab
-      // stuck on "connecting" for the full 10s `waitForChannel` timeout, with
-      // nothing to tell an unreachable agent apart from a symmetric NAT both
-      // sides could not get around. `failed` is the terminal state; `disconnected`
-      // is transient and recovers on its own, so it is deliberately ignored.
-      peer.onConnectionStateChange((state) => {
-        if (state !== 'failed') return;
-        const message =
-          'Connection failed: no direct route to the agent (ICE). Check that ' +
-          'TURN is reachable, or that the agent is not behind a blocking NAT.';
-        for (const tab of tabs.value) {
-          if (tab.agentId !== agentId || tab.kind !== 'terminal') continue;
-          tab.status = 'error';
-          tab.error = message;
+        // A terminated session is pushed as an `error` frame, which never
+        // reaches `PeerConnection` (it carries no `SignalMessage`). Without this
+        // hook the tab would sit on "connecting" until `waitForChannel` timed
+        // out with no explanation — the REST transport would only discover the
+        // same fact on its next poll.
+        if (transport instanceof WebSocketSignalTransport) {
+          unsubscribers.push(
+            transport.onServerError((code) => {
+              if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+              const message =
+                code === 'SESSION_TERMINATED'
+                  ? 'Session terminated: the agent disconnected or the session was closed.'
+                  : 'Session not found on the server.';
+              for (const tab of tabs.value) {
+                if (tab.agentId !== agentId || tab.kind !== 'terminal')
+                  continue;
+                tab.status = 'error';
+                tab.error = message;
+                tab.initStep = undefined;
+              }
+              discardTerminalConnection(agentId);
+            }),
+          );
         }
-        // The peer is terminal; keeping it cached would make the next open or
-        // retry hand back the same dead connection.
-        connections.delete(agentId);
-        pendingConnections.delete(agentId);
-      });
 
-      await peer.waitForChannel('terminal');
+        await peer.start();
+        setInitStep(agentId, 'terminal', 'negotiating');
 
-      const client = new TerminalClient(agentId, peer.dataChannels);
-      connections.set(agentId, { peer, client, sessionId: sessionResp.id });
-      return client;
+        // ICE failure used to be observed by nobody. The only symptom was a tab
+        // stuck on "connecting" for the full 10s `waitForChannel` timeout, with
+        // nothing to tell an unreachable agent apart from a symmetric NAT both
+        // sides could not get around. `failed` is the terminal state; `disconnected`
+        // is transient and recovers on its own, so it is deliberately ignored.
+        unsubscribers.push(
+          peer.onConnectionStateChange((state) => {
+            if (state !== 'failed') return;
+            const message =
+              'Connection failed: no direct route to the agent (ICE). Check that ' +
+              'TURN is reachable, or that the agent is not behind a blocking NAT.';
+            for (const tab of tabs.value) {
+              if (tab.agentId !== agentId || tab.kind !== 'terminal') continue;
+              tab.status = 'error';
+              tab.error = message;
+              tab.initStep = undefined;
+            }
+            // The peer is terminal; keeping it cached would make the next open or
+            // retry hand back the same dead connection.
+            discardTerminalConnection(agentId);
+          }),
+        );
+
+        await peer.waitForChannel('terminal');
+
+        const client = new TerminalClient(agentId, peer.dataChannels);
+        connections.set(agentId, {
+          peer,
+          client,
+          sessionId: sessionResp.id,
+          unsubscribers,
+        });
+        return client;
+      } catch (e) {
+        // Release the half-built connection and the server session. Closing the
+        // peer also tears down the signaling transport (which, left alone, would
+        // keep reconnecting for a session that is about to be terminated).
+        runUnsubscribers(unsubscribers);
+        if (peer) void peer.close();
+        void apiClient.sessions.terminate(sessionResp.id).catch(() => {
+          // Best-effort: the session may already be gone server-side.
+        });
+        throw e;
+      }
     })();
 
     pendingConnections.set(agentId, connectionPromise);
@@ -317,6 +378,21 @@ export const useTerminalStore = defineStore('terminal', () => {
   }
 
   /**
+   * Drop a cached terminal connection and detach its transport/peer
+   * subscriptions, without touching the server session. Used by the error
+   * callbacks (the peer is already dead) and by `closeTerminalConnection`.
+   */
+  function discardTerminalConnection(agentId: string): void {
+    // A pending handshake for the same agent must also be dropped, or the next
+    // open would be handed the promise for the connection just discarded.
+    pendingConnections.delete(agentId);
+    const conn = connections.get(agentId);
+    if (!conn) return;
+    runUnsubscribers(conn.unsubscribers);
+    connections.delete(agentId);
+  }
+
+  /**
    * Tear down a terminal connection whose tab was closed mid-handshake, unless
    * another tab for the same agent still needs it (connections are shared per
    * agent).
@@ -331,6 +407,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (!conn) return;
     conn.client.dispose();
     void conn.peer.close();
+    runUnsubscribers(conn.unsubscribers);
     connections.delete(agentId);
     void apiClient.sessions.terminate(conn.sessionId).catch(() => {
       // Best-effort: the session may already be gone server-side.
@@ -435,8 +512,14 @@ export const useTerminalStore = defineStore('terminal', () => {
     activeTabId.value = tabId;
     const live = tabs.value.find((t) => t.id === tabId);
 
+    // Set once the server session exists; the catch block uses it to release
+    // that session if any later step fails (the tab cannot, because it never
+    // reached `desktopConnections`).
+    let sessionId: string | null = null;
+
     try {
       const sessionResp = await apiClient.sessions.create({ agentId });
+      sessionId = sessionResp.id;
       const transport = await createSignalingTransport(sessionResp.id);
       if (live) live.initStep = 'ice';
       const iceServers = await apiClient.webrtc.getIceServers();
@@ -451,42 +534,49 @@ export const useTerminalStore = defineStore('terminal', () => {
         media: { video: true },
       });
 
+      const unsubscribers: Unsubscribe[] = [];
+
       if (transport instanceof WebSocketSignalTransport) {
-        transport.onServerError((code) => {
-          if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+        unsubscribers.push(
+          transport.onServerError((code) => {
+            if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+            const message =
+              code === 'SESSION_TERMINATED'
+                ? 'Session terminated: the agent disconnected or the session was closed.'
+                : 'Session not found on the server.';
+            for (const tab of tabs.value) {
+              if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
+              tab.status = 'error';
+              tab.error = message;
+              tab.initStep = undefined;
+            }
+            discardDesktopConnection(agentId);
+          }),
+        );
+      }
+
+      unsubscribers.push(
+        peer.onConnectionStateChange((state) => {
+          if (state !== 'failed') return;
           const message =
-            code === 'SESSION_TERMINATED'
-              ? 'Session terminated: the agent disconnected or the session was closed.'
-              : 'Session not found on the server.';
+            'Connection failed: no direct route to the agent (ICE). Check that ' +
+            'TURN is reachable, or that the agent is not behind a blocking NAT.';
           for (const tab of tabs.value) {
             if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
             tab.status = 'error';
             tab.error = message;
             tab.initStep = undefined;
           }
-          desktopConnections.delete(agentId);
-        });
-      }
-
-      peer.onConnectionStateChange((state) => {
-        if (state !== 'failed') return;
-        const message =
-          'Connection failed: no direct route to the agent (ICE). Check that ' +
-          'TURN is reachable, or that the agent is not behind a blocking NAT.';
-        for (const tab of tabs.value) {
-          if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
-          tab.status = 'error';
-          tab.error = message;
-          tab.initStep = undefined;
-        }
-        desktopConnections.delete(agentId);
-      });
+          discardDesktopConnection(agentId);
+        }),
+      );
 
       const client = new DesktopClient(agentId, peer);
       desktopConnections.set(agentId, {
         peer,
         client,
         sessionId: sessionResp.id,
+        unsubscribers,
       });
 
       // The tab may have been closed while the handshake ran; `closeTab` found
@@ -495,6 +585,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       if (!isTabOpen(tabId)) {
         client.close();
         void peer.close();
+        runUnsubscribers(unsubscribers);
         desktopConnections.delete(agentId);
         void apiClient.sessions.terminate(sessionResp.id).catch(() => {});
         return tabId;
@@ -518,7 +609,16 @@ export const useTerminalStore = defineStore('terminal', () => {
       if (half) {
         half.client.close();
         void half.peer.close();
+        runUnsubscribers(half.unsubscribers);
         desktopConnections.delete(agentId);
+      }
+      // Release the server session too. A failure between `sessions.create` and
+      // `desktopConnections.set` left `half` undefined, so without this the
+      // session held the agent's ADR-14 slot with nothing pointing at it.
+      if (sessionId) {
+        void apiClient.sessions.terminate(sessionId).catch(() => {
+          // Best-effort: the session may already be gone server-side.
+        });
       }
       if (live) {
         live.status = 'error';
@@ -550,11 +650,24 @@ export const useTerminalStore = defineStore('terminal', () => {
       if (conn) {
         conn.client.close();
         void conn.peer.close();
+        runUnsubscribers(conn.unsubscribers);
         desktopConnections.delete(failed.agentId);
+        void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+          // Best-effort: the session may already be gone server-side.
+        });
       }
       await openDesktopTab(failed.agentId, failed.title);
     } else {
-      connections.delete(failed.agentId);
+      const conn = connections.get(failed.agentId);
+      if (conn) {
+        runUnsubscribers(conn.unsubscribers);
+        connections.delete(failed.agentId);
+        // The old session is abandoned otherwise: a retried tab gets a brand
+        // new session, and the previous row would stay `active` server-side.
+        void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+          // Best-effort: the session may already be gone server-side.
+        });
+      }
       pendingConnections.delete(failed.agentId);
       await openTab(failed.agentId, failed.title);
     }
@@ -566,12 +679,25 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   }
 
+  /**
+   * Drop a cached desktop connection and detach its transport/peer
+   * subscriptions, without touching the server session. Used by the error
+   * callbacks (the peer is already dead) and by `closeDesktopConnection`.
+   */
+  function discardDesktopConnection(agentId: string): void {
+    const conn = desktopConnections.get(agentId);
+    if (!conn) return;
+    runUnsubscribers(conn.unsubscribers);
+    desktopConnections.delete(agentId);
+  }
+
   /** Close a desktop tab's connection: its client, its peer, and the server session. */
   function closeDesktopConnection(agentId: string): void {
     const conn = desktopConnections.get(agentId);
     if (!conn) return;
     conn.client.close();
     void conn.peer.close();
+    runUnsubscribers(conn.unsubscribers);
     desktopConnections.delete(agentId);
     void apiClient.sessions.terminate(conn.sessionId).catch(() => {});
   }
@@ -596,6 +722,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (!conn) return;
     conn.client.dispose();
     void conn.peer.close();
+    runUnsubscribers(conn.unsubscribers);
     connections.delete(removed.agentId);
     // Tell the server the session is over. Without this the session row
     // stays `active` after the tab closes, and the agent — which sees only
