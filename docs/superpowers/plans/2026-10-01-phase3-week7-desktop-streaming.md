@@ -2645,19 +2645,29 @@ vi.mock('@ponter/webrtc-core', () => ({
 Then add the tests (inside the existing `describe`):
 
 ```typescript
-  it('openDesktopTab creates a desktop tab that reaches active', async () => {
-    const { apiClient } = await import('@/services/client');
+  it('openDesktopTab mutates the tab through the proxy so a watcher fires', async () => {
     const store = useTerminalStore();
     desktopStart.mockResolvedValueOnce({
       track: { kind: 'video' },
       streams: [],
     });
 
-    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+    // A read-back assertion would pass even on the raw-object bug (the mutated
+    // raw object is the same reference stored in the array). What the view
+    // actually depends on is reactivity, so pin that: a watcher must fire.
+    let fired = 0;
+    const stop = watch(
+      () => store.tabs.find((t) => t.kind === 'desktop')?.desktopStream,
+      () => {
+        fired++;
+      },
+    );
+    const tabId = await store.openDesktopTab('ag-4', 'Host 4');
+    await nextTick();
+    stop();
 
-    expect(apiClient.sessions.create).toHaveBeenCalledWith({ agentId: 'ag-1' });
+    expect(fired).toBeGreaterThan(0);
     const tab = store.tabs.find((t) => t.id === tabId);
-    expect(tab?.kind).toBe('desktop');
     expect(tab?.status).toBe('active');
     expect(tab?.desktopStream?.track).toEqual({ kind: 'video' });
   });
@@ -2681,6 +2691,29 @@ Then add the tests (inside the existing `describe`):
     expect(apiClient.sessions.create).not.toHaveBeenCalled();
     expect(store.tabs.find((t) => t.id === tabId)?.status).toBe('error');
     expect(store.tabs.find((t) => t.id === tabId)?.error).toMatch(/already has/i);
+  });
+
+  it('openTab refuses when the agent already has an open desktop tab (reverse guard)', async () => {
+    const { apiClient } = await import('@/services/client');
+    const store = useTerminalStore();
+    store.tabs.push({
+      id: 'tab-d-1',
+      agentId: 'ag-3',
+      kind: 'desktop',
+      terminalId: '',
+      title: 'Host 3',
+      status: 'active',
+      desktopStream: { track: { kind: 'video' }, streams: [] } as never,
+    });
+    vi.mocked(apiClient.sessions.create).mockClear();
+
+    const tabId = await store.openTab('ag-3', 'Host 3');
+
+    expect(apiClient.sessions.create).not.toHaveBeenCalled();
+    expect(store.tabs.find((t) => t.id === tabId)?.status).toBe('error');
+    expect(store.tabs.find((t) => t.id === tabId)?.error).toMatch(
+      /close the desktop stream/i,
+    );
   });
 
   it('closeTab on a desktop tab closes the client and its peer', async () => {
@@ -2742,6 +2775,25 @@ Add the desktop connection map next to `connections`:
 ```
 
 Add `kind: 'terminal'` at the two existing construction sites: in `openTab`'s `newTab` (after `agentId`) and in `recordFailedTab`'s pushed object (after `agentId`).
+
+Also add the reverse ADR-19 guard at the top of `openTab` (before `getOrConnectAgent`): if the
+agent already has an open desktop tab, record a failed tab and return without any network call —
+spec §7.1 requires exclusivity in **both** directions:
+
+```typescript
+    // Reverse ADR-19 guard: if the agent already has an open desktop tab, refuse
+    // before any network call. ADR-14 makes the server refuse a second session
+    // anyway, but the user should see why without a round-trip.
+    if (tabs.value.some((t) => t.agentId === agentId && t.kind === 'desktop')) {
+      recordFailedTab(
+        tabId,
+        agentId,
+        title,
+        'Close the desktop stream before opening a terminal.',
+      );
+      return tabId;
+    }
+```
 
 **Then update the pre-existing test fixtures that construct a `TabItem`** — `kind` is required, so the web typecheck (Step 14) fails on every fixture that omits it. `kind` stays required rather than optional on purpose: making it optional would let a store bug create a tab with `kind === undefined` that silently falls through the `kind === 'desktop'` branches, and it would force `=== 'desktop'` checks to also defend against `undefined`. Add `kind: 'terminal'` to each:
 
@@ -2832,8 +2884,14 @@ Then add `openDesktopTab` before the `return` block:
       activeTabId.value = tabId;
 
       const stream = await client.start();
-      tab.desktopStream = stream;
-      tab.status = 'active';
+      // Mutate through the proxy (find on tabs.value) so Vue's reactivity
+      // watchers fire. Mutating the raw local `tab` object after push does not
+      // notify — `DesktopView`'s `watch` on `desktopStream` would never fire.
+      const live = tabs.value.find((t) => t.id === tabId);
+      if (live) {
+        live.desktopStream = stream;
+        live.status = 'active';
+      }
       return tabId;
     } catch (e) {
       const message =

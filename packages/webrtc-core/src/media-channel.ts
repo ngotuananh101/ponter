@@ -46,7 +46,7 @@ export function subscribeRemoteTracks(
 ): () => void {
   if (!peer.onTrack) {
     throw new Error(
-      'media.video was requested but this RTCPeerConnectionLike adapter does not implement onTrack — remote tracks could never be delivered',
+      'this RTCPeerConnectionLike adapter does not implement onTrack — remote tracks could never be delivered',
     );
   }
 

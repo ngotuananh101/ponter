@@ -458,6 +458,13 @@ impl DesktopEncoder {
     /// Encodes one frame to Annex-B bytes (each NAL carries its own start
     /// code — verified against `openh264 0.9.8`, see spec §3.2).
     pub fn encode(&mut self, frame: &RawFrame) -> Result<Vec<u8>> {
+        debug_assert!(
+            frame.width % 2 == 0 && frame.height % 2 == 0,
+            "encode() requires even dimensions; callers must run crop_to_even first \
+             (got {}x{})",
+            frame.width,
+            frame.height
+        );
         let yuv = YUVBuffer::from_rgba8_source(RgbaSliceU8::new(
             &frame.rgba,
             (frame.width as usize, frame.height as usize),
@@ -666,9 +673,11 @@ mod tests {
         let source = Box::new(TestPatternSource::new(64, 48));
 
         let result = run_stream(source, unbound_track(), 1234, 96, stop_rx).await;
+        let err = result.expect_err("writing to an unbound track must surface an error");
+        let chain = format!("{err:#}");
         assert!(
-            result.is_err(),
-            "writing to an unbound track must surface an error, got {result:?}"
+            chain.contains("codec not found"),
+            "the error must be the missing-codec failure, got: {chain}"
         );
         drop(stop_tx);
     }
