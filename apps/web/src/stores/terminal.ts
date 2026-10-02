@@ -32,6 +32,13 @@ export interface TabItem {
   desktopStream?: DesktopStream;
 }
 
+/** Best-effort message from an unknown catch value; never `[object Object]`. */
+function toErrorMessage(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === 'string') return cause;
+  return 'unknown error';
+}
+
 export const useTerminalStore = defineStore('terminal', () => {
   const tabs = ref<TabItem[]>([]);
   const activeTabId = ref<string | null>(null);
@@ -247,12 +254,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     title: string | undefined,
     cause: unknown,
   ): void {
-    const message =
-      cause instanceof Error
-        ? cause.message
-        : typeof cause === 'string'
-          ? cause
-          : 'unknown error';
+    const message = toErrorMessage(cause);
 
     const session = new TerminalSession(
       `pending-${tabId}`,
@@ -394,12 +396,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       }
       return tabId;
     } catch (e) {
-      const message =
-        e instanceof Error
-          ? e.message
-          : typeof e === 'string'
-            ? e
-            : 'unknown error';
+      const message = toErrorMessage(e);
       // Drop the half-built connection so a retry does not reuse a dead peer.
       const half = desktopConnections.get(agentId);
       if (half) {
