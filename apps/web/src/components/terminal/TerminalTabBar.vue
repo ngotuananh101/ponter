@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { Plus, RefreshCw, X } from '@lucide/vue';
+import { Plus, RefreshCw, X, Terminal, Monitor } from '@lucide/vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 defineProps<{
-  tabs: Array<{ id: string; title: string; status: string }>;
+  tabs: Array<{
+    id: string;
+    title: string;
+    status: string;
+    kind: 'terminal' | 'desktop';
+  }>;
   activeTabId: string | null;
 }>();
 
@@ -43,6 +48,11 @@ defineEmits<{
               'bg-destructive': tab.status === 'error',
             }"
           />
+          <Monitor
+            v-if="tab.kind === 'desktop'"
+            class="w-3.5 h-3.5 flex-shrink-0"
+          />
+          <Terminal v-else class="w-3.5 h-3.5 flex-shrink-0" />
           <span class="truncate max-w-[130px] font-mono">{{ tab.title }}</span>
           <button
             v-if="tab.status === 'error'"

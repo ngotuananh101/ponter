@@ -251,6 +251,9 @@ importers:
       '@ponter/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@ponter/desktop-core':
+        specifier: workspace:*
+        version: link:../../packages/desktop-core
       '@ponter/shared':
         specifier: workspace:*
         version: link:../../packages/shared

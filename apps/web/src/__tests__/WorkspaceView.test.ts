@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, enableAutoUnmount } from '@vue/test-utils';
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import WorkspaceView from '../views/WorkspaceView.vue';
 import { useTerminalStore } from '../stores/terminal';
@@ -40,6 +40,7 @@ function seedTab(store: TerminalStore, id: string, agentId: string): void {
   store.tabs.push({
     id,
     agentId,
+    kind: 'terminal',
     terminalId: `term-${id}`,
     title: `Tab ${id}`,
     status: 'active',
@@ -132,5 +133,22 @@ describe('WorkspaceView.vue', () => {
       expect(wrapper.find('button[title="Show sidebar"]').exists()).toBe(false);
       expect(openTab).not.toHaveBeenCalled();
     });
+  });
+
+  it('renders DesktopView (not XtermTerminal) for a desktop tab', async () => {
+    const store = useTerminalStore();
+    store.tabs.push({
+      id: 'tab-d',
+      agentId: 'ag-1',
+      kind: 'desktop',
+      terminalId: '',
+      title: 'Host 1',
+      status: 'active',
+      desktopStream: { track: { kind: 'video' }, streams: [] } as never,
+    });
+    store.setActiveTab('tab-d');
+    const wrapper = mount(WorkspaceView);
+    await flushPromises();
+    expect(wrapper.find('video').exists()).toBe(true);
   });
 });
