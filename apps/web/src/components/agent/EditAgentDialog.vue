@@ -214,15 +214,16 @@ async function handleSubmit() {
             </div>
           </div>
 
-          <!-- Capabilities: a group of toggle buttons, so the label names the
-               group rather than pointing at one control. -->
+          <!-- Capabilities: a group of toggle buttons, not a single form
+               control, so the heading is a span named by `aria-labelledby`
+               rather than a <label> (which must point at a control). -->
           <div class="space-y-1.5">
-            <Label
+            <span
               id="edit-agent-capabilities-label"
-              class="text-xs font-semibold"
+              class="block text-xs font-semibold"
             >
               Capabilities
-            </Label>
+            </span>
             <div
               class="flex gap-2"
               role="group"
