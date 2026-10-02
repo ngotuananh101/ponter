@@ -1,4 +1,9 @@
-import type { RTCPeerConnectionLike, RTCDataChannelLike } from '../types';
+import type {
+  RTCPeerConnectionLike,
+  RTCDataChannelLike,
+  MediaStreamLike,
+  MediaStreamTrackLike,
+} from '../types';
 import type { IceServerConfig } from '@ponter/shared';
 
 class BrowserDataChannel implements RTCDataChannelLike {
@@ -53,6 +58,9 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
     (channel: RTCDataChannelLike) => void
   > = [];
   private readonly stateHandlers: Array<(state: string) => void> = [];
+  private readonly trackHandlers: Array<
+    (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void
+  > = [];
 
   constructor(config: { iceServers?: IceServerConfig[] } = {}) {
     if (typeof RTCPeerConnection === 'undefined') {
@@ -90,6 +98,15 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
     this.pc.addEventListener('connectionstatechange', () => {
       for (const handler of this.stateHandlers) {
         handler(this.pc.connectionState);
+      }
+    });
+
+    this.pc.addEventListener('track', (event) => {
+      for (const handler of this.trackHandlers) {
+        handler(
+          event.track as MediaStreamTrackLike,
+          event.streams as unknown as MediaStreamLike[],
+        );
       }
     });
   }
@@ -136,6 +153,19 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
 
   onConnectionStateChange(handler: (state: string) => void): void {
     this.stateHandlers.push(handler);
+  }
+
+  addTransceiver(kind: string, options?: { direction?: string }): unknown {
+    return this.pc.addTransceiver(
+      kind as 'video',
+      options as RTCRtpTransceiverInit,
+    );
+  }
+
+  onTrack(
+    handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
+  ): void {
+    this.trackHandlers.push(handler);
   }
 
   async getStats(): Promise<RTCStatsReport> {

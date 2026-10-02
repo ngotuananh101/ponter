@@ -5,6 +5,8 @@ import type {
   RTCPeerConnectionLike,
   RTCDataChannelLike,
   SignalTransport,
+  MediaStreamLike,
+  MediaStreamTrackLike,
 } from '../src/types';
 import type { SignalMessage } from '@ponter/shared';
 
@@ -61,31 +63,38 @@ class OrderRecorder implements RTCPeerConnectionLike {
   public remoteDescriptionSet = false;
   public violations = 0;
   public addIceCandidateCalls = 0;
+  /** Names of calls in the order they were made (seam-order assertions). */
+  public readonly callLog: string[] = [];
 
   constructor(private readonly inner: RTCPeerConnectionLike) {}
 
   async createOffer(): Promise<RTCSessionDescriptionInit> {
+    this.callLog.push('createOffer');
     return await this.inner.createOffer();
   }
 
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    this.callLog.push('createAnswer');
     return await this.inner.createAnswer();
   }
 
   async setLocalDescription(
     description: RTCSessionDescriptionInit,
   ): Promise<void> {
+    this.callLog.push('setLocalDescription');
     await this.inner.setLocalDescription(description);
   }
 
   async setRemoteDescription(
     description: RTCSessionDescriptionInit,
   ): Promise<void> {
+    this.callLog.push('setRemoteDescription');
     await this.inner.setRemoteDescription(description);
     this.remoteDescriptionSet = true;
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    this.callLog.push('addIceCandidate');
     this.addIceCandidateCalls += 1;
     if (!this.remoteDescriptionSet) {
       this.violations += 1;
@@ -97,6 +106,7 @@ class OrderRecorder implements RTCPeerConnectionLike {
     label: string,
     options?: RTCDataChannelInit,
   ): RTCDataChannelLike {
+    this.callLog.push(`createDataChannel:${label}`);
     return this.inner.createDataChannel(label, options);
   }
 
@@ -110,6 +120,17 @@ class OrderRecorder implements RTCPeerConnectionLike {
 
   onConnectionStateChange(handler: (state: string) => void): void {
     this.inner.onConnectionStateChange(handler);
+  }
+
+  addTransceiver(kind: string, options?: { direction?: string }): unknown {
+    this.callLog.push(`addTransceiver:${kind}`);
+    return this.inner.addTransceiver?.(kind, options);
+  }
+
+  onTrack(
+    handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
+  ): void {
+    this.inner.onTrack?.(handler);
   }
 
   async getStats(): Promise<RTCStatsReport> {
@@ -412,5 +433,70 @@ describe('Real P2P Handshake (werift)', () => {
 
     // cand_2 threw, and cand_3 was still attempted: the tail was not dropped.
     expect(added).toEqual(['cand_1', 'cand_2', 'cand_3']);
+  }, 20000);
+
+  it('sends options.capabilities in the offer instead of channelLabels', async () => {
+    const bus = new InProcessBus();
+    const tA = bus.createTransport('A', 'B');
+
+    // Capture the offer signal instead of delivering it anywhere.
+    const sent: SignalMessage[] = [];
+    const capturingTransport: SignalTransport = {
+      send: async (msg) => {
+        sent.push(msg);
+      },
+      subscribe: () => () => {},
+      close: () => {},
+    };
+    void tA;
+
+    const adapterA = new WeriftAdapter({ iceServers: [] });
+    offererPC = new PeerConnection(adapterA, capturingTransport, {
+      role: 'offerer',
+      channelLabels: ['terminal'],
+      capabilities: ['desktop'],
+    });
+
+    await offererPC.start();
+
+    const offer = sent.find((m) => m.type === 'offer');
+    expect(offer).toBeDefined();
+    expect(offer && offer.type === 'offer' ? offer.data.capabilities : []).toEqual(
+      ['desktop'],
+    );
+  }, 20000);
+
+  it('creates no data channels when channelLabels is empty', async () => {
+    const bus = new InProcessBus();
+    const tA = bus.createTransport('A', 'B');
+    const tB = bus.createTransport('B', 'A');
+
+    // The recorder wraps the OFFERER: `addTransceiver` and `createOffer` are both
+    // called on the offerer's peer, so wrapping the answerer would record
+    // nothing and every indexOf below would be -1 (making the assertion fail).
+    const recorder = new OrderRecorder(new WeriftAdapter({ iceServers: [] }));
+
+    offererPC = new PeerConnection(recorder, tA, {
+      role: 'offerer',
+      channelLabels: [],
+      capabilities: ['desktop'],
+      media: { video: true },
+    });
+
+    answererPC = new PeerConnection(new WeriftAdapter({ iceServers: [] }), tB, {
+      role: 'answerer',
+      channelLabels: [],
+    });
+
+    await offererPC.start();
+
+    expect(
+      recorder.callLog.filter((c) => c.startsWith('createDataChannel:')),
+    ).toEqual([]);
+    // Review Focus #4: the media transceiver is configured BEFORE the offer is
+    // created, or the offer's SDP would contain no video m-line at all.
+    expect(recorder.callLog.indexOf('addTransceiver:video')).toBeLessThan(
+      recorder.callLog.indexOf('createOffer'),
+    );
   }, 20000);
 });
