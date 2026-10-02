@@ -2,20 +2,10 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
 import type { Agent } from '@ponter/shared';
-import {
-  Terminal,
-  Monitor,
-  RefreshCw,
-  Server,
-  Search,
-  Pencil,
-  Trash2,
-} from '@lucide/vue';
+import { Terminal, Monitor, RefreshCw, Server, Search } from '@lucide/vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import EditAgentDialog from '@/components/agent/EditAgentDialog.vue';
-import DeleteAgentDialog from '@/components/agent/DeleteAgentDialog.vue';
 
 defineEmits<{
   (e: 'connectAgent', agent: Agent): void;
@@ -25,8 +15,6 @@ defineEmits<{
 const agents = ref<Agent[]>([]);
 const loading = ref(false);
 const searchQuery = ref('');
-const editingAgent = ref<Agent | null>(null);
-const deletingAgent = ref<Agent | null>(null);
 
 async function loadAgents() {
   loading.value = true;
@@ -37,24 +25,6 @@ async function loadAgents() {
   } finally {
     loading.value = false;
   }
-}
-
-function openEdit(agent: Agent) {
-  editingAgent.value = agent;
-}
-
-function openDelete(agent: Agent) {
-  deletingAgent.value = agent;
-}
-
-/** Swap the edited agent into the list so the row reflects the new metadata. */
-function handleUpdated(updated: Agent) {
-  agents.value = agents.value.map((a) => (a.id === updated.id ? updated : a));
-}
-
-/** Drop the deleted agent from the list without a full refetch. */
-function handleDeleted(id: string) {
-  agents.value = agents.value.filter((a) => a.id !== id);
 }
 
 const filteredAgents = computed(() => {
@@ -135,11 +105,14 @@ onMounted(() => {
             }}
           </p>
         </div>
+        <!-- The row itself is not clickable: opening a session is an explicit
+             choice via the terminal / desktop buttons, so clicking the host
+             name never launches a shell by accident. -->
         <div
           v-for="a in filteredAgents"
           :key="a.id"
-          class="group flex items-center justify-between p-2 rounded-md hover:bg-muted/70 cursor-pointer transition-all border border-transparent hover:border-border/60 text-xs"
-          @click="$emit('connectAgent', a)"
+          class="flex items-center justify-between p-2 rounded-md hover:bg-muted/70 transition-all border border-transparent hover:border-border/60 text-xs"
+          :data-test="`agent-row-${a.id}`"
         >
           <div class="flex items-center gap-2 truncate">
             <span class="relative flex h-2 w-2 flex-shrink-0">
@@ -155,9 +128,7 @@ onMounted(() => {
               ></span>
             </span>
             <div class="flex flex-col truncate">
-              <span
-                class="truncate font-medium text-foreground group-hover:text-primary transition-colors"
-              >
+              <span class="truncate font-medium text-foreground">
                 {{ a.hostname || a.id }}
               </span>
               <span
@@ -169,56 +140,27 @@ onMounted(() => {
           </div>
           <div class="flex items-center gap-1">
             <button
-              class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
+              class="p-1 rounded bg-muted/50 hover:bg-primary/10 hover:text-primary transition-colors text-muted-foreground"
               title="Open terminal"
+              :aria-label="`Open terminal on ${a.hostname || a.id}`"
               :data-test="`connect-terminal-${a.id}`"
-              @click.stop="$emit('connectAgent', a)"
+              @click="$emit('connectAgent', a)"
             >
               <Terminal class="w-3.5 h-3.5" />
             </button>
             <button
               v-if="a.capabilities.includes('desktop')"
-              class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
+              class="p-1 rounded bg-muted/50 hover:bg-primary/10 hover:text-primary transition-colors text-muted-foreground"
               title="Open desktop stream"
+              :aria-label="`Open desktop stream on ${a.hostname || a.id}`"
               :data-test="`connect-desktop-${a.id}`"
-              @click.stop="$emit('connectDesktop', a)"
+              @click="$emit('connectDesktop', a)"
             >
               <Monitor class="w-3.5 h-3.5" />
-            </button>
-            <button
-              class="p-1 rounded bg-muted/50 group-hover:bg-primary/10 group-hover:text-primary transition-colors text-muted-foreground"
-              title="Edit agent"
-              :data-test="`edit-agent-${a.id}`"
-              @click.stop="openEdit(a)"
-            >
-              <Pencil class="w-3.5 h-3.5" />
-            </button>
-            <button
-              class="p-1 rounded bg-muted/50 hover:bg-destructive/15 hover:text-destructive transition-colors text-muted-foreground"
-              title="Delete agent"
-              :data-test="`delete-agent-${a.id}`"
-              @click.stop="openDelete(a)"
-            >
-              <Trash2 class="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
       </div>
     </ScrollArea>
-
-    <!-- Manage dialogs, teleported to body so they escape the sidebar's
-         overflow clipping. -->
-    <EditAgentDialog
-      :open="editingAgent !== null"
-      :agent="editingAgent"
-      @update:open="(v) => !v && (editingAgent = null)"
-      @updated="handleUpdated"
-    />
-    <DeleteAgentDialog
-      :open="deletingAgent !== null"
-      :agent="deletingAgent"
-      @update:open="(v) => !v && (deletingAgent = null)"
-      @deleted="handleDeleted"
-    />
   </aside>
 </template>

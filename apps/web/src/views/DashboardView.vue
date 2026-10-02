@@ -28,8 +28,12 @@ import {
   CheckCircle2,
   Lock,
   Plus,
+  Pencil,
+  Trash2,
 } from '@lucide/vue';
 import RegisterAgentDialog from '@/components/agent/RegisterAgentDialog.vue';
+import EditAgentDialog from '@/components/agent/EditAgentDialog.vue';
+import DeleteAgentDialog from '@/components/agent/DeleteAgentDialog.vue';
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -40,6 +44,8 @@ const error = ref<string | null>(null);
 const searchQuery = ref('');
 const statusFilter = ref<'all' | 'online' | 'offline'>('all');
 const showRegisterModal = ref(false);
+const editingAgent = ref<Agent | null>(null);
+const deletingAgent = ref<Agent | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -89,6 +95,24 @@ const filteredAgents = computed(() => {
     return matchesSearch && matchesStatus;
   });
 });
+
+function openEdit(agent: Agent) {
+  editingAgent.value = agent;
+}
+
+function openDelete(agent: Agent) {
+  deletingAgent.value = agent;
+}
+
+/** Swap the edited agent into the list so the card reflects the new metadata. */
+function handleUpdated(updated: Agent) {
+  agents.value = agents.value.map((a) => (a.id === updated.id ? updated : a));
+}
+
+/** Drop the deleted agent from the list without a full refetch. */
+function handleDeleted(id: string) {
+  agents.value = agents.value.filter((a) => a.id !== id);
+}
 
 onMounted(() => {
   loadDashboardData();
@@ -450,6 +474,34 @@ onUnmounted(() => {
                   >
                     Agent Offline
                   </Button>
+
+                  <!-- Manage actions: edit metadata and remove the agent from
+                       the fleet. Kept here on the dashboard, not in the
+                       workspace, so fleet administration lives in one place. -->
+                  <div
+                    class="flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-border/70"
+                  >
+                    <button
+                      type="button"
+                      class="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                      title="Edit agent"
+                      :aria-label="`Edit ${a.hostname || a.id}`"
+                      :data-test="`edit-agent-${a.id}`"
+                      @click.stop="openEdit(a)"
+                    >
+                      <Pencil class="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                      title="Delete agent"
+                      :aria-label="`Delete ${a.hostname || a.id}`"
+                      :data-test="`delete-agent-${a.id}`"
+                      @click.stop="openDelete(a)"
+                    >
+                      <Trash2 class="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -549,6 +601,20 @@ onUnmounted(() => {
     <RegisterAgentDialog
       v-model:open="showRegisterModal"
       @registered="loadDashboardData"
+    />
+
+    <!-- Agent Management Dialogs -->
+    <EditAgentDialog
+      :open="editingAgent !== null"
+      :agent="editingAgent"
+      @update:open="(v) => !v && (editingAgent = null)"
+      @updated="handleUpdated"
+    />
+    <DeleteAgentDialog
+      :open="deletingAgent !== null"
+      :agent="deletingAgent"
+      @update:open="(v) => !v && (deletingAgent = null)"
+      @deleted="handleDeleted"
     />
   </div>
 </template>

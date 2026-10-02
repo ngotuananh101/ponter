@@ -2,12 +2,14 @@
 import { ref, onMounted, onUnmounted, toRaw } from 'vue';
 import { useRoute } from 'vue-router';
 import { useTerminalStore } from '@/stores/terminal';
+import { useFullscreen } from '@/composables/useFullscreen';
 import type { TabItem } from '@/stores/terminal';
 import type { Agent } from '@ponter/shared';
 import type { TerminalSession } from '@ponter/terminal-core';
 import WorkspaceSidebar from '@/components/terminal/WorkspaceSidebar.vue';
 import TerminalTabBar from '@/components/terminal/TerminalTabBar.vue';
 import XtermTerminal from '@/components/terminal/XtermTerminal.vue';
+import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import DesktopView from '@/components/desktop/DesktopView.vue';
 import MobileAccessoryBar from '@/components/terminal/MobileAccessoryBar.vue';
 import { Button } from '@/components/ui/button';
@@ -25,6 +27,15 @@ import {
 const route = useRoute();
 const terminalStore = useTerminalStore();
 const sidebarOpen = ref(true);
+
+// Fullscreen acts on the terminal/desktop body, so the OS-level fullscreen
+// hides the header, sidebar and tab strip along with it.
+const sessionBodyRef = ref<HTMLElement | null>(null);
+const {
+  isFullscreen,
+  isSupported: fullscreenSupported,
+  toggle: toggleFullscreen,
+} = useFullscreen(sessionBodyRef);
 
 function handleConnect(agent: Agent) {
   terminalStore.openTab(
@@ -80,6 +91,16 @@ function handleKeyDown(event: KeyboardEvent) {
     event.preventDefault();
     if (terminalStore.activeTabId) {
       terminalStore.closeTab(terminalStore.activeTabId);
+    }
+    return;
+  }
+
+  // Ctrl+Shift+F or Cmd+Shift+F: toggle fullscreen for the active session.
+  // Esc remains the browser's native way out; this is the way in.
+  if (ctrlOrCmd && event.shiftKey && event.key === 'F') {
+    event.preventDefault();
+    if (terminalStore.activeTab && fullscreenSupported) {
+      void toggleFullscreen();
     }
     return;
   }
@@ -147,23 +168,52 @@ onUnmounted(() => {
       <TerminalTabBar
         :tabs="terminalStore.tabs"
         :active-tab-id="terminalStore.activeTabId"
+        :fullscreen-active="isFullscreen"
+        :fullscreen-supported="fullscreenSupported"
         @select-tab="terminalStore.setActiveTab"
         @close-tab="terminalStore.closeTab"
         @retry-tab="terminalStore.retryTab"
         @new-tab="handleNewTab"
+        @toggle-fullscreen="toggleFullscreen"
       />
 
-      <!-- Terminal Body: the only scrollable region in the shell -->
-      <div class="relative min-h-0 flex-1 overflow-hidden bg-[#090d16]">
+      <!-- Terminal Body: the only scrollable region in the shell. This is the
+           fullscreen target, so entering fullscreen drops the header, sidebar
+           and tab strip and gives the session the whole screen. -->
+      <div
+        ref="sessionBodyRef"
+        class="workspace-session relative min-h-0 flex-1 overflow-hidden bg-[#090d16]"
+      >
         <template v-if="terminalStore.activeTab">
+          <!-- A terminal tab exists before its session does: the store pushes it
+               at click time so the user sees the tab immediately, and the
+               handshake fills in `session` once the channel is up. xterm only
+               mounts once the session exists. -->
           <XtermTerminal
-            v-if="terminalStore.activeTab.kind === 'terminal'"
+            v-if="
+              terminalStore.activeTab.kind === 'terminal' &&
+              terminalStore.activeTab.session
+            "
             :key="terminalStore.activeTab.id"
             :session="toRaw(terminalStore.activeTab.session) as TerminalSession"
           />
           <DesktopView
-            v-else
+            v-else-if="terminalStore.activeTab.kind === 'desktop'"
             :key="terminalStore.activeTab.id"
+            :tab="terminalStore.activeTab as TabItem"
+          />
+
+          <!-- The step list overlays the body while a terminal handshake runs,
+               including the "Opening shell" stage after the session exists —
+               xterm is already mounted underneath, so the first PTY output
+               flips the tab active and reveals it. (Desktop owns its own
+               progress overlay inside DesktopView, next to its error overlay.)
+               A failed tab shows the error overlay below instead. -->
+          <ConnectionProgress
+            v-if="
+              terminalStore.activeTab.kind === 'terminal' &&
+              terminalStore.activeTab.status === 'connecting'
+            "
             :tab="terminalStore.activeTab as TabItem"
           />
 
@@ -255,9 +305,9 @@ onUnmounted(() => {
             <div class="flex items-center gap-1.5">
               <span
                 class="px-1.5 py-0.5 rounded bg-muted text-foreground border border-border"
-                >FitAddon</span
+                >Ctrl+Shift+F</span
               >
-              <span>Auto-resizing</span>
+              <span>Fullscreen</span>
             </div>
           </div>
         </div>
@@ -294,7 +344,7 @@ onUnmounted(() => {
 
         <div class="flex items-center gap-2 text-[10px]">
           <Keyboard class="w-3 h-3 text-muted-foreground" />
-          <span>Alt+1..9 switch · Ctrl+W close</span>
+          <span>Alt+1..9 switch · Ctrl+W close · Ctrl+Shift+F fullscreen</span>
         </div>
       </footer>
 
@@ -307,3 +357,16 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* The body carries Tailwind's `relative`, and an author rule outranks the UA
+   stylesheet's `:fullscreen { position: fixed }` — so without this the element
+   would stay in flow and fullscreen would render it at its old box. Re-assert
+   the fullscreen geometry explicitly. */
+.workspace-session:fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+</style>

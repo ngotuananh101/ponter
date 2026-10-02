@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { RefreshCw } from '@lucide/vue';
 import { Button } from '@/components/ui/button';
+import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import { useTerminalStore } from '@/stores/terminal';
 import type { TabItem } from '@/stores/terminal';
 
@@ -55,15 +56,9 @@ onBeforeUnmount(() => {
       class="h-full w-full object-contain"
     />
 
-    <div
-      v-if="tab.status === 'connecting'"
-      class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground"
-    >
-      <span
-        class="h-5 w-5 rounded-full border-2 border-muted-foreground/30 border-t-primary animate-spin"
-      ></span>
-      <p class="text-xs font-mono">Negotiating stream…</p>
-    </div>
+    <!-- Desktop handshake can take up to 20s waiting for the first track; the
+         step list makes that wait legible instead of a bare spinner. -->
+    <ConnectionProgress v-if="tab.status === 'connecting'" :tab="tab" />
 
     <div
       v-if="tab.status === 'error'"

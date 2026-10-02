@@ -14,6 +14,7 @@ import {
 import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
+import type { InitStep } from '@/lib/connection-steps';
 
 export interface TabItem {
   id: string;
@@ -23,6 +24,12 @@ export interface TabItem {
   terminalId: string;
   title: string;
   status: 'connecting' | 'active' | 'exited' | 'error';
+  /**
+   * Which initialization stage the tab is in while `status === 'connecting'`.
+   * The workspace renders this as a step list so a slow handshake shows
+   * progress instead of an empty body.
+   */
+  initStep?: InitStep;
   exitCode?: number;
   /** Why the connection failed, when `status === 'error'`. */
   error?: string;
@@ -59,6 +66,38 @@ export const useTerminalStore = defineStore('terminal', () => {
   const activeTab = computed(() =>
     tabs.value.find((t) => t.id === activeTabId.value),
   );
+
+  /**
+   * Whether a tab is still open. Tabs are now pushed before their handshake
+   * completes, so a user can close one mid-handshake; the open flows use this
+   * to detect that and tear down the connection they just built instead of
+   * leaking it (which would hold the agent's single session slot, ADR-14).
+   */
+  function isTabOpen(tabId: string): boolean {
+    return tabs.value.some((t) => t.id === tabId);
+  }
+
+  /**
+   * Advance the initialization step of every still-connecting tab for an
+   * agent. Terminal tabs share one underlying connection, so two tabs opened
+   * for the same agent must both track the same handshake progress — a
+   * per-call callback would leave the second tab frozen on its first step.
+   */
+  function setInitStep(
+    agentId: string,
+    kind: 'terminal' | 'desktop',
+    step: InitStep,
+  ): void {
+    for (const tab of tabs.value) {
+      if (
+        tab.agentId === agentId &&
+        tab.kind === kind &&
+        tab.status === 'connecting'
+      ) {
+        tab.initStep = step;
+      }
+    }
+  }
 
   /**
    * Build the signaling transport for a session. Shared by the terminal and
@@ -99,6 +138,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (pending) return pending;
 
     const connectionPromise = (async () => {
+      setInitStep(agentId, 'terminal', 'session');
       const sessionResp = await apiClient.sessions.create({ agentId });
 
       const transport = await createSignalingTransport(sessionResp.id);
@@ -107,6 +147,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       // ICE list here rather than caching it at module load. Without this the
       // RTCPeerConnection is built with an empty `iceServers` and ICE can only
       // ever succeed on a LAN.
+      setInitStep(agentId, 'terminal', 'ice');
       const iceServers = await apiClient.webrtc.getIceServers();
 
       const rtcPeer = createBrowserAdapter({ iceServers });
@@ -139,6 +180,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       }
 
       await peer.start();
+      setInitStep(agentId, 'terminal', 'negotiating');
 
       // ICE failure used to be observed by nobody. The only symptom was a tab
       // stuck on "connecting" for the full 10s `waitForChannel` timeout, with
@@ -196,6 +238,26 @@ export const useTerminalStore = defineStore('terminal', () => {
       return tabId;
     }
 
+    // Push the tab BEFORE the handshake. The handshake can take seconds (ICE +
+    // `waitForChannel`), and a tab that only appears once it is done leaves the
+    // user staring at an unchanged workspace wondering whether the click
+    // registered. The tab starts with no session; the workspace renders the
+    // step list until one arrives.
+    tabs.value.push({
+      id: tabId,
+      agentId,
+      kind: 'terminal',
+      terminalId: '',
+      title: title || `Agent ${agentId.slice(0, 8)}`,
+      status: 'connecting',
+      initStep: 'session',
+    });
+    activeTabId.value = tabId;
+
+    // Read the tab back through the proxy: the object pushed above is the raw
+    // one, and mutating it directly would not notify the template.
+    const live = tabs.value.find((t) => t.id === tabId);
+
     let client: TerminalClient;
     try {
       client = await getOrConnectAgent(agentId);
@@ -205,39 +267,74 @@ export const useTerminalStore = defineStore('terminal', () => {
       // an unhandled rejection, no tab, and no message. `waitForChannel` alone
       // accounts for the common case — the user clicked an agent and nothing
       // happened.
-      recordFailedTab(tabId, agentId, title, e);
+      //
+      // If the tab was closed mid-handshake, `live` still references the
+      // detached proxy; writing to it is harmless and nothing is shown. The
+      // connection was never registered, so there is nothing to tear down.
+      if (live) {
+        live.status = 'error';
+        live.error = toErrorMessage(e);
+        live.initStep = undefined;
+      }
+      return tabId;
+    }
+
+    // The tab may have been closed while the handshake ran. Closing it cannot
+    // have released this connection — `closeTab` found no session and no
+    // registered connection at that point — so release it now, or the agent
+    // keeps its single session slot (ADR-14) occupied by an orphan.
+    if (!isTabOpen(tabId)) {
+      releaseOrphanedTerminalConnection(agentId);
       return tabId;
     }
 
     const session = client.createSession({ cols: 80, rows: 24, shell });
 
-    const newTab: TabItem = {
-      id: tabId,
-      agentId,
-      kind: 'terminal',
-      terminalId: session.id,
-      title: title || `Agent ${agentId.slice(0, 8)}`,
-      status: 'connecting',
-      session,
-    };
+    if (live) {
+      live.terminalId = session.id;
+      live.session = session;
+      live.initStep = 'shell';
 
-    session.onStateChange((state) => {
-      newTab.status = state === 'closed' ? 'exited' : state;
-    });
+      session.onStateChange((state) => {
+        live.status = state === 'closed' ? 'exited' : state;
+        if (live.status !== 'connecting') live.initStep = undefined;
+      });
 
-    session.onExit((code) => {
-      newTab.status = 'exited';
-      newTab.exitCode = code;
-    });
+      session.onExit((code) => {
+        live.status = 'exited';
+        live.exitCode = code;
+        live.initStep = undefined;
+      });
 
-    client.onError?.((message) => {
-      newTab.status = 'error';
-      newTab.error = message;
-    });
+      client.onError?.((message) => {
+        live.status = 'error';
+        live.error = message;
+        live.initStep = undefined;
+      });
+    }
 
-    tabs.value.push(newTab);
-    activeTabId.value = tabId;
     return tabId;
+  }
+
+  /**
+   * Tear down a terminal connection whose tab was closed mid-handshake, unless
+   * another tab for the same agent still needs it (connections are shared per
+   * agent).
+   */
+  function releaseOrphanedTerminalConnection(agentId: string): void {
+    if (
+      tabs.value.some((t) => t.agentId === agentId && t.kind === 'terminal')
+    ) {
+      return;
+    }
+    const conn = connections.get(agentId);
+    if (!conn) return;
+    conn.client.dispose();
+    void conn.peer.close();
+    connections.delete(agentId);
+    void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+      // Best-effort: the session may already be gone server-side.
+    });
   }
 
   /**
@@ -323,9 +420,25 @@ export const useTerminalStore = defineStore('terminal', () => {
       return tabId;
     }
 
+    // Push the tab up front, same reasoning as `openTab`: the desktop handshake
+    // waits up to 20s for the first video track, and an absent tab reads as a
+    // dead click.
+    tabs.value.push({
+      id: tabId,
+      agentId,
+      kind: 'desktop',
+      terminalId: '',
+      title: title || `Agent ${agentId.slice(0, 8)}`,
+      status: 'connecting',
+      initStep: 'session',
+    });
+    activeTabId.value = tabId;
+    const live = tabs.value.find((t) => t.id === tabId);
+
     try {
       const sessionResp = await apiClient.sessions.create({ agentId });
       const transport = await createSignalingTransport(sessionResp.id);
+      if (live) live.initStep = 'ice';
       const iceServers = await apiClient.webrtc.getIceServers();
       const rtcPeer = createBrowserAdapter({ iceServers });
 
@@ -349,6 +462,7 @@ export const useTerminalStore = defineStore('terminal', () => {
             if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
             tab.status = 'error';
             tab.error = message;
+            tab.initStep = undefined;
           }
           desktopConnections.delete(agentId);
         });
@@ -363,6 +477,7 @@ export const useTerminalStore = defineStore('terminal', () => {
           if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
           tab.status = 'error';
           tab.error = message;
+          tab.initStep = undefined;
         }
         desktopConnections.delete(agentId);
       });
@@ -374,25 +489,26 @@ export const useTerminalStore = defineStore('terminal', () => {
         sessionId: sessionResp.id,
       });
 
-      const tab: TabItem = {
-        id: tabId,
-        agentId,
-        kind: 'desktop',
-        terminalId: '',
-        title: title || `Agent ${agentId.slice(0, 8)}`,
-        status: 'connecting',
-      };
-      tabs.value.push(tab);
-      activeTabId.value = tabId;
+      // The tab may have been closed while the handshake ran; `closeTab` found
+      // no registered connection then, so release the one just built or the
+      // agent's single session slot stays occupied by an orphan (ADR-14).
+      if (!isTabOpen(tabId)) {
+        client.close();
+        void peer.close();
+        desktopConnections.delete(agentId);
+        void apiClient.sessions.terminate(sessionResp.id).catch(() => {});
+        return tabId;
+      }
 
+      if (live) live.initStep = 'stream';
       const stream = await client.start();
       // Mutate through the proxy (find on tabs.value) so Vue's reactivity
       // watchers fire. Mutating the raw local `tab` object after push does not
       // notify — `DesktopView`'s `watch` on `desktopStream` would never fire.
-      const live = tabs.value.find((t) => t.id === tabId);
       if (live) {
         live.desktopStream = stream;
         live.status = 'active';
+        live.initStep = undefined;
       }
       return tabId;
     } catch (e) {
@@ -404,10 +520,10 @@ export const useTerminalStore = defineStore('terminal', () => {
         void half.peer.close();
         desktopConnections.delete(agentId);
       }
-      const existing = tabs.value.find((t) => t.id === tabId);
-      if (existing) {
-        existing.status = 'error';
-        existing.error = message;
+      if (live) {
+        live.status = 'error';
+        live.error = message;
+        live.initStep = undefined;
       } else {
         recordDesktopErrorTab(tabId, agentId, title, message);
       }

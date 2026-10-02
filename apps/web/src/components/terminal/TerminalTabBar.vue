@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { Plus, RefreshCw, X, Terminal, Monitor } from '@lucide/vue';
+import { Plus, RefreshCw, X, Terminal, Monitor, Loader2 } from '@lucide/vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import FullscreenToggle from '@/components/terminal/FullscreenToggle.vue';
 
 defineProps<{
   tabs: Array<{
@@ -10,6 +11,9 @@ defineProps<{
     kind: 'terminal' | 'desktop';
   }>;
   activeTabId: string | null;
+  /** Fullscreen state of the session body, owned by the workspace view. */
+  fullscreenActive?: boolean;
+  fullscreenSupported?: boolean;
 }>();
 
 defineEmits<{
@@ -17,6 +21,7 @@ defineEmits<{
   (e: 'closeTab', tabId: string): void;
   (e: 'retryTab', tabId: string): void;
   (e: 'newTab'): void;
+  (e: 'toggleFullscreen'): void;
 }>();
 </script>
 
@@ -39,11 +44,19 @@ defineEmits<{
           "
           @click="$emit('selectTab', tab.id)"
         >
+          <!-- Connecting swaps the status dot for a spinner, so a tab that is
+               still handshaking reads as "working" rather than merely amber. -->
+          <Loader2
+            v-if="tab.status === 'connecting'"
+            class="w-3 h-3 flex-shrink-0 text-amber-500 motion-safe:animate-spin"
+            :data-test="`tab-spinner-${tab.id}`"
+            aria-label="Connecting"
+          />
           <span
+            v-else
             class="w-2 h-2 rounded-full flex-shrink-0"
             :class="{
               'bg-emerald-500': tab.status === 'active',
-              'bg-amber-500 animate-pulse': tab.status === 'connecting',
               'bg-muted-foreground/40': tab.status === 'exited',
               'bg-destructive': tab.status === 'error',
             }"
@@ -74,6 +87,17 @@ defineEmits<{
         </div>
       </div>
     </ScrollArea>
+    <!-- The fullscreen control rides with the pinned "+", so it stays reachable
+         however many tabs are open. It only appears once a session is on
+         screen; the workspace view passes the state and handles the toggle. -->
+    <FullscreenToggle
+      v-if="activeTabId"
+      variant="inline"
+      :active="!!fullscreenActive"
+      :supported="!!fullscreenSupported"
+      :label="tabs.find((t) => t.id === activeTabId)?.title"
+      @toggle="$emit('toggleFullscreen')"
+    />
     <button
       class="p-1.5 mr-1 hover:bg-muted text-muted-foreground hover:text-foreground rounded-md transition-colors flex-shrink-0"
       title="Open new tab"

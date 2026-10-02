@@ -75,6 +75,70 @@ describe('TerminalTabBar.vue', () => {
     await wrapper.find('button[title="Open new tab"]').trigger('click');
     expect(wrapper.emitted('newTab')).toHaveLength(1);
   });
+
+  it('shows a spinner on a connecting tab and a dot once active', () => {
+    const wrapper = mount(TerminalTabBar, {
+      props: {
+        tabs: [
+          {
+            id: 't1',
+            title: 'Shell 1',
+            status: 'connecting',
+            kind: 'terminal' as const,
+          },
+          {
+            id: 't2',
+            title: 'Shell 2',
+            status: 'active',
+            kind: 'terminal' as const,
+          },
+        ],
+        activeTabId: 't1',
+      },
+    });
+
+    expect(wrapper.find('[data-test="tab-spinner-t1"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="tab-spinner-t2"]').exists()).toBe(false);
+  });
+
+  it('puts the fullscreen control beside "Open new tab" for an active tab', async () => {
+    const tabs = [
+      {
+        id: 't1',
+        title: 'Shell 1',
+        status: 'active',
+        kind: 'terminal' as const,
+      },
+    ];
+    const wrapper = mount(TerminalTabBar, {
+      props: {
+        tabs,
+        activeTabId: 't1',
+        fullscreenSupported: true,
+      },
+    });
+
+    const toggle = wrapper.find('[data-test="fullscreen-toggle"]');
+    expect(toggle.exists()).toBe(true);
+    // Sits before the "+" in DOM order, i.e. immediately to its left.
+    const buttons = wrapper.findAll('button').map((b) => b.element as Element);
+    expect(buttons.indexOf(toggle.element)).toBe(buttons.length - 2);
+    expect(buttons[buttons.length - 1]!.getAttribute('title')).toBe(
+      'Open new tab',
+    );
+
+    await toggle.trigger('click');
+    expect(wrapper.emitted('toggleFullscreen')).toHaveLength(1);
+  });
+
+  it('hides the fullscreen control when there is no active tab', () => {
+    const wrapper = mount(TerminalTabBar, {
+      props: { tabs: [], activeTabId: null, fullscreenSupported: true },
+    });
+    expect(wrapper.find('[data-test="fullscreen-toggle"]').exists()).toBe(
+      false,
+    );
+  });
 });
 
 describe('MobileAccessoryBar.vue', () => {
@@ -112,8 +176,6 @@ vi.mock('@/services/client', () => ({
   apiClient: {
     agents: {
       list: vi.fn(),
-      update: vi.fn(),
-      delete: vi.fn(),
     },
   },
 }));
@@ -179,7 +241,7 @@ describe('WorkspaceSidebar.vue', () => {
     expect(wrapper.emitted('connectAgent')).toBeFalsy();
   });
 
-  it('opens the edit dialog prefilled for the clicked agent', async () => {
+  it('connects only when the terminal button is clicked, not the row', async () => {
     const wrapper = mount(WorkspaceSidebar, {
       props: {},
       global: {
@@ -191,22 +253,22 @@ describe('WorkspaceSidebar.vue', () => {
     });
     await flushPromises();
 
-    expect(wrapper.find('[data-test="edit-agent-a1"]').exists()).toBe(true);
-    await wrapper.find('[data-test="edit-agent-a1"]').trigger('click');
-    await flushPromises();
-
-    // The edit dialog is open with a1's hostname prefilled.
-    expect(wrapper.find('#edit-agent-hostname').exists()).toBe(true);
-    expect(
-      (wrapper.find('#edit-agent-hostname').element as HTMLInputElement).value,
-    ).toBe('host-a');
-
-    // Editing must not also fire a connect action (the row click is stopped).
+    // Clicking the row itself (e.g. the host name) must not launch a session.
+    await wrapper.find('[data-test="agent-row-a1"]').trigger('click');
     expect(wrapper.emitted('connectAgent')).toBeFalsy();
     expect(wrapper.emitted('connectDesktop')).toBeFalsy();
+
+    // Only the explicit terminal button opens a session.
+    await wrapper.find('[data-test="connect-terminal-a1"]').trigger('click');
+    expect(wrapper.emitted('connectAgent')?.[0]).toEqual([
+      expect.objectContaining({ id: 'a1' }),
+    ]);
   });
 
-  it('opens the delete dialog for the clicked agent', async () => {
+  // Editing and deleting agents is dashboard (home) administration, not a
+  // workspace action — the sidebar only connects. Those flows are covered by
+  // DashboardView.test.ts.
+  it('does not expose edit or delete controls', async () => {
     const wrapper = mount(WorkspaceSidebar, {
       props: {},
       global: {
@@ -218,83 +280,7 @@ describe('WorkspaceSidebar.vue', () => {
     });
     await flushPromises();
 
-    await wrapper.find('[data-test="delete-agent-a2"]').trigger('click');
-    await flushPromises();
-
-    expect(wrapper.find('[data-test="delete-agent-confirm"]').exists()).toBe(
-      true,
-    );
-    expect(wrapper.text()).toContain('host-b');
-    expect(wrapper.emitted('connectAgent')).toBeFalsy();
-  });
-
-  it('removes the agent from the list after a successful delete', async () => {
-    const { apiClient } = await import('@/services/client');
-    vi.mocked(apiClient.agents.delete).mockResolvedValueOnce({ success: true });
-
-    const wrapper = mount(WorkspaceSidebar, {
-      props: {},
-      global: {
-        stubs: {
-          Teleport: true,
-          ScrollArea: { template: '<div><slot /></div>' },
-        },
-      },
-    });
-    await flushPromises();
-
-    expect(wrapper.find('[data-test="delete-agent-a2"]').exists()).toBe(true);
-    await wrapper.find('[data-test="delete-agent-a2"]').trigger('click');
-    await flushPromises();
-    await wrapper.find('[data-test="delete-agent-confirm"]').trigger('click');
-    await flushPromises();
-
-    expect(apiClient.agents.delete).toHaveBeenCalledWith('a2');
+    expect(wrapper.find('[data-test="edit-agent-a1"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="delete-agent-a2"]').exists()).toBe(false);
-    // The other agent is untouched.
-    expect(wrapper.find('[data-test="delete-agent-a1"]').exists()).toBe(true);
-  });
-
-  it('reflects an edited agent in the list after a successful update', async () => {
-    const { apiClient } = await import('@/services/client');
-    vi.mocked(apiClient.agents.update).mockResolvedValueOnce({
-      id: 'a1',
-      userId: 'u1',
-      hostname: 'renamed-host',
-      platform: 'linux',
-      osVersion: '6.5',
-      agentVersion: '0.1.0',
-      publicKey: 'pk-a',
-      isOnline: true,
-      lastHeartbeat: null,
-      capabilities: ['terminal', 'desktop'],
-      createdAt: new Date().toISOString(),
-    });
-
-    const wrapper = mount(WorkspaceSidebar, {
-      props: {},
-      global: {
-        stubs: {
-          Teleport: true,
-          ScrollArea: { template: '<div><slot /></div>' },
-        },
-      },
-    });
-    await flushPromises();
-
-    await wrapper.find('[data-test="edit-agent-a1"]').trigger('click');
-    await flushPromises();
-    await wrapper.find('#edit-agent-hostname').setValue('renamed-host');
-    await wrapper.find('[data-test="edit-agent-submit"]').trigger('click');
-    await flushPromises();
-
-    expect(apiClient.agents.update).toHaveBeenCalledWith('a1', {
-      hostname: 'renamed-host',
-      platform: 'linux',
-      osVersion: '6.5',
-      agentVersion: '0.1.0',
-      capabilities: ['terminal', 'desktop'],
-    });
-    expect(wrapper.text()).toContain('renamed-host');
   });
 });

@@ -21,6 +21,33 @@ vi.mock('vue-router', () => ({
 // would fire on the next test's synthetic keypress.
 enableAutoUnmount(afterEach);
 
+// happy-dom implements no Fullscreen API, so the view's fullscreen control would
+// never render. Install the minimum the composable checks for, and remove it
+// afterwards so the absence is not leaked to other suites.
+beforeEach(() => {
+  Object.defineProperty(Element.prototype, 'requestFullscreen', {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => Promise.resolve()),
+  });
+  Object.defineProperty(document, 'exitFullscreen', {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => Promise.resolve()),
+  });
+  Object.defineProperty(document, 'fullscreenElement', {
+    configurable: true,
+    get: () => null,
+  });
+});
+
+afterEach(() => {
+  delete (Element.prototype as unknown as Record<string, unknown>)
+    .requestFullscreen;
+  delete (document as unknown as Record<string, unknown>).exitFullscreen;
+  delete (document as unknown as Record<string, unknown>).fullscreenElement;
+});
+
 type TerminalStore = ReturnType<typeof useTerminalStore>;
 
 // TerminalTabBar stays real on purpose: the bug this file pins lived in the
@@ -150,5 +177,68 @@ describe('WorkspaceView.vue', () => {
     const wrapper = mount(WorkspaceView);
     await flushPromises();
     expect(wrapper.find('video').exists()).toBe(true);
+  });
+
+  it('shows the connection stepper for a terminal tab still connecting', async () => {
+    const store = useTerminalStore();
+    // The store pushes this tab before its session exists; the body must show
+    // progress, not xterm mounted against an undefined session.
+    store.tabs.push({
+      id: 'tab-c',
+      agentId: 'ag-1',
+      kind: 'terminal',
+      terminalId: '',
+      title: 'Host 1',
+      status: 'connecting',
+      initStep: 'negotiating',
+    });
+    store.setActiveTab('tab-c');
+
+    const wrapper = mountWorkspace();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Connecting to');
+    expect(wrapper.text()).toContain('Negotiating WebRTC channel');
+    // xterm is stubbed in this suite; its absence is asserted via the stub
+    // name not appearing as a rendered terminal.
+    expect(wrapper.findComponent({ name: 'XtermTerminal' }).exists()).toBe(
+      false,
+    );
+  });
+
+  it('shows the error overlay, not the stepper, for a failed terminal tab', async () => {
+    const store = useTerminalStore();
+    store.tabs.push({
+      id: 'tab-e',
+      agentId: 'ag-1',
+      kind: 'terminal',
+      terminalId: '',
+      title: 'Host 1',
+      status: 'error',
+      error: 'no route',
+    });
+    store.setActiveTab('tab-e');
+
+    const wrapper = mountWorkspace();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('no route');
+    expect(wrapper.text()).not.toContain('Connecting to');
+  });
+
+  it('offers a fullscreen control only when a session tab is active', async () => {
+    const store = useTerminalStore();
+    const wrapper = mountWorkspace();
+
+    // No tab: nothing to take fullscreen.
+    expect(wrapper.find('[data-test="fullscreen-toggle"]').exists()).toBe(
+      false,
+    );
+
+    seedTab(store, 'tab-1', 'agent-1');
+    store.setActiveTab('tab-1');
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="fullscreen-toggle"]').exists()).toBe(true);
   });
 });
