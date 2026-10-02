@@ -145,4 +145,21 @@ describe('EditAgentDialog.vue', () => {
     expect(apiClient.agents.update).not.toHaveBeenCalled();
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
   });
+
+  it('7. Labels the capabilities group and marks the backdrop decorative', () => {
+    const wrapper = mount(EditAgentDialog, {
+      props: { open: true, agent: createMockAgent() },
+      global: { stubs: { Teleport: true } },
+    });
+
+    const group = wrapper.find('[role="group"]');
+    expect(group.exists()).toBe(true);
+    expect(group.attributes('aria-labelledby')).toBe(
+      'edit-agent-capabilities-label',
+    );
+    expect(wrapper.find('#edit-agent-capabilities-label').exists()).toBe(true);
+
+    // The click-outside backdrop is decorative, not a keyboard control.
+    expect(wrapper.find('[role="presentation"]').exists()).toBe(true);
+  });
 });

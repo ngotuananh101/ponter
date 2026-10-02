@@ -100,4 +100,12 @@ describe('DeleteAgentDialog.vue', () => {
     expect(apiClient.agents.delete).not.toHaveBeenCalled();
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
   });
+
+  it('6. Marks the click-outside backdrop decorative', () => {
+    const wrapper = mount(DeleteAgentDialog, {
+      props: { open: true, agent: createMockAgent() },
+      global: { stubs: { Teleport: true } },
+    });
+    expect(wrapper.find('[role="presentation"]').exists()).toBe(true);
+  });
 });

@@ -108,7 +108,9 @@ async function handleSubmit() {
       v-if="open && agent"
       class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-xs animate-in fade-in duration-150"
     >
-      <div class="fixed inset-0" @click="handleClose" />
+      <!-- Decorative click-outside backdrop. It is not a keyboard control:
+           the visible Close and Cancel buttons are the accessible dismissal. -->
+      <div role="presentation" class="fixed inset-0" @click="handleClose" />
 
       <div
         class="relative w-full max-w-lg rounded-xl border border-border bg-card text-card-foreground shadow-2xl z-10 overflow-hidden flex flex-col max-h-[90vh]"
@@ -212,10 +214,20 @@ async function handleSubmit() {
             </div>
           </div>
 
-          <!-- Capabilities -->
+          <!-- Capabilities: a group of toggle buttons, so the label names the
+               group rather than pointing at one control. -->
           <div class="space-y-1.5">
-            <Label class="text-xs font-semibold">Capabilities</Label>
-            <div class="flex gap-2">
+            <Label
+              id="edit-agent-capabilities-label"
+              class="text-xs font-semibold"
+            >
+              Capabilities
+            </Label>
+            <div
+              class="flex gap-2"
+              role="group"
+              aria-labelledby="edit-agent-capabilities-label"
+            >
               <button
                 type="button"
                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"

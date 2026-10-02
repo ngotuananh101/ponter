@@ -10,20 +10,14 @@ import {
   toPublicAgent,
   type PublicAgent,
 } from '../utils/agent.js';
+// The one live-socket map, owned by the WebSocket layer. Importing it here —
+// rather than keeping a second, never-populated map — is what makes the
+// `socketPresent` flag reflect reality. `ws.ts` does not import this module, so
+// there is no cycle.
+import { agentConnections } from './ws.js';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
-
-/**
- * Live agent sockets, keyed by `agents.id`.
- *
- * Module scope within the single Node.js process: WebSocket connections and HTTP
- * requests share the same process, so this map is reliable here (unlike the
- * multi-isolate Workers deployment). WebSocket handling is wired up in a later
- * task; the map is declared now so `toPublicAgent` can accept a socket-present
- * flag without callers needing to know the source.
- */
-export const agentConnections = new Map<string, unknown>();
 
 router.get('/', async (c) => {
   const user = c.get('user');
