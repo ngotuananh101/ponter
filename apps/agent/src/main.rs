@@ -7,13 +7,7 @@
 
 // Desktop streaming is unavailable on musl (see Cargo.toml): the module is
 // compiled out entirely, so the musl artifact stays terminal-only.
-//
-// The allow is temporary: Task 4 wires the module into the session loop, and
-// this repository's `cargo clippy --all-targets -- -D warnings` gate fails on
-// the dead_code warnings an unwired module produces (verified — in a binary
-// crate even `pub` items are dead-code-checked).
 #[cfg(not(target_env = "musl"))]
-#[allow(dead_code)]
 mod desktop;
 mod pty;
 mod rtc;
@@ -71,6 +65,11 @@ struct Cli {
     cols: u16,
     #[arg(long, default_value_t = 24)]
     rows: u16,
+
+    /// Desktop frame source: `screen` captures the display, `test` streams a
+    /// deterministic pattern (what CI and the E2E harness use).
+    #[arg(long, env = "AGENT_DESKTOP_SOURCE", value_enum, default_value_t = DesktopSource::Screen)]
+    desktop_source: DesktopSource,
 }
 
 /// `--credential-or-env` in the roadmap is realised as clap's
@@ -151,6 +150,43 @@ async fn main() -> Result<()> {
     run_with_reconnect(&cli, &credential, &shell).await
 }
 
+/// Which frames a desktop session streams (ADR-17).
+///
+/// Defined unconditionally so the CLI has the same shape on every target; on
+/// musl the value is accepted and then refused, because the desktop module is
+/// compiled out there.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopSource {
+    /// Capture the real primary display (Linux is the runnable platform in Week 7).
+    Screen,
+    /// A deterministic synthetic pattern: headless CI and the E2E harness.
+    Test,
+}
+
+/// What an offer asks this agent to serve (ADR-15). Decided from the offer's
+/// capabilities *before* the answer is built.
+#[derive(Debug, PartialEq, Eq)]
+enum SessionMode {
+    Terminal,
+    Desktop,
+    None,
+}
+
+/// Classify an offer's capabilities into the mode this agent will serve.
+///
+/// Pure and total: the input is attacker-controlled strings and the only
+/// operation is exact comparison against the two known labels. Terminal is
+/// checked first so a malformed client offering both gets the established flow.
+fn classify_offer(capabilities: &[String]) -> SessionMode {
+    if capabilities.iter().any(|c| c == rtc::TERMINAL_LABEL) {
+        SessionMode::Terminal
+    } else if capabilities.iter().any(|c| c == rtc::DESKTOP_LABEL) {
+        SessionMode::Desktop
+    } else {
+        SessionMode::None
+    }
+}
+
 /// The CLI values a running session needs, owned.
 ///
 /// `run_with_reconnect` starts the session supervisor with `tokio::spawn` so
@@ -163,6 +199,10 @@ struct SessionConfig {
     cols: u16,
     rows: u16,
     shell: String,
+    /// Unused on musl, where the desktop module is compiled out; kept so the
+    /// CLI shape is identical on every target.
+    #[allow(dead_code)]
+    desktop_source: DesktopSource,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -207,6 +247,7 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
         cols: cli.cols,
         rows: cli.rows,
         shell: shell.to_string(),
+        desktop_source: cli.desktop_source,
     };
 
     let mut delay = signal::BACKOFF_INITIAL;
@@ -405,6 +446,10 @@ async fn run_one_session(
     pushed_ice: &[signal::IceServerEntry],
     cfg: &SessionConfig,
 ) -> Result<()> {
+    // ADR-15: classify from the offer's capabilities before anything is built.
+    // The mode also selects the ICE timeouts passed to `build_peer`.
+    let mode = classify_offer(&offer.capabilities);
+
     // End-of-session signal. The session loop below watches `inbound` (which
     // stays open across socket reconnects) and the pty pump, so a peer that
     // dies without a clean close used to leave the session — and its ADR-14
@@ -431,6 +476,10 @@ async fn run_one_session(
     let channel: Arc<OnceLock<Arc<dyn DataChannel>>> = Arc::new(OnceLock::new());
     let (open_tx, mut open_rx) = tokio::sync::oneshot::channel::<()>();
     let open_tx = Arc::new(Mutex::new(Some(open_tx)));
+    // Fired on `Connected`; the desktop session waits on it (a desktop peer has
+    // no data channel to wait for instead). Unused by the terminal path.
+    let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
+    let connected_tx = Arc::new(Mutex::new(Some(connected_tx)));
 
     let handler = Arc::new(rtc::SessionHandler::new(
         offer.session_id.clone(),
@@ -438,11 +487,41 @@ async fn run_one_session(
         end_tx.clone(),
         channel.clone(),
         open_tx,
+        connected_tx,
     ));
-    let peer = rtc::build_peer(pushed_ice, &cfg.stun, handler).await?;
+    let peer =
+        rtc::build_peer(pushed_ice, &cfg.stun, handler, mode == SessionMode::Desktop).await?;
 
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
+
+    // Branch on the classification made before the peer was built (ADR-15). A
+    // desktop offer needs its sending track attached before the remote
+    // description exists; an unsupported offer is refused with a real SDP
+    // (approved: false) and never reaches the terminal setup below.
+    match mode {
+        SessionMode::Desktop => {
+            return run_desktop_session(
+                offer,
+                &peer,
+                outbound,
+                pushed_ice,
+                cfg,
+                &mut pending,
+                connected_rx,
+                end_rx,
+                inbound,
+            )
+            .await;
+        }
+        SessionMode::None => {
+            tracing::warn!(session_id = %offer.session_id, "refused: no recognised capability");
+            rtc::refuse_offer(&peer, offer, outbound).await?;
+            let _ = peer.close().await;
+            return Ok(());
+        }
+        SessionMode::Terminal => {}
+    }
 
     rtc::answer_offer(&peer, offer, outbound).await?;
 
@@ -451,12 +530,6 @@ async fn run_one_session(
     // browser starts trickling the moment it reads it, so this is a real race
     // rather than a theoretical one.
     rtc::flush_pending_candidates(&peer, &mut pending).await?;
-
-    if !offer.capabilities.iter().any(|c| c == rtc::TERMINAL_LABEL) {
-        tracing::warn!(session_id = %offer.session_id, "refused: no terminal capability");
-        let _ = peer.close().await;
-        return Ok(());
-    }
 
     // PtyManager multiplexes up to 10 concurrent sessions over this one
     // terminal DataChannel. The manager is created before the data-channel
@@ -772,6 +845,147 @@ async fn run_one_session(
     Ok(())
 }
 
+/// Serve a desktop offer end to end: create the source, attach the track,
+/// answer, wait for the connection, stream, and tear down.
+///
+/// The order is load-bearing (ADR-15, pinned by the Task 6 E2E): the sending
+/// track is attached **before** the answer's remote description is set, and the
+/// frame source is created **before** the answer is sent — a host with no
+/// display must refuse the offer rather than open a session that can never
+/// produce a frame.
+#[cfg(not(target_env = "musl"))]
+#[allow(clippy::too_many_arguments)]
+async fn run_desktop_session(
+    offer: &signal::SignalOffer,
+    peer: &Arc<dyn PeerConnection>,
+    outbound: &mpsc::Sender<signal::SignalMessage>,
+    pushed_ice: &[signal::IceServerEntry],
+    cfg: &SessionConfig,
+    pending: &mut Vec<RTCIceCandidateInit>,
+    connected_rx: tokio::sync::oneshot::Receiver<()>,
+    mut end_rx: mpsc::Receiver<&'static str>,
+    inbound: &mut mpsc::Receiver<signal::SignalMessage>,
+) -> Result<()> {
+    // Create the source first so a capture failure is a clean refusal
+    // (`approved: false`) instead of a session the browser opens onto a black
+    // video element.
+    let source: Box<dyn desktop::FrameSource> = match cfg.desktop_source {
+        DesktopSource::Test => Box::new(desktop::TestPatternSource::new(1280, 720)),
+        DesktopSource::Screen => match desktop::ScreenSource::new().await {
+            Ok(source) => Box::new(source),
+            Err(e) => {
+                tracing::warn!(error = %e, "desktop capture unavailable; refusing the offer");
+                rtc::refuse_offer(peer, offer, outbound).await?;
+                let _ = peer.close().await;
+                return Ok(());
+            }
+        },
+    };
+
+    let media = rtc::attach_desktop_track(peer).await?;
+    rtc::send_desktop_answer(peer, offer, outbound).await?;
+    rtc::flush_pending_candidates(peer, pending).await?;
+
+    // Wait for the connection. Until it is `Connected` the track is unbound and
+    // every `write_sample` fails with `Error::CodecNotFound` (Task 3's test
+    // pins that failure mode), so streaming must not start before this.
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(20), connected_rx).await,
+        Ok(Ok(()))
+    ) {
+        tracing::warn!(session_id = %offer.session_id, "desktop peer did not connect within 20s");
+        let _ = peer.close().await;
+        return Ok(());
+    }
+
+    let (ssrc, payload_type) = rtc::desktop_stream_params(&media).await?;
+
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let mut stream = tokio::spawn(desktop::run_stream(
+        source,
+        media.track.clone(),
+        ssrc,
+        payload_type,
+        stop_rx,
+    ));
+
+    // The desktop session loop: same shape as the terminal one minus the data
+    // channel. Ways out: the stream task ending (an error), a candidate/offer
+    // on `inbound`, the connection closing or failing (via `end_rx` — the
+    // desktop equivalent of "the data channel closed"), the hourly cap, or a
+    // shutdown signal.
+    let session_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
+    let reason = loop {
+        tokio::select! {
+            result = &mut stream => break match result {
+                Ok(Ok(())) => "the desktop stream ended",
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "the desktop stream failed");
+                    "the desktop stream failed"
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "the desktop stream task panicked");
+                    "the desktop stream panicked"
+                }
+            },
+            message = inbound.recv() => match message {
+                Some(message) => route_inbound(
+                    peer,
+                    &offer.session_id,
+                    pending,
+                    message,
+                    outbound,
+                    pushed_ice,
+                    cfg,
+                ).await?,
+                None => break "the agent is shutting down",
+            },
+            reason = end_rx.recv() => break reason.unwrap_or("the peer went away"),
+            _ = tokio::time::sleep_until(session_deadline) => break "the 1h session cap",
+            _ = shutdown_signal() => break "a shutdown signal",
+        }
+    };
+    tracing::info!(session_id = %offer.session_id, reason, "desktop session loop finished");
+
+    // Teardown: signal the stream to stop, give it a bounded moment to exit
+    // (it stops the capture thread on the way out), then close the peer. A
+    // stream that ignores the stop signal is aborted so no capture task leaks.
+    let _ = stop_tx.send(true);
+    if tokio::time::timeout(Duration::from_secs(5), &mut stream)
+        .await
+        .is_err()
+    {
+        tracing::warn!("the desktop stream did not stop within 5s; aborting it");
+        stream.abort();
+    }
+    let _ = peer.close().await;
+    Ok(())
+}
+
+/// On musl the desktop module does not exist, so a desktop offer is refused
+/// like any other unsupported mode (ADR-15) — no track, no capture, no encoder.
+#[cfg(target_env = "musl")]
+#[allow(clippy::too_many_arguments)]
+async fn run_desktop_session(
+    offer: &signal::SignalOffer,
+    peer: &Arc<dyn PeerConnection>,
+    outbound: &mpsc::Sender<signal::SignalMessage>,
+    _pushed_ice: &[signal::IceServerEntry],
+    _cfg: &SessionConfig,
+    _pending: &mut Vec<RTCIceCandidateInit>,
+    _connected_rx: tokio::sync::oneshot::Receiver<()>,
+    _end_rx: mpsc::Receiver<&'static str>,
+    _inbound: &mut mpsc::Receiver<signal::SignalMessage>,
+) -> Result<()> {
+    tracing::warn!(
+        session_id = %offer.session_id,
+        "desktop streaming is unavailable on this build (musl); refusing",
+    );
+    rtc::refuse_offer(peer, offer, outbound).await?;
+    let _ = peer.close().await;
+    Ok(())
+}
+
 /// Route one inbound message to the live session.
 ///
 /// Candidates are filtered by `session_id`: the socket is shared, and a
@@ -859,7 +1073,7 @@ async fn refuse_second_offer(
     );
     // A peer that will only answer and close still needs a handler — 0.21's
     // `build()` refuses without one — and none of its callbacks matter here.
-    let peer = rtc::build_peer(pushed_ice, &cfg.stun, Arc::new(rtc::NoopHandler)).await?;
+    let peer = rtc::build_peer(pushed_ice, &cfg.stun, Arc::new(rtc::NoopHandler), false).await?;
     rtc::refuse_offer(&peer, offer, outbound).await?;
     let _ = peer.close().await;
     Ok(())
@@ -1178,6 +1392,28 @@ mod tests {
     async fn pty_manager_send_input_false_for_unknown_id() {
         let manager = PtyManager::new(10);
         assert!(!manager.send_input("no-such-session", b"x".to_vec()).await);
+    }
+
+    #[test]
+    fn classify_offer_maps_capabilities_to_a_session_mode() {
+        // The capabilities are attacker-controlled strings; classification is a
+        // pure comparison against the two known labels (ADR-15). An unknown or
+        // empty list is None (refused), and terminal wins if a malformed client
+        // somehow offers both — the established flow is the safe default.
+        assert_eq!(
+            classify_offer(&["terminal".to_string()]),
+            SessionMode::Terminal
+        );
+        assert_eq!(
+            classify_offer(&["desktop".to_string()]),
+            SessionMode::Desktop
+        );
+        assert_eq!(classify_offer(&[]), SessionMode::None);
+        assert_eq!(classify_offer(&["unknown".to_string()]), SessionMode::None);
+        assert_eq!(
+            classify_offer(&["desktop".to_string(), "terminal".to_string()]),
+            SessionMode::Terminal,
+        );
     }
 
     #[test]
