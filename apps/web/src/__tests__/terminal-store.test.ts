@@ -13,8 +13,8 @@ const desktopClose = vi.fn();
 vi.mock('@ponter/desktop-core', () => ({
   DesktopClient: function (
     this: Record<string, unknown>,
-    agentId: string,
-    peer: unknown,
+    _agentId: string,
+    _peer: unknown,
   ) {
     this.start = desktopStart;
     this.close = desktopClose;

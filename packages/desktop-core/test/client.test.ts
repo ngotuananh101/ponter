@@ -16,8 +16,7 @@ const fakeStreams: MediaStreamLike[] = [];
  */
 function mockPeer() {
   let trackHandler:
-    | ((t: MediaStreamTrackLike, s: MediaStreamLike[]) => void)
-    | null = null;
+    ((t: MediaStreamTrackLike, s: MediaStreamLike[]) => void) | null = null;
   let stateHandler: ((state: string) => void) | null = null;
   const removeTrackHandler = vi.fn();
   const removeStateHandler = vi.fn();

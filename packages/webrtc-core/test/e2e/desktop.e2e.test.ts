@@ -117,7 +117,10 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
     spawnAgent(agentId, credential, ['--desktop-source', 'test']);
     await waitForAgentOnline(token, agentId);
 
-    const { offerer, tracks, packets } = await openDesktopPeer(sessionId, token);
+    const { offerer, tracks, packets } = await openDesktopPeer(
+      sessionId,
+      token,
+    );
 
     try {
       // If the answer's track were attached after `set_remote_description`
@@ -166,7 +169,11 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
     await waitForAgentOnline(token, agentId);
 
     const first = await openDesktopPeer(sessionId, token);
-    await waitFor(() => first.packets.length > 0, 'the first RTP packet', 20_000);
+    await waitFor(
+      () => first.packets.length > 0,
+      'the first RTP packet',
+      20_000,
+    );
 
     // werift's `pc.close()` on a media-only connection sends neither a DTLS
     // close_notify nor an ICE packet — the socket simply goes quiet. The agent

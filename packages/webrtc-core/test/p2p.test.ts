@@ -461,9 +461,9 @@ describe('Real P2P Handshake (werift)', () => {
 
     const offer = sent.find((m) => m.type === 'offer');
     expect(offer).toBeDefined();
-    expect(offer && offer.type === 'offer' ? offer.data.capabilities : []).toEqual(
-      ['desktop'],
-    );
+    expect(
+      offer && offer.type === 'offer' ? offer.data.capabilities : [],
+    ).toEqual(['desktop']);
   }, 20000);
 
   it('creates no data channels when channelLabels is empty', async () => {

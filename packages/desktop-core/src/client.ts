@@ -62,7 +62,9 @@ export class DesktopClient {
     const removeStateHandler = this.onConnectionStateChange((state) => {
       if (state === 'failed' || state === 'closed') {
         settle(() =>
-          rejectTrack(new Error(`the connection ${state} before a track arrived`)),
+          rejectTrack(
+            new Error(`the connection ${state} before a track arrived`),
+          ),
         );
       }
     });

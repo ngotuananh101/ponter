@@ -10,7 +10,9 @@ import type {
 } from '../src/types';
 
 /** Minimal seam object: only the members each test actually needs. */
-function fakePeer(members: Partial<RTCPeerConnectionLike>): RTCPeerConnectionLike {
+function fakePeer(
+  members: Partial<RTCPeerConnectionLike>,
+): RTCPeerConnectionLike {
   return members as RTCPeerConnectionLike;
 }
 
@@ -36,9 +38,9 @@ describe('configureReceiveMedia', () => {
   });
 
   it('throws a descriptive error when the adapter lacks addTransceiver', () => {
-    expect(() =>
-      configureReceiveMedia(fakePeer({}), { video: true }),
-    ).toThrow(/addTransceiver/);
+    expect(() => configureReceiveMedia(fakePeer({}), { video: true })).toThrow(
+      /addTransceiver/,
+    );
   });
 });
 

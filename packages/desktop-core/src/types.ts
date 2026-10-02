@@ -1,4 +1,7 @@
-import type { MediaStreamLike, MediaStreamTrackLike } from '@ponter/webrtc-core';
+import type {
+  MediaStreamLike,
+  MediaStreamTrackLike,
+} from '@ponter/webrtc-core';
 
 /** The first remote video track and whatever streams it belongs to. */
 export interface DesktopStream {

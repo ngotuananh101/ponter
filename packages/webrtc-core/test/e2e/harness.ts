@@ -362,9 +362,9 @@ export async function postJson<T>(
 }
 
 /** Register a user, an agent and a session; return everything a test needs. */
-export async function seed(
-  { capabilities = ['terminal'] }: { capabilities?: string[] } = {},
-): Promise<{
+export async function seed({
+  capabilities = ['terminal'],
+}: { capabilities?: string[] } = {}): Promise<{
   token: string;
   agentId: string;
   credential: string;

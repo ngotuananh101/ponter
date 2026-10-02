@@ -165,7 +165,8 @@ export class PeerConnection {
 
     const offer = await this.peer.createOffer();
     await this.peer.setLocalDescription(offer);
-    const capabilities = this.options.capabilities ?? this.options.channelLabels;
+    const capabilities =
+      this.options.capabilities ?? this.options.channelLabels;
     const signal = createOfferSignal('', offer, capabilities);
     await this.transport.send(signal);
   }
