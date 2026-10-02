@@ -1,0 +1,48 @@
+name: CI (Docker)
+
+# Build verification for the self-hosted server image. Split out of the old
+# monolithic `ci.yml` so it only runs when the image's inputs change.
+#
+# The path filter mirrors exactly what `docker/Dockerfile.server` COPYs from
+# the build context (repo root): the workspace manifests, every `packages/*`,
+# `apps/server`, and `docker/`. It intentionally omits `turbo.json`, the
+# eslint/prettier configs, and the agent/web apps — the Dockerfile never reads
+# them, so touching them cannot change the image.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'docker/**'
+      - 'apps/server/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.github/workflows/ci-docker.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'docker/**'
+      - 'apps/server/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.github/workflows/ci-docker.yml'
+
+jobs:
+  docker:
+    name: Docker Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build server Docker image
+        run: docker build -f docker/Dockerfile.server -t ponter-server:ci .
+
+      - name: Verify image exists
+        run: docker image inspect ponter-server:ci

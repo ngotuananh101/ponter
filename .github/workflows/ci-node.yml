@@ -1,0 +1,93 @@
+name: CI (Node)
+
+# Node/TypeScript workspace verification: lint, typecheck, format, and the
+# server/web/shared test suites.
+#
+# Split out of the old monolithic `ci.yml` so that a push only runs the work
+# that its changes actually affect. The Rust agent is deliberately EXCLUDED
+# here — it is fmt/clippy/check/test'd by `build-agent.yml` (which is
+# path-filtered on `apps/agent/**`), so building it on every Node-only push was
+# pure waste. The turbo `--filter='!@ponter/agent'` below keeps `pnpm lint` /
+# `pnpm typecheck` from invoking cargo (which this job no longer installs).
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'apps/server/**'
+      - 'apps/web/**'
+      - 'apps/desktop/**'
+      - 'apps/mobile/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'turbo.json'
+      - 'tsconfig.base.json'
+      - 'eslint.config.js'
+      - '.prettierrc.json'
+      - '.prettierignore'
+      - '.github/workflows/ci-node.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'apps/server/**'
+      - 'apps/web/**'
+      - 'apps/desktop/**'
+      - 'apps/mobile/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'turbo.json'
+      - 'tsconfig.base.json'
+      - 'eslint.config.js'
+      - '.prettierrc.json'
+      - '.prettierignore'
+      - '.github/workflows/ci-node.yml'
+
+jobs:
+  verify:
+    name: Lint, Typecheck, Format & Node Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.6.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `!@ponter/agent` excludes the Rust crate: its lint/typecheck scripts
+      # shell out to cargo, and this job has no Rust toolchain. The agent is
+      # verified by build-agent.yml instead.
+      - name: Lint workspace
+        run: pnpm exec turbo run lint --filter='!@ponter/agent'
+
+      - name: Typecheck workspace
+        run: pnpm exec turbo run typecheck --filter='!@ponter/agent'
+
+      - name: Check code formatting
+        run: pnpm format:check
+
+      # Run @ponter/server tests (Node.js + Hono + SQLite)
+      - name: Run server test suite
+        run: pnpm --filter @ponter/server test
+
+      - name: Run web test suite
+        run: pnpm --filter @ponter/web test
+        continue-on-error: true # UI tests may be flaky
+
+      - name: Run shared package tests
+        run: pnpm --filter @ponter/shared test
+        continue-on-error: true

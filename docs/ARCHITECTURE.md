@@ -290,9 +290,12 @@ flowchart TD
 ponter/
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                    # CI pipeline
+│       ├── ci-node.yml               # CI: Node/TS lint, typecheck, tests
+│       ├── ci-docker.yml             # CI: server Docker image build
+│       ├── ci-e2e.yml                # CI: cross-language terminal E2E
+│       ├── build-agent.yml           # Build/verify Rust agent (6 targets)
 │       ├── deploy.yml                # Deploy frontend to Cloudflare Pages
-│       └── build-agent.yml           # Build Rust agent binary for releases
+│       └── docker-publish.yml        # Publish server image to Docker Hub (manual)
 │
 ├── apps/
 │   ├── web/                          # VueJS Web App (Cloudflare Pages)
