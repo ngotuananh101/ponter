@@ -33,7 +33,8 @@ use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::media_engine::MIME_TYPE_H264;
 #[cfg(not(target_env = "musl"))]
 use rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+    RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
+    RtpCodecKind,
 };
 #[cfg(not(target_env = "musl"))]
 use rtc::rtp_transceiver::{PayloadType, SSRC};
@@ -150,24 +151,53 @@ pub async fn send_desktop_answer(
     send_answer(peer, offer, true, outbound).await
 }
 
+/// Picks the payload type the desktop stream must be stamped with.
+///
+/// **Not `codecs.first()`.** rtc's
+/// `set_codec_preferences_from_remote_description` rebuilds the sender's codec
+/// list in the *offer's* m-line order, so the first entry is whatever the
+/// browser offered first — and a real Chrome offer lists VP8 (PT 96) before
+/// H.264 (PT 102). The track only ever emits H.264, so taking `.first()` stamped
+/// every RTP packet with VP8's PT 96 while carrying an H.264 payload: Chrome
+/// demuxes by payload type, routed the packets to its VP8 decoder, failed, and
+/// rendered a black frame with the connection otherwise healthy. werift (the CI
+/// E2E peer) offers H.264 only, so its `.first()` was already H.264 and the bug
+/// never surfaced there.
+///
+/// Split out from [`desktop_stream_params`] so the selection is unit-testable
+/// without a peer connection.
+#[cfg(not(target_env = "musl"))]
+fn select_h264_payload_type(codecs: &[RTCRtpCodecParameters]) -> Option<PayloadType> {
+    codecs
+        .iter()
+        .find(|codec| {
+            codec
+                .rtp_codec
+                .mime_type
+                .eq_ignore_ascii_case(MIME_TYPE_H264)
+        })
+        .map(|codec| codec.payload_type)
+}
+
 /// Resolve the negotiated payload type and SSRC for a desktop sender.
 ///
 /// Neither is assumed: the payload type is whatever the SDP negotiation chose
 /// (the offer may not have picked PT 102), and the SSRC is the one the track was
 /// built with, read back through the track API. Both are needed by
-/// `desktop::run_stream`, and a wrong payload type makes rtc drop every packet.
+/// `desktop::run_stream`, and a wrong payload type makes the browser drop or
+/// mis-decode every packet.
 #[cfg(not(target_env = "musl"))]
 pub async fn desktop_stream_params(media: &DesktopMedia) -> Result<(SSRC, PayloadType)> {
-    let payload_type = media
-        .sender
-        .get_parameters()
-        .await
-        .context("sender.get_parameters")?
-        .rtp_parameters
-        .codecs
-        .first()
-        .map(|codec| codec.payload_type)
-        .ok_or_else(|| anyhow::anyhow!("the desktop sender has no negotiated codec"))?;
+    let payload_type = select_h264_payload_type(
+        &media
+            .sender
+            .get_parameters()
+            .await
+            .context("sender.get_parameters")?
+            .rtp_parameters
+            .codecs,
+    )
+    .ok_or_else(|| anyhow::anyhow!("the desktop sender has no negotiated H.264 codec"))?;
 
     let ssrc = *media
         .track
@@ -852,5 +882,60 @@ mod tests {
         // empty ICE server list.
         let servers = ice_servers_from_entries(&[]);
         assert!(servers.is_empty(), "no pushed entries means no override");
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    fn codec(mime_type: &str, payload_type: PayloadType) -> RTCRtpCodecParameters {
+        RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: mime_type.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            payload_type,
+        }
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[test]
+    fn desktop_payload_type_is_h264_even_when_vp8_is_offered_first() {
+        // The regression for the black-screen bug: a real Chrome offer lists
+        // VP8 (96) before H.264 (102), and rtc keeps the offer's order, so
+        // `codecs.first()` was VP8's PT. The desktop track only ever emits
+        // H.264, so stamping PT 96 on H.264 payload made Chrome hand the bytes
+        // to its VP8 decoder and show a black frame. The selection must find
+        // the H.264 entry wherever it sits in the list.
+        let codecs = vec![
+            codec("video/VP8", 96),
+            codec("video/rtx", 97),
+            codec("video/H264", 102),
+            codec("video/H264", 127),
+        ];
+        assert_eq!(
+            select_h264_payload_type(&codecs),
+            Some(102),
+            "the first H.264 entry's payload type must win, not the first entry",
+        );
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[test]
+    fn desktop_payload_type_matches_the_h264_mime_case_insensitively() {
+        // werift normalises the mime type to lowercase at parse time; the match
+        // must not depend on the casing the crate happens to carry.
+        let codecs = vec![codec("video/vp8", 96), codec("video/h264", 102)];
+        assert_eq!(select_h264_payload_type(&codecs), Some(102));
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[test]
+    fn desktop_payload_type_is_none_when_no_h264_was_negotiated() {
+        // With no H.264 m-line there is nothing to stamp; `desktop_stream_params`
+        // turns this `None` into a hard error rather than silently sending
+        // H.264 bytes under another codec's payload type.
+        let codecs = vec![codec("video/VP8", 96), codec("video/VP9", 98)];
+        assert_eq!(select_h264_payload_type(&codecs), None);
     }
 }

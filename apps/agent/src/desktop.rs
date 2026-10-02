@@ -444,6 +444,38 @@ impl FrameSource for ScreenSource {
     }
 }
 
+/// Returns the share of pixels that are not near-black and the per-channel
+/// means, as a diagnostic for the black-video hunt.
+///
+/// A frame that reaches the encoder almost entirely black means the *capture*
+/// is delivering blank pixels (the RDP/WGC path); a frame with real content but
+/// a zero-length bitstream means the *encoder* skipped it. The two need very
+/// different fixes, so the log line has to tell them apart.
+fn frame_content(frame: &RawFrame) -> (f64, [f64; 3]) {
+    let mut sum = [0u64; 3];
+    let mut nonblack = 0u64;
+    let mut px = 0u64;
+    for c in frame.rgba.chunks_exact(4) {
+        px += 1;
+        let mut is_black = true;
+        for i in 0..3 {
+            let v = c[i];
+            sum[i] += v as u64;
+            if v > 8 {
+                is_black = false;
+            }
+        }
+        if !is_black {
+            nonblack += 1;
+        }
+    }
+    let px = px.max(1) as f64;
+    (
+        100.0 * nonblack as f64 / px,
+        [sum[0] as f64 / px, sum[1] as f64 / px, sum[2] as f64 / px],
+    )
+}
+
 /// Tick interval: 15 fps. A tick with no new frame is skipped, so the real
 /// rate follows the display, never faster than this.
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(66);
@@ -477,6 +509,7 @@ pub async fn run_stream(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let mut skipped: u64 = 0;
+    let mut encoded: u64 = 0;
     loop {
         tokio::select! {
             _ = stop.changed() => {
@@ -494,6 +527,25 @@ pub async fn run_stream(
                 };
                 let frame = crop_to_even(downscale(&frame, MAX_WIDTH, MAX_HEIGHT));
                 let data = encoder.encode(&frame)?;
+                encoded += 1;
+                // Diagnostic for the black-video hunt: distinguishes a blank
+                // *capture* (nonblack ~0) from a *skipped* encode (nonblack high
+                // but `bytes` 0). Guarded by the level so the per-pixel scan
+                // costs nothing unless `RUST_LOG=ponter_agent=debug`.
+                if tracing::enabled!(tracing::Level::DEBUG) && (encoded == 1 || encoded % 30 == 0) {
+                    let (nonblack_pct, mean) = frame_content(&frame);
+                    tracing::debug!(
+                        encoded,
+                        width = frame.width,
+                        height = frame.height,
+                        nonblack_pct,
+                        mean_r = mean[0],
+                        mean_g = mean[1],
+                        mean_b = mean[2],
+                        bytes = data.len(),
+                        "desktop: frame"
+                    );
+                }
                 let sample = Sample {
                     data: Bytes::from(data),
                     duration: FRAME_INTERVAL,
