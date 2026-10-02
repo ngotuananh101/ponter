@@ -1,5 +1,11 @@
 import { RTCPeerConnection as WeriftPC } from 'werift';
-import type { RTCPeerConnectionLike, RTCDataChannelLike } from '../types';
+import type { RTCRtpCodecParameters, TransceiverOptions } from 'werift';
+import type {
+  RTCPeerConnectionLike,
+  RTCDataChannelLike,
+  MediaStreamLike,
+  MediaStreamTrackLike,
+} from '../types';
 import type { IceServerConfig } from '@ponter/shared';
 
 class WeriftDataChannel implements RTCDataChannelLike {
@@ -73,15 +79,29 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
     (channel: RTCDataChannelLike) => void
   > = [];
   private readonly stateHandlers: Array<(state: string) => void> = [];
+  private readonly trackHandlers: Array<
+    (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void
+  > = [];
 
-  constructor(config: { iceServers?: IceServerConfig[] } = {}) {
+  constructor(
+    config: {
+      iceServers?: IceServerConfig[];
+      codecs?: {
+        audio?: RTCRtpCodecParameters[];
+        video?: RTCRtpCodecParameters[];
+      };
+    } = {},
+  ) {
     const rtcIceServers = (config.iceServers ?? []).map((s) => ({
       urls: s.urls,
       ...(s.username ? { username: s.username } : {}),
       ...(s.credential ? { credential: s.credential } : {}),
     }));
 
-    this.pc = new WeriftPC({ iceServers: rtcIceServers });
+    this.pc = new WeriftPC({
+      iceServers: rtcIceServers,
+      ...(config.codecs ? { codecs: config.codecs } : {}),
+    });
 
     this.pc.onIceCandidate.subscribe((candidate) => {
       if (candidate) {
@@ -107,6 +127,15 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
     this.pc.connectionStateChange.subscribe((state) => {
       for (const handler of this.stateHandlers) {
         handler(state);
+      }
+    });
+
+    // werift fires BOTH onTrack and the DOM-style ontrack for the same track;
+    // subscribing to exactly one of them avoids double delivery. `onTrack`
+    // carries no streams array, so pass `[]` — consumers must not require it.
+    this.pc.onTrack.subscribe((track) => {
+      for (const handler of this.trackHandlers) {
+        handler(track as MediaStreamTrackLike, []);
       }
     });
   }
@@ -167,6 +196,19 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
 
   onConnectionStateChange(handler: (state: string) => void): void {
     this.stateHandlers.push(handler);
+  }
+
+  addTransceiver(kind: string, options?: { direction?: string }): unknown {
+    return this.pc.addTransceiver(
+      kind as 'video',
+      options as Partial<TransceiverOptions>,
+    );
+  }
+
+  onTrack(
+    handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
+  ): void {
+    this.trackHandlers.push(handler);
   }
 
   async getStats(): Promise<RTCStatsReport> {

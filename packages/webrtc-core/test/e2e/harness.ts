@@ -362,7 +362,9 @@ export async function postJson<T>(
 }
 
 /** Register a user, an agent and a session; return everything a test needs. */
-export async function seed(): Promise<{
+export async function seed({
+  capabilities = ['terminal'],
+}: { capabilities?: string[] } = {}): Promise<{
   token: string;
   agentId: string;
   credential: string;
@@ -383,7 +385,7 @@ export async function seed(): Promise<{
     {
       id: `agent_e2e_${suffix}`,
       publicKey: `pk_agent_${suffix}`,
-      capabilities: ['terminal'],
+      capabilities,
     },
     auth.token,
   );
@@ -406,6 +408,7 @@ export async function seed(): Promise<{
 export function spawnAgent(
   agentId: string,
   credential: string,
+  extraArgs: string[] = [],
 ): { child: ChildProcess; output: () => string } {
   const spawned = spawnLogged(
     AGENT_BIN,
@@ -418,6 +421,7 @@ export function spawnAgent(
       credential,
       '--stun',
       '',
+      ...extraArgs,
     ],
     { cwd: REPO_ROOT, env: { RUST_LOG: 'info' } },
   );

@@ -7,7 +7,10 @@
 //! "no event handler found" otherwise. There is no `on_*` registration API on
 //! the connection itself any more.
 
+#[cfg(not(target_env = "musl"))]
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rtc::ice::mdns::MulticastDnsMode;
@@ -21,10 +24,160 @@ use webrtc::peer_connection::{
     SettingEngineBuilder,
 };
 
+#[cfg(not(target_env = "musl"))]
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(not(target_env = "musl"))]
+use rtc::media_stream::MediaStreamTrack;
+#[cfg(not(target_env = "musl"))]
+use rtc::peer_connection::configuration::media_engine::MIME_TYPE_H264;
+#[cfg(not(target_env = "musl"))]
+use rtc::rtp_transceiver::rtp_sender::{
+    RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
+};
+#[cfg(not(target_env = "musl"))]
+use rtc::rtp_transceiver::{PayloadType, SSRC};
+#[cfg(not(target_env = "musl"))]
+use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
+#[cfg(not(target_env = "musl"))]
+use webrtc::media_stream::track_local::TrackLocal;
+#[cfg(not(target_env = "musl"))]
+use webrtc::media_stream::Track;
+#[cfg(not(target_env = "musl"))]
+use webrtc::rtp_transceiver::RtpSender;
+
 use crate::signal::{IceCandidateSignal, IceServerEntry, SignalAnswer, SignalMessage, SignalOffer};
 
 /// The one channel label this agent accepts. ADR-09: exact label, nothing else.
 pub const TERMINAL_LABEL: &str = "terminal";
+
+/// The capability string that selects a desktop session (ADR-15).
+pub const DESKTOP_LABEL: &str = "desktop";
+
+/// A per-process counter so two sessions in one agent never share an SSRC.
+#[cfg(not(target_env = "musl"))]
+static SSRC_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+/// A session-local SSRC: process-start time XORed with a monotonic counter.
+///
+/// The value is not security-relevant (it only has to be unique per sender on
+/// one connection), so this avoids adding a `rand` dependency: the nanosecond
+/// clock gives cross-process spread, the counter makes collisions within one
+/// process impossible, and `| 1` keeps the result non-zero.
+#[cfg(not(target_env = "musl"))]
+fn next_ssrc() -> SSRC {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seq = SSRC_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    ((nanos as u32) ^ ((nanos >> 32) as u32) ^ seq) | 1
+}
+
+/// The sending track plus the sender, so the session can resolve the
+/// negotiated payload type and the SSRC after the answer is connected.
+#[cfg(not(target_env = "musl"))]
+pub struct DesktopMedia {
+    pub track: Arc<TrackLocalStaticSample>,
+    pub sender: Arc<dyn RtpSender>,
+}
+
+/// Build the video track and attach it to the peer.
+///
+/// **Must be called before `set_remote_description`.** `add_track` creates the
+/// transceiver and its m-line; adding it after the remote description exists
+/// means the offer's video m-line is answered `inactive` and the browser never
+/// receives a track (ADR-15, and the E2E in Task 6 pins it).
+///
+/// The codec parameters mirror the `MediaEngine`'s default H.264 entry (PT 102,
+/// `level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f`).
+/// The actual negotiated payload type is read back from the sender later — this
+/// value only has to match the mime/fmtp the answer advertises so the offer's
+/// H.264 m-line can be matched to it.
+#[cfg(not(target_env = "musl"))]
+pub async fn attach_desktop_track(peer: &Arc<dyn PeerConnection>) -> Result<DesktopMedia> {
+    let ssrc = next_ssrc();
+    let rtp_codec = RTCRtpCodec {
+        mime_type: MIME_TYPE_H264.to_owned(),
+        clock_rate: 90_000,
+        channels: 0,
+        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+            .to_owned(),
+        rtcp_feedback: vec![],
+    };
+
+    let track = Arc::new(
+        TrackLocalStaticSample::new(
+            Instant::now(),
+            MediaStreamTrack::new(
+                "ponter-desktop".to_owned(),
+                "screen".to_owned(),
+                DESKTOP_LABEL.to_owned(),
+                RtpCodecKind::Video,
+                vec![RTCRtpEncodingParameters {
+                    rtp_coding_parameters: RTCRtpCodingParameters {
+                        ssrc: Some(ssrc),
+                        ..Default::default()
+                    },
+                    codec: rtp_codec,
+                    ..Default::default()
+                }],
+            ),
+        )
+        .context("building the desktop track")?,
+    );
+
+    let sender = peer
+        .add_track(Arc::clone(&track) as Arc<dyn TrackLocal>)
+        .await
+        .context("add_track(desktop)")?;
+
+    Ok(DesktopMedia { track, sender })
+}
+
+/// Answer a desktop offer with `approved: true` and the SDP just built.
+///
+/// The track is attached by the caller *before* this runs (ADR-15); this is the
+/// same `set_remote_description → create_answer → set_local_description → send`
+/// core as [`answer_offer`], with the flag fixed to `true` because the caller
+/// has already decided the offer is a desktop offer it can serve.
+#[cfg(not(target_env = "musl"))]
+pub async fn send_desktop_answer(
+    peer: &Arc<dyn PeerConnection>,
+    offer: &SignalOffer,
+    outbound: &mpsc::Sender<SignalMessage>,
+) -> Result<()> {
+    send_answer(peer, offer, true, outbound).await
+}
+
+/// Resolve the negotiated payload type and SSRC for a desktop sender.
+///
+/// Neither is assumed: the payload type is whatever the SDP negotiation chose
+/// (the offer may not have picked PT 102), and the SSRC is the one the track was
+/// built with, read back through the track API. Both are needed by
+/// `desktop::run_stream`, and a wrong payload type makes rtc drop every packet.
+#[cfg(not(target_env = "musl"))]
+pub async fn desktop_stream_params(media: &DesktopMedia) -> Result<(SSRC, PayloadType)> {
+    let payload_type = media
+        .sender
+        .get_parameters()
+        .await
+        .context("sender.get_parameters")?
+        .rtp_parameters
+        .codecs
+        .first()
+        .map(|codec| codec.payload_type)
+        .ok_or_else(|| anyhow::anyhow!("the desktop sender has no negotiated codec"))?;
+
+    let ssrc = *media
+        .track
+        .ssrcs()
+        .await
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("the desktop track has no SSRC"))?;
+
+    Ok((ssrc, payload_type))
+}
 
 /// Map the pushed `ice-servers` entries onto the crate's ICE server type.
 ///
@@ -100,6 +253,7 @@ pub async fn build_peer(
     pushed: &[IceServerEntry],
     stun_url: &str,
     handler: Arc<dyn PeerConnectionEventHandler>,
+    media_only: bool,
 ) -> Result<Arc<dyn PeerConnection>> {
     let mut media = MediaEngine::default();
     media
@@ -108,7 +262,7 @@ pub async fn build_peer(
     let registry = register_default_interceptors(Registry::new(), &mut media)
         .context("register_default_interceptors")?;
 
-    let setting = SettingEngineBuilder::new()
+    let mut setting = SettingEngineBuilder::new()
         .with_multicast_dns_mode(MulticastDnsMode::Disabled)
         // The answerer must resolve `a=setup` to a concrete role, and the
         // choice decides who can answer an SCTP INIT. rtc 0.21 builds a
@@ -130,8 +284,28 @@ pub async fn build_peer(
         // peer's INIT — and it matches the production topology: the browser is
         // the offerer, so Chrome and werift both initiate the association
         // while this side answers.
-        .with_answering_dtls_role(RTCDtlsRole::Server)
-        .build();
+        .with_answering_dtls_role(RTCDtlsRole::Server);
+
+    // A media-only (desktop) peer has no data channel, so ICE silence is its
+    // only "the browser is gone" signal: werift's `pc.close()` on a connection
+    // with no SCTP association sends neither a DTLS close_notify nor an ICE
+    // packet, it simply stops. The defaults (disconnected 5s + failed 25s, per
+    // `rtc-ice`'s `validate_selected_pair`) would hold the ADR-14 slot for ~30s
+    // after a network drop — long enough that a user cannot reconnect, and long
+    // enough that the E2E teardown assertion (20s) could never pass. Desktop
+    // media flows every ~66ms, so 3s of silence is unambiguous; Failed at
+    // 3s + 5s = 8s keeps a brief `Disconnected` recoverable while still freeing
+    // the slot promptly. Terminal peers keep the RFC-shaped defaults — their
+    // data channel is the close signal, so a short ICE timeout would only add
+    // false failures on a healthy-but-quiet link.
+    if media_only {
+        setting = setting.with_ice_timeouts(
+            Some(Duration::from_secs(3)),
+            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
+        );
+    }
+    let setting = setting.build();
 
     let mut ice_servers = ice_servers_from_entries(pushed);
     if ice_servers.is_empty() && !stun_url.is_empty() {
@@ -171,6 +345,9 @@ pub struct SessionHandler {
     end_tx: mpsc::Sender<&'static str>,
     channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
     open_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Fired once on `Connected`. The desktop session waits on it; the terminal
+    /// session ignores it (it waits for the data channel instead).
+    connected_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl SessionHandler {
@@ -180,6 +357,7 @@ impl SessionHandler {
         end_tx: mpsc::Sender<&'static str>,
         channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
         open_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+        connected_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     ) -> Self {
         Self {
             session_id,
@@ -187,6 +365,7 @@ impl SessionHandler {
             end_tx,
             channel,
             open_tx,
+            connected_tx,
         }
     }
 }
@@ -242,12 +421,29 @@ impl PeerConnectionEventHandler for SessionHandler {
         });
     }
 
-    /// End the session when the connection fails (ICE gave up: a killed tab
-    /// that never sent a close, a network cut). Without this the session — and
-    /// its ADR-14 slot — would run until the 1h cap.
+    /// Report `Connected`, and end the session on `Failed` or `Closed`.
+    ///
+    /// `Failed` is ICE giving up (a killed tab that never sent a close, a
+    /// network cut). `Closed` is the peer closing cleanly — for a terminal
+    /// session the data-channel close already covers that, but a desktop
+    /// session has no data channel, so `Closed` is the only signal that the
+    /// browser hung up. `Disconnected` is deliberately NOT terminal: it is
+    /// transient and recovers on its own. `Connected` fires `connected_tx`
+    /// exactly once (the `take()` makes a repeat a no-op).
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        if state == RTCPeerConnectionState::Failed {
-            let _ = self.end_tx.try_send("the peer connection failed");
+        match state {
+            RTCPeerConnectionState::Connected => {
+                if let Some(tx) = self.connected_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }
+            RTCPeerConnectionState::Failed => {
+                let _ = self.end_tx.try_send("the peer connection failed");
+            }
+            RTCPeerConnectionState::Closed => {
+                let _ = self.end_tx.try_send("the peer connection closed");
+            }
+            _ => {}
         }
     }
 
@@ -615,6 +811,20 @@ mod tests {
         let servers = ice_servers_from_entries(&entries);
         assert_eq!(servers.len(), 1, "the TCP-only entry must be dropped");
         assert_eq!(servers[0].urls, vec!["stun:stun.l.google.com:19302"]);
+    }
+
+    #[test]
+    #[cfg(not(target_env = "musl"))]
+    fn session_ssrcs_are_distinct_and_never_zero() {
+        // The SSRC only has to be unique per sender within one process. Two
+        // sessions that started in the same nanosecond (impossible in practice,
+        // but the counter makes it impossible in principle) must not collide,
+        // and 0 is avoided so no stack sees a "zero SSRC" packet.
+        let a = next_ssrc();
+        let b = next_ssrc();
+        assert_ne!(a, b, "the per-process counter must break ties");
+        assert_ne!(a, 0);
+        assert_ne!(b, 0);
     }
 
     #[test]

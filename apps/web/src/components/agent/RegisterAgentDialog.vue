@@ -92,7 +92,7 @@ async function handleRegister() {
       hostname: hostname.value.trim() || trimmedId,
       platform: platform.value,
       publicKey,
-      capabilities: ['terminal'],
+      capabilities: ['terminal', 'desktop'],
     });
 
     registeredAgentId.value = res.agent.id;

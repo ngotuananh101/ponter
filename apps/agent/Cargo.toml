@@ -24,6 +24,16 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 webrtc = "0.21"
 
+# Desktop streaming. Absent on musl: that target is the fully-static
+# terminal-only artifact, and desktop offers are refused there (ADR-15).
+# openh264 is gated too, not just xcap: openh264-sys2 compiles vendored C++
+# via cc, and cc-rs cannot find a C++ compiler for the musl target
+# (musl-tools ships musl-gcc only — verified by probe).
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+bytes = "1"
+openh264 = "0.9.8"     # vendored Cisco source; no network at build time
+xcap = "0.9.8"
+
 [profile.release]
 opt-level = 3
 lto = true

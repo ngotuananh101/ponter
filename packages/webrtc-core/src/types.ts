@@ -9,6 +9,14 @@ export interface RTCDataChannelLike {
   onStateChange(handler: (state: string) => void): void;
 }
 
+export interface MediaStreamTrackLike {
+  readonly kind: string;
+}
+
+export interface MediaStreamLike {
+  getTracks(): MediaStreamTrackLike[];
+}
+
 export interface RTCPeerConnectionLike {
   createOffer(): Promise<RTCSessionDescriptionInit>;
   createAnswer(): Promise<RTCSessionDescriptionInit>;
@@ -24,12 +32,25 @@ export interface RTCPeerConnectionLike {
   onConnectionStateChange(handler: (state: string) => void): void;
   getStats(): Promise<RTCStatsReport>;
   close(): Promise<void>;
+  /**
+   * Optional media seam (ADR-06/ADR-20). Optional so every existing mock and
+   * adapter keeps typechecking; an adapter that lacks it is rejected with a
+   * descriptive error when `media.video` is requested.
+   */
+  addTransceiver?(kind: string, options?: { direction?: string }): unknown;
+  onTrack?(
+    handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
+  ): void;
 }
 
 export interface PeerConnectionOptions {
   iceServers?: IceServerConfig[];
   role: 'offerer' | 'answerer';
   channelLabels: string[];
+  /** Capabilities sent in the offer. Falls back to `channelLabels`. */
+  capabilities?: string[];
+  /** Request receive-side media setup before the offer is created. */
+  media?: { video?: boolean };
   connectTimeoutMs?: number;
 }
 

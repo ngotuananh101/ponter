@@ -13,7 +13,7 @@ function createMockAgent(overrides: Partial<Agent> = {}): Agent {
     osVersion: '6.5',
     agentVersion: '0.1.0',
     publicKey: 'mock-public-key',
-    capabilities: ['terminal'],
+    capabilities: ['terminal', 'desktop'],
     isOnline: false,
     lastHeartbeat: null,
     createdAt: new Date().toISOString(),
@@ -116,7 +116,7 @@ describe('RegisterAgentDialog.vue', () => {
       hostname: 'node-alpha.lan',
       platform: 'windows',
       publicKey: 'mocked-spki-public-key',
-      capabilities: ['terminal'],
+      capabilities: ['terminal', 'desktop'],
     });
 
     // Check success step rendered

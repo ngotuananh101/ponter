@@ -2,11 +2,13 @@
 import { ref, onMounted, onUnmounted, toRaw } from 'vue';
 import { useRoute } from 'vue-router';
 import { useTerminalStore } from '@/stores/terminal';
+import type { TabItem } from '@/stores/terminal';
 import type { Agent } from '@ponter/shared';
 import type { TerminalSession } from '@ponter/terminal-core';
 import WorkspaceSidebar from '@/components/terminal/WorkspaceSidebar.vue';
 import TerminalTabBar from '@/components/terminal/TerminalTabBar.vue';
 import XtermTerminal from '@/components/terminal/XtermTerminal.vue';
+import DesktopView from '@/components/desktop/DesktopView.vue';
 import MobileAccessoryBar from '@/components/terminal/MobileAccessoryBar.vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -31,6 +33,13 @@ function handleConnect(agent: Agent) {
   );
 }
 
+function handleConnectDesktop(agent: Agent) {
+  terminalStore.openDesktopTab(
+    agent.id,
+    agent.hostname || `Agent ${agent.id.slice(0, 6)}`,
+  );
+}
+
 /**
  * Open another shell for the agent currently on screen, falling back to the
  * first tab's agent. With no tab open there is no agent to reuse, so the
@@ -47,8 +56,9 @@ function handleNewTab() {
 }
 
 function handleSendKey(char: string) {
-  if (terminalStore.activeTab) {
-    terminalStore.activeTab.session.write(char);
+  const session = terminalStore.activeTab?.session;
+  if (session) {
+    session.write(char);
   }
 }
 
@@ -104,7 +114,11 @@ onUnmounted(() => {
 <template>
   <div class="flex h-full min-h-0 w-full flex-1 overflow-hidden bg-background">
     <!-- Collapsible Agent Sidebar -->
-    <WorkspaceSidebar v-show="sidebarOpen" @connect-agent="handleConnect" />
+    <WorkspaceSidebar
+      v-show="sidebarOpen"
+      @connect-agent="handleConnect"
+      @connect-desktop="handleConnectDesktop"
+    />
 
     <!-- Toggle button -->
     <button
@@ -143,15 +157,24 @@ onUnmounted(() => {
       <div class="relative min-h-0 flex-1 overflow-hidden bg-[#090d16]">
         <template v-if="terminalStore.activeTab">
           <XtermTerminal
+            v-if="terminalStore.activeTab.kind === 'terminal'"
             :key="terminalStore.activeTab.id"
             :session="toRaw(terminalStore.activeTab.session) as TerminalSession"
+          />
+          <DesktopView
+            v-else
+            :key="terminalStore.activeTab.id"
+            :tab="terminalStore.activeTab as TabItem"
           />
 
           <!-- A connection failure used to be a silent unhandled rejection.
                Without this the user clicked an agent, saw nothing happen, and
                had no way to tell an offline agent from a blocked port. -->
           <div
-            v-if="terminalStore.activeTab.status === 'error'"
+            v-if="
+              terminalStore.activeTab.kind === 'terminal' &&
+              terminalStore.activeTab.status === 'error'
+            "
             class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
           >
             <p class="text-sm text-destructive font-semibold">
@@ -257,7 +280,10 @@ onUnmounted(() => {
           <span class="text-border">|</span>
           <span class="flex items-center gap-1">
             <Radio class="w-3 h-3 text-primary" />
-            <span>Channel: terminal (64 KiB buffer)</span>
+            <span v-if="terminalStore.activeTab.kind === 'desktop'">
+              Media: H.264 · view-only
+            </span>
+            <span v-else>Channel: terminal (64 KiB buffer)</span>
           </span>
           <span class="text-border">|</span>
           <span class="flex items-center gap-1">

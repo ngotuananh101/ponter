@@ -3,9 +3,12 @@ import type {
   RTCDataChannelLike,
   SignalTransport,
   PeerConnectionOptions,
+  MediaStreamLike,
+  MediaStreamTrackLike,
 } from './types';
 import type { SignalMessage } from '@ponter/shared';
 import { DataChannelManager } from './data-channel';
+import { configureReceiveMedia, subscribeRemoteTracks } from './media-channel';
 import {
   toSessionDescriptionInit,
   toIceCandidateInit,
@@ -83,6 +86,9 @@ export class PeerConnection {
   }
 
   private readonly stateListeners: Array<(state: string) => void> = [];
+  private readonly trackListeners: Array<
+    (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void
+  > = [];
   private readonly unsubscribeTransport: () => void;
 
   constructor(
@@ -113,6 +119,16 @@ export class PeerConnection {
       }
     });
 
+    // 3b. Hook remote media tracks when the adapter supports them. The guard
+    // keeps every existing mock (which has no onTrack) working untouched.
+    if (this.peer.onTrack) {
+      subscribeRemoteTracks(this.peer, (track, streams) => {
+        for (const listener of this.trackListeners.slice()) {
+          listener(track, streams);
+        }
+      });
+    }
+
     // 4. Pre-create all offerer data channels before offer creation (F2)
     if (options.role === 'offerer') {
       for (const label of options.channelLabels) {
@@ -136,9 +152,22 @@ export class PeerConnection {
     if (this.isClosed) throw new Error('PeerConnection is closed');
     if (this.options.role !== 'offerer') return;
 
+    // Fail fast BEFORE the offer is created: an adapter that cannot deliver
+    // tracks would otherwise produce a stream that silently never arrives.
+    if (this.options.media?.video) {
+      if (!this.peer.addTransceiver || !this.peer.onTrack) {
+        throw new Error(
+          'media.video was requested but this adapter does not implement the media seam (addTransceiver/onTrack)',
+        );
+      }
+      configureReceiveMedia(this.peer, this.options.media);
+    }
+
     const offer = await this.peer.createOffer();
     await this.peer.setLocalDescription(offer);
-    const signal = createOfferSignal('', offer, this.options.channelLabels);
+    const capabilities =
+      this.options.capabilities ?? this.options.channelLabels;
+    const signal = createOfferSignal('', offer, capabilities);
     await this.transport.send(signal);
   }
 
@@ -147,6 +176,16 @@ export class PeerConnection {
     return () => {
       const idx = this.stateListeners.indexOf(handler);
       if (idx >= 0) this.stateListeners.splice(idx, 1);
+    };
+  }
+
+  onRemoteTrack(
+    handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
+  ): () => void {
+    this.trackListeners.push(handler);
+    return () => {
+      const idx = this.trackListeners.indexOf(handler);
+      if (idx >= 0) this.trackListeners.splice(idx, 1);
     };
   }
 
