@@ -176,6 +176,19 @@ export const useTerminalStore = defineStore('terminal', () => {
   ): Promise<string> {
     const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
+    // Reverse ADR-19 guard: if the agent already has an open desktop tab, refuse
+    // before any network call. ADR-14 makes the server refuse a second session
+    // anyway, but the user should see why without a round-trip.
+    if (tabs.value.some((t) => t.agentId === agentId && t.kind === 'desktop')) {
+      recordFailedTab(
+        tabId,
+        agentId,
+        title,
+        'Close the desktop stream before opening a terminal.',
+      );
+      return tabId;
+    }
+
     let client: TerminalClient;
     try {
       client = await getOrConnectAgent(agentId);
@@ -367,8 +380,14 @@ export const useTerminalStore = defineStore('terminal', () => {
       activeTabId.value = tabId;
 
       const stream = await client.start();
-      tab.desktopStream = stream;
-      tab.status = 'active';
+      // Mutate through the proxy (find on tabs.value) so Vue's reactivity
+      // watchers fire. Mutating the raw local `tab` object after push does not
+      // notify — `DesktopView`'s `watch` on `desktopStream` would never fire.
+      const live = tabs.value.find((t) => t.id === tabId);
+      if (live) {
+        live.desktopStream = stream;
+        live.status = 'active';
+      }
       return tabId;
     } catch (e) {
       const message =

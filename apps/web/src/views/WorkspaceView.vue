@@ -171,7 +171,10 @@ onUnmounted(() => {
                Without this the user clicked an agent, saw nothing happen, and
                had no way to tell an offline agent from a blocked port. -->
           <div
-            v-if="terminalStore.activeTab.status === 'error'"
+            v-if="
+              terminalStore.activeTab.kind === 'terminal' &&
+              terminalStore.activeTab.status === 'error'
+            "
             class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
           >
             <p class="text-sm text-destructive font-semibold">

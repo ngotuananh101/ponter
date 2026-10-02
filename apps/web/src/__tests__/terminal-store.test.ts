@@ -8,8 +8,6 @@ import type { TerminalSession } from '@ponter/terminal-core';
 // the test drives `start()` deterministically and can assert `close()`.
 const desktopStart = vi.fn();
 const desktopClose = vi.fn();
-const desktopStateHandler = vi.fn();
-const desktopErrorHandler = vi.fn();
 
 vi.mock('@ponter/desktop-core', () => ({
   DesktopClient: function (
@@ -19,8 +17,6 @@ vi.mock('@ponter/desktop-core', () => ({
   ) {
     this.start = desktopStart;
     this.close = desktopClose;
-    this.onConnectionStateChange = desktopStateHandler;
-    this.onError = desktopErrorHandler;
   },
 }));
 
@@ -141,5 +137,43 @@ describe('useTerminalStore', () => {
 
     expect(desktopClose).toHaveBeenCalled();
     expect(store.tabs.find((t) => t.id === tabId)).toBeUndefined();
+  });
+
+  it('openTab refuses when the agent already has an open desktop tab (reverse guard)', async () => {
+    const { apiClient } = await import('@/services/client');
+    const store = useTerminalStore();
+    // Seed an open desktop tab for the agent — the second session would be
+    // refused server-side (ADR-14), but the client guard must fire first.
+    store.tabs.push({
+      id: 'tab-d-1',
+      agentId: 'ag-3',
+      kind: 'desktop',
+      terminalId: '',
+      title: 'Host 3',
+      status: 'active',
+      desktopStream: { track: { kind: 'video' }, streams: [] } as never,
+    });
+    vi.mocked(apiClient.sessions.create).mockClear();
+
+    const tabId = await store.openTab('ag-3', 'Host 3');
+
+    expect(apiClient.sessions.create).not.toHaveBeenCalled();
+    expect(store.tabs.find((t) => t.id === tabId)?.status).toBe('error');
+    expect(store.tabs.find((t) => t.id === tabId)?.error).toMatch(
+      /close the desktop stream/i,
+    );
+  });
+
+  it('openDesktopTab mutates the tab through the proxy so the stream reaches the view', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-4', 'Host 4');
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.status).toBe('active');
+    expect(tab?.desktopStream?.track).toEqual({ kind: 'video' });
   });
 });
