@@ -254,9 +254,29 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
     let mut supervisor: Option<tokio::task::JoinHandle<Result<()>>> = None;
 
     loop {
-        match SignalClient::connect(&cli.server, credential, inbound_tx.clone(), ice_tx.clone())
-            .await
-        {
+        // A shutdown request can arrive while the signaling handshake is in
+        // flight. On Unix the tokio SIGINT/SIGTERM handler is installed
+        // process-wide and delivery is a one-shot broadcast: a signal that
+        // arrives with no listener registered is dropped, and installing the
+        // handler also replaces the default "terminate" disposition. So a
+        // Ctrl-C during `connect` — where no `shutdown_signal()` branch is
+        // otherwise live — used to be swallowed, and every later Ctrl-C with
+        // it, leaving the agent alive until the handshake finished (or
+        // forever, against a peer that accepts the TCP connection but never
+        // answers the upgrade). Racing the connect against the signal keeps a
+        // listener live for the whole attempt.
+        let connect =
+            SignalClient::connect(&cli.server, credential, inbound_tx.clone(), ice_tx.clone());
+        tokio::pin!(connect);
+        let connected = tokio::select! {
+            result = &mut connect => result,
+            _ = shutdown_signal() => {
+                tracing::info!("shutdown signal received while connecting");
+                return Ok(());
+            }
+        };
+
+        match connected {
             Ok(mut client) => {
                 tracing::info!("connected to the signaling server");
                 delay = signal::BACKOFF_INITIAL;
