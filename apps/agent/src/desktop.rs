@@ -1423,11 +1423,19 @@ pub fn test_source_info() -> DesktopSourceInfo {
 /// Frame the enumeration as a `desktop-sources` control message (spec §2.2).
 ///
 /// Pure so the wire shape is unit-testable without a peer connection.
-pub fn frame_desktop_sources(sources: &[DesktopSourceInfo], timestamp_ms: i64) -> String {
+///
+/// `input_enabled` is the ADR-29 gate (`cfg.allow_input`) published to the
+/// viewer so the UI can say whether input is possible at all (§6.3) — it is
+/// **not** what enforces the gate; the agent's own dispatcher is (§9).
+pub fn frame_desktop_sources(
+    sources: &[DesktopSourceInfo],
+    input_enabled: bool,
+    timestamp_ms: i64,
+) -> String {
     let message = crate::pty::DataChannelMessage {
         r#type: "desktop-sources".to_string(),
         channel: "control".to_string(),
-        payload: serde_json::json!({ "sources": sources }),
+        payload: serde_json::json!({ "sources": sources, "inputEnabled": input_enabled }),
         timestamp: timestamp_ms,
     };
     serde_json::to_string(&message).expect("a frame of plain data cannot fail to serialize")
@@ -2185,7 +2193,7 @@ mod tests {
 
     #[test]
     fn frame_desktop_sources_carries_the_envelope_and_the_default_flag() {
-        let raw = frame_desktop_sources(&[test_source_info()], 7);
+        let raw = frame_desktop_sources(&[test_source_info()], true, 7);
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(value["type"], "desktop-sources");
         assert_eq!(value["channel"], "control");
@@ -2195,6 +2203,13 @@ mod tests {
         // The camelCase wire spelling, not the Rust field name.
         assert!(value["payload"]["sources"][0].get("scaleFactor").is_some());
         assert!(value["payload"]["sources"][0].get("scale_factor").is_none());
+        // The ADR-29 gate as published to the viewer (§6.3), asserted to track
+        // the argument in both directions — the shipped default is `false`, so
+        // the frame the viewer actually receives must say so.
+        assert_eq!(value["payload"]["inputEnabled"], true);
+        let closed: serde_json::Value =
+            serde_json::from_str(&frame_desktop_sources(&[test_source_info()], false, 7)).unwrap();
+        assert_eq!(closed["payload"]["inputEnabled"], false);
     }
 
     #[test]

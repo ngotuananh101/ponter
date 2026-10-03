@@ -39,6 +39,12 @@ tracing-log = "0.2"
 # (musl-tools ships musl-gcc only — verified by probe).
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 bytes = "1"
+# Input injection (ADR-27 finding: enigo, MIT). Non-musl: the musl artifact is
+# terminal-only and never injects. Enigo is pure Rust (no vendoring, unlike
+# xcap) and in fact builds on musl too — the cfg-gate here is policy, not a
+# build constraint. The concrete injector lives in `input::platform`, gated the
+# same way.
+enigo = "0.6.1"
 openh264 = "0.9.8"     # vendored Cisco source; no network at build time
 # `openh264` re-exports only `OpenH264API`, so the raw-API constants
 # (`ENCODER_OPTION_BITRATE`/`ENCODER_OPTION_MAX_BITRATE`) and `SBitrateInfo`

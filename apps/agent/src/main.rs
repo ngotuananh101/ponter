@@ -9,6 +9,13 @@
 // compiled out entirely, so the musl artifact stays terminal-only.
 #[cfg(not(target_env = "musl"))]
 mod desktop;
+// `input` is gated with `desktop`, not independently: `to_absolute` takes a
+// `DesktopSourceInfo` (spec §6.2), so the module cannot compile where `desktop`
+// is compiled out. The musl artifact has no desktop session to inject into
+// (ADR-15), so nothing here is reachable on musl. `--allow-input` still exists
+// on every target (spec §6.4) — it lives in `Cli`, not in this module.
+#[cfg(not(target_env = "musl"))]
+mod input;
 mod logging;
 mod pty;
 mod rtc;
@@ -92,6 +99,18 @@ struct Cli {
     /// current source (ADR-22).
     #[arg(long, env = "AGENT_DESKTOP_SELECT_TIMEOUT_MS", default_value_t = 5000)]
     desktop_select_timeout_ms: u64,
+
+    /// Enable remote input injection (mouse + keyboard). OFF by default: this
+    /// is the ADR-29 gate, an agent-local opt-in a remote peer cannot set.
+    #[arg(
+        long,
+        env = "AGENT_ALLOW_INPUT",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value_t = false,
+    )]
+    allow_input: bool,
 }
 
 /// `--credential-or-env` in the roadmap is realised as clap's
@@ -392,6 +411,10 @@ struct SessionConfig {
     /// target, mirroring `desktop_source`.
     #[allow(dead_code)]
     desktop_select_timeout: Duration,
+    /// Input forwarding gate (ADR-29). Off by default; inert on musl, where
+    /// there is no desktop session (same shape as `desktop_source`).
+    #[allow(dead_code)]
+    allow_input: bool,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -445,6 +468,7 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
         desktop_profile,
         desktop_default_source: cli.desktop_default_source.clone(),
         desktop_select_timeout: Duration::from_millis(cli.desktop_select_timeout_ms),
+        allow_input: cli.allow_input,
     };
 
     let mut delay = signal::BACKOFF_INITIAL;
@@ -1239,7 +1263,44 @@ async fn run_desktop_session(
     for source in &mut sources {
         source.default = source.id == default_id;
     }
-    let sources_frame = desktop::frame_desktop_sources(&sources, crate::pty::now_ms());
+    let sources_frame =
+        desktop::frame_desktop_sources(&sources, cfg.allow_input, crate::pty::now_ms());
+
+    // The geometry `to_absolute` (spec §6.2) maps normalized input into. It is
+    // the source the session started on, taken from the enumeration so the
+    // origin/width/height are the ones the picker shows.
+    //
+    // A later `desktop-select` swap changes what is streamed but does **not**
+    // update this in Week 9 — mapping input onto a swapped source is deferred
+    // and recorded as a known limitation (spec §3.4). Do not extend scope here.
+    //
+    // The fallback keeps the frame path total: if enumeration failed the picker
+    // is empty and the viewer has nothing to click into, but the dispatcher must
+    // still have geometry rather than unwrapping.
+    let current_source = sources
+        .iter()
+        .find(|s| s.default)
+        .or_else(|| sources.first())
+        .cloned()
+        .unwrap_or_else(|| match cfg.desktop_source {
+            DesktopSource::Test => desktop::test_source_info(),
+            DesktopSource::Screen => {
+                tracing::debug!("no source enumerated; input mapping falls back to the origin");
+                desktop::DesktopSourceInfo {
+                    id: String::new(),
+                    kind: desktop::SourceKind::Monitor,
+                    name: String::new(),
+                    width: 0,
+                    height: 0,
+                    x: 0,
+                    y: 0,
+                    scale_factor: 1.0,
+                    rotation: 0.0,
+                    is_primary: false,
+                    default: false,
+                }
+            }
+        });
 
     // Auto-ABR (spec §3.3, ADR-23 PASS branch): sample GCC's published target
     // twice a second and feed it into the same `SetBitrate` path manual control
@@ -1294,6 +1355,10 @@ async fn run_desktop_session(
     let channel_for_control = channel.clone();
     let end_tx_for_control = end_tx.clone();
     let session_id = offer.session_id.clone();
+    // Copied out of `cfg` because the spawned task must be `'static` and
+    // `SessionConfig` is borrowed — the same reason `session_id` is cloned
+    // above. This is the ADR-29 gate's only runtime copy.
+    let allow_input = cfg.allow_input;
     let control_task = tokio::spawn(async move {
         // The control channel opens after the answer; wait for it, but never
         // block the stream on it — a viewer that never opens the picker still
@@ -1313,6 +1378,9 @@ async fn run_desktop_session(
             tracing::debug!(error = %e, "sending desktop-sources failed");
             return;
         }
+        // The injector is built lazily (first allowed input frame) and reused,
+        // so a host with no display fails one frame, not the session (§6.3).
+        let mut injector: Option<Box<dyn input::InputInjector>> = None;
         loop {
             tokio::select! {
                 event = dc.poll() => match event {
@@ -1321,6 +1389,30 @@ async fn run_desktop_session(
                             tracing::debug!("ignoring a non-UTF-8 control frame");
                             continue;
                         };
+                        // Input rides the same channel (ADR-26). The gate lives
+                        // in `allow_input`: closed ⇒ debug-log + drop, open
+                        // ⇒ decode + inject, fail-soft either way (§2.3). The
+                        // cheap substring guard keeps the two decoders from both
+                        // parsing every frame; `apply_if_allowed` is still the
+                        // only path that decides, so it cannot bypass the gate.
+                        if text.contains("\"desktop-input\"") {
+                            if allow_input {
+                                if injector.is_none() {
+                                    match input::platform::PlatformInjector::try_new() {
+                                        Ok(i) => injector = Some(Box::new(i)),
+                                        Err(e) => tracing::debug!(error = %e, "input enabled but the injector is unavailable"),
+                                    }
+                                }
+                                if let Some(injector) = injector.as_mut() {
+                                    input::apply_if_allowed(
+                                        allow_input, text, &current_source, injector.as_mut(),
+                                    );
+                                }
+                            } else {
+                                tracing::debug!("dropping desktop-input: input disabled");
+                            }
+                            continue;
+                        }
                         match desktop::decode_control(text) {
                             Ok(Some(control)) => {
                                 // A manual bitrate frame is the user taking the
@@ -2099,5 +2191,67 @@ mod tests {
     fn stream_profile_frame_budget_matches_fps() {
         let budget = StreamProfile::DEFAULT_1080P30.frame_budget();
         assert!((budget.as_secs_f32() - 1.0 / 30.0).abs() < 1e-6);
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn allow_input_cli_and_env_parsing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // 1. Neither flag nor env -> false
+        std::env::remove_var("AGENT_ALLOW_INPUT");
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1"]).unwrap();
+        assert!(
+            !cli.allow_input,
+            "absent flag and env should default to false"
+        );
+
+        // 2. CLI flag alone -> true
+        let cli =
+            Cli::try_parse_from(["ponter-agent", "--agent-id", "a1", "--allow-input"]).unwrap();
+        assert!(cli.allow_input, "--allow-input flag should enable input");
+
+        // CLI flag with explicit values
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1", "--allow-input=true"])
+            .unwrap();
+        assert!(cli.allow_input, "--allow-input=true should enable input");
+        let cli =
+            Cli::try_parse_from(["ponter-agent", "--agent-id", "a1", "--allow-input=1"]).unwrap();
+        assert!(cli.allow_input, "--allow-input=1 should enable input");
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1", "--allow-input=false"])
+            .unwrap();
+        assert!(!cli.allow_input, "--allow-input=false should disable input");
+        let cli =
+            Cli::try_parse_from(["ponter-agent", "--agent-id", "a1", "--allow-input=0"]).unwrap();
+        assert!(!cli.allow_input, "--allow-input=0 should disable input");
+
+        // 3. Env AGENT_ALLOW_INPUT=1 -> true
+        std::env::set_var("AGENT_ALLOW_INPUT", "1");
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1"]).unwrap();
+        assert!(cli.allow_input, "AGENT_ALLOW_INPUT=1 should enable input");
+
+        // 4. Env AGENT_ALLOW_INPUT=true -> true
+        std::env::set_var("AGENT_ALLOW_INPUT", "true");
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1"]).unwrap();
+        assert!(
+            cli.allow_input,
+            "AGENT_ALLOW_INPUT=true should enable input"
+        );
+
+        // 5. Env AGENT_ALLOW_INPUT=0 -> false
+        std::env::set_var("AGENT_ALLOW_INPUT", "0");
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1"]).unwrap();
+        assert!(!cli.allow_input, "AGENT_ALLOW_INPUT=0 should disable input");
+
+        // 6. Env AGENT_ALLOW_INPUT=false -> false
+        std::env::set_var("AGENT_ALLOW_INPUT", "false");
+        let cli = Cli::try_parse_from(["ponter-agent", "--agent-id", "a1"]).unwrap();
+        assert!(
+            !cli.allow_input,
+            "AGENT_ALLOW_INPUT=false should disable input"
+        );
+
+        std::env::remove_var("AGENT_ALLOW_INPUT");
     }
 }
