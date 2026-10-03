@@ -292,6 +292,12 @@ export class DesktopClient {
     this.controlUnsubscribe = null;
     this.peerStateUnsubscribe?.();
     this.peerStateUnsubscribe = null;
+    // Release every handler the caller may still hold. The `off` closures it
+    // keeps would otherwise splice a closed client's arrays on a later call.
+    this.stateListeners.length = 0;
+    this.errorListeners.length = 0;
+    this.sourceListeners.length = 0;
+    this.statsListeners.length = 0;
     void this.peer.close();
   }
 }

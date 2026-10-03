@@ -601,6 +601,12 @@ export const useTerminalStore = defineStore('terminal', () => {
       if (live) live.initStep = 'stream';
       const stream = await client.start();
 
+      // The source the agent is actually streaming. Tracked so a refused pick
+      // can snap the picker back (spec §2.2: "the UI keeps showing the old
+      // source"); updated from the enumeration's `default` entry and from every
+      // stats frame that confirms a swap.
+      let confirmedSourceId: string | undefined;
+
       // The agent pushes its enumeration when the control channel opens, so the
       // subscription is registered after `start()` (the track arrives first).
       // Both unsubscribers go into the same list the teardown already drains.
@@ -609,13 +615,24 @@ export const useTerminalStore = defineStore('terminal', () => {
           const tab = tabs.value.find((t) => t.id === tabId);
           if (!tab) return;
           tab.desktopSources = sources;
-          tab.desktopSourceId ??= sources.find((s) => s.default)?.id;
+          const defaultId = sources.find((s) => s.default)?.id;
+          if (defaultId) confirmedSourceId = defaultId;
+          tab.desktopSourceId ??= defaultId;
         }),
-      );
-      unsubscribers.push(
         client.onStats((stats) => {
           const tab = tabs.value.find((t) => t.id === tabId);
-          if (tab) tab.desktopStats = stats;
+          if (!tab) return;
+          tab.desktopStats = stats;
+          if (stats.status?.kind === 'select-refused') {
+            // The agent kept streaming the old source; undo the optimistic pick
+            // so the picker does not show a source that is not on screen.
+            tab.desktopSourceId =
+              confirmedSourceId ??
+              tab.desktopSources?.find((s) => s.default)?.id;
+            return;
+          }
+          // A stats frame with no refusal note confirms a pending switch.
+          if (tab.desktopSourceId) confirmedSourceId = tab.desktopSourceId;
         }),
       );
 
@@ -795,7 +812,7 @@ export const useTerminalStore = defineStore('terminal', () => {
    */
   function selectDesktopSource(tabId: string, sourceId: string): void {
     const tab = tabs.value.find((t) => t.id === tabId);
-    if (!tab || tab.kind !== 'desktop') return;
+    if (tab?.kind !== 'desktop') return;
     const conn = desktopConnections.get(tab.agentId);
     if (!conn) return;
     conn.client.selectSource(sourceId);
@@ -805,7 +822,7 @@ export const useTerminalStore = defineStore('terminal', () => {
   /** Set the desktop stream's target bitrate (manual control, ADR-23). */
   function setDesktopBitrate(tabId: string, bitrateBps: number): void {
     const tab = tabs.value.find((t) => t.id === tabId);
-    if (!tab || tab.kind !== 'desktop') return;
+    if (tab?.kind !== 'desktop') return;
     const conn = desktopConnections.get(tab.agentId);
     if (!conn) return;
     conn.client.setBitrate(bitrateBps);

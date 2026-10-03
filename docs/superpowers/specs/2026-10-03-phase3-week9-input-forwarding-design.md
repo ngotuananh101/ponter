@@ -11,11 +11,11 @@
 
 Week 8 turned the Week 7 thin slice into a usable stream: a resolved quality profile, a source picker, and a control channel (`['control']`) carrying `desktop-sources` / `desktop-select` / `desktop-bitrate` / `desktop-stats`. Week 9 makes that stream **interactive**: the browser forwards pointer and keyboard events over the same control channel, and the agent injects them into the operating system of the machine it is streaming.
 
-The roadmap item is "Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)" (`ARCHITECTURE.md:943`). This spec delivers the wire, the injection, and the tests — **but behind a hard gate that keeps input inert in production** (ADR-29).
+The roadmap item is "Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)" (`ARCHITECTURE.md:951`). This spec delivers the wire, the injection, and the tests — **but behind a hard gate that keeps input inert in production** (ADR-29).
 
 One constraint shapes the whole design:
 
-- **Input injection is a fundamentally higher-risk surface than watching, and the agent's trust model is not ready for it.** The E2EE audit's **H3** (`docs/security/2026-10-01-e2ee-zero-trust-audit.md:163`) is explicit: the agent has *no peer identity verification* — it approves a session on the attacker-controlled `desktop` capability label alone (the audit cites `apps/agent/src/rtc.rs:186`; that line has since drifted, but the behaviour is current: `classify_offer` decides the mode from capability strings, `apps/agent/src/main.rs:288-296`, and the desktop answer hardcodes `approved: true`, `apps/agent/src/rtc.rs:146-153`). A remote-input feature on top of an unverified peer is a remote-code-execution-shaped risk: whatever the agent injects, the peer chose. The audit's **H2** (the `approved` refusal flag is recorded but never enforced) compounds it. **Week 9 therefore ships the mechanism, not the capability** — the feature is gated off and does not become usable until the identity/consent workstream (WS2/WS3) lands. This is the user's decision (§9), recorded as ADR-29.
+- **Input injection is a fundamentally higher-risk surface than watching, and the agent's trust model is not ready for it.** The E2EE audit's **H3** (`docs/security/2026-10-01-e2ee-zero-trust-audit.md:163`) is explicit: the agent has *no peer identity verification* — it approves a session on the attacker-controlled `desktop` capability label alone (the audit cites `apps/agent/src/rtc.rs:186`; that line has since drifted, but the behaviour is current: `classify_offer` decides the mode from capability strings, `apps/agent/src/main.rs:358-366`, and the desktop answer hardcodes `approved: true`, `apps/agent/src/rtc.rs:224-237`). A remote-input feature on top of an unverified peer is a remote-code-execution-shaped risk: whatever the agent injects, the peer chose. The audit's **H2** (the `approved` refusal flag is recorded but never enforced) compounds it. **Week 9 therefore ships the mechanism, not the capability** — the feature is gated off and does not become usable until the identity/consent workstream (WS2/WS3) lands. This is the user's decision (§9), recorded as ADR-29.
 
 ### 1.1 Core Goals
 
@@ -29,9 +29,9 @@ One constraint shapes the whole design:
 ### 1.2 Non-Goals (Explicitly Deferred)
 
 - **Usable remote input in production.** This is the headline non-goal (ADR-29): the artifact ships with input **off**. "Input works end-to-end for a real user" is **not** an acceptance criterion (§10.2). It becomes a goal only after WS2/WS3 (§9).
-- **Input on the musl artifact.** musl has no desktop module; a desktop offer is already refused there (`apps/agent/src/main.rs:1151`, ADR-15), so no desktop session exists to inject into. The `--allow-input` flag is accepted on all targets for CLI-shape consistency but is inert on musl (mirrors `--desktop-source`).
+- **Input on the musl artifact.** musl has no desktop module; a desktop offer is already refused there (`apps/agent/src/main.rs:1449`, ADR-15), so no desktop session exists to inject into. The `--allow-input` flag is accepted on all targets for CLI-shape consistency but is inert on musl (mirrors `--desktop-source`).
 - **Input when there is no desktop session.** The frame lives on the `control` channel, which only a desktop session opens. A terminal session never sees it; a `desktop-input` on any other channel is dropped (§2.4).
-- **Clipboard, drag-and-drop, file transfer.** File transfer is Phase 4 (`ARCHITECTURE.md:946-948`); clipboard is not scheduled.
+- **Clipboard, drag-and-drop, file transfer.** File transfer is Phase 4 (`ARCHITECTURE.md:953-955`); clipboard is not scheduled.
 - **Touch, pen, gamepad.** Pointer and keyboard only.
 - **Pointer lock / relative-motion capture.** A first cut maps *absolute* pointer position within the video rect. FPS-style pointer lock is deferred.
 - **Full IME composition.** A `text` frame carries committed unicode (basic IME commit / `beforeinput`); managing an in-progress composition buffer (preedit) is deferred.
@@ -114,8 +114,8 @@ All facts below were verified against repository state or vendor documentation �
 ### 3.1 No input-injection crate exists in the repository or the build cache
 
 - A repository-wide grep and a scan of the cargo registry cache found **no** input-injection crate: `apps/agent/Cargo.lock` contains **0** occurrences of `enigo`, and the registry cache holds no `enigo` / `rdev` / `inputbot` / `uinput` source. The only vendored crate is `apps/agent/vendor/xcap` (capture, not injection).
-- The agent's dependency set (`apps/agent/Cargo.toml:7-20`) is base64/clap/rtc/webrtc/tokio/portable-pty plus the desktop-only `bytes`/`openh264`/`xcap` (`:34-35`). Nothing injects input today.
-- **Consequence.** Week 9 introduces the **first** input dependency. Like `xcap`/`openh264`, it must be gated `cfg(not(target_env = "musl"))` (`Cargo.toml:32-35`) so the musl artifact stays terminal-only, and it will need the same vendoring/offline consideration `xcap` got (`apps/agent/vendor/xcap/PATCH.md`). The candidate set is recorded in ADR-27.
+- The agent's dependency set (`apps/agent/Cargo.toml:7-25`) is base64/clap/rtc/webrtc/tokio/portable-pty plus the desktop-only `bytes`/`openh264`/`xcap` (`:41-42`, `:48`). Nothing injects input today.
+- **Consequence.** Week 9 introduces the **first** input dependency. Like `xcap`/`openh264`, it must be gated `cfg(not(target_env = "musl"))` (`Cargo.toml:40`) so the musl artifact stays terminal-only, and it will need the same vendoring/offline consideration `xcap` got (`apps/agent/vendor/xcap/PATCH.md`). The candidate set is recorded in ADR-27.
 
 ### 3.2 Wayland is a first-class risk for injection (not a footnote)
 
@@ -130,7 +130,7 @@ All facts below were verified against repository state or vendor documentation �
 
 ### 3.4 Coordinate space: normalized → absolute, and the DPR caveat
 
-- `DesktopSourceInfo` already carries `x`, `y`, `width`, `height`, `scaleFactor` and `rotation` (Week 8 spec §2.2; projected from `xcap`'s `Monitor`/`Window` accessors, `apps/agent/src/desktop.rs:404-421`).
+- `DesktopSourceInfo` already carries `x`, `y`, `width`, `height`, `scaleFactor` and `rotation` (Week 8 spec §2.2; projected from `xcap`'s `Monitor`/`Window` accessors, `apps/agent/src/desktop.rs:478-519`).
 - **Watch item (honest).** `xcap` reports geometry in the platform's native unit; injection libraries variously expect **logical** or **physical** pixels. On a scaled display (`scaleFactor != 1`) a normalized coordinate multiplied by `width` may land at the wrong physical point. The spike/implementation must confirm the unit `xcap` returns matches the unit the injector consumes, and convert via `scaleFactor` if not. This spec does **not** settle it — it flags it so the implementer does not discover it in a demo.
 
 ### 3.5 What cannot be verified from this repository
@@ -180,7 +180,7 @@ All facts below were verified against repository state or vendor documentation �
 
 ### ADR-29: Input ships gated OFF by default, behind an agent-local opt-in the peer cannot set
 
-**Context.** The E2EE audit's **H3** (`:163`) finds the agent has **no peer identity verification**: it approves a session on the attacker-controlled `desktop` capability label (`apps/agent/src/main.rs:288-296`; the audit's `rtc.rs:186` cite has since drifted). **H2** (`:149`) finds the `approved` flag is recorded but never enforced. Remote input on an unverified peer means a compromised signaling server can drive the machine it can reach — a materially worse outcome than watching it. The user's decision (§9) is to ship the mechanism now and gate the capability.
+**Context.** The E2EE audit's **H3** (`:163`) finds the agent has **no peer identity verification**: it approves a session on the attacker-controlled `desktop` capability label (`apps/agent/src/main.rs:358-366`; the audit's `rtc.rs:186` cite has since drifted). **H2** (`:149`) finds the `approved` flag is recorded but never enforced. Remote input on an unverified peer means a compromised signaling server can drive the machine it can reach — a materially worse outcome than watching it. The user's decision (§9) is to ship the mechanism now and gate the capability.
 
 **Decision.** Input is **inert by default**. The agent drops every `desktop-input` frame unless the operator opted in with `--allow-input` (env `AGENT_ALLOW_INPUT=1`), resolved once into `SessionConfig`. The gate is **one mechanism** — an agent-local flag, not a capability negotiation:
 
@@ -195,7 +195,7 @@ When the gate is closed the agent logs the drop and continues — no injection, 
 
 ### ADR-30: Coordinate mapping removes the `object-contain` letterbox, then applies source geometry
 
-**Context.** The `<video>` uses `object-contain` (`apps/web/src/components/desktop/DesktopView.vue:56`), so the stream is letterboxed (or pillarboxed) within the element. A naive `clientX / rect.width` maps a click on the black bars to a wrong source point. The source may also be offset on a multi-monitor desktop and scaled.
+**Context.** The `<video>` uses `object-contain` (`apps/web/src/components/desktop/DesktopView.vue:77`), so the stream is letterboxed (or pillarboxed) within the element. A naive `clientX / rect.width` maps a click on the black bars to a wrong source point. The source may also be offset on a multi-monitor desktop and scaled.
 
 **Decision.** The browser computes the **content box** inside the element (the largest rect with the video's aspect ratio, centered), maps `(clientX, clientY)` to normalized `(nx, ny)` within that box, and clamps to `0..1` (§7.1). The agent maps `nx, ny` to absolute pixels with `abs = source.x + round(n * source.dimension)`, using the **currently streamed** source's geometry from `DesktopSourceInfo`.
 
@@ -307,7 +307,7 @@ pub fn decode_desktop_input(raw: &str) -> Result<Option<DesktopInput>>;
 
 - The decoder reuses `MAX_FRAME_BYTES` (`apps/agent/src/pty.rs:26`) as the pre-parse cap and the `DataChannelMessage<T>` envelope (`apps/agent/src/pty.rs:40`). Unlike the terminal path, the payload is **JSON, not base64** — input is structured, so there is no byte string to decode; the reuse is the guard *shape*, and the spec says so rather than implying a base64 step.
 - Coordinates are clamped to `0..=1` at decode time so a hostile frame cannot produce an out-of-range absolute point.
-- **The musl boundary is at the dependency, not the module.** `mod input` is **not** `cfg`-gated: it holds only serde types, the `decode_desktop_input` function, `to_absolute`, and the `InputInjector` trait — no heavy dependency — so it compiles on every target, exactly as `pty.rs` does. Only the **concrete injector** (enigo or per-platform, ADR-27) is gated `cfg(not(target_env = "musl"))`, and the injection dependency goes in `[target.'cfg(not(target_env = "musl"))'.dependencies]` alongside `bytes`/`openh264`/`xcap` (`apps/agent/Cargo.toml:32-35`). On musl the concrete type is simply never constructed — no desktop session exists to inject into (the dispatcher branch lives inside the non-musl `run_desktop_session`, itself `#[cfg(not(target_env = "musl"))]`, `apps/agent/src/main.rs:984-986`) — so no stub is required.
+- **The musl boundary is at the dependency, not the module.** `mod input` is **not** `cfg`-gated: it holds only serde types, the `decode_desktop_input` function, `to_absolute`, and the `InputInjector` trait — no heavy dependency — so it compiles on every target, exactly as `pty.rs` does. Only the **concrete injector** (enigo or per-platform, ADR-27) is gated `cfg(not(target_env = "musl"))`, and the injection dependency goes in `[target.'cfg(not(target_env = "musl"))'.dependencies]` alongside `bytes`/`openh264`/`xcap` (`apps/agent/Cargo.toml:40`). On musl the concrete type is simply never constructed — no desktop session exists to inject into (the dispatcher branch lives inside the non-musl `run_desktop_session`, itself `#[cfg(not(target_env = "musl"))]`, `apps/agent/src/main.rs:1100-1102`) — so no stub is required.
 
 ### 6.2 Normalized → absolute mapping (ADR-30)
 
@@ -334,7 +334,7 @@ Week 8's control dispatcher (Week 8 spec §6.3) already decodes `desktop-select`
 ### 6.4 `SessionConfig` and CLI
 
 - `SessionConfig` gains `allow_input: bool`.
-- `Cli` gains `#[arg(long, env = "AGENT_ALLOW_INPUT", default_value_t = false)] allow_input: bool` — the same flag/env pattern as `desktop_source` (`apps/agent/src/main.rs:75-76`). Defined on every target so the CLI shape is uniform; inert on musl (no desktop session, ADR-15).
+- `Cli` gains `#[arg(long, env = "AGENT_ALLOW_INPUT", default_value_t = false)] allow_input: bool` — the same flag/env pattern as `desktop_source` (`apps/agent/src/main.rs:77-78`). Defined on every target so the CLI shape is uniform; inert on musl (no desktop session, ADR-15).
 
 ### 6.5 Rust unit tests
 
@@ -373,18 +373,18 @@ It computes the content box (aspect-fit, centered), maps, and clamps to `0..1`. 
 - An **Input toggle** in the overlay, **default OFF**, rendered only when `tab.desktopInputEnabled === true` (i.e. the agent reported `inputEnabled`). When the gate is closed (production default) the toggle never appears and **no listeners are attached** — the element captures nothing.
 - When the toggle is ON, the component attaches `pointermove` / `pointerdown` / `pointerup` / `wheel` / `keydown` / `keyup` listeners to the `<video>` (which gets `tabindex` and focus on enable) and calls `store.sendDesktopInput(tab.id, event)`, translating DOM events to `DesktopInput` via `toNormalized`.
 - The `<video>` keeps **no `controls`**; the existing `DesktopView.test.ts` assertion (no `controls`) stays green.
-- Removing the "view-only" comment (`:50`) and the WorkspaceView footer text (§7.4) reflects that the view is *conditionally* interactive now.
+- Removing the "view-only" comment (`:71`) and the WorkspaceView footer text (§7.4) reflects that the view is *conditionally* interactive now.
 
 ### 7.3 Store changes — `stores/terminal.ts`
 
-- **`openDesktopTab`** (`:484`): `channelLabels: []` → `channelLabels: ['control']` (`:532`) — the Week 8 change, carried here as the baseline this spec builds on.
+- **`openDesktopTab`** (`:491`): `channelLabels: []` → `channelLabels: ['control']` (`:539`) — the Week 8 change, carried here as the baseline this spec builds on.
 - `TabItem` gains `desktopInputEnabled?: boolean` (set from `onSources`).
 - New action `sendDesktopInput(tabId, event)` → `desktopConnections.get(agentId).client.sendInput(event)`, guarded so a closed tab is a no-op.
 - `onSources` handler additionally sets `tab.desktopInputEnabled = payload.inputEnabled`.
 
 ### 7.4 `WorkspaceView.vue` footer
 
-The Week 8 line `Media: H.264 · <stats or "connecting">` (`:334`) is unchanged for the media half; Week 9 appends an input indicator only when input is available: `· input on` / `· input off`. When the gate is closed (default) the footer shows the media line alone — the feature is not advertised.
+The Week 8 line `Media: H.264 · <stats or "connecting">` (`:337`) is unchanged for the media half; Week 9 appends an input indicator only when input is available: `· input on` / `· input off`. When the gate is closed (default) the footer shows the media line alone — the feature is not advertised.
 
 ### 7.5 Web tests
 
@@ -467,7 +467,7 @@ The user's decision, recorded as ADR-29, is the **separate-gate** option: Week 9
 
 The gate is a holding pattern, not a fix. The audit findings behind it:
 
-- **H3 — no peer identity verification** (`:163`). Approval is granted on the `desktop` label alone (`apps/agent/src/main.rs:288-296`; the audit's `rtc.rs:186` cite has since drifted); the agent never verifies the client's key or DTLS fingerprint. This is *the* reason input cannot be enabled: on an unverified peer, injected input is remote control by an unauthenticated party. Closed by **WS2**.
+- **H3 — no peer identity verification** (`:163`). Approval is granted on the `desktop` label alone (`apps/agent/src/main.rs:358-366`; the audit's `rtc.rs:186` cite has since drifted); the agent never verifies the client's key or DTLS fingerprint. This is *the* reason input cannot be enabled: on an unverified peer, injected input is remote control by an unauthenticated party. Closed by **WS2**.
 - **H2 — `approved` flag never enforced** (`:149`). The agent's refusal flag is recorded but not checked server- or client-side. A hostile signaling server can deliver an answer the browser honours despite a refusal. Closed by **WS3**.
 - **M7 — browser terminal input: base64 + JSON only, no crypto** (`:340`). Input is serialization, not encryption: keystrokes (including passwords) are plaintext at the application layer. The `desktop-input` frames inherit this; E2EE for input is **WS1** (Phase 5), not Week 9.
 - **M8 — agent PTY output: base64 only; no crypto crates** (`:349`). The agent has no crypto dependency to decrypt an E2EE payload. Same WS1 dependency.
@@ -540,9 +540,9 @@ The gate is a holding pattern, not a fix. The audit findings behind it:
 
 Reconciled in the same PR (D8):
 
-1. **Roadmap §8** (`ARCHITECTURE.md:941-944`): the "Tuần 8-9" list's input item — "Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)" — is annotated **partial**: the wire and injection land, but **input is gated off (ADR-29)** and is not usable until WS2/WS3. The item is **not** ticked as done. The `(ADR-18)` reference becomes `(ADR-18 superseded by ADR-26; gated by ADR-29)`.
+1. **Roadmap §8** (`ARCHITECTURE.md:941-951`): the "Tuần 8-9" list's input item — "Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)" — is annotated **partial**: the wire and injection land, but **input is gated off (ADR-29)** and is not usable until WS2/WS3. The item is **not** ticked as done. The `(ADR-18)` reference becomes `(ADR-18 superseded by ADR-26; gated by ADR-29)`.
 2. **ADR-18 superseded.** The Week 7 spec's ADR-18 gains a superseded note pointing at ADR-26 (Week 9 spec), matching the roadmap annotation. The `<video>` is no longer unconditionally view-only — it is view-only *unless the gate is open*.
-3. **Perf table** (`ARCHITECTURE.md:1080-1081`): the row `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` is **still present and still wrong** — H.265 is not viable in WebRTC (Week 8 spec §3.5). Week 8's **D8** specifies the correction (split into a Week 8 software row and a spike-gated hardware row) but **that edit has not landed**: PR #24 (`2899b39`) merged the Week 8 *spec only* and did not touch `ARCHITECTURE.md`. This is a **pending** reconciliation, not a completed one — Week 9's D8 may fold it in (the perf row does not depend on input, but leaving a known-false row in place is worse than fixing it while the docs are open), and §11.1's roadmap edits are the same situation. The spec states this so no one reads "already corrected" and skips the edit.
-4. **Security status.** The roadmap's Phase 5 workstream list (`ARCHITECTURE.md:952+`) already tracks WS1-WS5. Week 9 adds no new workstream; §9.3 records that **H3, H2, M7, M8 remain open** after the Week 9 merge, and that the gate is a holding pattern — the input feature is closed until **WS2** (peer identity, closes H3) and **WS3** (enforce `approved`, closes H2) land.
+3. **Perf table** (`ARCHITECTURE.md:1087-1088`): Week 8's **D8** correction **has landed** — PR #27 (`be8a8c9`) replaced the false `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` row with a Week 8 software row (`Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264)`) and a spike-gated hardware row (`Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt`). No H.265 row remains, so no correction is pending here. (This spec originally recorded the row as "still present and still wrong" — that was true when the Week 8 spec merged (PR #24, spec-only) but the Week 8 *implementation* PR has since fixed it.) Week 9's D8 needs no perf-table edit.
+4. **Security status.** The roadmap's Phase 5 workstream list (`ARCHITECTURE.md:961+`) already tracks WS1-WS5. Week 9 adds no new workstream; §9.3 records that **H3, H2, M7, M8 remain open** after the Week 9 merge, and that the gate is a holding pattern — the input feature is closed until **WS2** (peer identity, closes H3) and **WS3** (enforce `approved`, closes H2) land.
 
-Phase 4's stub (`ARCHITECTURE.md:946-948`) is **not** touched (out of scope; §1.2).
+Phase 4's stub (`ARCHITECTURE.md:953-955`) is **not** touched (out of scope; §1.2).

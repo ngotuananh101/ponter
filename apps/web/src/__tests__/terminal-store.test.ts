@@ -4,6 +4,7 @@ import { watch, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
 import type { TerminalSession } from '@ponter/terminal-core';
+import type { DesktopStats } from '@ponter/shared';
 
 // The store builds a DesktopClient for every desktop tab. Mock the module so
 // the test drives `start()` deterministically and can assert `close()`.
@@ -92,6 +93,41 @@ describe('useTerminalStore', () => {
     desktopOnSourcesOff.mockReset();
     desktopOnStatsOff.mockReset();
   });
+
+  /**
+   * Open a desktop tab whose client then pushes `sources` on the control
+   * channel. Returns the store and the tab id so a test can drive selects and
+   * stats frames. Shared so the picker tests do not repeat the setup block.
+   */
+  async function openDesktopWithSources(
+    sources: Array<{ id: string; default: boolean }>,
+  ) {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+    desktopSourcesHandler?.(sources);
+    await nextTick();
+    return { store, tabId };
+  }
+
+  /** Push one `desktop-stats` frame through the mock client's handler. */
+  function emitStats(overrides: Partial<DesktopStats> = {}): void {
+    desktopStatsHandler?.({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      targetBitrateBps: 6_000_000,
+      ...overrides,
+    });
+  }
+
+  const pickerId = (
+    store: ReturnType<typeof useTerminalStore>,
+    tabId: string,
+  ) => store.tabs.find((t) => t.id === tabId)?.desktopSourceId;
 
   it('initializes with empty tabs and connections', () => {
     const store = useTerminalStore();
@@ -304,6 +340,54 @@ describe('useTerminalStore', () => {
     store.setDesktopBitrate(tabId, 3_000_000);
 
     expect(desktopSetBitrate).toHaveBeenCalledWith(3_000_000);
+  });
+
+  it('rolls the picker back to the streaming source when a select is refused', async () => {
+    const { store, tabId } = await openDesktopWithSources([
+      { id: 'monitor:1', default: true },
+      { id: 'window:9', default: false },
+    ]);
+    expect(pickerId(store, tabId)).toBe('monitor:1');
+
+    // The user picks another source: the tab records it optimistically.
+    store.selectDesktopSource(tabId, 'window:9');
+    await nextTick();
+    expect(pickerId(store, tabId)).toBe('window:9');
+
+    // The agent refuses and keeps streaming the old source (spec §2.2). The
+    // picker must snap back or it keeps showing a source that is not on screen.
+    emitStats({
+      status: { kind: 'select-refused', detail: 'unknown source id' },
+    });
+    await nextTick();
+
+    expect(pickerId(store, tabId)).toBe('monitor:1');
+  });
+
+  it('rolls back to the last confirmed source, not the original default', async () => {
+    const { store, tabId } = await openDesktopWithSources([
+      { id: 'monitor:1', default: true },
+      { id: 'monitor:2', default: false },
+      { id: 'window:9', default: false },
+    ]);
+
+    // A first switch succeeds: the plain stats frame confirms it, so the
+    // confirmed source advances from the original default to monitor:2.
+    store.selectDesktopSource(tabId, 'monitor:2');
+    await nextTick();
+    emitStats();
+    await nextTick();
+
+    // A later switch is refused: the picker must roll back to monitor:2 — the
+    // source actually on screen — not to the original monitor:1 default.
+    store.selectDesktopSource(tabId, 'window:9');
+    await nextTick();
+    emitStats({
+      status: { kind: 'select-refused', detail: 'unknown source id' },
+    });
+    await nextTick();
+
+    expect(pickerId(store, tabId)).toBe('monitor:2');
   });
 
   it('tears down the control subscriptions on closeTab', async () => {

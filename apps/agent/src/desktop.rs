@@ -31,6 +31,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 
 // `StreamProfile` is pure data and lives in `main.rs` (unconditional) so that
 // `SessionConfig` — which is also unconditional — can name it on musl.
+use crate::pty::MAX_FRAME_BYTES;
 use crate::StreamProfile;
 
 /// One frame, RGBA8, `width * height * 4` bytes.
@@ -805,6 +806,11 @@ pub trait SwapSource {
 /// only ever re-select the test pattern).
 pub struct LiveSources {
     pub test: bool,
+    /// The session's *current* profile, so `build` names the truth: after a
+    /// downgrade the session runs 720p30, and passing a hardcoded 1080p30 here
+    /// would be a call site that lies to `source_for` (which ignores the arg
+    /// today, but must not be handed a wrong value).
+    pub profile: StreamProfile,
 }
 
 #[async_trait::async_trait]
@@ -822,7 +828,7 @@ impl SwapSource for LiveSources {
         // One factory for every path: `source_for` already handles the `test:`
         // scheme, so the test branch needs no special case here. `source_ids`
         // gates what can reach this, so in test mode `id` is always `test:0`.
-        source_for(id, StreamProfile::DEFAULT_1080P30).await
+        source_for(id, self.profile).await
     }
 }
 
@@ -931,11 +937,15 @@ impl SustainMonitor {
         SustainAction::Continue
     }
 
-    /// A manual bitrate change is the user asking for a fresh evaluation, so the
-    /// latch re-opens — but only while there is a lower rung to fall to. At the
-    /// floor, re-opening would only re-select the same profile, so it stays
-    /// closed (ADR-24's "no oscillation").
-    pub fn note_manual_bitrate(&mut self, current: StreamProfile) {
+    /// A bitrate change — manual (the browser) or automatic (the auto-ABR task,
+    /// which sends on the same control channel) — is a fresh evaluation request,
+    /// so the latch re-opens — but only while there is a lower rung to fall to.
+    /// At the floor, re-opening would only re-select the same profile, so it
+    /// stays closed (ADR-24's "no oscillation").
+    ///
+    /// Named `note_bitrate_change`, not `note_manual_bitrate`: the caller does
+    /// not (and cannot) distinguish the two sources here, so the old name lied.
+    pub fn note_bitrate_change(&mut self, current: StreamProfile) {
         if current != StreamProfile::SAFE_720P30 {
             self.latched = false;
             self.consecutive_over = 0;
@@ -1024,9 +1034,9 @@ pub async fn run_stream(
                         match encoder.apply_bitrate(bps) {
                             Ok(()) => {
                                 profile.bitrate_bps = bps;
-                                // A manual change is a fresh evaluation request
+                                // A bitrate change is a fresh evaluation request
                                 // (re-arms only above the floor; ADR-24).
-                                sustain.note_manual_bitrate(profile);
+                                sustain.note_bitrate_change(profile);
                                 // Reflect the effective value to the UI (spec §2.3 step 6).
                                 send_stats(&events, encoded_size, profile, None);
                             }
@@ -1038,7 +1048,10 @@ pub async fn run_stream(
                     Some(StreamControl::SourceSwap(id)) => {
                         match swap_source(
                             &mut source,
-                            &LiveSources { test: source_is_test },
+                            &LiveSources {
+                                test: source_is_test,
+                                profile,
+                            },
                             &id,
                             profile,
                             select_timeout,
@@ -1354,8 +1367,13 @@ struct DesktopSelectMessage {
 /// Returns `Ok(None)` for a frame on another channel (ADR-09: the agent ignores
 /// any other channel) and for an unknown `type` (forward-compatible, spec §2.2);
 /// returns `Err` only for a frame that claims to be `control` but is malformed.
-/// Mirrors `pty::decode_pty_input`'s shape.
+/// Mirrors `pty::decode_pty_input`'s shape — including its size guard: the
+/// control channel is an inbound surface, so an oversize frame is refused on
+/// size before any parse (spec §9's resource bound).
 pub fn decode_control(raw: &str) -> Result<Option<StreamControl>> {
+    if raw.len() > MAX_FRAME_BYTES {
+        anyhow::bail!("inbound frame exceeds {MAX_FRAME_BYTES} bytes");
+    }
     let envelope: crate::pty::DataChannelMessage<serde_json::Value> =
         serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
 
@@ -2154,6 +2172,18 @@ mod tests {
     }
 
     #[test]
+    fn decode_control_rejects_an_oversize_frame_before_parsing() {
+        // Mirrors pty's `chunk_boundaries` guard: a frame above MAX_FRAME_BYTES
+        // is refused on size, before any JSON parse (spec §9's resource bound
+        // on the control channel). The assertion is on the *message*, not a
+        // bare `is_err()`: a non-JSON oversize string would also fail parsing,
+        // so `is_err()` alone would pass even with no guard — a false green.
+        let oversize = "x".repeat(crate::pty::MAX_FRAME_BYTES + 1);
+        let err = decode_control(&oversize).unwrap_err();
+        assert!(format!("{err:#}").contains("exceeds"));
+    }
+
+    #[test]
     fn frame_desktop_sources_carries_the_envelope_and_the_default_flag() {
         let raw = frame_desktop_sources(&[test_source_info()], 7);
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -2470,16 +2500,16 @@ mod tests {
         }
         assert_eq!(monitor.observe(slow), SustainAction::Continue, "latched");
 
-        // A manual change above the floor re-arms exactly one more evaluation.
-        monitor.note_manual_bitrate(StreamProfile::DEFAULT_1080P30);
+        // A bitrate change above the floor re-arms exactly one more evaluation.
+        monitor.note_bitrate_change(StreamProfile::DEFAULT_1080P30);
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
         assert_eq!(monitor.observe(slow), SustainAction::Downgrade);
 
-        // At the floor, a manual change does not re-arm.
+        // At the floor, a bitrate change does not re-arm.
         let mut at_floor = SustainMonitor::new(StreamProfile::SAFE_720P30);
-        at_floor.note_manual_bitrate(StreamProfile::SAFE_720P30);
+        at_floor.note_bitrate_change(StreamProfile::SAFE_720P30);
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK * 2 {
             assert_eq!(at_floor.observe(slow), SustainAction::Continue);
         }

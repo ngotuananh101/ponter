@@ -193,6 +193,26 @@ describe('DesktopView', () => {
     );
   });
 
+  it('leaves the bitrate input empty until the first stats frame', () => {
+    // Sources present (so the chrome renders) but no stats yet: the bitrate
+    // control is visible and must show nothing, not an invented 6 Mbps.
+    const wrapper = mount(DesktopView, {
+      props: {
+        tab: desktopTab({
+          desktopSources: twoSources,
+          desktopSourceId: 'monitor:1',
+        }),
+      },
+    });
+
+    // A hardcoded 6 Mbps default would show a number the agent never sent —
+    // the session may sit at the 720p30 floor. Before any stats, show nothing.
+    const input = wrapper.find<HTMLInputElement>(
+      '[data-test="desktop-bitrate"]',
+    );
+    expect(input.element.value).toBe('');
+  });
+
   it('calls setDesktopBitrate from the bitrate control', async () => {
     const store = useTerminalStore();
     const setBitrate = vi

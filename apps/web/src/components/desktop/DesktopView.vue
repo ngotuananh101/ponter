@@ -114,7 +114,7 @@ function onBitrateChange(event: Event): void {
           max="20000000"
           step="250000"
           class="w-24 rounded border border-border/60 bg-transparent px-1 py-0.5"
-          :value="tab.desktopStats?.targetBitrateBps ?? 6_000_000"
+          :value="tab.desktopStats?.targetBitrateBps ?? ''"
           @change="onBitrateChange"
         />
         <span>bps</span>

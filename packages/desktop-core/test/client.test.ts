@@ -70,9 +70,6 @@ function mockPeer() {
       trackHandler?.(t, s),
     emitState: (state: string) => stateHandler?.(state),
     emitControl: (msg: unknown) => controlHandler?.(msg),
-    setControlOpen: (open: boolean) => {
-      controlState = open ? 'open' : null;
-    },
     setControlState: (state: 'connecting' | 'open' | 'closed' | null) => {
       controlState = state;
     },
@@ -191,6 +188,45 @@ describe('DesktopClient', () => {
 
     expect(states).toEqual(['connecting']);
     client.close();
+  });
+
+  it('drops every listener on close() so a late frame reaches nobody', async () => {
+    const { peer, emitState, emitControl } = mockPeer();
+    const client = new DesktopClient('agent-1', peer);
+
+    const states: string[] = [];
+    const sources: unknown[] = [];
+    const stats: unknown[] = [];
+    client.onConnectionStateChange((s) => states.push(s));
+    client.onSources((s) => sources.push(s));
+    client.onStats((s) => stats.push(s));
+
+    client.close();
+
+    // A closed client must not fan out to handlers the caller can no longer
+    // unsubscribe (its `off` closures are still held but the client is gone).
+    emitState('connected');
+    emitControl({
+      type: 'desktop-sources',
+      channel: 'control',
+      payload: { sources: [{ id: 'monitor:1', default: true }] },
+      timestamp: 1,
+    });
+    emitControl({
+      type: 'desktop-stats',
+      channel: 'control',
+      payload: {
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        targetBitrateBps: 6_000_000,
+      },
+      timestamp: 2,
+    });
+
+    expect(states).toEqual([]);
+    expect(sources).toEqual([]);
+    expect(stats).toEqual([]);
   });
 });
 
