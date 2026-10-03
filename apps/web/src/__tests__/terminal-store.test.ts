@@ -9,6 +9,12 @@ import type { TerminalSession } from '@ponter/terminal-core';
 // the test drives `start()` deterministically and can assert `close()`.
 const desktopStart = vi.fn();
 const desktopClose = vi.fn();
+const desktopSelectSource = vi.fn();
+const desktopSetBitrate = vi.fn();
+let desktopSourcesHandler: ((sources: unknown[]) => void) | null = null;
+let desktopStatsHandler: ((stats: unknown) => void) | null = null;
+const desktopOnSourcesOff = vi.fn();
+const desktopOnStatsOff = vi.fn();
 
 vi.mock('@ponter/desktop-core', () => ({
   DesktopClient: function (
@@ -18,6 +24,16 @@ vi.mock('@ponter/desktop-core', () => ({
   ) {
     this.start = desktopStart;
     this.close = desktopClose;
+    this.selectSource = desktopSelectSource;
+    this.setBitrate = desktopSetBitrate;
+    this.onSources = vi.fn((handler: (sources: unknown[]) => void) => {
+      desktopSourcesHandler = handler;
+      return desktopOnSourcesOff;
+    });
+    this.onStats = vi.fn((handler: (stats: unknown) => void) => {
+      desktopStatsHandler = handler;
+      return desktopOnStatsOff;
+    });
   },
 }));
 
@@ -32,8 +48,16 @@ vi.mock('@/services/client', () => ({
   },
 }));
 
+const peerOptions: Array<Record<string, unknown>> = [];
+
 vi.mock('@ponter/webrtc-core', () => ({
-  PeerConnection: function (this: Record<string, unknown>) {
+  PeerConnection: function (
+    this: Record<string, unknown>,
+    _rtcPeer: unknown,
+    _transport: unknown,
+    options: Record<string, unknown>,
+  ) {
+    peerOptions.push(options);
     this.start = vi.fn(async () => {});
     this.close = vi.fn(async () => {});
     this.waitForChannel = vi.fn(async () => {});
@@ -59,6 +83,14 @@ vi.mock('@/services/token-storage', () => ({
 describe('useTerminalStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    peerOptions.length = 0;
+    desktopSourcesHandler = null;
+    desktopStatsHandler = null;
+    desktopStart.mockReset();
+    desktopSelectSource.mockReset();
+    desktopSetBitrate.mockReset();
+    desktopOnSourcesOff.mockReset();
+    desktopOnStatsOff.mockReset();
   });
 
   it('initializes with empty tabs and connections', () => {
@@ -190,5 +222,101 @@ describe('useTerminalStore', () => {
     const tab = store.tabs.find((t) => t.id === tabId);
     expect(tab?.status).toBe('active');
     expect(tab?.desktopStream?.track).toEqual({ kind: 'video' });
+  });
+
+  it('offers a control channel for a desktop tab', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+
+    await store.openDesktopTab('ag-1', 'Host 1');
+
+    expect(peerOptions.at(-1)).toMatchObject({ channelLabels: ['control'] });
+  });
+
+  it('populates desktopSources and selects the default entry', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+
+    desktopSourcesHandler?.([
+      { id: 'monitor:1', default: false },
+      { id: 'monitor:2', default: true },
+    ]);
+    await nextTick();
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.desktopSources).toHaveLength(2);
+    expect(tab?.desktopSourceId).toBe('monitor:2');
+  });
+
+  it('records desktopStats from the agent', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+
+    desktopStatsHandler?.({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      targetBitrateBps: 6_000_000,
+    });
+    await nextTick();
+
+    expect(
+      store.tabs.find((t) => t.id === tabId)?.desktopStats?.targetBitrateBps,
+    ).toBe(6_000_000);
+  });
+
+  it('selectDesktopSource calls the client and records the id', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+
+    store.selectDesktopSource(tabId, 'window:0x4a00007');
+    await nextTick();
+
+    expect(desktopSelectSource).toHaveBeenCalledWith('window:0x4a00007');
+    expect(store.tabs.find((t) => t.id === tabId)?.desktopSourceId).toBe(
+      'window:0x4a00007',
+    );
+  });
+
+  it('setDesktopBitrate calls the client', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+
+    store.setDesktopBitrate(tabId, 3_000_000);
+
+    expect(desktopSetBitrate).toHaveBeenCalledWith(3_000_000);
+  });
+
+  it('tears down the control subscriptions on closeTab', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-1', 'Host 1');
+
+    store.closeTab(tabId);
+
+    expect(desktopOnSourcesOff).toHaveBeenCalled();
+    expect(desktopOnStatsOff).toHaveBeenCalled();
   });
 });

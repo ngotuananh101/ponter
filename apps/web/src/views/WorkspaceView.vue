@@ -330,8 +330,16 @@ onUnmounted(() => {
           <span class="text-border">|</span>
           <span class="flex items-center gap-1">
             <Radio class="w-3 h-3 text-primary" />
-            <span v-if="terminalStore.activeTab.kind === 'desktop'">
-              Media: H.264 · view-only
+            <span
+              v-if="terminalStore.activeTab.kind === 'desktop'"
+              data-test="footer-media"
+            >
+              Media: H.264 ·
+              {{
+                terminalStore.activeTab.desktopStats
+                  ? `${terminalStore.activeTab.desktopStats.width}×${terminalStore.activeTab.desktopStats.height}`
+                  : 'connecting'
+              }}
             </span>
             <span v-else>Channel: terminal (64 KiB buffer)</span>
           </span>

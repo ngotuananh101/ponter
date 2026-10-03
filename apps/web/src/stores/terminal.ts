@@ -12,6 +12,7 @@ import {
   WebSocketSignalTransport,
 } from '@ponter/webrtc-core';
 import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
+import type { DesktopSourceInfo, DesktopStats } from '@ponter/shared';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
 import type { InitStep } from '@/lib/connection-steps';
@@ -37,6 +38,12 @@ export interface TabItem {
   session?: TerminalSessionType;
   /** Desktop tabs only: the render data. The client/peer live in `desktopConnections`. */
   desktopStream?: DesktopStream;
+  /** Desktop tabs only: the agent's capture-source enumeration (spec §7.1). */
+  desktopSources?: DesktopSourceInfo[];
+  /** Desktop tabs only: best-effort telemetry from `desktop-stats`. */
+  desktopStats?: DesktopStats;
+  /** Desktop tabs only: the source the agent is streaming (or was asked to). */
+  desktopSourceId?: string;
 }
 
 /** Best-effort message from an unknown catch value; never `[object Object]`. */
@@ -525,11 +532,11 @@ export const useTerminalStore = defineStore('terminal', () => {
       const iceServers = await apiClient.webrtc.getIceServers();
       const rtcPeer = createBrowserAdapter({ iceServers });
 
-      // No data channel: desktop is media-only, so `channelLabels: []` and the
-      // capability/media options drive the offer.
+      // A control channel carries the source picker, bitrate, and stats. The
+      // media path is unchanged; the label rides the existing manager (spec §5.2).
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
-        channelLabels: [],
+        channelLabels: ['control'],
         capabilities: ['desktop'],
         media: { video: true },
       });
@@ -593,6 +600,25 @@ export const useTerminalStore = defineStore('terminal', () => {
 
       if (live) live.initStep = 'stream';
       const stream = await client.start();
+
+      // The agent pushes its enumeration when the control channel opens, so the
+      // subscription is registered after `start()` (the track arrives first).
+      // Both unsubscribers go into the same list the teardown already drains.
+      unsubscribers.push(
+        client.onSources((sources) => {
+          const tab = tabs.value.find((t) => t.id === tabId);
+          if (!tab) return;
+          tab.desktopSources = sources;
+          tab.desktopSourceId ??= sources.find((s) => s.default)?.id;
+        }),
+      );
+      unsubscribers.push(
+        client.onStats((stats) => {
+          const tab = tabs.value.find((t) => t.id === tabId);
+          if (tab) tab.desktopStats = stats;
+        }),
+      );
+
       // Mutate through the proxy (find on tabs.value) so Vue's reactivity
       // watchers fire. Mutating the raw local `tab` object after push does not
       // notify — `DesktopView`'s `watch` on `desktopStream` would never fire.
@@ -760,6 +786,31 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   }
 
+  /**
+   * Ask the agent to switch the desktop stream to another source (ADR-22).
+   *
+   * The tab records the id immediately so the picker shows the user's choice;
+   * the agent's next `desktop-stats` is what confirms the switch actually took.
+   * A refused switch arrives as a `status` note on that frame, not as an error.
+   */
+  function selectDesktopSource(tabId: string, sourceId: string): void {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (!tab || tab.kind !== 'desktop') return;
+    const conn = desktopConnections.get(tab.agentId);
+    if (!conn) return;
+    conn.client.selectSource(sourceId);
+    tab.desktopSourceId = sourceId;
+  }
+
+  /** Set the desktop stream's target bitrate (manual control, ADR-23). */
+  function setDesktopBitrate(tabId: string, bitrateBps: number): void {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (!tab || tab.kind !== 'desktop') return;
+    const conn = desktopConnections.get(tab.agentId);
+    if (!conn) return;
+    conn.client.setBitrate(bitrateBps);
+  }
+
   return {
     tabs,
     activeTabId,
@@ -769,6 +820,8 @@ export const useTerminalStore = defineStore('terminal', () => {
     retryTab,
     setActiveTab,
     closeTab,
+    selectDesktopSource,
+    setDesktopBitrate,
     getOrConnectAgentForTest: getOrConnectAgent,
   };
 });

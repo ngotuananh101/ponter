@@ -9,6 +9,8 @@ export type {
   DataChannelMessage,
 } from './webrtc.js';
 
+export type { DesktopSourceInfo, DesktopStats } from './desktop.js';
+
 export type {
   TransferDirection,
   FileTransferStatus,

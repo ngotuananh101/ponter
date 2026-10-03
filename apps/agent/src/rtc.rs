@@ -7,6 +7,7 @@
 //! "no event handler found" otherwise. There is no `on_*` registration API on
 //! the connection itself any more.
 
+use std::sync::atomic::AtomicU64;
 #[cfg(not(target_env = "musl"))]
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -17,6 +18,8 @@ use rtc::ice::mdns::MulticastDnsMode;
 use rtc::peer_connection::transport::RTCDtlsRole;
 use tokio::sync::{mpsc, oneshot};
 use webrtc::data_channel::DataChannel;
+#[cfg(not(target_env = "musl"))]
+use webrtc::peer_connection::{configure_congestion_control, CongestionFeedback};
 use webrtc::peer_connection::{
     register_default_interceptors, MediaEngine, PeerConnection, PeerConnectionBuilder,
     PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceServer,
@@ -52,8 +55,90 @@ use crate::signal::{IceCandidateSignal, IceServerEntry, SignalAnswer, SignalMess
 /// The one channel label this agent accepts. ADR-09: exact label, nothing else.
 pub const TERMINAL_LABEL: &str = "terminal";
 
+/// The desktop control channel's label (Week 8, spec §2.1). Desktop-only.
+pub const CONTROL_LABEL: &str = "control";
+
 /// The capability string that selects a desktop session (ADR-15).
 pub const DESKTOP_LABEL: &str = "desktop";
+
+/// Where GCC starts (spec §3.3). Deliberately low — the safe floor, not the
+/// 1080p30 target — because a path that opens congested should not open at
+/// 6 Mbps. The dispatcher ignores the estimate until it *moves off* this seed,
+/// so the stream still starts at the session profile (spec §2.3 step 2).
+#[cfg(not(target_env = "musl"))]
+pub const ABR_INITIAL_BPS: f64 = 4_000_000.0;
+/// Never let GCC drive the encoder outside the wire boundary's clamp.
+#[cfg(not(target_env = "musl"))]
+pub const ABR_MIN_BPS: f64 = 250_000.0;
+#[cfg(not(target_env = "musl"))]
+pub const ABR_MAX_BPS: f64 = 20_000_000.0;
+
+/// GCC-driven auto-ABR (spec §3.3, ADR-23 PASS branch). Installed only on a
+/// peer that carries a control channel, so the terminal SDP is untouched.
+#[cfg(not(target_env = "musl"))]
+mod abr {
+    use rtc::interceptor::{BandwidthEstimator, EstimatorStats, Gcc, PacketReport};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// Delegates to `inner` and publishes its target after every update.
+    ///
+    /// `configure_congestion_control` boxes the estimator inside the chain, so
+    /// this wrapper is the one application-supplied object in the loop that can
+    /// carry the number back out (spec §3.3). Copied from the shipped example
+    /// `webrtc-0.21.0/examples/bandwidth-estimation-from-disk`.
+    pub struct ReportingEstimator<E: BandwidthEstimator> {
+        inner: E,
+        target: Arc<AtomicU64>,
+    }
+
+    impl<E: BandwidthEstimator> ReportingEstimator<E> {
+        pub fn new(inner: E) -> (Self, Arc<AtomicU64>) {
+            let target = Arc::new(AtomicU64::new(inner.target_bitrate().to_bits()));
+            let handle = Arc::clone(&target);
+            (Self { inner, target }, handle)
+        }
+
+        fn publish(&self) {
+            self.target
+                .store(self.inner.target_bitrate().to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    impl<E: BandwidthEstimator> BandwidthEstimator for ReportingEstimator<E> {
+        fn on_reports(&mut self, now: Instant, reports: &[PacketReport]) {
+            self.inner.on_reports(now, reports);
+            self.publish();
+        }
+
+        fn target_bitrate(&self) -> f64 {
+            self.inner.target_bitrate()
+        }
+
+        fn handle_timeout(&mut self, now: Instant) {
+            self.inner.handle_timeout(now);
+            self.publish();
+        }
+
+        fn poll_timeout(&self) -> Option<Instant> {
+            self.inner.poll_timeout()
+        }
+
+        fn stats(&self) -> EstimatorStats {
+            self.inner.stats()
+        }
+    }
+
+    /// A GCC estimator wrapped so its target is observable.
+    pub fn estimator() -> (ReportingEstimator<Gcc>, Arc<AtomicU64>) {
+        ReportingEstimator::new(Gcc::new(
+            super::ABR_INITIAL_BPS,
+            super::ABR_MIN_BPS,
+            super::ABR_MAX_BPS,
+        ))
+    }
+}
 
 /// A per-process counter so two sessions in one agent never share an SSRC.
 #[cfg(not(target_env = "musl"))]
@@ -284,12 +369,37 @@ pub async fn build_peer(
     stun_url: &str,
     handler: Arc<dyn PeerConnectionEventHandler>,
     media_only: bool,
-) -> Result<Arc<dyn PeerConnection>> {
+    has_control: bool,
+) -> Result<BuiltPeer> {
     let mut media = MediaEngine::default();
     media
         .register_default_codecs()
         .context("register_default_codecs")?;
-    let registry = register_default_interceptors(Registry::new(), &mut media)
+
+    // Congestion control is desktop-only: it registers `transport-cc` feedback
+    // and a header extension on the media engine, which changes the SDP. The
+    // terminal path must stay byte-identical (spec §2.4), so it is gated on
+    // `has_control` — the same flag that decides the ICE timeouts below.
+    #[cfg(not(target_env = "musl"))]
+    let (registry, abr_target) = if has_control {
+        let (estimator, handle) = abr::estimator();
+        let registry = configure_congestion_control(
+            Registry::new(),
+            estimator,
+            CongestionFeedback::Twcc,
+            &mut media,
+        )
+        .context("configure_congestion_control")?;
+        (registry, Some(handle))
+    } else {
+        (Registry::new(), None)
+    };
+    // musl has no desktop session, so `has_control` is never true there; the
+    // peer still needs a registry, just without congestion control.
+    #[cfg(target_env = "musl")]
+    let (registry, abr_target): (Registry, Option<Arc<AtomicU64>>) = (Registry::new(), None);
+
+    let registry = register_default_interceptors(registry, &mut media)
         .context("register_default_interceptors")?;
 
     let mut setting = SettingEngineBuilder::new()
@@ -316,19 +426,24 @@ pub async fn build_peer(
         // while this side answers.
         .with_answering_dtls_role(RTCDtlsRole::Server);
 
-    // A media-only (desktop) peer has no data channel, so ICE silence is its
-    // only "the browser is gone" signal: werift's `pc.close()` on a connection
-    // with no SCTP association sends neither a DTLS close_notify nor an ICE
-    // packet, it simply stops. The defaults (disconnected 5s + failed 25s, per
-    // `rtc-ice`'s `validate_selected_pair`) would hold the ADR-14 slot for ~30s
-    // after a network drop — long enough that a user cannot reconnect, and long
-    // enough that the E2E teardown assertion (20s) could never pass. Desktop
-    // media flows every ~66ms, so 3s of silence is unambiguous; Failed at
+    // A peer with a data channel — terminal's, or desktop's control channel —
+    // treats a channel close as the end-of-session signal, so it keeps the
+    // RFC-shaped ICE defaults. Only a peer with no channel at all relies on ICE
+    // silence, and only that peer gets the shortened timeouts (spec §6.3).
+    //
+    // Week 7's rationale for the shortened timeouts still holds for that
+    // no-channel case: werift's `pc.close()` on a connection with no SCTP
+    // association sends neither a DTLS close_notify nor an ICE packet, it simply
+    // stops. The defaults (disconnected 5s + failed 25s, per `rtc-ice`'s
+    // `validate_selected_pair`) would hold the ADR-14 slot for ~30s after a
+    // network drop — long enough that a user cannot reconnect, and long enough
+    // that the E2E teardown assertion (20s) could never pass. Desktop media
+    // flows every ~66ms, so 3s of silence is unambiguous; Failed at
     // 3s + 5s = 8s keeps a brief `Disconnected` recoverable while still freeing
-    // the slot promptly. Terminal peers keep the RFC-shaped defaults — their
-    // data channel is the close signal, so a short ICE timeout would only add
-    // false failures on a healthy-but-quiet link.
-    if media_only {
+    // the slot promptly. A peer with a channel does not need this: its channel
+    // close is the prompt signal, so a short ICE timeout would only add false
+    // failures on a healthy-but-quiet link.
+    if media_only && !has_control {
         setting = setting.with_ice_timeouts(
             Some(Duration::from_secs(3)),
             Some(Duration::from_secs(5)),
@@ -360,7 +475,20 @@ pub async fn build_peer(
         .await
         .context("build peer connection")?;
 
-    Ok(Arc::new(peer) as Arc<dyn PeerConnection>)
+    Ok(BuiltPeer {
+        peer: Arc::new(peer) as Arc<dyn PeerConnection>,
+        abr_target,
+    })
+}
+
+/// A built peer plus the handles the session needs from it.
+///
+/// `abr_target` is `Some` only for a peer built with congestion control — a
+/// desktop session. The terminal and refusal peers leave it `None`, so their
+/// SDP is byte-identical to Week 7 (spec §2.4).
+pub struct BuiltPeer {
+    pub peer: Arc<dyn PeerConnection>,
+    pub abr_target: Option<Arc<AtomicU64>>,
 }
 
 /// The event handler every session peer is built with.
@@ -373,6 +501,9 @@ pub struct SessionHandler {
     session_id: String,
     outbound: mpsc::Sender<SignalMessage>,
     end_tx: mpsc::Sender<&'static str>,
+    /// The one channel label this session accepts (ADR-09): `terminal` for a
+    /// terminal session, `control` for a desktop session.
+    accepted_label: String,
     channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
     open_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     /// Fired once on `Connected`. The desktop session waits on it; the terminal
@@ -385,6 +516,7 @@ impl SessionHandler {
         session_id: String,
         outbound: mpsc::Sender<SignalMessage>,
         end_tx: mpsc::Sender<&'static str>,
+        accepted_label: String,
         channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
         open_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
         connected_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -393,6 +525,7 @@ impl SessionHandler {
             session_id,
             outbound,
             end_tx,
+            accepted_label,
             channel,
             open_tx,
             connected_tx,
@@ -491,7 +624,7 @@ impl PeerConnectionEventHandler for SessionHandler {
     /// back-pressure), not lost.
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         match dc.label().await {
-            Ok(label) if label == TERMINAL_LABEL => {}
+            Ok(label) if label == self.accepted_label => {}
             Ok(label) => {
                 tracing::warn!(label = %label, "refusing unexpected channel");
                 let _ = dc.close().await;
@@ -506,7 +639,7 @@ impl PeerConnectionEventHandler for SessionHandler {
         }
 
         if let Err(second) = self.channel.set(dc) {
-            tracing::warn!("refusing a second terminal channel");
+            tracing::warn!(label = %self.accepted_label, "refusing a second session channel");
             let _ = second.close().await;
             return;
         }
@@ -937,5 +1070,17 @@ mod tests {
         // H.264 bytes under another codec's payload type.
         let codecs = vec![codec("video/VP8", 96), codec("video/VP9", 98)];
         assert_eq!(select_h264_payload_type(&codecs), None);
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[test]
+    fn reporting_estimator_publishes_its_initial_target() {
+        // The wrapper's whole job is to make GCC's target observable from the
+        // application: before any feedback arrives it must publish exactly the
+        // seed it was constructed with, so the auto-ABR loop can tell "nothing
+        // reported yet" (the seed) from a real measurement.
+        let (_estimator, handle) = abr::estimator();
+        let published = f64::from_bits(handle.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(published, ABR_INITIAL_BPS);
     }
 }

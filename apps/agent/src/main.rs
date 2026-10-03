@@ -17,6 +17,8 @@ mod signal;
 use std::collections::HashMap;
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_env = "musl"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -74,6 +76,22 @@ struct Cli {
     /// deterministic pattern (what CI and the E2E harness use).
     #[arg(long, env = "AGENT_DESKTOP_SOURCE", value_enum, default_value_t = DesktopSource::Screen)]
     desktop_source: DesktopSource,
+
+    /// Desktop quality profile. `1080p30` is the default; `720p30` is the safe
+    /// floor for a host that cannot sustain 1080p30 (ADR-24).
+    #[arg(long, env = "AGENT_DESKTOP_PROFILE", default_value = "1080p30")]
+    desktop_profile: String,
+
+    /// Which source streams before any selection (spec §6.1). `primary` (the
+    /// default) means the primary monitor; any other value is an explicit
+    /// source id validated against the enumeration at startup.
+    #[arg(long, env = "AGENT_DESKTOP_DEFAULT_SOURCE", default_value = "primary")]
+    desktop_default_source: String,
+
+    /// Bounded window to apply a requested source switch before keeping the
+    /// current source (ADR-22).
+    #[arg(long, env = "AGENT_DESKTOP_SELECT_TIMEOUT_MS", default_value_t = 5000)]
+    desktop_select_timeout_ms: u64,
 }
 
 /// `--credential-or-env` in the roadmap is realised as clap's
@@ -267,6 +285,62 @@ enum DesktopSource {
     Test,
 }
 
+/// The resolved quality for one desktop session (ADR-21).
+///
+/// Resolved once at session start from the CLI/env, then read by the downscale
+/// box, the ticker cadence, and the encoder config. `bitrate_bps` is the only
+/// member adjustable after start (ADR-23).
+///
+/// Defined here, beside `DesktopSource`, rather than in `desktop.rs`: it is pure
+/// data, and `SessionConfig` (which is unconditional) holds one. A type named
+/// only inside the `#[cfg(not(target_env = "musl"))]` `desktop` module would be
+/// E0433 on musl.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StreamProfile {
+    pub max_width: u32,
+    pub max_height: u32,
+    pub fps: f32,
+    pub bitrate_bps: u32,
+}
+
+impl StreamProfile {
+    /// Default: 1080p30 at 6 Mbps (ADR-24's conditional target).
+    pub const DEFAULT_1080P30: Self = Self {
+        max_width: 1920,
+        max_height: 1080,
+        fps: 30.0,
+        bitrate_bps: 6_000_000,
+    };
+    /// The guaranteed floor: 720p30 at 4 Mbps (ADR-24).
+    pub const SAFE_720P30: Self = Self {
+        max_width: 1280,
+        max_height: 720,
+        fps: 30.0,
+        bitrate_bps: 4_000_000,
+    };
+
+    /// The frame budget in seconds — `1 / fps`.
+    pub fn frame_budget(&self) -> Duration {
+        Duration::from_secs_f32(1.0 / self.fps)
+    }
+}
+
+/// Parse `--desktop-profile` / `AGENT_DESKTOP_PROFILE`.
+///
+/// Only the two named profiles exist; anything else is an error rather than a
+/// silent default, so a typo in a deployment fails loudly at startup.
+impl std::str::FromStr for StreamProfile {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "1080p30" => Ok(Self::DEFAULT_1080P30),
+            "720p30" => Ok(Self::SAFE_720P30),
+            other => bail!("unknown desktop profile {other:?}; expected 1080p30 or 720p30"),
+        }
+    }
+}
+
 /// What an offer asks this agent to serve (ADR-15). Decided from the offer's
 /// capabilities *before* the answer is built.
 #[derive(Debug, PartialEq, Eq)]
@@ -307,6 +381,17 @@ struct SessionConfig {
     /// CLI shape is identical on every target.
     #[allow(dead_code)]
     desktop_source: DesktopSource,
+    /// Unused on musl, where the desktop module is compiled out; kept so the
+    /// CLI shape is identical on every target.
+    #[allow(dead_code)]
+    desktop_profile: StreamProfile,
+    /// Unused on musl for the same reason as `desktop_profile`.
+    #[allow(dead_code)]
+    desktop_default_source: String,
+    /// Unused on musl (the desktop module is compiled out); same shape on every
+    /// target, mirroring `desktop_source`.
+    #[allow(dead_code)]
+    desktop_select_timeout: Duration,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -346,12 +431,20 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
     let mut outbound_tx = Some(outbound_tx);
     let mut ice_rx = Some(ice_rx);
 
+    let desktop_profile: StreamProfile = cli
+        .desktop_profile
+        .parse()
+        .context("--desktop-profile / AGENT_DESKTOP_PROFILE")?;
+
     let cfg = SessionConfig {
         stun: cli.stun.clone(),
         cols: cli.cols,
         rows: cli.rows,
         shell: shell.to_string(),
         desktop_source: cli.desktop_source,
+        desktop_profile,
+        desktop_default_source: cli.desktop_default_source.clone(),
+        desktop_select_timeout: Duration::from_millis(cli.desktop_select_timeout_ms),
     };
 
     let mut delay = signal::BACKOFF_INITIAL;
@@ -605,16 +698,33 @@ async fn run_one_session(
     let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
     let connected_tx = Arc::new(Mutex::new(Some(connected_tx)));
 
+    // The one channel label this session accepts. A terminal session accepts
+    // `terminal`; a desktop session accepts `control` (spec §2.1). The `None`
+    // mode never opens a session, so its label is never used.
+    let accepted_label = match mode {
+        SessionMode::Desktop => rtc::CONTROL_LABEL.to_string(),
+        _ => rtc::TERMINAL_LABEL.to_string(),
+    };
+
     let handler = Arc::new(rtc::SessionHandler::new(
         offer.session_id.clone(),
         outbound.clone(),
         end_tx.clone(),
+        accepted_label,
         channel.clone(),
         open_tx,
         connected_tx,
     ));
-    let peer =
-        rtc::build_peer(pushed_ice, &cfg.stun, handler, mode == SessionMode::Desktop).await?;
+    // A desktop peer now carries a control channel, so it keeps the RFC-shaped
+    // ICE defaults; `media_only` is false for every Week 8 session.
+    let rtc::BuiltPeer { peer, abr_target } = rtc::build_peer(
+        pushed_ice,
+        &cfg.stun,
+        handler,
+        false,
+        mode == SessionMode::Desktop,
+    )
+    .await?;
 
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
@@ -634,7 +744,11 @@ async fn run_one_session(
                 &mut pending,
                 connected_rx,
                 end_rx,
+                end_tx,
+                channel.clone(),
+                open_rx,
                 inbound,
+                abr_target,
             )
             .await;
         }
@@ -969,6 +1083,12 @@ async fn run_one_session(
     Ok(())
 }
 
+/// How long the dispatcher waits for the control channel before concluding the
+/// browser never opened one. Streaming is already running by then, so this only
+/// decides whether the picker is offered.
+#[cfg(not(target_env = "musl"))]
+const CONTROL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Serve a desktop offer end to end: create the source, attach the track,
 /// answer, wait for the connection, stream, and tear down.
 ///
@@ -988,15 +1108,34 @@ async fn run_desktop_session(
     pending: &mut Vec<RTCIceCandidateInit>,
     mut connected_rx: tokio::sync::oneshot::Receiver<()>,
     mut end_rx: mpsc::Receiver<&'static str>,
+    end_tx: mpsc::Sender<&'static str>,
+    channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
+    mut open_rx: tokio::sync::oneshot::Receiver<()>,
     inbound: &mut mpsc::Receiver<signal::SignalMessage>,
+    abr_target: Option<Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<()> {
     // Create the source first so a capture failure is a clean refusal
     // (`approved: false`) instead of a session the browser opens onto a black
     // video element.
-    let source: Box<dyn desktop::FrameSource> = match cfg.desktop_source {
-        DesktopSource::Test => Box::new(desktop::TestPatternSource::new(1280, 720)),
-        DesktopSource::Screen => match desktop::ScreenSource::new().await {
-            Ok(source) => Box::new(source),
+    //
+    // A bad default-source preference (or an unreadable primary monitor) is a
+    // refusal too, not a propagated error: the client must see `approved: false`,
+    // the same as a capture failure, not a dropped signaling connection.
+    let default_id = match desktop::default_source_id(
+        cfg.desktop_source == DesktopSource::Test,
+        &cfg.desktop_default_source,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(error = ?e, "desktop default source unavailable; refusing the offer");
+            rtc::refuse_offer(peer, offer, outbound).await?;
+            let _ = peer.close().await;
+            return Ok(());
+        }
+    };
+    let source: Box<dyn desktop::FrameSource> =
+        match desktop::source_for(&default_id, cfg.desktop_profile).await {
+            Ok(source) => source,
             Err(e) => {
                 // `?e` (Debug) prints anyhow's full chain; `%e` (Display) would
                 // show only the outermost context ("opening the video recorder")
@@ -1006,8 +1145,7 @@ async fn run_desktop_session(
                 let _ = peer.close().await;
                 return Ok(());
             }
-        },
-    };
+        };
 
     let media = rtc::attach_desktop_track(peer).await?;
     rtc::send_desktop_answer(peer, offer, outbound).await?;
@@ -1080,12 +1218,166 @@ async fn run_desktop_session(
 
     let (ssrc, payload_type) = rtc::desktop_stream_params(&media).await?;
 
+    let (control_tx, control_rx) = mpsc::channel::<desktop::StreamControl>(16);
+    let (events_tx, mut events_rx) = mpsc::channel::<desktop::StreamEvent>(16);
+
+    // The enumeration the picker shows. In test mode it is synthesised (CI is
+    // headless and must not touch xcap); on a real host it is the live
+    // enumeration. The streaming entry is flagged `default: true` so the
+    // browser marks it selected without any interaction (ADR-22).
+    //
+    // `default_id` was resolved above (it built the pre-answer source), so it is
+    // reused here rather than re-derived — the picker's `default` flag and the
+    // live stream must name the same source.
+    let mut sources = match cfg.desktop_source {
+        DesktopSource::Test => vec![desktop::test_source_info()],
+        DesktopSource::Screen => desktop::enumerate_sources().unwrap_or_else(|e| {
+            tracing::warn!(error = ?e, "source enumeration failed; the picker will be empty");
+            Vec::new()
+        }),
+    };
+    for source in &mut sources {
+        source.default = source.id == default_id;
+    }
+    let sources_frame = desktop::frame_desktop_sources(&sources, crate::pty::now_ms());
+
+    // Auto-ABR (spec §3.3, ADR-23 PASS branch): sample GCC's published target
+    // twice a second and feed it into the same `SetBitrate` path manual control
+    // uses, so both share one encoder-retarget code path. A manual
+    // `desktop-bitrate` frame latches `manual` and stops auto for the rest of
+    // the session, so the two never fight.
+    //
+    // This runs whenever congestion control is installed — i.e. whenever the
+    // desktop peer was built with a control channel (`has_control`), including a
+    // session where the viewer never opens the picker (ADR-22): the channel to
+    // `run_stream` exists regardless, so the estimate still reaches the encoder.
+    //
+    // `manual` is created unconditionally: the decode arm below latches it even
+    // when there is no estimator, which is harmless and keeps the arm simple.
+    // This block goes *before* the `control_task` spawn, which moves
+    // `control_tx`.
+    let manual = Arc::new(AtomicBool::new(false));
+    let manual_for_decode = Arc::clone(&manual);
+    let abr_sender = control_tx.clone();
+    let abr_task = abr_target.map(|abr_target| {
+        let abr_tx = abr_sender;
+        let manual = Arc::clone(&manual);
+        let seed_target = cfg.desktop_profile.bitrate_bps;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(500));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // What we last told the encoder, so the dead-band measures against
+            // reality. Starts at the session profile: until GCC moves off its
+            // seed, `abr_next_target` returns `None` and the stream keeps this
+            // target (spec §2.3 step 2).
+            let mut auto_target = seed_target;
+            loop {
+                tick.tick().await;
+                if manual.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let estimate = f64::from_bits(abr_target.load(Ordering::Relaxed));
+                if let Some(bps) = desktop::abr_next_target(estimate, auto_target) {
+                    if abr_tx
+                        .send(desktop::StreamControl::SetBitrate(bps))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    auto_target = bps;
+                }
+            }
+        })
+    });
+
+    let channel_for_control = channel.clone();
+    let end_tx_for_control = end_tx.clone();
+    let session_id = offer.session_id.clone();
+    let control_task = tokio::spawn(async move {
+        // The control channel opens after the answer; wait for it, but never
+        // block the stream on it — a viewer that never opens the picker still
+        // gets video (ADR-22).
+        let dc = tokio::select! {
+            result = &mut open_rx => match result {
+                Ok(()) => channel_for_control.get().cloned(),
+                Err(_) => None,
+            },
+            _ = tokio::time::sleep(CONTROL_OPEN_TIMEOUT) => None,
+        };
+        let Some(dc) = dc else {
+            tracing::debug!(session_id = %session_id, "no control channel opened; media-only session");
+            return;
+        };
+        if let Err(e) = dc.send_text(&sources_frame).await {
+            tracing::debug!(error = %e, "sending desktop-sources failed");
+            return;
+        }
+        loop {
+            tokio::select! {
+                event = dc.poll() => match event {
+                    Some(DataChannelEvent::OnMessage(message)) => {
+                        let Ok(text) = std::str::from_utf8(&message.data) else {
+                            tracing::debug!("ignoring a non-UTF-8 control frame");
+                            continue;
+                        };
+                        match desktop::decode_control(text) {
+                            Ok(Some(control)) => {
+                                // A manual bitrate frame is the user taking the
+                                // wheel: stop auto-ABR for the rest of the session.
+                                if matches!(control, desktop::StreamControl::SetBitrate(_)) {
+                                    manual_for_decode.store(true, Ordering::Relaxed);
+                                }
+                                if control_tx.send(control).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::debug!(error = %e, "dropping a malformed control frame")
+                            }
+                        }
+                    }
+                    Some(DataChannelEvent::OnClose) | None => break,
+                    _ => {}
+                },
+                // `Some(..)` pattern: once the stream drops its sender the
+                // branch is disabled, so a closed channel cannot spin.
+                Some(event) = events_rx.recv() => {
+                    let frame = match event {
+                        desktop::StreamEvent::Stats(stats) => {
+                            desktop::frame_desktop_stats(&stats, crate::pty::now_ms())
+                        }
+                    };
+                    if let Err(e) = dc.send_text(&frame).await {
+                        tracing::debug!(error = %e, "sending a desktop-stats frame failed");
+                        break;
+                    }
+                }
+            }
+        }
+        // The control channel is this desktop session's only data channel, so
+        // its close is the end-of-session signal — exactly as the terminal
+        // channel's close is (the 2026-10-01 dead-peer fix). Without this the
+        // session loop below would sit on `inbound`/`end_rx` until the 1h cap,
+        // holding the single ADR-14 slot after the browser closed the tab.
+        // Fires on an explicit `OnClose` and on `poll()` returning `None` (the
+        // driver ended the channel) alike. `try_send` on a full channel is a
+        // no-op: the first reason already won.
+        let _ = end_tx_for_control.try_send("the control channel closed");
+    });
+
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let mut stream = tokio::spawn(desktop::run_stream(
         source,
         media.track.clone(),
         ssrc,
         payload_type,
+        cfg.desktop_profile,
+        cfg.desktop_source == DesktopSource::Test,
+        cfg.desktop_select_timeout,
+        control_rx,
+        events_tx,
         stop_rx,
     ));
 
@@ -1138,6 +1430,14 @@ async fn run_desktop_session(
         tracing::warn!("the desktop stream did not stop within 5s; aborting it");
         stream.abort();
     }
+    // The control dispatcher parks on the data channel's `poll()`, which only
+    // ends when the channel closes; abort it so it cannot outlive the session.
+    control_task.abort();
+    // The auto-ABR sampler only sends into the control channel; abort it beside
+    // the dispatcher so neither outlives the session.
+    if let Some(task) = abr_task {
+        task.abort();
+    }
     let _ = peer.close().await;
     Ok(())
 }
@@ -1155,7 +1455,11 @@ async fn run_desktop_session(
     _pending: &mut Vec<RTCIceCandidateInit>,
     _connected_rx: tokio::sync::oneshot::Receiver<()>,
     _end_rx: mpsc::Receiver<&'static str>,
+    _end_tx: mpsc::Sender<&'static str>,
+    _channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
+    _open_rx: tokio::sync::oneshot::Receiver<()>,
     _inbound: &mut mpsc::Receiver<signal::SignalMessage>,
+    _abr_target: Option<Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<()> {
     tracing::warn!(
         session_id = %offer.session_id,
@@ -1253,7 +1557,14 @@ async fn refuse_second_offer(
     );
     // A peer that will only answer and close still needs a handler — 0.21's
     // `build()` refuses without one — and none of its callbacks matter here.
-    let peer = rtc::build_peer(pushed_ice, &cfg.stun, Arc::new(rtc::NoopHandler), false).await?;
+    let rtc::BuiltPeer { peer, .. } = rtc::build_peer(
+        pushed_ice,
+        &cfg.stun,
+        Arc::new(rtc::NoopHandler),
+        false,
+        false,
+    )
+    .await?;
     rtc::refuse_offer(&peer, offer, outbound).await?;
     let _ = peer.close().await;
     Ok(())
@@ -1764,5 +2075,29 @@ mod tests {
             matches!(received, Some(signal::SignalMessage::IceCandidate(_))),
             "a late candidate must reach the live session after re-attach"
         );
+    }
+
+    #[test]
+    fn stream_profile_parses_the_two_named_profiles() {
+        assert_eq!(
+            "1080p30".parse::<StreamProfile>().unwrap(),
+            StreamProfile::DEFAULT_1080P30
+        );
+        assert_eq!(
+            "720p30".parse::<StreamProfile>().unwrap(),
+            StreamProfile::SAFE_720P30
+        );
+    }
+
+    #[test]
+    fn stream_profile_rejects_an_unknown_name() {
+        let err = "1080p60".parse::<StreamProfile>().unwrap_err();
+        assert!(format!("{err:#}").contains("expected 1080p30 or 720p30"));
+    }
+
+    #[test]
+    fn stream_profile_frame_budget_matches_fps() {
+        let budget = StreamProfile::DEFAULT_1080P30.frame_budget();
+        assert!((budget.as_secs_f32() - 1.0 / 30.0).abs() < 1e-6);
     }
 }

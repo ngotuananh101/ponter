@@ -929,7 +929,7 @@ gantt
 
 ### Phase 3: Desktop Streaming (Tuần 7-9)
 
-> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8-9 (chất lượng hình ảnh, điều khiển chuột/phím, hardening) là hạng mục sắp tới.
+> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8 đã hoàn thành — profile 1080p30 (nền 720p30), điều khiển bitrate thủ công, chọn nguồn, GCC auto-ABR. Còn lại của Phase 3 là Tuần 9 (điều khiển chuột/phím — Spec B) và codec phần cứng (spike ADR-25, chưa cam kết).
 
 #### Tuần 7: Desktop Streaming — lát cắt mỏng (đã xong)
 - [x] `packages/webrtc-core` — seam media tuỳ chọn (`addTransceiver`/`onTrack`) + `media-channel.ts` (đóng ADR-06)
@@ -939,9 +939,16 @@ gantt
 - [x] E2E cross-language (`desktop.e2e.test.ts`) + demo thủ công trên Chrome
 
 #### Tuần 8-9: Chất lượng & tương tác (sắp tới)
-- [ ] Tăng chất lượng/khung hình, adaptive bitrate
+
+##### Tuần 8: Chất lượng & chọn nguồn (đã xong)
+- [x] Profile chất lượng 1080p30 (nền 720p30), fallback theo sức chịu tải (ADR-24)
+- [x] Điều khiển bitrate thủ công, retarget tại chỗ không cần rebuild (ADR-23)
+- [x] GCC auto-ABR — mục tiêu, đã xác nhận bằng spike §3.7 (không phải tiêu chí nghiệm thu)
+- [x] Chọn màn hình/cửa sổ, đổi nguồn có giới hạn thời gian (ADR-22)
+- [ ] Codec phần cứng (H.264 hardware / AV1) — spike ADR-25, chưa cam kết
+
+##### Còn lại (Tuần 9 — Spec B)
 - [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
-- [ ] Chọn màn hình/cửa sổ, codec phần cứng
 
 ### Phase 4: File Transfer (Tuần 10-11)
 
@@ -1077,8 +1084,8 @@ cargo build --release --target x86_64-unknown-linux-gnu
 | Metric | Target | Method |
 |--------|--------|--------|
 | Terminal Latency | < 10ms | P2P DataChannel |
-| Desktop stream (Week 7) | ~720p @ 15fps, view-only | Software H.264 (openh264) |
-| Desktop stream (Phase 3 target) | 60fps | Hardware H.265 |
+| Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
+| Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt |
 | File Transfer | > 10MB/s | Parallel chunks |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |

@@ -241,4 +241,34 @@ describe('WorkspaceView.vue', () => {
 
     expect(wrapper.find('[data-test="fullscreen-toggle"]').exists()).toBe(true);
   });
+
+  it('shows the desktop stats-derived media line in the footer', async () => {
+    const store = useTerminalStore();
+    store.tabs.push({
+      id: 'tab-d2',
+      agentId: 'ag-1',
+      kind: 'desktop',
+      terminalId: '',
+      title: 'Host 1',
+      status: 'active',
+      desktopStream: { track: { kind: 'video' }, streams: [] } as never,
+      desktopStats: {
+        width: 1280,
+        height: 720,
+        fps: 30,
+        targetBitrateBps: 4_000_000,
+      },
+    });
+    store.setActiveTab('tab-d2');
+
+    const wrapper = mountWorkspace();
+    await flushPromises();
+
+    // Scoped to the footer element so this pins the footer's own binding, not
+    // the same resolution text rendered inside the desktop view body.
+    const footerMedia = wrapper.find('[data-test="footer-media"]');
+    expect(footerMedia.exists()).toBe(true);
+    expect(footerMedia.text()).toContain('Media: H.264');
+    expect(footerMedia.text()).toContain('1280×720');
+  });
 });

@@ -13,4 +13,6 @@ export interface DesktopStream {
 export interface DesktopClientOptions {
   /** How long `start()` waits for the first remote track. Default 20_000. */
   trackTimeoutMs?: number;
+  /** How long to wait for the control channel to open after the track. Default 5_000. */
+  controlTimeoutMs?: number;
 }

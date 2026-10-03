@@ -40,6 +40,11 @@ tracing-log = "0.2"
 [target.'cfg(not(target_env = "musl"))'.dependencies]
 bytes = "1"
 openh264 = "0.9.8"     # vendored Cisco source; no network at build time
+# `openh264` re-exports only `OpenH264API`, so the raw-API constants
+# (`ENCODER_OPTION_BITRATE`/`ENCODER_OPTION_MAX_BITRATE`) and `SBitrateInfo`
+# that `DesktopEncoder::apply_bitrate` needs live only here. Same version line
+# so the two crates resolve to one `openh264-sys2`.
+openh264-sys2 = "0.9.8"
 xcap = "0.9.8"
 
 # On Windows, use xcap's Windows.Graphics.Capture backend instead of DXGI

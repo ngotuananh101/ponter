@@ -2212,6 +2212,7 @@ dependencies = [
  "futures-util",
  "log",
  "openh264",
+ "openh264-sys2",
  "portable-pty",
  "rtc",
  "serde",
