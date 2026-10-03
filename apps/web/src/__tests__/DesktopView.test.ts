@@ -207,9 +207,9 @@ describe('DesktopView', () => {
     );
   });
 
-  it('leaves the bitrate input empty until the first stats frame', () => {
-    // Sources present (so the chrome renders) but no stats yet: the bitrate
-    // control is visible and must show nothing, not an invented 6 Mbps.
+  it('leaves the bitrate input empty until the first stats frame', async () => {
+    // Sources present (so the footer renders) but no stats yet: the bitrate
+    // control lives inside the gear popover, which must be opened first.
     const wrapper = mount(DesktopView, {
       props: {
         tab: desktopTab({
@@ -218,6 +218,10 @@ describe('DesktopView', () => {
         }),
       },
     });
+
+    await wrapper
+      .find('[data-test="desktop-settings-toggle"]')
+      .trigger('click');
 
     // A hardcoded 6 Mbps default would show a number the agent never sent —
     // the session may sit at the 720p30 floor. Before any stats, show nothing.
@@ -245,9 +249,30 @@ describe('DesktopView', () => {
       },
     });
 
+    await wrapper
+      .find('[data-test="desktop-settings-toggle"]')
+      .trigger('click');
+
     await wrapper.find('[data-test="desktop-bitrate"]').setValue('3000000');
 
     expect(setBitrate).toHaveBeenCalledWith('tab-1', 3_000_000);
+  });
+
+  it('toggles the gear settings popover to reveal the bitrate input', async () => {
+    const wrapper = mountWithChrome();
+
+    // Initially the bitrate input is hidden inside the closed gear popover.
+    expect(wrapper.find('[data-test="desktop-bitrate"]').exists()).toBe(false);
+
+    await wrapper
+      .find('[data-test="desktop-settings-toggle"]')
+      .trigger('click');
+    expect(wrapper.find('[data-test="desktop-bitrate"]').exists()).toBe(true);
+
+    await wrapper
+      .find('[data-test="desktop-settings-toggle"]')
+      .trigger('click');
+    expect(wrapper.find('[data-test="desktop-bitrate"]').exists()).toBe(false);
   });
 
   it('forwards nothing while the agent gate is closed', async () => {

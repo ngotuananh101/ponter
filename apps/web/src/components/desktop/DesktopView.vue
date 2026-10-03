@@ -7,7 +7,7 @@ import {
   onMounted,
   onBeforeUnmount,
 } from 'vue';
-import { RefreshCw } from '@lucide/vue';
+import { RefreshCw, Settings } from '@lucide/vue';
 import { Button } from '@/components/ui/button';
 import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import { useTerminalStore } from '@/stores/terminal';
@@ -61,6 +61,9 @@ const statsLine = computed(() => {
   const base = `${stats.width}×${stats.height} · ${Math.round(stats.fps)} fps · ${mbps} Mbps`;
   return stats.status ? `${base} · ${stats.status.detail}` : base;
 });
+
+/** The settings (gear) popover: reveals the manual bitrate control. */
+const settingsOpen = ref(false);
 
 function onSourceChange(event: Event): void {
   const sourceId = (event.target as HTMLSelectElement).value;
@@ -175,111 +178,137 @@ const inputHandlers = computed(() => {
 </script>
 
 <template>
-  <div class="relative h-full w-full bg-[#090d16]">
-    <!-- No `controls` (our own chrome instead), and input listeners attach only
-         while the operator turns the toggle on behind the agent's gate (ADR-26
-         supersedes ADR-18; ADR-29 gates every injection path). -->
-    <video
-      ref="videoEl"
-      autoplay
-      muted
-      playsinline
-      :tabindex="inputOn ? 0 : undefined"
-      class="h-full w-full object-contain"
-      v-on="inputHandlers"
-    />
+  <div class="flex flex-col h-full w-full bg-[#090d16] overflow-hidden">
+    <!-- Video container: fills the remaining height above the footer status bar. -->
+    <div
+      class="relative flex-1 min-h-0 w-full flex items-center justify-center"
+    >
+      <!-- No `controls` (our own chrome instead), and input listeners attach only
+           while the operator turns the toggle on behind the agent's gate (ADR-26
+           supersedes ADR-18; ADR-29 gates every injection path). -->
+      <video
+        ref="videoEl"
+        autoplay
+        muted
+        playsinline
+        :tabindex="inputOn ? 0 : undefined"
+        class="h-full w-full object-contain"
+        v-on="inputHandlers"
+      />
 
-    <!-- Control chrome (Week 8): source picker, manual bitrate, telemetry. -->
+      <!-- Desktop handshake can take up to 20s waiting for the first track; the
+           step list makes that wait legible instead of a bare spinner. -->
+      <ConnectionProgress v-if="tab.status === 'connecting'" :tab="tab" />
+
+      <div
+        v-if="tab.status === 'error'"
+        class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
+      >
+        <p class="text-sm text-destructive font-semibold">
+          Could not open the desktop stream for {{ tab.title }}
+        </p>
+        <p class="text-xs text-muted-foreground font-mono max-w-lg break-words">
+          {{ tab.error }}
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          class="text-xs flex items-center gap-2 border-border/80"
+          :data-test="`retry-desktop-${tab.id}`"
+          @click="store.retryTab(tab.id)"
+        >
+          <RefreshCw class="w-3.5 h-3.5" />
+          Retry connection
+        </Button>
+      </div>
+    </div>
+
+    <!-- Footer Status Bar: source picker, input toggle, settings/gear popover
+         (manual bitrate), and telemetry stats. -->
     <div
       v-if="
         tab.status === 'active' && (tab.desktopSources?.length || statsLine)
       "
-      class="absolute top-0 left-0 right-0 flex flex-wrap items-center gap-3 bg-[#090d16]/80 px-3 py-1.5 text-xs"
+      class="relative h-7 flex-shrink-0 flex items-center justify-between border-t border-border/40 bg-card/90 px-3 text-xs select-none"
     >
-      <label
-        v-if="tab.desktopSources?.length"
-        class="flex items-center gap-1 text-muted-foreground"
-      >
-        <span>Source</span>
-        <select
-          data-test="desktop-source-picker"
-          class="rounded border border-border/60 bg-transparent px-1 py-0.5"
-          :value="tab.desktopSourceId"
-          @change="onSourceChange"
+      <div class="flex items-center gap-3">
+        <label
+          v-if="tab.desktopSources?.length"
+          class="flex items-center gap-1 text-muted-foreground"
         >
-          <option
-            v-for="source in tab.desktopSources"
-            :key="source.id"
-            :value="source.id"
+          <span>Source</span>
+          <select
+            data-test="desktop-source-picker"
+            class="rounded border border-border/60 bg-transparent px-1 py-0.5"
+            :value="tab.desktopSourceId"
+            @change="onSourceChange"
           >
-            {{ source.name }}{{ source.default ? ' (streaming)' : '' }}
-          </option>
-        </select>
-      </label>
+            <option
+              v-for="source in tab.desktopSources"
+              :key="source.id"
+              :value="source.id"
+            >
+              {{ source.name }}{{ source.default ? ' (streaming)' : '' }}
+            </option>
+          </select>
+        </label>
 
-      <label class="flex items-center gap-1 text-muted-foreground">
-        <span>Bitrate</span>
-        <input
-          data-test="desktop-bitrate"
-          type="number"
-          min="250000"
-          max="20000000"
-          step="250000"
-          class="w-24 rounded border border-border/60 bg-transparent px-1 py-0.5"
-          :value="tab.desktopStats?.targetBitrateBps ?? ''"
-          @change="onBitrateChange"
-        />
-        <span>bps</span>
-      </label>
+        <label
+          v-if="tab.desktopInputEnabled"
+          class="flex items-center gap-1 text-muted-foreground"
+        >
+          <input
+            data-test="desktop-input-toggle"
+            type="checkbox"
+            :checked="inputOn"
+            @change="onToggle"
+          />
+          <span>Input</span>
+        </label>
 
-      <!-- Only rendered when the agent's gate is open (ADR-29), so the
-           production default never advertises an inert toggle. -->
-      <label
-        v-if="tab.desktopInputEnabled"
-        class="flex items-center gap-1 text-muted-foreground"
-      >
-        <input
-          data-test="desktop-input-toggle"
-          type="checkbox"
-          :checked="inputOn"
-          @change="onToggle"
-        />
-        <span>Input</span>
-      </label>
+        <!-- Settings (gear) popover tucking the manual bitrate control. -->
+        <div class="relative flex items-center">
+          <button
+            type="button"
+            data-test="desktop-settings-toggle"
+            aria-label="Stream settings"
+            class="flex items-center justify-center rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            @click="settingsOpen = !settingsOpen"
+          >
+            <Settings class="w-3.5 h-3.5" />
+          </button>
+
+          <div
+            v-if="settingsOpen"
+            class="absolute bottom-full left-0 mb-1.5 flex items-center gap-1.5 rounded-md border border-border bg-[#090d16]/95 p-2 shadow-lg text-xs"
+          >
+            <label
+              class="flex items-center gap-1 text-muted-foreground whitespace-nowrap"
+            >
+              <span>Bitrate</span>
+              <input
+                data-test="desktop-bitrate"
+                type="number"
+                min="250000"
+                max="20000000"
+                step="250000"
+                class="w-24 rounded border border-border/60 bg-transparent px-1 py-0.5"
+                :value="tab.desktopStats?.targetBitrateBps ?? ''"
+                @change="onBitrateChange"
+              />
+              <span>bps</span>
+            </label>
+          </div>
+        </div>
+      </div>
 
       <span
         v-if="statsLine"
         data-test="desktop-stats"
-        class="text-muted-foreground font-mono"
+        class="font-mono text-muted-foreground"
       >
         {{ statsLine }}
       </span>
-    </div>
-
-    <!-- Desktop handshake can take up to 20s waiting for the first track; the
-         step list makes that wait legible instead of a bare spinner. -->
-    <ConnectionProgress v-if="tab.status === 'connecting'" :tab="tab" />
-
-    <div
-      v-if="tab.status === 'error'"
-      class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
-    >
-      <p class="text-sm text-destructive font-semibold">
-        Could not open the desktop stream for {{ tab.title }}
-      </p>
-      <p class="text-xs text-muted-foreground font-mono max-w-lg break-words">
-        {{ tab.error }}
-      </p>
-      <Button
-        size="sm"
-        variant="outline"
-        class="text-xs flex items-center gap-2 border-border/80"
-        :data-test="`retry-desktop-${tab.id}`"
-        @click="store.retryTab(tab.id)"
-      >
-        <RefreshCw class="w-3.5 h-3.5" />
-        Retry connection
-      </Button>
     </div>
   </div>
 </template>
