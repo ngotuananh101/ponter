@@ -908,24 +908,24 @@ gantt
 ### Phase 2: WebRTC & Terminal (Tuần 4-6)
 
 #### Tuần 4: WebRTC Core
-- [ ] Tạo packages/webrtc-core
-- [ ] Implement signaling client
-- [ ] Xử lý ICE/STUN/TURN
-- [ ] Tạo data channels
-- [ ] Test kết nối P2P
+- [x] Tạo packages/webrtc-core
+- [x] Implement signaling client
+- [x] Xử lý ICE/STUN/TURN
+- [x] Tạo data channels
+- [x] Test kết nối P2P
 
 #### Tuần 5: Desktop Agent - Terminal
-- [ ] Tạo Rust agent — `apps/agent` (crate `ponter-agent`)
-- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `@ponter/server`
-- [ ] Tích hợp portable-pty — PTY thật, 1 session
-- [ ] Xử lý terminal I/O — kênh `terminal`
-- [ ] Implement session management
+- [x] Tạo Rust agent — `apps/agent` (crate `ponter-agent`)
+- [x] Implement WebSocket signaling — `GET /api/ws/agent` trên `@ponter/server`
+- [x] Tích hợp portable-pty — PTY thật, 1 session
+- [x] Xử lý terminal I/O — kênh `terminal`
+- [x] Implement session management
 
 #### Tuần 6: Terminal UI
-- [ ] Tích hợp xterm.js
-- [ ] Kết nối data channel với terminal
-- [ ] Implement multi-tab terminal
-- [ ] Handle resize events
+- [x] Tích hợp xterm.js
+- [x] Kết nối data channel với terminal
+- [x] Implement multi-tab terminal
+- [x] Handle resize events
 
 ### Phase 3: Desktop Streaming (Tuần 7-9)
 
