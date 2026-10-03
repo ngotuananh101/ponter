@@ -24,6 +24,14 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 webrtc = "0.21"
 
+# `log` is already in the tree (webrtc and its `rtc-*` crates log through it,
+# and `tracing-log` bridges it into `tracing`). It is a dev-dependency here so
+# `logging`'s tests can assert the filter works on that bridged path, not only
+# on `tracing`'s own macros.
+[dev-dependencies]
+log = "0.4"
+tracing-log = "0.2"
+
 # Desktop streaming. Absent on musl: that target is the fully-static
 # terminal-only artifact, and desktop offers are refused there (ADR-15).
 # openh264 is gated too, not just xcap: openh264-sys2 compiles vendored C++

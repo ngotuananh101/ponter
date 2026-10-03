@@ -9,6 +9,7 @@
 // compiled out entirely, so the musl artifact stays terminal-only.
 #[cfg(not(target_env = "musl"))]
 mod desktop;
+mod logging;
 mod pty;
 mod rtc;
 mod signal;
@@ -24,7 +25,6 @@ use base64::engine::general_purpose::STANDARD as STANDARD_ENGINE;
 use base64::Engine;
 use clap::Parser;
 use tokio::sync::mpsc;
-use tracing_subscriber::EnvFilter;
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit};
 
@@ -243,11 +243,7 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    logging::init();
 
     let cli = Cli::parse();
     let credential = resolve_credential(&cli)?;

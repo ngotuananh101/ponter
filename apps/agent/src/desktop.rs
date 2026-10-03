@@ -597,6 +597,15 @@ impl DesktopEncoder {
             .bitrate(BitRate::from_bps(2_000_000))
             .max_frame_rate(FrameRate::from_hz(15.0))
             .usage_type(UsageType::ScreenContentRealTime)
+            // `ScreenContentRealTime` does not implement adaptive quantization
+            // or background detection. `EncoderConfig::new()` turns both on by
+            // default, so OpenH264's `ParamValidation` auto-disables them on
+            // every encoder construction and prints a `WELS_LOG_WARNING`
+            // straight to stderr — bypassing `tracing`, which is why it cannot
+            // be filtered downstream. Turning them off here states the intent
+            // and silences the warning at its source.
+            .adaptive_quantization(false)
+            .background_detection(false)
             .rate_control_mode(RateControlMode::Bitrate)
             .complexity(Complexity::Low)
             .intra_frame_period(IntraFramePeriod::from_num_frames(60))
