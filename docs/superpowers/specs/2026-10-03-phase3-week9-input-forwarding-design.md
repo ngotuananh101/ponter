@@ -168,6 +168,8 @@ All facts below were verified against repository state or vendor documentation �
 
 **Consequence.** §10.2 acceptance criteria do **not** reference the spike. The trait is defined in §6.1 so the choice is a one-module swap. The musl gate (`cfg(not(target_env = "musl"))`) and the offline/vendor consideration (§3.1) apply to whichever branch is taken.
 
+**Finding (2026-10-03, half-day spike, Fedora + X11):** PASS — `enigo` 0.6.1 (MIT) builds with default features and injects pointer+keyboard on X11 via XTest; `Enigo` is `Send`, so it fits `InputInjector` behind a `Box<dyn>` with no wrapper. Wayland: the default build is a silent no-op on GNOME (returns `Ok`, nothing moves); the `wayland` feature is wlroots-only and is NOT enabled — Wayland stays the §8.4-step-5 recorded limitation, with libei/portal as follow-up. macOS: set `Settings::open_prompt_to_get_permissions = false` (default `true` would pop a GUI prompt). ~14 new lockfile crates on Linux; pure Rust, so **no vendoring** (unlike xcap) and it even builds on musl — the musl cfg-gate is policy, not a build constraint. Chosen branch: **enigo**. The per-platform branch stays documented above as the fallback.
+
 ### ADR-28: Input is structured and normalized; the browser sends intent, the agent maps to the OS
 
 **Context.** The browser and the agent run on different machines, potentially different OSes, with different screen geometries and keyboard layouts. Two designs are possible: (a) the browser sends raw device-level events and the agent replays them, or (b) the browser sends **normalized intent** (pointer position as a fraction of the source, physical key codes, committed text) and the agent maps to the OS.
