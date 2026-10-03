@@ -1,7 +1,7 @@
 name: CI (Node)
 
 # Node/TypeScript workspace verification: lint, typecheck, format, and the
-# server/web/shared test suites.
+# Node/TypeScript test suites.
 #
 # Split out of the old monolithic `ci.yml` so that a push only runs the work
 # that its changes actually affect. The Rust agent is deliberately EXCLUDED
@@ -80,9 +80,27 @@ jobs:
       - name: Check code formatting
         run: pnpm format:check
 
-      # Run @ponter/server tests (Node.js + Hono + SQLite)
-      - name: Run server test suite
-        run: pnpm --filter @ponter/server test
+      # Run every Node/TypeScript test suite through turbo, so the CI log and
+      # exit code cover the whole workspace rather than a hand-picked few.
+      #
+      # `!@ponter/agent` drops the Rust crate (its `test` script shells out to
+      # cargo, and this job has no Rust toolchain — `build-agent.yml` owns it).
+      # `!@ponter/web` and `!@ponter/shared` are excluded here only because
+      # they are non-gating: their steps below keep the `continue-on-error:
+      # true` behaviour they have always had, and turbo has no per-package
+      # "allowed to fail" mode to express that. Running them a second time in
+      # this gating step would be redundant.
+      #
+      # `--continue=always` matters: turbo's default is to cancel the remaining
+      # tasks once one fails, which would hide a later suite's result behind an
+      # earlier failure. Every suite must run and report.
+      - name: Run Node test suites
+        run: >-
+          pnpm exec turbo run test
+          --filter='!@ponter/agent'
+          --filter='!@ponter/web'
+          --filter='!@ponter/shared'
+          --continue=always
 
       - name: Run web test suite
         run: pnpm --filter @ponter/web test
