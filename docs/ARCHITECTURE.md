@@ -947,8 +947,9 @@ gantt
 - [x] Chọn màn hình/cửa sổ, đổi nguồn có giới hạn thời gian (ADR-22)
 - [ ] Codec phần cứng (H.264 hardware / AV1) — spike ADR-25, chưa cam kết
 
-##### Còn lại (Tuần 9 — Spec B)
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
+##### Tuần 9: Input forwarding (đã có cơ chế, CHƯA dùng được)
+- [ ] Điều khiển chuột & bàn phím (input forwarding) — cơ chế + wire đã xong, nhưng **mặc định TẮT** (ADR-29), chỉ bật bằng `--allow-input` cục bộ; chưa dùng được cho tới khi WS2/WS3 xong. (ADR-18 đã bị ADR-26 thay thế; cổng chặn bởi ADR-29)
+> Input chỉ mở được sau **WS2** (định danh peer — đóng H3) và **WS3** (enforce `approved` — đóng H2). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
 
 ### Phase 4: File Transfer (Tuần 10-11)
 

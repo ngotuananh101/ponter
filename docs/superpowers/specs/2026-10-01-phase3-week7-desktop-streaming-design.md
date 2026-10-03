@@ -170,6 +170,8 @@ The answer's `approved` flag reflects the mode actually served.
 
 **Consequence.** The desktop tab is explicitly a viewer. A future week adds an input channel and the corresponding ADR.
 
+> **Superseded by ADR-26 (Week 9 spec, `docs/superpowers/specs/2026-10-03-phase3-week9-input-forwarding-design.md`).** The desktop view is no longer *unconditionally* view-only: it is view-only **unless the input gate is open** (ADR-29). Input rides the existing `control` channel; no separate channel was added.
+
 ### ADR-19: Desktop tab is client-side exclusive per agent (mirrors ADR-14)
 
 **Context.** The agent refuses a second concurrent session (ADR-14). Without a client-side guard, opening a desktop tab while a terminal tab is open would end in a ~20 s timeout with no explanation.
