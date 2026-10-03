@@ -409,6 +409,7 @@ export function spawnAgent(
   agentId: string,
   credential: string,
   extraArgs: string[] = [],
+  env: NodeJS.ProcessEnv = {},
 ): { child: ChildProcess; output: () => string } {
   const spawned = spawnLogged(
     AGENT_BIN,
@@ -423,7 +424,9 @@ export function spawnAgent(
       '',
       ...extraArgs,
     ],
-    { cwd: REPO_ROOT, env: { RUST_LOG: 'info' } },
+    // The caller's env overrides the fixed default, so a test can raise the
+    // log level (`{ RUST_LOG: 'debug' }`) to observe a `debug` line.
+    { cwd: REPO_ROOT, env: { RUST_LOG: 'info', ...env } },
   );
   agents.push(spawned);
   return spawned;

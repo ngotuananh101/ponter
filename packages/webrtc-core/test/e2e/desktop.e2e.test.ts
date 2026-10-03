@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { useH264 } from 'werift';
 import type { MediaStreamTrack as WeriftTrack, RtpPacket } from 'werift';
@@ -169,6 +170,28 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
         .map((f) => f.payload as DesktopStats);
     return { offerer, packets, controlFrames, stats };
   }
+
+  /** The `inputEnabled` flag the agent last reported on `desktop-sources`. */
+  const inputEnabled = (
+    frames: Array<DataChannelMessage<unknown>>,
+  ): boolean | undefined => {
+    const frame = frames.findLast((f) => f.type === 'desktop-sources');
+    return (frame?.payload as { inputEnabled?: boolean } | undefined)
+      ?.inputEnabled;
+  };
+
+  /** Send one pointer-move at a known normalized point. */
+  const sendPointerMove = (
+    offerer: PeerConnection,
+    x: number,
+    y: number,
+  ): void => {
+    offerer.dataChannels.sendJson('control', 'desktop-input', {
+      kind: 'pointer-move',
+      x,
+      y,
+    });
+  };
 
   it('receives a real H.264 track with flowing RTP', async () => {
     const { token, agentId, credential, sessionId } = await seed({
@@ -439,4 +462,112 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       await offerer.close();
     }
   }, 90_000);
+
+  // Review Focus #1, spec §8.3: the default build is INERT. This is the test
+  // that protects the shipped behaviour.
+  it('receives a desktop-input frame and drops it when the gate is closed', async () => {
+    const { token, agentId, credential, sessionId } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    // No --allow-input: the default. RUST_LOG=debug so the drop is observable.
+    const agent = spawnAgent(
+      agentId,
+      credential,
+      ['--desktop-source', 'test'],
+      {
+        RUST_LOG: 'debug',
+      },
+    );
+    await waitForAgentOnline(token, agentId);
+
+    const { offerer, packets, controlFrames } = await openDesktopPeer(
+      sessionId,
+      token,
+    );
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      expect(inputEnabled(controlFrames)).toBe(false);
+
+      const before = packets.length;
+      sendPointerMove(offerer, 0.5, 0.5);
+
+      // (a) the agent logged the drop — proves the frame ARRIVED and was dropped,
+      // not that the wire is broken.
+      await waitFor(
+        () => agent.output().includes('dropping desktop-input'),
+        'the agent to log the drop',
+        15_000,
+      );
+      // (b) the session is unharmed: RTP keeps flowing.
+      await waitFor(
+        () => packets.length > before,
+        'continued RTP after a dropped input frame',
+        15_000,
+      );
+      // (c) the gate is still reported closed.
+      expect(inputEnabled(controlFrames)).toBe(false);
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
+
+  // Review Focus #1/#4, spec §8.3: with --allow-input, a pointer-move reaches
+  // the real seat. Asserted via `xdotool` (XTest under Xvfb), NEVER via enigo's
+  // return value — a Wayland/GNOME no-op returns Ok (ADR-27 finding).
+  it('injects a pointer-move when the gate is open under Xvfb', async () => {
+    const { token, agentId, credential, sessionId } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    // The display is provided by the CI step (Step 5); DISPLAY=:99 by convention.
+    const agent = spawnAgent(
+      agentId,
+      credential,
+      ['--desktop-source', 'test', '--allow-input'],
+      { DISPLAY: process.env.DISPLAY ?? ':99', RUST_LOG: 'debug' },
+    );
+    void agent;
+    await waitForAgentOnline(token, agentId);
+
+    const { offerer, controlFrames } = await openDesktopPeer(sessionId, token);
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      expect(inputEnabled(controlFrames)).toBe(true);
+
+      // Pin the seat to a known origin FIRST. Xvfb's pointer starts at the
+      // screen centre (spike: x:960 y:540 on 1920x1080), so a bare
+      // "did it leave the origin?" assert would pass even if the injector did
+      // nothing — a false green on the one test that proves real injection.
+      execFileSync('xdotool', ['mousemove', '0', '0']);
+
+      // Forward a normalized point and assert the EXACT mapped pixel, not just
+      // "somewhere". The `test` source is 1280x720 at origin 0,0, so
+      // to_absolute(0.25, 0.25) = (round(0.25*1280), round(0.25*720)) =
+      // (320, 180). A small tolerance absorbs X11 pointer rounding.
+      const [wantX, wantY] = [320, 180];
+      sendPointerMove(offerer, 0.25, 0.25);
+      await waitFor(
+        () => {
+          const out = execFileSync('xdotool', ['getmouselocation']).toString();
+          // `xdotool getmouselocation` prints `x:NNN y:NNN ...`.
+          const x = Number(/x:(\d+)/.exec(out)?.[1]);
+          const y = Number(/y:(\d+)/.exec(out)?.[1]);
+          return Math.abs(x - wantX) <= 2 && Math.abs(y - wantY) <= 2;
+        },
+        `the OS pointer to land near (${wantX}, ${wantY})`,
+        15_000,
+      );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
 });
