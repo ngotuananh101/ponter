@@ -54,8 +54,8 @@ lacks `libpipewire-0.3`/`libdrm`, so the Rust agent does not build locally.
 |---|---|---|---|
 | 1 | `cargo test --locked` passes on Linux; musl `cargo build --locked` succeeds | ✅ | agent `cargo test --locked` → **60 passed, 1 ignored** (live-display smoke); `cargo build --locked` OK. CI `Build Agent / Verify` + `Build Agent / Linux/x64-musl` matrix leg (run 37041659449). |
 | 2 | `pnpm lint && pnpm typecheck && pnpm test` pass workspace-wide | ✅ | format:check ✅; web **129/129**; server 108/108; agent fmt/clippy/test/build ✅ (`Build Agent / Verify`, run 37041659449). CI `CI (Node) / Lint, Typecheck, Format & Node Tests` (run 37042542245 @ `478f2ab`). `desktop-core` 8/8 and `webrtc-core` 81/81 pass locally but are **not run by any CI workflow** today — see Notes. |
-| 3 | E2E: track, ≥30 packets @ negotiated PT, ≥1 IDR, teardown + second session | ✅ | `pnpm --filter @ponter/webrtc-core test:e2e` → **13/13** (3 desktop + 10 terminal/shutdown). CI `CI (E2E) / Cross-language terminal E2E` (run 37041659448 @ `db82a11`). |
-| 4 | Terminal E2E still passes unchanged | ✅ | "leaves the terminal flow unaffected" test + the pre-existing 10 terminal/shutdown tests (9 terminal + 1 shutdown). |
+| 3 | E2E: track, ≥30 packets @ negotiated PT, ≥1 IDR, teardown + second session | ✅ | `pnpm --filter @ponter/webrtc-core test:e2e` → **13/13** (3 desktop + 9 terminal + 1 shutdown). CI `CI (E2E) / Cross-language terminal E2E` (run 37041659448 @ `db82a11`). |
+| 4 | Terminal E2E still passes unchanged | ✅ | "leaves the terminal flow unaffected" test + the pre-existing 9 terminal tests. |
 | 5 | Recorded demo shows live 720p15 + refusal + reopen | ✅ | Closed by project-owner attestation (2026-10-03); no recording artifact — see Status. |
 | 6 | `ARCHITECTURE.md` no longer claims 60fps/H.265 as achieved | ✅ | Phase 3 roadmap section added; perf row split into "Week 7 ~720p@15fps software H.264" vs "Phase 3 target 60fps hardware H.265". |
 
