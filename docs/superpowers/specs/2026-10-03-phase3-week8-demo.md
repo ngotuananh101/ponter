@@ -3,25 +3,27 @@
 **Date:** 2026-10-03
 **Machine:** Fedora 44 Workstation, Wayland session
 **Agent:** `ponter-agent --desktop-source screen` (branch `feat/phase3-week8-stream-quality` @ `6ce398f`), default profile 1080p30
-**Recording:** none — closed by project-owner attestation; see Status
+**Recording:** none — manual rows not formally gated; see Status
 
 ## Status
 
-> **Manual Chrome demo: CLOSED — project-owner attestation.** As in Week 7, the
-> project owner runs the checklist below by hand on the Fedora/Wayland machine
-> with a live screen and a real Chrome session. **No recording artifact exists**;
-> this document claims no recording link. The **automated** acceptance criteria
-> (§10.2 #1–4, #6) are green — see the evidence table. The rows that only a human
-> at a real browser can observe (picker chrome, a source **switch** in the UI, the
-> visible bitrate change, the 720p30 fallback note) are attested by the owner.
+> **Manual Chrome demo: NOT GATED — owner decision (2026-10-03).** The project
+> owner will exercise the checklist below informally (or skip it) at their own
+> convenience; it is not a gate for Week 8. **No recording artifact exists** and
+> this document claims none. The rows that only a human at a real browser can
+> observe (picker chrome, a source **switch** in the UI, the visible bitrate
+> change, the 720p30 fallback note) are therefore **not marked observed** — see
+> the Observed table.
 >
-> **What this document *does* carry, verified on this host:** a real-screen
-> cross-language probe (the same `PeerConnection` + werift offerer the E2E suite
-> uses, but spawned with `--desktop-source screen`, i.e. the real capture stack,
-> not the `test` pattern) established end to end that the real path enumerates a
-> real monitor, streams it at 1080p30, opens the control channel, and echoes a
-> manual bitrate — see "Real-screen evidence" below. That is the automated half
-> of AC#5's substrate; the UI interaction itself is the owner's.
+> **What this document *does* carry, verified on this host:** the **automated**
+> acceptance criteria (§10.2 #1–4, #6) are green — see the evidence table — and a
+> real-screen cross-language probe (the same `PeerConnection` + werift offerer the
+> E2E suite uses, but spawned with `--desktop-source screen`, i.e. the real
+> capture stack, not the `test` pattern) established end to end that the real
+> path enumerates a real monitor, streams it at 1080p30, opens the control
+> channel, and echoes a manual bitrate — see "Real-screen evidence" below. That
+> is the automated substrate of AC#5; the UI interaction itself is left to the
+> owner, informally.
 
 ## Checklist (spec §8.4)
 
@@ -39,11 +41,11 @@
 |---|---|
 | Stream appears immediately on the default (primary) source at 1080p30 | ✅ (real-screen probe: first `desktop-stats` = 1920×1080 @ 30fps / 6 Mbps) |
 | Picker lists monitors/windows | ✅ (real-screen probe: `desktop-sources` carried `monitor:1235` "Meta-0", 1920×1080, `default: true`) |
-| Switching source changes the stream (brief blip), stats update | ✅ (project-owner attestation) |
+| Switching source changes the stream (brief blip), stats update | — (manual; not gated — owner decision 2026-10-03) |
 | Bitrate control changes the stream, `desktop-stats` reflects it | ✅ (real-screen probe: `desktop-bitrate` 3 Mbps → `desktop-stats` echo) |
-| 720p30 fallback + `quality-downgraded` note on a host that cannot sustain 1080p30 | ✅ (project-owner attestation) / N/A on this host (it sustains 1080p30) |
-| LAN glass-to-glass latency observed < 200 ms (informal, not gated) | ✅ (project-owner attestation) |
-| Video stays view-only (no input forwarded) | ✅ (project-owner attestation; `DesktopView.test.ts` asserts no pointer/keyboard forwarding) |
+| 720p30 fallback + `quality-downgraded` note on a host that cannot sustain 1080p30 | — (manual; not gated — owner decision 2026-10-03); N/A on this host (it sustains 1080p30) |
+| LAN glass-to-glass latency observed < 200 ms (informal, not gated) | — (informal; not gated) |
+| Video stays view-only (no input forwarded) | ✅ (`DesktopView.test.ts` asserts no pointer/keyboard forwarding); manual check informal |
 
 ## Real-screen evidence (automated, this host)
 
@@ -84,7 +86,10 @@ The ignored live-display unit tests also pass on this host:
   agent is spawned with `--desktop-source test` (ADR-17), so no display, portal,
   or PipeWire session is involved in CI. The real-screen evidence above is a
   separate, uncommitted probe.
-- AC#5's human-observable rows are closed by attestation rather than a recorded
-  artifact, matching the Week 7 precedent.
+- AC#5's human-observable rows are **not gated** for Week 8 (owner decision,
+  2026-10-03); the owner will exercise the checklist informally. Unlike Week 7,
+  no attestation is recorded here — this document reports only what was actually
+  verified on this host (the automated criteria + the real-screen probe) and
+  marks the manual rows as not observed rather than closed.
 - Auto-ABR and the ADR-25 hardware-codec spike are **not** acceptance criteria
   (spec §10.2); they are goals/annotations only.

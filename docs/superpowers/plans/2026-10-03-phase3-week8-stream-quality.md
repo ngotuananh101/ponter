@@ -4329,7 +4329,7 @@ git commit -m "test(e2e): control channel, manual bitrate, and refused-selection
 
 > **Language:** `docs/ARCHITECTURE.md` is written in Vietnamese — its own section headers (`## 8. Lộ trình Triển khai`, `## 11. Performance Targets`) establish the file's convention. The additions below are Vietnamese to match, exactly as the Week 7 plan's Task 7 did. This is the one place the plan deviates from the global "repo docs stay English" rule, and it is because the rule defers to a file's own convention.
 
-- [ ] **Step 1: Fix the perf-table row (the H.265 drift)**
+- [x] **Step 1: Fix the perf-table row (the H.265 drift)**
 
 In `docs/ARCHITECTURE.md` §11 (Performance Targets, `docs/ARCHITECTURE.md:1080-1081`), the two desktop rows are:
 
@@ -4347,7 +4347,7 @@ The second row names H.265 as an achievable target, which §3.5 establishes is *
 
 Rationale for the wording: `1080p30` with `720p30` as the guaranteed floor is ADR-24's conditional target; the hardware row now names the *viable* alternatives (hardware H.264 / AV1) and marks them as the **ADR-25 spike, not committed**, so the file no longer promises a codec WebRTC cannot carry.
 
-- [ ] **Step 2: Mark the Week 8 items in the roadmap §8**
+- [x] **Step 2: Mark the Week 8 items in the roadmap §8**
 
 In `docs/ARCHITECTURE.md:941-944`, the list is currently:
 
@@ -4376,11 +4376,11 @@ Split it into a **done Week 8** sub-block and a **still-open** block, so the unc
 
 > The `##### Tuần 8` sub-heading and the split keep the roadmap's `####`/`#####` convention (the file already uses `####` under a `### Phase` block). The input-forwarding item moves under an explicit "Tuần 9 — Spec B" block so it stays unchecked and owned by the Week 9 spec, not silently dropped. The auto-ABR line is ticked **and** annotated as a goal, matching spec §10.2's "not an acceptance criterion".
 
-- [ ] **Step 3: Confirm the Phase 4 stub is untouched**
+- [x] **Step 3: Confirm the Phase 4 stub is untouched**
 
 Spec §11: Phase 4's stub (`docs/ARCHITECTURE.md:946-948`, `### Phase 4: File Transfer (Tuần 10-11)` + its "Chưa thiết kế" note) is **not** in scope. Confirm the edit in Steps 1-2 changed nothing between line 946 and `### Phase 5`.
 
-- [ ] **Step 4: Verify the file is still valid Markdown and the table renders**
+- [x] **Step 4: Verify the file is still valid Markdown and the table renders**
 
 Run (the repo has no configured markdown linter, so this is a manual read; if `markdownlint-cli2` is available, prefer it):
 
@@ -4391,7 +4391,7 @@ pnpm exec markdownlint-cli2 docs/ARCHITECTURE.md 2>/dev/null || \
 
 Expected: the two desktop rows have the same three-column shape as their neighbours (each line has exactly two `|` separators around three cells), and no `|` inside a cell breaks the table. Visually confirm the §11 table and the §8 list render.
 
-- [ ] **Step 5: Run the full local verification sweep**
+- [x] **Step 5: Run the full local verification sweep**
 
 Run each, in order, and do not proceed on a red result:
 
@@ -4405,7 +4405,9 @@ pnpm --filter @ponter/webrtc-core test:e2e
 
 Expected: all PASS. This is the local mirror of the current CI gates — `CI (Node) / Lint, Typecheck, Format & Node Tests`, `Build Agent / Verify`, `CI (E2E) / Cross-language terminal E2E` — so a green run here means CI has no surprise waiting. (There is no `ci.yml`; the old single-workflow jobs were split into `ci-node.yml` / `ci-e2e.yml` / `build-agent.yml`.)
 
-- [ ] **Step 6: Record the manual Chrome demo**
+- [x] **Step 6: Record the manual Chrome demo**
+
+> Manual rows **not gated** — owner decision (2026-10-03); no recording artifact exists. The demo doc reports the automated real-screen evidence and marks the manual rows not observed — see `docs/superpowers/specs/2026-10-03-phase3-week8-demo.md`.
 
 Follow spec §8.4. The recording is saved **outside the repo** (it is a large binary and is not committed). Write its location and the observed results into `docs/superpowers/specs/2026-10-03-phase3-week8-demo.md`:
 
@@ -4436,7 +4438,7 @@ Follow spec §8.4. The recording is saved **outside the repo** (it is a large bi
 
 > **Carry the Task 3 watch-item finding here.** If `screen_content_usage_emits_an_idr_only_on_the_first_frame` (Task 3, Step 9) failed — `ScreenContentRealTime` emitting an IDR every frame — say so in the Notes and in the PR body: it does not make the fallback wrong, but it changes what the "brief blip" on a source switch looks like. Confirm the finding before recording.
 
-- [ ] **Step 7: Confirm every acceptance criterion (spec §10.2)**
+- [x] **Step 7: Confirm every acceptance criterion (spec §10.2)**
 
 Walk spec §10.2 and tick each against evidence. **Auto-ABR and the ADR-25 hardware spike are explicitly NOT acceptance criteria** — they appear only as goals/annotations, never as a gated row:
 
@@ -4451,7 +4453,7 @@ Walk spec §10.2 and tick each against evidence. **Auto-ABR and the ADR-25 hardw
 
 **Not gated (goals only):** GCC auto-ABR (ADR-23, confirmed by the spike §3.7) and the ADR-25 hardware-codec spike. If a reviewer asks to gate either, that is a scope change for a later spec, not this PR.
 
-- [ ] **Step 8: Open the PR**
+- [x] **Step 8: Open the PR**
 
 Per repo convention (`docs(spec)` → `docs(plan)` → `feat`/`test` → `docs(architecture)`), the branch already carries each commit from Tasks 1–7. Open one PR to `main`:
 
@@ -4493,6 +4495,8 @@ EOF
 
 > **Coordination:** one PR in flight at a time (repo convention). Rebase onto `main` after the Week 9 spec (#25) merges if it lands first.
 
-- [ ] **Step 9: Record the PR number and hand off**
+- [x] **Step 9: Record the PR number and hand off**
+
+> PR #27 — merged into `main` as `be8a8c9` (squash, 2026-10-03). No recording artifact exists; the demo's status and evidence live in `docs/superpowers/specs/2026-10-03-phase3-week8-demo.md` (Step 6).
 
 Note the PR URL. The demo recording (Step 6) is attached as a PR comment, not committed. No further commits are expected on the branch until review.
