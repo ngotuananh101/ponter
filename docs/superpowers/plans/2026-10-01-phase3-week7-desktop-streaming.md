@@ -10,6 +10,26 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-01-phase3-week7-desktop-streaming-design.md`
 
+> **Reconciliation note (added 2026-10-03) — read before following any CI step below.**
+> This plan is a historical record of Week 7, written when a single
+> `.github/workflows/ci.yml` still existed. That file was **split by PR #19**
+> (`chore(ci): split ci.yml into path-filtered workflows`, merged as `b1e5982`)
+> into `ci-node.yml` / `ci-e2e.yml` / `ci-docker.yml`, alongside the already
+> separate `build-agent.yml`. Every reference below to `ci.yml`, and to its old
+> job keys, is therefore stale — the steps themselves were correct when the work
+> was done, and are not rewritten here. Use this mapping to find the live gate:
+>
+> | Old (this plan) | `ci.yml` job key | Now lives in | Current job |
+> |---|---|---|---|
+> | `verify` job | `verify` | `ci-node.yml` | `Lint, Typecheck, Format & Node Tests` |
+> | `rust` job | `rust` | `build-agent.yml` | `Verify` (and the `build` matrix) |
+> | `e2e` job | `e2e` | `ci-e2e.yml` | `Cross-language terminal E2E` |
+> | `docker` job | `docker` | `ci-docker.yml` | `Docker Build Verification` |
+>
+> The capture-stack apt step this plan adds (Task 6, Steps 6–7) now lives in
+> `build-agent.yml` (the `Verify` job and the linux-gnu legs of the `build`
+> matrix) and in `ci-e2e.yml`.
+
 ## Global Constraints
 
 - **Precondition — do not start implementation until both PRs merge:** `fix/agent-session-dead-peer` (PR #12, merged) and `chore/deps-upgrade` (webrtc/rtc 0.21) must both be on `main`. Open `feat/phase3-week7-desktop-streaming` from a fresh rebase of `main`, in a **separate worktree** (e.g. `.claude/worktrees/phase3-week7`) — never `git checkout` in the shared working directory.
@@ -3399,6 +3419,13 @@ git commit -m "feat(web): desktop stream tab, view, and per-agent affordance"
 
 ### Task 6: E2E — harness extensions, `desktop.e2e.test.ts`, CI capture deps
 
+> **CI reference (reconciled 2026-10-03):** this task was written against the single
+> `.github/workflows/ci.yml`, which no longer exists. Its `rust` job is now
+> `build-agent.yml`'s `Verify` job (and the linux-gnu legs of its `build` matrix),
+> and its `e2e` job is `ci-e2e.yml`'s `Cross-language terminal E2E` job. So the
+> `ci.yml` edits in Steps 6, 8 and 9 below apply to those two files instead. See the
+> reconciliation note at the top of this file.
+
 **Files:**
 - Modify: `packages/webrtc-core/test/e2e/harness.ts`
 - Create: `packages/webrtc-core/test/e2e/desktop.e2e.test.ts`
@@ -3887,7 +3914,7 @@ cargo test --manifest-path apps/agent/Cargo.toml --locked
 pnpm --filter @ponter/webrtc-core test:e2e
 ```
 
-Expected: all PASS. This is the local mirror of the `verify`, `rust`, and `e2e` CI jobs — a green run here means CI has no surprise waiting.
+Expected: all PASS. This is the local mirror of the `verify`, `rust`, and `e2e` CI jobs — a green run here means CI has no surprise waiting. (Those three `ci.yml` jobs are now `CI (Node) / Lint, Typecheck, Format & Node Tests`, `Build Agent / Verify`, and `CI (E2E) / Cross-language terminal E2E` — see the reconciliation note at the top of this file.)
 
 - [x] **Step 2: Record the manual Chrome demo**
 
@@ -3934,10 +3961,10 @@ Walk spec §10.2 and tick each against evidence:
 
 | # | Criterion | Evidence |
 |---|---|---|
-| 1 | `cargo test --locked` passes on Linux; musl `cargo build --locked` succeeds | Step 1 + CI `rust` job + `build-agent` musl matrix leg |
-| 2 | `pnpm lint && typecheck && test` pass workspace-wide | Step 1 + CI `verify` job |
-| 3 | E2E passes: track, ≥30 packets @ negotiated PT, ≥1 IDR, teardown + second session | Step 1 + CI `e2e` job (Task 6, Test 1 & 2) |
-| 4 | Terminal E2E still passes unchanged | Step 1 + CI `e2e` job (Task 6, Test 3 + pre-existing suite) |
+| 1 | `cargo test --locked` passes on Linux; musl `cargo build --locked` succeeds | Step 1 + CI `Build Agent / Verify` job + `Build Agent` musl matrix leg |
+| 2 | `pnpm lint && typecheck && test` pass workspace-wide | Step 1 + CI job `CI (Node) / Lint, Typecheck, Format & Node Tests` |
+| 3 | E2E passes: track, ≥30 packets @ negotiated PT, ≥1 IDR, teardown + second session | Step 1 + CI job `CI (E2E) / Cross-language terminal E2E` (Task 6, Test 1 & 2) |
+| 4 | Terminal E2E still passes unchanged | Step 1 + CI job `CI (E2E) / Cross-language terminal E2E` (Task 6, Test 3 + pre-existing suite) |
 | 5 | Recorded demo shows live 720p15 + refusal + reopen | Step 2 |
 | 6 | ARCHITECTURE.md no longer claims 60fps/H.265 as achieved | Task 7 |
 
