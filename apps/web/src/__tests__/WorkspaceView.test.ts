@@ -242,7 +242,14 @@ describe('WorkspaceView.vue', () => {
     expect(wrapper.find('[data-test="fullscreen-toggle"]').exists()).toBe(true);
   });
 
-  it('shows the desktop stats-derived media line in the footer', async () => {
+  /** Seed one active desktop tab and mount the workspace on it. */
+  async function mountWorkspaceWithDesktopTab(
+    overrides: Partial<
+      Parameters<TerminalStore['tabs']['push']>[0] & {
+        desktopInputEnabled?: boolean;
+      }
+    > = {},
+  ) {
     const store = useTerminalStore();
     store.tabs.push({
       id: 'tab-d2',
@@ -258,11 +265,17 @@ describe('WorkspaceView.vue', () => {
         fps: 30,
         targetBitrateBps: 4_000_000,
       },
-    });
+      ...overrides,
+    } as never);
     store.setActiveTab('tab-d2');
 
     const wrapper = mountWorkspace();
     await flushPromises();
+    return wrapper;
+  }
+
+  it('shows the desktop stats-derived media line in the footer', async () => {
+    const wrapper = await mountWorkspaceWithDesktopTab();
 
     // Scoped to the footer element so this pins the footer's own binding, not
     // the same resolution text rendered inside the desktop view body.
@@ -270,5 +283,34 @@ describe('WorkspaceView.vue', () => {
     expect(footerMedia.exists()).toBe(true);
     expect(footerMedia.text()).toContain('Media: H.264');
     expect(footerMedia.text()).toContain('1280×720');
+  });
+
+  it('advertises the input state once the agent reports the gate closed', async () => {
+    const wrapper = await mountWorkspaceWithDesktopTab({
+      desktopInputEnabled: false,
+    });
+
+    expect(wrapper.find('[data-test="footer-media"]').text()).toContain(
+      'input off',
+    );
+  });
+
+  it('advertises the input state once the agent reports the gate open', async () => {
+    const wrapper = await mountWorkspaceWithDesktopTab({
+      desktopInputEnabled: true,
+    });
+
+    expect(wrapper.find('[data-test="footer-media"]').text()).toContain(
+      'input on',
+    );
+  });
+
+  it('does not advertise input before the agent reports', async () => {
+    // No `desktopInputEnabled` yet: the feature is not mentioned at all, which
+    // is the production default while the gate ships closed (spec §7.4).
+    const wrapper = await mountWorkspaceWithDesktopTab();
+
+    const footer = wrapper.find('[data-test="footer-media"]').text();
+    expect(footer).not.toContain('input');
   });
 });

@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopClient } from '../src/client';
+import type { DesktopClientOptions } from '../src/types';
 import type {
   MediaStreamLike,
   MediaStreamTrackLike,
@@ -8,6 +9,39 @@ import type { PeerConnection } from '@ponter/webrtc-core';
 
 const fakeTrack: MediaStreamTrackLike = { kind: 'video' };
 const fakeStreams: MediaStreamLike[] = [];
+
+/** Module-level so a test can inspect every `sendJson` frame the client sent. */
+const mockSendJson =
+  vi.fn<(label: string, type: string, payload: unknown) => void>();
+/** The control handler of the most recently created mock, for `emitSources`. */
+let currentEmitControl: ((msg: unknown) => void) | null = null;
+
+/** Push a `desktop-sources` payload through the current mock's control handler. */
+function emitSources(
+  sources: Array<{ id: string; default: boolean }>,
+  inputEnabled: boolean,
+): void {
+  currentEmitControl?.({
+    type: 'desktop-sources',
+    channel: 'control',
+    payload: { sources, inputEnabled },
+    timestamp: 1,
+  });
+}
+
+beforeEach(() => {
+  mockSendJson.mockClear();
+});
+
+/** A connected client: start() resolved, so the control subscription is live. */
+async function connected(options?: DesktopClientOptions) {
+  const mock = mockPeer();
+  const client = new DesktopClient('agent-1', mock.peer, options);
+  const started = client.start();
+  mock.emitTrack(fakeTrack, fakeStreams);
+  await started;
+  return { ...mock, client };
+}
 
 /**
  * Mock peer exposing only what DesktopClient touches: start, close,
@@ -26,7 +60,7 @@ function mockPeer() {
   const removeTrackHandler = vi.fn();
   const removeStateHandler = vi.fn();
   const removeControlHandler = vi.fn();
-  const sendJson = vi.fn();
+  const sendJson = mockSendJson;
   // Default: the control channel opens. A test can re-point this to a rejecting
   // mock to exercise the never-opens warning path.
   const waitForChannel = vi.fn(async (_label: string, _timeoutMs?: number) => ({
@@ -57,6 +91,7 @@ function mockPeer() {
         ),
         onMessage: vi.fn((_label: string, handler: (msg: unknown) => void) => {
           controlHandler = handler;
+          currentEmitControl = handler;
           return removeControlHandler;
         }),
         sendJson,
@@ -209,7 +244,10 @@ describe('DesktopClient', () => {
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [{ id: 'monitor:1', default: true }] },
+      payload: {
+        sources: [{ id: 'monitor:1', default: true }],
+        inputEnabled: false,
+      },
       timestamp: 1,
     });
     emitControl({
@@ -231,16 +269,6 @@ describe('DesktopClient', () => {
 });
 
 describe('DesktopClient control surface', () => {
-  /** A connected client: start() resolved, so the control subscription is live. */
-  async function connected() {
-    const mock = mockPeer();
-    const client = new DesktopClient('agent-1', mock.peer);
-    const started = client.start();
-    mock.emitTrack(fakeTrack, fakeStreams);
-    await started;
-    return { ...mock, client };
-  }
-
   const oneSource = {
     id: 'monitor:1',
     kind: 'monitor' as const,
@@ -258,35 +286,38 @@ describe('DesktopClient control surface', () => {
   it('dispatches desktop-sources to onSources and re-fires on a second frame', async () => {
     const { client, emitControl } = await connected();
     const seen: unknown[] = [];
-    client.onSources((sources) => seen.push(sources));
+    client.onSources((payload) => seen.push(payload));
 
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [oneSource] },
+      payload: { sources: [oneSource], inputEnabled: false },
       timestamp: 1,
     });
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [] },
+      payload: { sources: [], inputEnabled: false },
       timestamp: 2,
     });
 
-    expect(seen).toEqual([[oneSource], []]);
+    expect(seen).toEqual([
+      { sources: [oneSource], inputEnabled: false },
+      { sources: [], inputEnabled: false },
+    ]);
     client.close();
   });
 
   it('stops delivering onSources after unsubscribe', async () => {
     const { client, emitControl } = await connected();
     const seen: unknown[] = [];
-    const off = client.onSources((sources) => seen.push(sources));
+    const off = client.onSources((payload) => seen.push(payload));
 
     off();
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [oneSource] },
+      payload: { sources: [oneSource], inputEnabled: false },
       timestamp: 1,
     });
 
@@ -325,14 +356,14 @@ describe('DesktopClient control surface', () => {
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [oneSource] },
+      payload: { sources: [oneSource], inputEnabled: true },
       timestamp: 1,
     });
 
     const seen: unknown[] = [];
-    client.onSources((sources) => seen.push(sources));
+    client.onSources((payload) => seen.push(payload));
 
-    expect(seen).toEqual([[oneSource]]);
+    expect(seen).toEqual([{ sources: [oneSource], inputEnabled: true }]);
     client.close();
   });
 
@@ -487,6 +518,144 @@ describe('DesktopClient control surface', () => {
       expect.stringContaining('control channel did not open'),
     );
     warn.mockRestore();
+    client.close();
+  });
+});
+
+describe('DesktopClient input surface (Week 9, spec §5.3)', () => {
+  const sentInputs = (): Array<{ type: string; payload: unknown }> =>
+    mockSendJson.mock.calls
+      .filter((c) => c[1] === 'desktop-input')
+      .map((c) => ({ type: c[1], payload: c[2] }));
+
+  const isKind = (kind: string) => (s: { payload: unknown }) =>
+    (s.payload as { kind: string }).kind === kind;
+
+  it('forwards a discrete event when the channel is open', async () => {
+    const { client, setControlState } = await connected();
+    setControlState('open');
+
+    client.sendInput({
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.5,
+      y: 0.5,
+    });
+
+    expect(mockSendJson).toHaveBeenCalledWith('control', 'desktop-input', {
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.5,
+      y: 0.5,
+    });
+    client.close();
+  });
+
+  it('warns and does not throw when the channel is not open', async () => {
+    const { client, setControlState } = await connected();
+    setControlState('connecting');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(() => client.sendInput({ kind: 'text', text: 'a' })).not.toThrow();
+    expect(sentInputs()).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+
+    warn.mockRestore();
+    client.close();
+  });
+
+  it('coalesces pointer-move to the configured rate and never drops discrete events', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, setControlState } = await connected({
+        inputRateLimitHz: 60,
+      });
+      setControlState('open');
+
+      // 120 moves in the same tick: the first is forwarded now; the rest are
+      // coalesced and flushed at most once per 1/60 s.
+      for (let i = 0; i < 120; i++) {
+        client.sendInput({ kind: 'pointer-move', x: i / 120, y: 0 });
+      }
+      client.sendInput({
+        kind: 'key',
+        code: 'KeyA',
+        pressed: true,
+        modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+      });
+
+      expect(sentInputs().filter(isKind('pointer-move'))).toHaveLength(1);
+      expect(sentInputs().filter(isKind('key'))).toHaveLength(1);
+
+      vi.advanceTimersByTime(17); // ~1/60 s
+      const movesAfter = sentInputs().filter(isKind('pointer-move'));
+      expect(movesAfter.length).toBeGreaterThanOrEqual(2);
+      // The last move carries the newest position, not a stale one.
+      expect((movesAfter.at(-1)?.payload as { x: number }).x).toBeCloseTo(
+        119 / 120,
+      );
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never coalesces discrete events even when the rate window is saturated', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, setControlState } = await connected({
+        inputRateLimitHz: 60,
+      });
+      setControlState('open');
+
+      client.sendInput({ kind: 'pointer-move', x: 0.1, y: 0.1 });
+      client.sendInput({ kind: 'pointer-move', x: 0.2, y: 0.2 });
+      client.sendInput({ kind: 'wheel', dx: 0, dy: -1, x: 0.5, y: 0.5 });
+      client.sendInput({ kind: 'wheel', dx: 0, dy: -1, x: 0.5, y: 0.5 });
+
+      // Both wheel frames go out immediately, undeterred by the pending move.
+      expect(sentInputs().filter(isKind('wheel'))).toHaveLength(2);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('strictly caps continuous pointer-move throughput to inputRateLimitHz', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, setControlState } = await connected({
+        inputRateLimitHz: 60,
+      });
+      setControlState('open');
+
+      // Simulate a 500 Hz gaming mouse moving continuously for 1000 ms (1 move every 2 ms).
+      for (let t = 0; t <= 1000; t += 2) {
+        client.sendInput({ kind: 'pointer-move', x: t / 1000, y: 0 });
+        vi.advanceTimersByTime(2);
+      }
+
+      const moves = sentInputs().filter(isKind('pointer-move'));
+      // At 60 Hz over 1000 ms, at most ~61 frames (leading edge + 60 interval flushes).
+      // A bug that flushes both leading and trailing edges yields ~111-120 frames.
+      expect(moves.length).toBeLessThanOrEqual(61);
+      expect(moves.length).toBeGreaterThanOrEqual(58);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces inputEnabled from the desktop-sources payload', async () => {
+    const { client } = await connected();
+    const seen: boolean[] = [];
+    client.onSources((payload) => seen.push(payload.inputEnabled));
+
+    emitSources([{ id: 'monitor:1', default: true }], true);
+
+    expect(seen).toEqual([true]);
     client.close();
   });
 });

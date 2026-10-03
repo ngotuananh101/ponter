@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue';
+import {
+  ref,
+  watch,
+  computed,
+  nextTick,
+  onMounted,
+  onBeforeUnmount,
+} from 'vue';
 import { RefreshCw } from '@lucide/vue';
 import { Button } from '@/components/ui/button';
 import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import { useTerminalStore } from '@/stores/terminal';
 import type { TabItem } from '@/stores/terminal';
+import { toNormalized } from '@/lib/desktop-input';
+import type { KeyModifiers } from '@ponter/shared';
 
 const props = defineProps<{ tab: TabItem }>();
 const store = useTerminalStore();
@@ -64,20 +73,123 @@ function onBitrateChange(event: Event): void {
     store.setDesktopBitrate(props.tab.id, bps);
   }
 }
+
+/**
+ * Input forwarding is OFF until the operator turns it on here, and the toggle
+ * only exists when the agent's gate is open (`desktopInputEnabled`, ADR-29).
+ */
+const inputOn = ref(false);
+// Turning the gate off mid-session must also drop the local state, so a later
+// remount with the gate closed captures nothing.
+watch(
+  () => props.tab.desktopInputEnabled,
+  (enabled) => {
+    if (!enabled) inputOn.value = false;
+  },
+);
+// Keydown only reaches the focused element, and a `tabindex` does not focus
+// itself: moving focus to the video on enable is what makes typing land on the
+// remote desktop without a click first (spec §7.2).
+watch(inputOn, async (on) => {
+  if (!on) return;
+  await nextTick();
+  videoEl.value?.focus();
+});
+
+/** The input toggle is our own chrome, so its state is the local `inputOn`. */
+function onToggle(event: Event): void {
+  inputOn.value = (event.target as HTMLInputElement).checked;
+}
+
+function modifiersOf(e: KeyboardEvent | MouseEvent): KeyModifiers {
+  return { ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey };
+}
+
+/** The pointer position as normalized 0..1 source coords (letterbox removed). */
+function pointOf(e: MouseEvent): { x: number; y: number } {
+  const el = videoEl.value;
+  if (!el) return { x: 0, y: 0 };
+  return toNormalized(
+    e.clientX,
+    e.clientY,
+    el.getBoundingClientRect(),
+    el.videoWidth,
+    el.videoHeight,
+  );
+}
+
+function onPointerMove(e: PointerEvent): void {
+  store.sendDesktopInput(props.tab.id, {
+    kind: 'pointer-move',
+    ...pointOf(e),
+  });
+}
+
+function onPointerButton(e: PointerEvent, pressed: boolean): void {
+  const button = e.button === 1 ? 'middle' : e.button === 2 ? 'right' : 'left';
+  store.sendDesktopInput(props.tab.id, {
+    kind: 'pointer-button',
+    button,
+    pressed,
+    ...pointOf(e),
+  });
+}
+
+function onWheel(e: WheelEvent): void {
+  // Interacting with the remote desktop must not scroll the local page.
+  e.preventDefault();
+  store.sendDesktopInput(props.tab.id, {
+    kind: 'wheel',
+    dx: e.deltaX,
+    dy: e.deltaY,
+    ...pointOf(e),
+  });
+}
+
+function onKey(e: KeyboardEvent, pressed: boolean): void {
+  // Physical code + modifier state (ADR-28): layout-independent.
+  store.sendDesktopInput(props.tab.id, {
+    kind: 'key',
+    code: e.code,
+    pressed,
+    modifiers: modifiersOf(e),
+  });
+}
+
+/**
+ * Attached only while the toggle is on, so the element captures nothing by
+ * default (spec §7.2, ADR-29). A statically bound `@wheel.prevent` would
+ * swallow local scrolling even with the gate closed.
+ */
+const inputHandlers = computed(() => {
+  if (!inputOn.value) return {};
+  return {
+    pointermove: onPointerMove,
+    pointerdown: (e: PointerEvent) => onPointerButton(e, true),
+    pointerup: (e: PointerEvent) => onPointerButton(e, false),
+    wheel: onWheel,
+    keydown: (e: KeyboardEvent) => onKey(e, true),
+    keyup: (e: KeyboardEvent) => onKey(e, false),
+  };
+});
 </script>
 
 <template>
   <div class="relative h-full w-full bg-[#090d16]">
-    <!-- No `controls`: Week 7 is view-only (ADR-18). -->
+    <!-- No `controls` (our own chrome instead), and input listeners attach only
+         while the operator turns the toggle on behind the agent's gate (ADR-26
+         supersedes ADR-18; ADR-29 gates every injection path). -->
     <video
       ref="videoEl"
       autoplay
       muted
       playsinline
+      :tabindex="inputOn ? 0 : undefined"
       class="h-full w-full object-contain"
+      v-on="inputHandlers"
     />
 
-    <!-- Control chrome (Week 8). No input forwarding: that is Week 9. -->
+    <!-- Control chrome (Week 8): source picker, manual bitrate, telemetry. -->
     <div
       v-if="
         tab.status === 'active' && (tab.desktopSources?.length || statsLine)
@@ -118,6 +230,21 @@ function onBitrateChange(event: Event): void {
           @change="onBitrateChange"
         />
         <span>bps</span>
+      </label>
+
+      <!-- Only rendered when the agent's gate is open (ADR-29), so the
+           production default never advertises an inert toggle. -->
+      <label
+        v-if="tab.desktopInputEnabled"
+        class="flex items-center gap-1 text-muted-foreground"
+      >
+        <input
+          data-test="desktop-input-toggle"
+          type="checkbox"
+          :checked="inputOn"
+          @change="onToggle"
+        />
+        <span>Input</span>
       </label>
 
       <span

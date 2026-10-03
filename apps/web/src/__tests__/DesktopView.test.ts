@@ -17,12 +17,15 @@ function desktopTab(overrides: Partial<TabItem> = {}): TabItem {
   };
 }
 
+const mountDesktop = (overrides: Partial<TabItem> = {}) =>
+  mount(DesktopView, { props: { tab: desktopTab(overrides) } });
+
 describe('DesktopView', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
 
-  it('renders a video element with no controls (view-only)', () => {
+  it('renders a video element with no native controls', () => {
     const wrapper = mount(DesktopView, { props: { tab: desktopTab() } });
     const video = wrapper.find('video');
     expect(video.exists()).toBe(true);
@@ -97,6 +100,17 @@ describe('DesktopView', () => {
       default: false,
     },
   ];
+
+  /**
+   * The chrome (source picker, bitrate, input toggle) renders only once the tab
+   * has sources or stats, so tests that touch it mount with sources present.
+   */
+  const mountWithChrome = (overrides: Partial<TabItem> = {}) =>
+    mountDesktop({
+      desktopSources: twoSources,
+      desktopSourceId: 'monitor:1',
+      ...overrides,
+    });
 
   it('renders the source picker only when sources are present', async () => {
     const withoutSources = mount(DesktopView, {
@@ -236,13 +250,16 @@ describe('DesktopView', () => {
     expect(setBitrate).toHaveBeenCalledWith('tab-1', 3_000_000);
   });
 
-  it('keeps the video view-only: no controls, no input forwarding', async () => {
+  it('forwards nothing while the agent gate is closed', async () => {
     const store = useTerminalStore();
     const select = vi
       .spyOn(store, 'selectDesktopSource')
       .mockImplementation(() => {});
     const setBitrate = vi
       .spyOn(store, 'setDesktopBitrate')
+      .mockImplementation(() => {});
+    const sendInput = vi
+      .spyOn(store, 'sendDesktopInput')
       .mockImplementation(() => {});
     const wrapper = mount(DesktopView, {
       props: {
@@ -255,24 +272,139 @@ describe('DesktopView', () => {
             fps: 30,
             targetBitrateBps: 6_000_000,
           },
+          // The production default: the agent never opened its input gate.
+          desktopInputEnabled: false,
         }),
       },
     });
     const video = wrapper.find('video');
     expect(video.attributes('controls')).toBeUndefined();
 
-    // Week 9 owns input forwarding. Asserting the *absence* of a rendered
-    // `onmousedown` attribute is vacuous — Vue attaches listeners via
-    // addEventListener and never renders them as attributes, so that check
-    // passes even with a handler attached. Dispatch the real events instead and
-    // prove nothing is forwarded: this fails if any pointer/key handler is
-    // wired to the video.
-    await video.trigger('mousedown');
-    await video.trigger('mouseup');
-    await video.trigger('click');
+    // Asserting the *absence* of a rendered `onpointermove` attribute is
+    // vacuous — Vue attaches listeners via addEventListener and never renders
+    // them as attributes. Dispatch the real events instead and prove nothing is
+    // forwarded: this fails if any input handler is wired to the video.
+    await video.trigger('pointermove');
+    await video.trigger('pointerdown');
+    await video.trigger('pointerup');
+    await video.trigger('wheel');
     await video.trigger('keydown');
+    await video.trigger('keyup');
 
+    expect(sendInput).not.toHaveBeenCalled();
     expect(select).not.toHaveBeenCalled();
     expect(setBitrate).not.toHaveBeenCalled();
+  });
+
+  it('renders no input toggle when the agent gate is closed', () => {
+    const wrapper = mountWithChrome({ desktopInputEnabled: false });
+    expect(wrapper.find('[data-test="desktop-input-toggle"]').exists()).toBe(
+      false,
+    );
+  });
+
+  it('renders the toggle and attaches no listeners until it is on', async () => {
+    const store = useTerminalStore();
+    const sendInput = vi
+      .spyOn(store, 'sendDesktopInput')
+      .mockImplementation(() => {});
+    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    const toggle = wrapper.find('[data-test="desktop-input-toggle"]');
+    expect(toggle.exists()).toBe(true);
+
+    // Before enabling: a pointermove on the video forwards nothing.
+    await wrapper
+      .find('video')
+      .trigger('pointermove', { clientX: 10, clientY: 10 });
+    expect(sendInput).not.toHaveBeenCalled();
+
+    await toggle.setValue(true);
+    await wrapper
+      .find('video')
+      .trigger('pointermove', { clientX: 10, clientY: 10 });
+    expect(sendInput).toHaveBeenCalled();
+  });
+
+  it('forwards a click and a key with normalized coordinates once enabled', async () => {
+    const store = useTerminalStore();
+    const sendInput = vi
+      .spyOn(store, 'sendDesktopInput')
+      .mockImplementation(() => {});
+    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+
+    await wrapper.find('video').trigger('pointerdown', {
+      clientX: 10,
+      clientY: 10,
+      button: 2,
+    });
+    await wrapper.find('video').trigger('keydown', {
+      code: 'KeyA',
+      ctrlKey: true,
+    });
+
+    expect(sendInput).toHaveBeenCalledWith('tab-1', {
+      kind: 'pointer-button',
+      button: 'right',
+      pressed: true,
+      x: 0,
+      y: 0,
+    });
+    expect(sendInput).toHaveBeenCalledWith('tab-1', {
+      kind: 'key',
+      code: 'KeyA',
+      pressed: true,
+      modifiers: { ctrl: true, alt: false, shift: false, meta: false },
+    });
+  });
+
+  it('drops the local toggle when the gate closes', async () => {
+    const store = useTerminalStore();
+    const sendInput = vi
+      .spyOn(store, 'sendDesktopInput')
+      .mockImplementation(() => {});
+    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+
+    // The agent can close the gate mid-session (a new desktop-sources frame).
+    await wrapper.setProps({
+      tab: desktopTab({
+        desktopSources: twoSources,
+        desktopSourceId: 'monitor:1',
+        desktopInputEnabled: false,
+      }),
+    });
+
+    await wrapper
+      .find('video')
+      .trigger('pointermove', { clientX: 10, clientY: 10 });
+    expect(sendInput).not.toHaveBeenCalled();
+  });
+
+  it('focuses the video when input is enabled so keys reach it', async () => {
+    // Keydown fires on the focused element; a video with a tabindex is still
+    // not focused by default, so enabling input must move focus there (spec
+    // §7.2) — otherwise typing lands on nothing until the user clicks first.
+    const wrapper = mount(DesktopView, {
+      props: {
+        tab: desktopTab({
+          desktopSources: twoSources,
+          desktopSourceId: 'monitor:1',
+          desktopInputEnabled: true,
+        }),
+      },
+      // Attached to the document: `focus()` on a detached element does not
+      // move `document.activeElement`, so an unattached mount cannot prove it.
+      attachTo: document.body,
+    });
+    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+
+    expect(document.activeElement).toBe(wrapper.find('video').element);
+    wrapper.unmount();
+  });
+
+  it('still renders the <video> with no controls when input is enabled', () => {
+    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    expect(wrapper.find('video').attributes('controls')).toBeUndefined();
   });
 });

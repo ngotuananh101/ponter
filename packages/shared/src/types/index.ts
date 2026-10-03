@@ -9,7 +9,13 @@ export type {
   DataChannelMessage,
 } from './webrtc.js';
 
-export type { DesktopSourceInfo, DesktopStats } from './desktop.js';
+export type {
+  DesktopSourceInfo,
+  DesktopStats,
+  DesktopInput,
+  DesktopSourcesPayload,
+  KeyModifiers,
+} from './desktop.js';
 
 export type {
   TransferDirection,

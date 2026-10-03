@@ -12,7 +12,11 @@ const desktopStart = vi.fn();
 const desktopClose = vi.fn();
 const desktopSelectSource = vi.fn();
 const desktopSetBitrate = vi.fn();
-let desktopSourcesHandler: ((sources: unknown[]) => void) | null = null;
+const desktopSendInput = vi.fn();
+// The handler now receives a DesktopSourcesPayload (spec §5.3, breaking change).
+let desktopSourcesHandler:
+  ((payload: { sources: unknown[]; inputEnabled: boolean }) => void) | null =
+  null;
 let desktopStatsHandler: ((stats: unknown) => void) | null = null;
 const desktopOnSourcesOff = vi.fn();
 const desktopOnStatsOff = vi.fn();
@@ -27,10 +31,18 @@ vi.mock('@ponter/desktop-core', () => ({
     this.close = desktopClose;
     this.selectSource = desktopSelectSource;
     this.setBitrate = desktopSetBitrate;
-    this.onSources = vi.fn((handler: (sources: unknown[]) => void) => {
-      desktopSourcesHandler = handler;
-      return desktopOnSourcesOff;
-    });
+    this.sendInput = desktopSendInput;
+    this.onSources = vi.fn(
+      (
+        handler: (payload: {
+          sources: unknown[];
+          inputEnabled: boolean;
+        }) => void,
+      ) => {
+        desktopSourcesHandler = handler;
+        return desktopOnSourcesOff;
+      },
+    );
     this.onStats = vi.fn((handler: (stats: unknown) => void) => {
       desktopStatsHandler = handler;
       return desktopOnStatsOff;
@@ -90,9 +102,18 @@ describe('useTerminalStore', () => {
     desktopStart.mockReset();
     desktopSelectSource.mockReset();
     desktopSetBitrate.mockReset();
+    desktopSendInput.mockReset();
     desktopOnSourcesOff.mockReset();
     desktopOnStatsOff.mockReset();
   });
+
+  /** Push a `desktop-sources` payload through the mock client's handler. */
+  function emitSources(
+    sources: Array<{ id: string; default: boolean }>,
+    inputEnabled = false,
+  ): void {
+    desktopSourcesHandler?.({ sources, inputEnabled });
+  }
 
   /**
    * Open a desktop tab whose client then pushes `sources` on the control
@@ -101,6 +122,7 @@ describe('useTerminalStore', () => {
    */
   async function openDesktopWithSources(
     sources: Array<{ id: string; default: boolean }>,
+    inputEnabled = false,
   ) {
     const store = useTerminalStore();
     desktopStart.mockResolvedValueOnce({
@@ -108,7 +130,7 @@ describe('useTerminalStore', () => {
       streams: [],
     });
     const tabId = await store.openDesktopTab('ag-1', 'Host 1');
-    desktopSourcesHandler?.(sources);
+    emitSources(sources, inputEnabled);
     await nextTick();
     return { store, tabId };
   }
@@ -280,10 +302,13 @@ describe('useTerminalStore', () => {
     });
     const tabId = await store.openDesktopTab('ag-1', 'Host 1');
 
-    desktopSourcesHandler?.([
-      { id: 'monitor:1', default: false },
-      { id: 'monitor:2', default: true },
-    ]);
+    desktopSourcesHandler?.({
+      sources: [
+        { id: 'monitor:1', default: false },
+        { id: 'monitor:2', default: true },
+      ],
+      inputEnabled: false,
+    });
     await nextTick();
 
     const tab = store.tabs.find((t) => t.id === tabId);
@@ -402,5 +427,50 @@ describe('useTerminalStore', () => {
 
     expect(desktopOnSourcesOff).toHaveBeenCalled();
     expect(desktopOnStatsOff).toHaveBeenCalled();
+  });
+
+  it('records desktopInputEnabled from the sources payload', async () => {
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+    );
+
+    expect(store.tabs.find((t) => t.id === tabId)?.desktopInputEnabled).toBe(
+      true,
+    );
+  });
+
+  it('sendDesktopInput forwards to the client for an open desktop tab', async () => {
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+    );
+
+    store.sendDesktopInput(tabId, { kind: 'text', text: 'a' });
+
+    expect(desktopSendInput).toHaveBeenCalledWith({ kind: 'text', text: 'a' });
+  });
+
+  it('sendDesktopInput is a no-op for a non-desktop or unknown tab', () => {
+    const store = useTerminalStore();
+
+    store.sendDesktopInput('nope', { kind: 'text', text: 'a' });
+
+    expect(desktopSendInput).not.toHaveBeenCalled();
+  });
+
+  it('still snaps the picker back on a refused select after the shape change', async () => {
+    const { store, tabId } = await openDesktopWithSources([
+      { id: 'monitor:1', default: true },
+      { id: 'monitor:2', default: false },
+    ]);
+
+    store.selectDesktopSource(tabId, 'monitor:2');
+    emitStats({
+      status: { kind: 'select-refused', detail: 'unknown source id' },
+    });
+    await nextTick();
+
+    expect(pickerId(store, tabId)).toBe('monitor:1');
   });
 });

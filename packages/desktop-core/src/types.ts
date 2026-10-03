@@ -15,4 +15,6 @@ export interface DesktopClientOptions {
   trackTimeoutMs?: number;
   /** How long to wait for the control channel to open after the track. Default 5_000. */
   controlTimeoutMs?: number;
+  /** Max `pointer-move` frames per second the client will forward. Default 60. */
+  inputRateLimitHz?: number;
 }

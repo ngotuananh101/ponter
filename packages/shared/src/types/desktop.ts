@@ -35,3 +35,43 @@ export interface DesktopStats {
   /** Optional agent→browser note; absent on ordinary telemetry. */
   status?: { kind: 'select-refused' | 'quality-downgraded'; detail: string };
 }
+
+/**
+ * Keyboard modifier state at the moment a `key` frame is emitted (spec §2.2).
+ * Physical codes + modifier state make the mapping layout-independent.
+ */
+export interface KeyModifiers {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+}
+
+/**
+ * One forwarded input event (Week 9, spec §2.2). The `kind` tag selects the
+ * fields. Pointer coordinates are normalized `0..1` within the *streamed
+ * source* (the browser removes the `object-contain` letterbox first, ADR-30);
+ * `code` is the physical `KeyboardEvent.code`; `text` is committed unicode.
+ */
+export type DesktopInput =
+  | { kind: 'pointer-move'; x: number; y: number }
+  | {
+      kind: 'pointer-button';
+      button: 'left' | 'middle' | 'right';
+      pressed: boolean;
+      x: number;
+      y: number;
+    }
+  | { kind: 'wheel'; dx: number; dy: number; x: number; y: number }
+  | { kind: 'key'; code: string; pressed: boolean; modifiers: KeyModifiers }
+  | { kind: 'text'; text: string };
+
+/**
+ * The `desktop-sources` payload (Week 8 + the Week 9 additive `inputEnabled`).
+ * A Week 8 client that ignores the extra field is unaffected (spec §2.2).
+ */
+export interface DesktopSourcesPayload {
+  sources: DesktopSourceInfo[];
+  /** True iff the agent's input gate is open (ADR-29). */
+  inputEnabled: boolean;
+}

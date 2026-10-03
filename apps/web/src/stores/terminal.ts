@@ -12,7 +12,11 @@ import {
   WebSocketSignalTransport,
 } from '@ponter/webrtc-core';
 import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
-import type { DesktopSourceInfo, DesktopStats } from '@ponter/shared';
+import type {
+  DesktopInput,
+  DesktopSourceInfo,
+  DesktopStats,
+} from '@ponter/shared';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
 import type { InitStep } from '@/lib/connection-steps';
@@ -44,6 +48,8 @@ export interface TabItem {
   desktopStats?: DesktopStats;
   /** Desktop tabs only: the source the agent is streaming (or was asked to). */
   desktopSourceId?: string;
+  /** Desktop tabs only: true iff the agent's input gate is open (ADR-29). */
+  desktopInputEnabled?: boolean;
 }
 
 /** Best-effort message from an unknown catch value; never `[object Object]`. */
@@ -611,11 +617,12 @@ export const useTerminalStore = defineStore('terminal', () => {
       // subscription is registered after `start()` (the track arrives first).
       // Both unsubscribers go into the same list the teardown already drains.
       unsubscribers.push(
-        client.onSources((sources) => {
+        client.onSources((payload) => {
           const tab = tabs.value.find((t) => t.id === tabId);
           if (!tab) return;
-          tab.desktopSources = sources;
-          const defaultId = sources.find((s) => s.default)?.id;
+          tab.desktopSources = payload.sources;
+          tab.desktopInputEnabled = payload.inputEnabled;
+          const defaultId = payload.sources.find((s) => s.default)?.id;
           if (defaultId) confirmedSourceId = defaultId;
           tab.desktopSourceId ??= defaultId;
         }),
@@ -828,6 +835,15 @@ export const useTerminalStore = defineStore('terminal', () => {
     conn.client.setBitrate(bitrateBps);
   }
 
+  /** Forward one input event to the agent (Week 9, spec §7.3). */
+  function sendDesktopInput(tabId: string, event: DesktopInput): void {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'desktop') return;
+    const conn = desktopConnections.get(tab.agentId);
+    if (!conn) return;
+    conn.client.sendInput(event);
+  }
+
   return {
     tabs,
     activeTabId,
@@ -839,6 +855,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     closeTab,
     selectDesktopSource,
     setDesktopBitrate,
+    sendDesktopInput,
     getOrConnectAgentForTest: getOrConnectAgent,
   };
 });

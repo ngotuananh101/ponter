@@ -340,6 +340,19 @@ onUnmounted(() => {
                   ? `${terminalStore.activeTab.desktopStats.width}×${terminalStore.activeTab.desktopStats.height}`
                   : 'connecting'
               }}
+              <!-- Only once the agent reports the gate: the closed default shows
+                   the media line alone, so an inert feature is never advertised
+                   (spec §7.4, ADR-29). -->
+              <template
+                v-if="terminalStore.activeTab.desktopInputEnabled !== undefined"
+              >
+                ·
+                {{
+                  terminalStore.activeTab.desktopInputEnabled
+                    ? 'input on'
+                    : 'input off'
+                }}
+              </template>
             </span>
             <span v-else>Channel: terminal (64 KiB buffer)</span>
           </span>
