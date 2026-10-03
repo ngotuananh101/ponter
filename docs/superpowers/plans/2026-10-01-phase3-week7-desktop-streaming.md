@@ -3875,7 +3875,7 @@ git commit -m "docs(architecture): add Phase 3 roadmap and split the desktop per
 - Consumes: every artifact from Tasks 1–7.
 - Produces: the demo record and the PR.
 
-- [ ] **Step 1: Run the full local verification sweep**
+- [x] **Step 1: Run the full local verification sweep**
 
 Run each, in order, and do not proceed on a red result:
 
@@ -3889,7 +3889,9 @@ pnpm --filter @ponter/webrtc-core test:e2e
 
 Expected: all PASS. This is the local mirror of the `verify`, `rust`, and `e2e` CI jobs — a green run here means CI has no surprise waiting.
 
-- [ ] **Step 2: Record the manual Chrome demo**
+- [x] **Step 2: Record the manual Chrome demo**
+
+> Closed by owner attestation, no recording artifact (2026-10-03).
 
 Follow the checklist in spec §8.4 (Fedora/Wayland; build deps installed; agent run with `--desktop-source screen`; server + web dev servers up; agent registered with `['terminal', 'desktop']`). Record a screen capture that shows, in order:
 
@@ -3926,7 +3928,7 @@ Save the recording outside the repo (it is a large binary and is not committed).
 <any deviation, e.g. frame rate under load, portal prompt behaviour>
 ```
 
-- [ ] **Step 3: Confirm every acceptance criterion**
+- [x] **Step 3: Confirm every acceptance criterion**
 
 Walk spec §10.2 and tick each against evidence:
 
@@ -3939,7 +3941,7 @@ Walk spec §10.2 and tick each against evidence:
 | 5 | Recorded demo shows live 720p15 + refusal + reopen | Step 2 |
 | 6 | ARCHITECTURE.md no longer claims 60fps/H.265 as achieved | Task 7 |
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 Per repo convention (`docs(spec)` → `docs(plan)` → `feat`/`test` → `docs(architecture)`), the branch already carries each commit from Tasks 1–7. Open one PR to `main`:
 
@@ -3977,7 +3979,7 @@ EOF
 
 > **Coordination:** one PR in flight at a time (repo convention). This branch must be rebased onto `main` *after* the `fix/agent-session-dead-peer` and `chore/deps-upgrade` PRs merge (Global Constraints). If either is still open, wait.
 
-- [ ] **Step 5: Record the PR number and hand off**
+- [x] **Step 5: Record the PR number and hand off**
 
 Note the PR URL. The demo recording (Step 2) is attached as a PR comment, not committed. No further commits are expected on the branch until review.
 
