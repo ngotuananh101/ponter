@@ -1340,7 +1340,13 @@ async fn run_files_session(
 async fn handle_files_frame(session: &mut files::FilesSession, raw: &str) -> Vec<files::Outbound> {
     match files::decode_files_frame(raw) {
         Ok(Some(inbound)) => session.handle(inbound).await,
-        Ok(None) => Vec::new(), // not a files frame: warn-and-ignore (ADR-09)
+        Ok(None) => {
+            tracing::warn!(
+                len = raw.len(),
+                "ignoring a non-files frame on the files channel"
+            );
+            Vec::new()
+        }
         Err(error) => {
             let (request_id, transfer_id) = files::extract_ids(raw);
             if request_id.is_none() && transfer_id.is_none() {
