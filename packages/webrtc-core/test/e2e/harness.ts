@@ -289,6 +289,11 @@ export async function startServerProcess(): Promise<void> {
       REFRESH_TOKEN_SECRET,
       TURN_SECRET: '',
       TURN_URL: '',
+      // TEST-ONLY escape hatch: the admin-approval gate makes non-first
+      // registrants "pending" with no token, which breaks the E2E harness
+      // (each test registers its own user). Enable auto-approve for E2E only;
+      // the production default remains "pending manual approval".
+      E2E_AUTO_APPROVE_USERS: 'true',
     },
   });
   currentServer = dev.child;
@@ -379,6 +384,11 @@ export async function seed({
     password: 'Password123!',
     publicKey: `pk_e2e_${suffix}`,
   });
+  if (!auth?.token) {
+    throw new Error(
+      'register returned no token — is auto-approve enabled for E2E? (E2E_AUTO_APPROVE_USERS)',
+    );
+  }
 
   const create = await postJson<AgentCreated>(
     '/api/agents',

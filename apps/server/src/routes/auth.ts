@@ -129,7 +129,13 @@ auth.post('/register', async (c) => {
       status = 'approved';
     } else {
       role = 'user';
-      status = settings.autoApproveUsers ? 'approved' : 'pending';
+      // TEST-ONLY escape hatch for E2E: when E2E_AUTO_APPROVE_USERS='true' is
+      // set in the environment, treat auto-approve as on for this registration.
+      // This does NOT affect the admin UI / production default (getSystemSettings
+      // still returns autoApproveUsers=false by default); it is read here only.
+      const e2eAutoApprove = process.env.E2E_AUTO_APPROVE_USERS === 'true';
+      status =
+        settings.autoApproveUsers || e2eAutoApprove ? 'approved' : 'pending';
     }
 
     // In a sync transaction, `.returning()` yields a QueryPromise that cannot
