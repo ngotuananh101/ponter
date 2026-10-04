@@ -3,8 +3,8 @@ import { FilesError, type FileClientErrorCode } from './errors';
 /** Raw bytes per chunk (spec §2.5): 32 KiB → 43 692 base64 chars < 64 KiB. */
 export const FILE_CHUNK_BYTES = 32768;
 
-/** Sliding-window size in chunks (ADR-34). */
-export const DEFAULT_WINDOW_SIZE = 16;
+/** Sliding-window size in chunks (ADR-37, spec §2.2). */
+export const DEFAULT_WINDOW_SIZE = 64;
 
 /** Idle timeout per transfer (ADR-34). */
 export const DEFAULT_IDLE_TIMEOUT_MS = 30_000;

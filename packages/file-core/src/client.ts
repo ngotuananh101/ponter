@@ -1,16 +1,24 @@
 import type { DataChannelManager } from '@ponter/webrtc-core';
 import type {
   FilesAckMessage,
+  FilesActionResult,
+  FilesDeleteRequest,
   FilesDownloadBegin,
   FilesDownloadEnd,
   FilesDownloadRequest,
   FilesErrorMessage,
   FilesListRequest,
   FilesListResult,
+  FilesMkdirRequest,
+  FilesRenameRequest,
   FilesUploadBeginRequest,
   FilesUploadComplete,
   FilesUploadEndRequest,
   TransferDirection,
+} from '@ponter/shared';
+import {
+  BINARY_TYPE_DOWNLOAD_CHUNK,
+  BINARY_TYPE_UPLOAD_CHUNK,
 } from '@ponter/shared';
 import {
   DEFAULT_IDLE_TIMEOUT_MS,
@@ -19,6 +27,7 @@ import {
   TransferState,
   totalChunksFor,
 } from './transfer';
+import { packBinaryChunk, unpackBinaryChunk } from './binary';
 import { FilesError, type FileClientErrorCode } from './errors';
 
 /** The wire result minus the requestId the client consumed internally. */
@@ -43,7 +52,7 @@ export interface TransferHandle {
 }
 
 export interface FileClientOptions {
-  /** Sliding-window size; default 16 (ADR-34). Test seam. */
+  /** Sliding-window size; default 64 (ADR-37). Test seam. */
   windowSize?: number;
   /** Idle timeout per transfer; default 30_000 ms (ADR-34). Test seam. */
   idleTimeoutMs?: number;
@@ -52,6 +61,32 @@ export interface FileClientOptions {
 interface PendingList {
   resolve: (result: FileListResult) => void;
   reject: (error: FilesError) => void;
+}
+
+interface PendingAction {
+  resolve: () => void;
+  reject: (error: FilesError) => void;
+}
+
+function isFilesErrorCode(code: string): code is FileClientErrorCode {
+  return [
+    'PATH_OUTSIDE_ROOT',
+    'INVALID_PATH',
+    'NOT_FOUND',
+    'NOT_A_FILE',
+    'NOT_A_DIRECTORY',
+    'FILE_EXISTS',
+    'FILE_TOO_LARGE',
+    'TRANSFER_BUSY',
+    'TRANSFER_UNKNOWN',
+    'TRANSFER_TIMEOUT',
+    'IO_ERROR',
+    'BAD_FRAME',
+    'RESUME_INVALID',
+    'DIR_NOT_EMPTY',
+    'PERMISSION_DENIED',
+    'QUEUE_FULL',
+  ].includes(code);
 }
 
 interface ActiveTransfer {
@@ -68,33 +103,15 @@ function mintId(): string {
   return crypto.randomUUID();
 }
 
-function base64ToBytes(base64: string): Uint8Array {
-  if (typeof Buffer !== 'undefined') {
-    return new Uint8Array(Buffer.from(base64, 'base64'));
-  }
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i)!;
-  return bytes;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(bytes).toString('base64');
-  }
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++)
-    binary += String.fromCodePoint(bytes[i]!);
-  return btoa(binary);
-}
-
 export class FileClient {
   private readonly pendingLists = new Map<string, PendingList>();
+  private readonly pendingActions = new Map<string, PendingAction>();
   private readonly transfers = new Map<string, ActiveTransfer>();
   private readonly errorListeners: Array<
     (code: FileClientErrorCode, message: string) => void
   > = [];
   private readonly unsubscribeMessage: () => void;
+  private readonly unsubscribeRaw: () => void;
   private readonly windowSize: number;
   private readonly idleTimeoutMs: number;
   private disposed = false;
@@ -110,6 +127,12 @@ export class FileClient {
       'files',
       (msg) => this.handleMessage(msg as { type: string; payload: unknown }),
     );
+    // ADR-36 (GAP-B): binary download chunks arrive as ArrayBuffer frames on
+    // the raw seam; string data keeps the JSON control path.
+    this.unsubscribeRaw = this.dataChannelManager.onRawMessage(
+      'files',
+      (data) => this.handleRawMessage(data),
+    );
   }
 
   /** List a directory. Rejects with FilesError. */
@@ -123,6 +146,49 @@ export class FileClient {
       });
       const payload: FilesListRequest = { requestId, path };
       this.sendJson('files-list', payload);
+    });
+  }
+
+  /**
+   * Create a directory `name` inside `dir`. Resolves when the agent replies
+   * with a matching `files-action-result`; rejects with a FilesError mapped
+   * from the result (or `BAD_FRAME` for an unknown error code).
+   */
+  mkdir(dir: string, name: string): Promise<void> {
+    this.assertLive();
+    const requestId = mintId();
+    return new Promise<void>((resolve, reject) => {
+      this.pendingActions.set(requestId, { resolve, reject });
+      const payload: FilesMkdirRequest = { requestId, dir, name };
+      this.sendJson('files-mkdir', payload);
+    });
+  }
+
+  /**
+   * Delete `path` (recursively when `recursive`). Resolves on the agent's
+   * matching `files-action-result`.
+   */
+  delete(path: string, recursive: boolean = false): Promise<void> {
+    this.assertLive();
+    const requestId = mintId();
+    return new Promise<void>((resolve, reject) => {
+      this.pendingActions.set(requestId, { resolve, reject });
+      const payload: FilesDeleteRequest = { requestId, path, recursive };
+      this.sendJson('files-delete', payload);
+    });
+  }
+
+  /**
+   * Rename `oldPath` to `newPath`. Resolves on the agent's matching
+   * `files-action-result`.
+   */
+  rename(oldPath: string, newPath: string): Promise<void> {
+    this.assertLive();
+    const requestId = mintId();
+    return new Promise<void>((resolve, reject) => {
+      this.pendingActions.set(requestId, { resolve, reject });
+      const payload: FilesRenameRequest = { requestId, oldPath, newPath };
+      this.sendJson('files-rename', payload);
     });
   }
 
@@ -194,12 +260,16 @@ export class FileClient {
               ?.chunkIndex as number);
           const start = chunkIndex * FILE_CHUNK_BYTES;
           const slice = bytes.slice(start, start + FILE_CHUNK_BYTES);
-          this.sendJson('files-upload-chunk', {
-            transferId,
-            chunkIndex,
-            totalChunks,
-            data: bytesToBase64(slice),
-          });
+          // ADR-36 (GAP-B): upload chunks go out as binary frames, no base64.
+          this.dataChannelManager.sendRaw(
+            'files',
+            packBinaryChunk(
+              BINARY_TYPE_UPLOAD_CHUNK,
+              transferId,
+              chunkIndex,
+              slice,
+            ),
+          );
           onProgress?.({
             transferId,
             direction: 'upload',
@@ -241,6 +311,90 @@ export class FileClient {
     };
   }
 
+  /**
+   * Upload a `File` object into `dirPath` under its own name (a single
+   * component). Slices chunks via `file.slice()` so the full file is never
+   * read into memory; chunks go out as ADR-36 binary frames (GAP-B).
+   */
+  uploadStream(
+    dirPath: string,
+    file: File,
+    onProgress?: (progress: TransferProgress) => void,
+  ): TransferHandle {
+    this.assertLive();
+    const transferId = mintId();
+    const totalChunks = totalChunksFor(file.size);
+    const state = new TransferState({
+      transferId,
+      direction: 'upload',
+      totalChunks,
+      size: file.size,
+      windowSize: this.windowSize,
+      idleTimeoutMs: this.idleTimeoutMs,
+      send: (frame) => {
+        if (frame.type === 'files-upload-chunk') {
+          const chunkIndex =
+            (frame.chunkIndex as number | undefined) ??
+            ((frame.payload as Record<string, unknown> | undefined)
+              ?.chunkIndex as number);
+          // Slice from the File (never reads the whole file) then send raw.
+          const start = chunkIndex * FILE_CHUNK_BYTES;
+          const end = Math.min(start + FILE_CHUNK_BYTES, file.size);
+          void file
+            .slice(start, end)
+            .arrayBuffer()
+            .then((buf) => {
+              this.dataChannelManager.sendRaw(
+                'files',
+                packBinaryChunk(
+                  BINARY_TYPE_UPLOAD_CHUNK,
+                  transferId,
+                  chunkIndex,
+                  new Uint8Array(buf),
+                ),
+              );
+            });
+          onProgress?.({
+            transferId,
+            direction: 'upload',
+            bytesTransferred: Math.min(
+              (chunkIndex + 1) * FILE_CHUNK_BYTES,
+              file.size,
+            ),
+            totalBytes: file.size,
+            chunkIndex,
+          });
+          return;
+        }
+        const { type, ...payload } = frame;
+        this.sendJson(type, payload);
+      },
+    });
+    const active: ActiveTransfer = {
+      state,
+      onProgress,
+      buffer: [],
+      receivedBytes: 0,
+      declaredSize: file.size,
+    };
+    this.transfers.set(transferId, active);
+    state.armIdleTimer();
+
+    const begin: FilesUploadBeginRequest = {
+      transferId,
+      path: dirPath,
+      name: file.name,
+      size: file.size,
+    };
+    this.sendJson('files-upload-begin', begin);
+    return {
+      transferId,
+      direction: 'upload',
+      done: state.settled as Promise<Uint8Array | void>,
+      cancel: () => state.cancel(),
+    };
+  }
+
   /** Subscribe to unsolicited errors (e.g. TRANSFER_TIMEOUT); returns an unsubscribe. */
   onError(
     handler: (code: FileClientErrorCode, message: string) => void,
@@ -257,6 +411,7 @@ export class FileClient {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeMessage();
+    this.unsubscribeRaw();
     for (const [, transfer] of this.transfers) {
       transfer.state.dispose('CANCELLED');
     }
@@ -265,6 +420,10 @@ export class FileClient {
       pending.reject(new FilesError('CANCELLED', 'client disposed'));
     }
     this.pendingLists.clear();
+    for (const [, pending] of this.pendingActions) {
+      pending.reject(new FilesError('CANCELLED', 'client disposed'));
+    }
+    this.pendingActions.clear();
   }
 
   private assertLive(): void {
@@ -295,6 +454,23 @@ export class FileClient {
         pending.resolve(rest);
         return;
       }
+      case 'files-action-result': {
+        const payload = msg.payload as FilesActionResult;
+        const pending = this.pendingActions.get(payload.requestId);
+        if (!pending) return;
+        this.pendingActions.delete(payload.requestId);
+        if (payload.success) {
+          pending.resolve();
+          return;
+        }
+        const errMsg = payload.error ?? 'file operation failed';
+        const code =
+          payload.error && isFilesErrorCode(payload.error)
+            ? payload.error
+            : ('BAD_FRAME' as FileClientErrorCode);
+        pending.reject(new FilesError(code, errMsg));
+        return;
+      }
       case 'files-download-begin': {
         const payload = msg.payload as FilesDownloadBegin;
         const active = this.transfers.get(payload.transferId);
@@ -304,32 +480,6 @@ export class FileClient {
         active.state.totalChunks = payload.totalChunks;
         active.state.size = payload.size;
         active.declaredSize = payload.size;
-        return;
-      }
-      case 'files-download-chunk': {
-        const payload = msg.payload as {
-          transferId: string;
-          chunkIndex: number;
-          data: string;
-        };
-        const active = this.transfers.get(payload.transferId);
-        if (!active) return;
-        const bytes = base64ToBytes(payload.data);
-        if (!active.state.onChunkReceived(payload.chunkIndex, bytes.byteLength))
-          return;
-        active.buffer.push(bytes);
-        active.receivedBytes += bytes.byteLength;
-        this.sendJson('files-download-ack', {
-          transferId: payload.transferId,
-          nextChunkIndex: active.state.receivedCount,
-        } satisfies FilesAckMessage);
-        active.onProgress?.({
-          transferId: payload.transferId,
-          direction: 'download',
-          bytesTransferred: active.receivedBytes,
-          totalBytes: active.declaredSize,
-          chunkIndex: payload.chunkIndex,
-        });
         return;
       }
       case 'files-download-end': {
@@ -391,6 +541,12 @@ export class FileClient {
           pending.reject(error);
           return;
         }
+        if (payload.requestId && this.pendingActions.has(payload.requestId)) {
+          const pending = this.pendingActions.get(payload.requestId)!;
+          this.pendingActions.delete(payload.requestId);
+          pending.reject(error);
+          return;
+        }
         for (const listener of [...this.errorListeners]) {
           listener(payload.code, payload.message);
         }
@@ -399,5 +555,41 @@ export class FileClient {
       default:
         return;
     }
+  }
+
+  /**
+   * ADR-36 (GAP-B): binary download chunks arrive as `ArrayBuffer` on the raw
+   * seam. They are unpacked (no base64) and fed to the same receive path.
+   */
+  private handleRawMessage(data: string | ArrayBuffer): void {
+    if (typeof data === 'string') return;
+    let frame;
+    try {
+      frame = unpackBinaryChunk(new Uint8Array(data));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      for (const listener of [...this.errorListeners]) {
+        listener('BAD_FRAME', message);
+      }
+      return;
+    }
+    if (frame.type !== BINARY_TYPE_DOWNLOAD_CHUNK) return;
+    const active = this.transfers.get(frame.transferId);
+    if (!active) return;
+    if (!active.state.onChunkReceived(frame.chunkIndex, frame.data.byteLength))
+      return;
+    active.buffer.push(frame.data);
+    active.receivedBytes += frame.data.byteLength;
+    this.sendJson('files-download-ack', {
+      transferId: frame.transferId,
+      nextChunkIndex: active.state.receivedCount,
+    } satisfies FilesAckMessage);
+    active.onProgress?.({
+      transferId: frame.transferId,
+      direction: 'download',
+      bytesTransferred: active.receivedBytes,
+      totalBytes: active.declaredSize,
+      chunkIndex: frame.chunkIndex,
+    });
   }
 }
