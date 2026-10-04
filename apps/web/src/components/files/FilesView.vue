@@ -11,6 +11,10 @@ import {
 import { useTerminalStore } from '@/stores/terminal';
 import type { TabItem } from '@/stores/terminal';
 import type { RemoteFile } from '@ponter/shared';
+import NewFolderDialog from './NewFolderDialog.vue';
+import RenameDialog from './RenameDialog.vue';
+import DeleteConfirmDialog from './DeleteConfirmDialog.vue';
+import TransferQueueDrawer from './TransferQueueDrawer.vue';
 
 const props = defineProps<{ tab: TabItem }>();
 const store = useTerminalStore();
@@ -22,6 +26,17 @@ const segments = computed(() => currentPath.value.split('/').filter(Boolean));
 const atRoot = computed(() => currentPath.value === '');
 const entries = computed(() => props.tab.fileList?.entries ?? []);
 const transfers = computed(() => props.tab.fileTransfers ?? []);
+
+// Drag state.
+const isDragActive = ref(false);
+
+// Dialog state.
+const newFolderOpen = ref(false);
+const renameOpen = ref(false);
+const deleteOpen = ref(false);
+const renameTarget = ref<RemoteFile | null>(null);
+const deleteTarget = ref<RemoteFile | null>(null);
+const transfersDrawerOpen = ref(false);
 
 /** Human sizes per spec §7.1: B / KiB / MiB / GiB, one decimal from KiB up. */
 function formatSize(size: number): string {
@@ -78,10 +93,77 @@ function onFilePicked(event: Event): void {
   input.value = '';
   if (file) void store.filesUpload(props.tab.id, file);
 }
+
+// --- Drag & drop ---
+function onDragover(event: DragEvent): void {
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy';
+  }
+  isDragActive.value = true;
+}
+
+function onDragleave(): void {
+  isDragActive.value = false;
+}
+
+function onDrop(event: DragEvent): void {
+  event.preventDefault();
+  isDragActive.value = false;
+  const files = event.dataTransfer?.files;
+  if (!files) return;
+  for (const file of Array.from(files)) {
+    void store.filesUpload(props.tab.id, file);
+  }
+}
+
+// --- Row actions ---
+function onRename(entry: RemoteFile): void {
+  renameTarget.value = entry;
+  renameOpen.value = true;
+}
+
+function onRenameConfirm(name: string): void {
+  const target = renameTarget.value;
+  if (!target) return;
+  void store.filesRename(props.tab.id, target.path, name);
+  renameOpen.value = false;
+  renameTarget.value = null;
+}
+
+function onDelete(entry: RemoteFile): void {
+  deleteTarget.value = entry;
+  deleteOpen.value = true;
+}
+
+function onDeleteConfirm(recursive: boolean): void {
+  const target = deleteTarget.value;
+  if (!target) return;
+  void store.filesDelete(props.tab.id, target.path, recursive);
+  deleteOpen.value = false;
+  deleteTarget.value = null;
+}
+
+// --- Transfer drawer ---
+function onPause(id: string): void {
+  void store.filesPauseTransfer(props.tab.id, id);
+}
+
+function onResume(id: string): void {
+  void store.filesResumeTransfer(props.tab.id, id);
+}
+
+function onCancel(id: string): void {
+  store.filesCancelTransfer(props.tab.id, id);
+}
 </script>
 
 <template>
-  <div data-test="files-view" class="flex h-full min-h-0 flex-col">
+  <div
+    data-test="files-view"
+    class="flex h-full min-h-0 flex-col"
+    :class="{ 'drag-active': isDragActive }"
+  >
     <!-- Toolbar: up / refresh / breadcrumb / upload -->
     <div
       class="flex h-9 flex-shrink-0 items-center gap-2 border-b border-border px-3 text-xs"
@@ -139,6 +221,26 @@ function onFilePicked(event: Event): void {
       </nav>
 
       <button
+        data-test="files-new-folder-btn"
+        class="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="New folder"
+        aria-label="New folder"
+        @click="newFolderOpen = true"
+      >
+        <Folder class="w-3.5 h-3.5" />
+      </button>
+
+      <button
+        data-test="files-transfers-btn"
+        class="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="Transfers"
+        aria-label="Transfers"
+        @click="transfersDrawerOpen = true"
+      >
+        <Upload class="w-3.5 h-3.5" />
+      </button>
+
+      <button
         data-test="files-upload"
         class="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
         @click="onUploadClick()"
@@ -176,14 +278,21 @@ function onFilePicked(event: Event): void {
       </button>
     </div>
 
-    <!-- Listing -->
-    <div class="min-h-0 flex-1 overflow-auto">
+    <!-- Listing (also the drag-and-drop target for file uploads) -->
+    <div
+      data-test="files-dropzone"
+      class="min-h-0 flex-1 overflow-auto"
+      @dragover="onDragover"
+      @dragleave="onDragleave"
+      @drop="onDrop"
+    >
       <table class="w-full text-xs">
         <thead class="sticky top-0 bg-card/95 text-left text-muted-foreground">
           <tr>
             <th class="px-3 py-1.5 font-medium">Name</th>
             <th class="w-24 px-3 py-1.5 text-right font-medium">Size</th>
             <th class="w-48 px-3 py-1.5 font-medium">Modified</th>
+            <th class="w-28 px-3 py-1.5 font-medium">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -191,7 +300,7 @@ function onFilePicked(event: Event): void {
             v-for="entry in entries"
             :key="entry.path"
             :data-test="`files-row-${entry.name}`"
-            class="cursor-pointer border-t border-border/50 hover:bg-muted/50"
+            class="border-t border-border/50"
             tabindex="0"
             @click="onRowClick(entry)"
             @keydown.enter="onRowClick(entry)"
@@ -214,6 +323,26 @@ function onFilePicked(event: Event): void {
             </td>
             <td class="px-3 py-1.5 font-mono text-muted-foreground">
               {{ formatModified(entry.modifiedAt) }}
+            </td>
+            <td class="px-3 py-1.5">
+              <span class="flex items-center gap-1">
+                <button
+                  class="rename-action rounded p-0.5 text-muted-foreground hover:text-foreground"
+                  title="Rename"
+                  aria-label="Rename"
+                  @click.stop="onRename(entry)"
+                >
+                  ✏
+                </button>
+                <button
+                  class="delete-action rounded p-0.5 text-muted-foreground hover:text-destructive"
+                  title="Delete"
+                  aria-label="Delete"
+                  @click.stop="onDelete(entry)"
+                >
+                  <X class="w-3.5 h-3.5" />
+                </button>
+              </span>
             </td>
           </tr>
         </tbody>
@@ -267,5 +396,37 @@ function onFilePicked(event: Event): void {
         </button>
       </div>
     </div>
+
+    <!-- Modal dialogs -->
+    <NewFolderDialog
+      :open="newFolderOpen"
+      @confirm="
+        store.filesMkdir(tab.id, $event);
+        newFolderOpen = false;
+      "
+      @cancel="newFolderOpen = false"
+    />
+    <RenameDialog
+      :open="renameOpen"
+      :initial-name="renameTarget?.name ?? ''"
+      @confirm="onRenameConfirm($event)"
+      @cancel="renameOpen = false"
+    />
+    <DeleteConfirmDialog
+      :open="deleteOpen"
+      :name="deleteTarget?.name ?? ''"
+      :is-directory="deleteTarget?.isDirectory ?? false"
+      @confirm="onDeleteConfirm($event)"
+      @cancel="deleteOpen = false"
+    />
+    <TransferQueueDrawer
+      :open="transfersDrawerOpen"
+      :tab-id="tab.id"
+      :transfers="transfers"
+      @pause="onPause($event)"
+      @resume="onResume($event)"
+      @cancel="onCancel($event)"
+      @close="transfersDrawerOpen = false"
+    />
   </div>
 </template>

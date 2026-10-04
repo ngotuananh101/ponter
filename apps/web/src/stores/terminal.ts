@@ -74,7 +74,11 @@ export interface TabItem {
   /** Files tabs only: active transfers with their handles (spec §7.2; `name`
    *  is what the §7.1 footer renders — see the ruling above). */
   fileTransfers?: Array<
-    TransferProgress & { handle: TransferHandle; name: string }
+    TransferProgress & {
+      handle: TransferHandle;
+      name: string;
+      paused?: boolean;
+    }
   >;
 }
 
@@ -1118,7 +1122,11 @@ export const useTerminalStore = defineStore('terminal', () => {
   /** The files-only fields a tab needs while transfers run. */
   interface FileTabLike {
     fileTransfers?: Array<
-      TransferProgress & { handle: TransferHandle; name: string }
+      TransferProgress & {
+        handle: TransferHandle;
+        name: string;
+        paused?: boolean;
+      }
     >;
     fileError?: string | null;
   }
@@ -1342,6 +1350,98 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (tab?.kind === 'files') tab.fileError = null;
   }
 
+  /** Create a directory inside the tab's current path (spec §7.2). */
+  async function filesMkdir(tabId: string, name: string): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    tab.fileError = null;
+    try {
+      await conn.client.mkdir(tab.filesPath ?? '', name);
+      await filesNavigate(tabId, tab.filesPath ?? '');
+    } catch (e) {
+      tab.fileError = fileErrorText(e);
+    }
+  }
+
+  /** Delete `path` relative to the tab's current path (spec §7.2). */
+  async function filesDelete(
+    tabId: string,
+    path: string,
+    recursive: boolean = false,
+  ): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    tab.fileError = null;
+    try {
+      await conn.client.delete(path, recursive);
+      await filesNavigate(tabId, tab.filesPath ?? '');
+    } catch (e) {
+      tab.fileError = fileErrorText(e);
+    }
+  }
+
+  /** Rename `oldPath` to `newPath` (spec §7.2). */
+  async function filesRename(
+    tabId: string,
+    oldPath: string,
+    newPath: string,
+  ): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    tab.fileError = null;
+    try {
+      await conn.client.rename(oldPath, newPath);
+      await filesNavigate(tabId, tab.filesPath ?? '');
+    } catch (e) {
+      tab.fileError = fileErrorText(e);
+    }
+  }
+
+  /** Pause an active transfer on the tab (spec §7.2). */
+  async function filesPauseTransfer(
+    tabId: string,
+    transferId: string,
+  ): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    const entry = tab.fileTransfers?.find((t) => t.transferId === transferId);
+    if (!entry) return;
+    try {
+      await conn.client.pauseTransfer(transferId, entry.direction);
+      entry.paused = true;
+    } catch (e) {
+      tab.fileError = fileErrorText(e);
+    }
+  }
+
+  /** Resume a paused transfer, resuming from the next chunk after the last
+   *  contiguous one received/sent (spec §7.2). */
+  async function filesResumeTransfer(
+    tabId: string,
+    transferId: string,
+  ): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    const entry = tab.fileTransfers?.find((t) => t.transferId === transferId);
+    if (!entry) return;
+    try {
+      await conn.client.resumeTransfer(transferId, entry.chunkIndex + 1);
+      entry.paused = false;
+    } catch (e) {
+      tab.fileError = fileErrorText(e);
+    }
+  }
+
   return {
     tabs,
     activeTabId,
@@ -1360,6 +1460,11 @@ export const useTerminalStore = defineStore('terminal', () => {
     filesUpload,
     filesCancelTransfer,
     clearFileError,
+    filesMkdir,
+    filesDelete,
+    filesRename,
+    filesPauseTransfer,
+    filesResumeTransfer,
     getOrConnectAgentForTest: getOrConnectAgent,
   };
 });
