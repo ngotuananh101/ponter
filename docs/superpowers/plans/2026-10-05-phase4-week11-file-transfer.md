@@ -446,6 +446,7 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
 - Modify: `packages/file-core/src/client.ts`
 - Modify: `apps/web/src/stores/terminal.ts` (SW download routing — see Interfaces; GAP-D ruling)
 - Modify: `apps/web/src/lib/file-errors.ts` (GAP-E ruling — add the four new error codes' UI text)
+- Modify: `packages/shared/src/types/files.ts` (GAP-F ruling — prettier format fix only, no semantic change)
 - Test: `packages/file-core/test/pause-resume.test.ts`
 
 **Interfaces:**
@@ -464,6 +465,7 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
     - `DIR_NOT_EMPTY: 'That folder is not empty'`
     - `PERMISSION_DENIED: 'The agent refused that operation'`
     - `QUEUE_FULL: 'Too many transfers are queued'`
+  - **Format fix (GAP-F ruling — Task 1 committed `packages/shared/src/types/files.ts` with a multi-line `QueueItemStatus` union that fails `prettier --check`; `pnpm format:check` is a gating CI step (`ci-node.yml`), so the branch would go red):** run `pnpm exec prettier --write packages/shared/src/types/files.ts` and include the reformatted file in this task's commit. **Formatting only — do not change any type, value, or ordering.** Verify with `pnpm exec prettier --check packages/shared/src/types/files.ts`.
 
 - [ ] **Step 1: Write failing test in `packages/file-core/test/pause-resume.test.ts`**
 
@@ -532,12 +534,12 @@ Expected: FAIL with `pauseTransfer` not defined.
 Run: `pnpm --filter @ponter/file-core test`  
 Expected: PASS.
 
-Also run `pnpm --filter @ponter/web typecheck` — it must exit 0 once `file-errors.ts` covers the four new codes (GAP-E). This is the only apps/web check this task owns.
+Also run `pnpm --filter @ponter/web typecheck` — it must exit 0 once `file-errors.ts` covers the four new codes (GAP-E). This is the only apps/web check this task owns. And run `pnpm exec prettier --check packages/shared/src/types/files.ts` — must exit 0 (GAP-F).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js apps/web/src/stores/terminal.ts apps/web/src/lib/file-errors.ts packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
+git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js apps/web/src/stores/terminal.ts apps/web/src/lib/file-errors.ts packages/shared/src/types/files.ts packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
 ```
 
 ---
