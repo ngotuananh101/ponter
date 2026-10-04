@@ -1018,8 +1018,8 @@ gantt
 
 - [x] Đa kênh nhị phân lai: text frame = JSON envelope (`files-list`…) + binary frame thô chunk payload, header 25 byte (type 1B + transfer ID 16B + chunk index 8B BE), payload ≤32 KiB — loại bỏ overhead base64 33% (ADR-36)
 - [x] Tốc độ >10 MB/s: cửa sổ trượt 64 chunk (~2 MiB in-flight), ack tích lũy mỗi 16 chunk hoặc 20 ms — đo ~11–14 MB/s loopback (ADR-37)
-- [x] Streaming xuống đĩa qua Service Worker: SW `/sw-files-download.js` bắt `/files-download-stream/:transferId/:filename`, stream `ReadableStream` tới thư mục Downloads, fallback Blob ≤200 MB khi SW lỗi (ADR-38)
-- [x] Hàng đợi & pause/resume: 1 up + 1 down, `.ponter-part` lưu khi dừng, resume dựa `fromChunkIndex` + length validation, janitor xóa parts >24 h (86400 s) (ADR-39)
+- [x] Streaming xuống đĩa qua Service Worker: SW `/sw-files-download.js` bắt `/files-download-stream/:transferId/:filename`, stream `ReadableStream` xuống đích tải xuống của trình duyệt, fallback Blob ≤200 MB khi SW lỗi (ADR-38)
+- [x] Hàng đợi & pause/resume: 1 up + 1 down, `.ponter-part` dành cho upload lưu khi dừng (download read-only không tạo `.part`), resume dựa `fromChunkIndex` + length validation, janitor xóa parts >24 h (86400 s) (ADR-39)
 - [x] Phép toán sandbox: `files-mkdir`/`files-delete`/`files-rename`; root bị từ chối `PERMISSION_DENIED`, delete dir rỗng/phi rỗng cần `recursive`; rename không ghi đè `FILE_EXISTS` (ADR-40)
 
 
