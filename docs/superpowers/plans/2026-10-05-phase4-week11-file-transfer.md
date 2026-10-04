@@ -23,7 +23,7 @@
 
 ## Review Focus
 
-1. **Binary Frame Truncation / Malformed Header:** An incoming binary frame with length < 25 bytes or > 32813 bytes must be safely rejected without panicking the agent or breaking the client loop.
+1. **Binary Frame Truncation / Malformed Header:** An incoming binary frame with length < 25 bytes or > 32793 bytes (25 header + 32768 payload) must be safely rejected without panicking the agent or breaking the client loop.
 2. **Resume Chunk Alignment Mismatch:** Resuming an upload with `fromChunkIndex` where existing `.part` size does not equal `fromChunkIndex * 32768` must return `RESUME_INVALID` and refuse to append corrupted data.
 3. **Sandbox Directory Traversal in Rename:** Renaming with `newPath` containing `../` or resolving outside the sandbox root must be rejected with `PATH_OUTSIDE_ROOT`.
 4. **Service Worker MessageChannel Drop:** If the user closes the download tab while Service Worker is streaming, the stream controller must close or error gracefully without leaving dangling worker channels.
@@ -223,6 +223,8 @@ git commit -m "feat(agent): implement binary frame codec and sandboxed directory
 
 **Files:**
 - Modify: `apps/agent/src/files.rs`
+- Modify: `apps/agent/src/main.rs` (binary transport wiring — see Interfaces)
+- Modify: `apps/agent/Cargo.toml` (make `bytes` available on all targets)
 - Test: `apps/agent/src/files.rs`
 
 **Interfaces:**
@@ -231,6 +233,12 @@ git commit -m "feat(agent): implement binary frame codec and sandboxed directory
   - Pause handler: flushes file, leaves `.part` on disk, returns `FilesPauseAckMessage`.
   - Resume handler: validates `.part` size against `fromChunkIndex * 32768`, resumes streaming.
   - Janitor function: `clean_stale_part_files(root: &Path, max_age: Duration) -> u32`.
+  - Binary transport (GAP-A ruling — no other task owns this): the agent files session carries both text and binary frames end-to-end:
+    - Inbound: the poll task routes `DataChannelEvent::OnMessage` by `msg.is_string` — text frames keep the existing UTF-8 path; binary frames are forwarded as raw bytes to the session dispatch, where type `0x02` (`BINARY_TYPE_UPLOAD_CHUNK`) frames feed `handle_upload_chunk` via `decode_files_binary_frame`.
+    - Outbound: `pump_download` emits binary frames via `encode_files_binary_frame(BINARY_TYPE_DOWNLOAD_CHUNK, …)` instead of base64 JSON `Outbound::DownloadChunk`; the pump sends them with `dc.send(BytesMut)` and keeps `send_text` for JSON frames.
+    - The session's frame channel carries an enum of text-or-binary payloads (e.g. `FilesFrame::Text(String) | FilesFrame::Binary(Vec<u8>)`).
+    - `bytes` must resolve on all targets (files sessions are NOT musl-gated): move/add `bytes = "1"` to the general `[dependencies]` in `apps/agent/Cargo.toml` (it currently sits under the non-musl target table).
+  - Ack batching (ADR-37): `ACK_FREQUENCY_CHUNKS: u64 = 16`, `ACK_FLUSH_INTERVAL: Duration = 20ms` — upload acks are cumulative (highest contiguous chunk index) and flush every 16 chunks or every 20 ms, whichever first.
 
 - [ ] **Step 1: Write failing Rust unit tests for pause/resume and janitor in `apps/agent/src/files.rs`**
 
@@ -279,17 +287,33 @@ mod tests_throughput_resume {
 }
 ```
 
+> **Adaptation note:** `tempfile` and `filetime` are NOT declared dev-dependencies of `apps/agent`. Use the in-file `temp_dir_for_test()` helper pattern (as established in Task 2) and `std::fs::File::set_times` (std, stable since Rust 1.75; rust-version is 1.85) for the mtime backdating. Preserve the test assertions exactly.
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml files::tests_throughput_resume`  
 Expected: FAIL.
 
-- [ ] **Step 3: Implement window update, pause/resume state machine, and janitor in `apps/agent/src/files.rs`**
+- [ ] **Step 3: Implement window update, binary transport, ack batching, pause/resume state machine, and janitor**
 
+In `apps/agent/src/files.rs`:
 - Update `FILE_WINDOW_CHUNKS` to 64.
+- Switch `pump_download` from base64 JSON `Outbound::DownloadChunk` to binary frames (`encode_files_binary_frame`, type `BINARY_TYPE_DOWNLOAD_CHUNK`); the `Outbound` enum gains a raw-bytes variant.
+- Accept inbound binary upload frames: wire the session dispatch into `handle_upload_chunk` via `decode_files_binary_frame` (type `BINARY_TYPE_UPLOAD_CHUNK`).
+- Add ack batching per ADR-37: `ACK_FREQUENCY_CHUNKS: u64 = 16`, `ACK_FLUSH_INTERVAL: Duration = 20ms`; acks are cumulative (highest contiguous chunk index) and flush every 16 chunks or every 20 ms, whichever first (replaces today's ack-every-chunk behavior).
+- Update the existing `download_acks_gate_the_window` test for the new window: it currently pins 16 in-flight chunks ("begin + 16 chunks", `frames.len() == 17`).
 - In `UploadState`: handle `files-pause` without deleting `.part`.
 - Implement `verify_resume_upload` verifying `.part` length.
 - Implement `clean_stale_part_files` scanning directory recursively for `.ponter-part` files.
+
+In `apps/agent/src/main.rs`:
+- Change the files-session frame channel to carry text-or-binary payloads (enum).
+- Poll task: branch on `msg.is_string` — text keeps the UTF-8 dispatch path; binary forwards the raw bytes to dispatch.
+- Pump: `send_text` for JSON frames, `dc.send(BytesMut)` for binary frames.
+- Update `handle_files_frame` to accept binary frames and return outbound frames that may be binary.
+
+In `apps/agent/Cargo.toml`:
+- Make `bytes = "1"` a dependency on all targets (currently non-musl only).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -299,7 +323,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(agent): support pause/resume upload, window tuning, and 24h part file janitor" -- apps/agent/src/files.rs
+git commit -m "feat(agent): binary transport, ack batching, pause/resume upload, window tuning, and 24h part file janitor" -- apps/agent/src/files.rs apps/agent/src/main.rs apps/agent/Cargo.toml
 ```
 
 ---
@@ -568,6 +592,7 @@ git commit -m "feat(web): add drag-and-drop, transfer queue drawer, and file ope
 **Files:**
 - Create: `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts`
 - Modify: `packages/webrtc-core/test/e2e/harness.ts`
+- Modify: `packages/webrtc-core/test/e2e/files.e2e.test.ts` (Week 10 suite must be updated for Week 11: `WINDOW` 16 → 64, base64 JSON chunk assertions → binary frames, and the cancel test's `WINDOW + 1` no-show pin reworked for the new window)
 
 **Interfaces:**
 - Produces: E2E test verifying:
@@ -589,7 +614,7 @@ Expected: PASS once Tasks 1-7 are integrated.
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "test(e2e): add Phase 4 Week 11 advanced file transfer e2e test suite" -- packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts packages/webrtc-core/test/e2e/harness.ts
+git commit -m "test(e2e): add Phase 4 Week 11 advanced file transfer e2e test suite" -- packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts packages/webrtc-core/test/e2e/files.e2e.test.ts packages/webrtc-core/test/e2e/harness.ts
 ```
 
 ---
