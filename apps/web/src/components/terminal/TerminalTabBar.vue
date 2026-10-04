@@ -8,7 +8,7 @@ defineProps<{
     id: string;
     title: string;
     status: string;
-    kind: 'terminal' | 'desktop';
+    kind: 'terminal' | 'desktop' | 'files';
   }>;
   activeTabId: string | null;
   /** Fullscreen state of the session body, owned by the workspace view. */

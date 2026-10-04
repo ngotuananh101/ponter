@@ -254,6 +254,9 @@ importers:
       '@ponter/desktop-core':
         specifier: workspace:*
         version: link:../../packages/desktop-core
+      '@ponter/file-core':
+        specifier: workspace:*
+        version: link:../../packages/file-core
       '@ponter/shared':
         specifier: workspace:*
         version: link:../../packages/shared
