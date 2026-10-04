@@ -1207,6 +1207,8 @@ export const useTerminalStore = defineStore('terminal', () => {
     // --- SW streaming path (GAP-D ruling) ---
     // Feature-detect first; if SW is unsupported, skip straight to fallback.
     // Registration is lazy: the first download triggers `registerDownloadSW`.
+    const MAX_BLOB_FALLBACK_BYTES = 200 * 1024 * 1024;
+    let swHandle: TransferHandle | null = null;
     if (swAvailable()) {
       try {
         const reg = await registerDownloadSW();
@@ -1224,9 +1226,16 @@ export const useTerminalStore = defineStore('terminal', () => {
             path,
             fileProgressHandler(tab),
             (chunk) => {
-              void writerRef.current?.writeChunk(chunk).catch(() => {});
+              void writerRef.current?.writeChunk(chunk).catch(() => {
+                // Chunk write failed (e.g. port closed or navigated away).
+                // Abort the writer and cancel the transfer so handle.done
+                // settles and we can cleanly fall through to saveBlob fallback.
+                writerRef.current?.abort();
+                handle.cancel();
+              });
             },
           );
+          swHandle = handle;
 
           const writer = new ServiceWorkerStreamWriter(port1, {
             transferId: handle.transferId,
@@ -1265,15 +1274,27 @@ export const useTerminalStore = defineStore('terminal', () => {
               (t) => t.transferId !== handle.transferId,
             );
           }
+          swHandle = null;
           return;
         }
       } catch {
-        // SW path failed (registration or stream error) — fall through to
-        // the saveBlob fallback below (spec ADR-38: <= 200 MB).
+        // SW path failed (registration or stream error) — cancel any transfer
+        // that was started so it doesn't keep streaming/acking orphaned, then
+        // fall through to the saveBlob fallback below.
+        swHandle?.cancel();
+        swHandle = null;
       }
     }
 
     // --- Fallback: in-memory saveBlob (spec ADR-38: <= 200 MB) ---
+    // Gate on file size from the directory listing (context §59): if known and
+    // over 200 MB, refuse to buffer in memory — show a warning instead.
+    const knownEntry = tab.fileList?.entries.find((e) => e.path === path);
+    if (knownEntry && knownEntry.size > MAX_BLOB_FALLBACK_BYTES) {
+      tab.fileError =
+        'File is too large to download without Service Worker support (over 200 MB)';
+      return;
+    }
     const handle = conn.client.download(path, fileProgressHandler(tab));
     await trackTransfer(tab, handle, name, (bytes) => saveBlob(name, bytes));
   }
