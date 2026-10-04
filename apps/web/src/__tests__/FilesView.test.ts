@@ -220,16 +220,19 @@ describe('FilesView', () => {
       const dropzone = wrapper.find('[data-test="files-dropzone"]');
       const file1 = new File([new Uint8Array([1])], 'a.txt');
       const file2 = new File([new Uint8Array([2])], 'b.txt');
+      const file3 = new File([new Uint8Array([3])], 'c.txt');
 
       const event = new DragEvent('drop');
       Object.defineProperty(event, 'dataTransfer', {
-        value: { files: [file1, file2] },
+        value: { files: [file1, file2, file3] },
         configurable: true,
       });
       await dropzone.element.dispatchEvent(event);
 
       expect(upload).toHaveBeenCalledWith('tab-f1', file1);
       expect(upload).toHaveBeenCalledWith('tab-f1', file2);
+      expect(upload).toHaveBeenCalledWith('tab-f1', file3);
+      expect(upload).toHaveBeenCalledTimes(3);
     });
 
     it('removes the drag-active class on dragleave', async () => {

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import {
   TerminalClient,
   TerminalSession,
@@ -35,6 +35,7 @@ import { tokenStorage } from '@/services/token-storage';
 import type { InitStep } from '@/lib/connection-steps';
 import { fileErrorMessage } from '@/lib/file-errors';
 import { saveBlob } from '@/lib/save-blob';
+import { useTransferQueueStore } from './transfer-queue';
 
 export interface TabItem {
   id: string;
@@ -159,6 +160,43 @@ export const useTerminalStore = defineStore('terminal', () => {
       unsubscribers: Unsubscribe[];
     }
   >();
+
+  // Transfer queue store — enforces one active transfer per direction so
+  // concurrent drops don't overwhelm the Rust agent's single-slot-per-direction
+  // contract (spec §7.7 AC#4, ADR-39).
+  const transferQueue = useTransferQueueStore();
+
+  /**
+   * Registry of pending start closures for queued transfers. When a queued item
+   * is promoted to `active` by the store's internal `pump()`, this watch fires
+   * and invokes the closure to actually begin the transfer.
+   */
+  const pendingUploadStarts = new Map<string, () => Promise<void>>();
+  const pendingDownloadStarts = new Map<string, () => Promise<void>>();
+
+  // Promote queued transfers when the store advances them to active.
+  watch(
+    () => transferQueue.activeUploadId,
+    (newId) => {
+      if (!newId) return;
+      const start = pendingUploadStarts.get(newId);
+      if (start) {
+        pendingUploadStarts.delete(newId);
+        void start();
+      }
+    },
+  );
+  watch(
+    () => transferQueue.activeDownloadId,
+    (newId) => {
+      if (!newId) return;
+      const start = pendingDownloadStarts.get(newId);
+      if (start) {
+        pendingDownloadStarts.delete(newId);
+        void start();
+      }
+    },
+  );
 
   const activeTab = computed(() =>
     tabs.value.find((t) => t.id === activeTabId.value),
@@ -1144,41 +1182,6 @@ export const useTerminalStore = defineStore('terminal', () => {
     };
   }
 
-  /**
-   * Register a handle on the tab and settle it: resolve with the save hook
-   * (download) or nothing (upload), record non-cancel failures on the tab,
-   * and drop the entry either way.
-   */
-  async function trackTransfer(
-    tab: FileTabLike,
-    handle: TransferHandle,
-    name: string,
-    onSaved?: (bytes: Uint8Array) => void,
-  ): Promise<void> {
-    tab.fileTransfers = [
-      ...(tab.fileTransfers ?? []),
-      {
-        transferId: handle.transferId,
-        direction: handle.direction,
-        bytesTransferred: 0,
-        totalBytes: 0,
-        chunkIndex: -1,
-        handle,
-        name,
-      },
-    ];
-    try {
-      const bytes = (await handle.done) as Uint8Array | void;
-      if (onSaved && bytes) onSaved(bytes);
-    } catch (e) {
-      if (!isCancelledError(e)) tab.fileError = fileErrorText(e);
-    } finally {
-      tab.fileTransfers = tab.fileTransfers?.filter(
-        (t) => t.transferId !== handle.transferId,
-      );
-    }
-  }
-
   /** List `path` and show it (spec §7.2). */
   async function filesNavigate(tabId: string, path: string): Promise<void> {
     const tab = tabs.value.find((t) => t.id === tabId);
@@ -1203,6 +1206,10 @@ export const useTerminalStore = defineStore('terminal', () => {
    * MessagePort so a 500 MB file never sits fully in memory. Falls back to the
    * in-memory `saveBlob` path for files <= 200 MB when the SW is unavailable or
    * fails; files > 200 MB with no SW surface a warning banner.
+   *
+   * Concurrency is gated by the transfer queue store (spec §7.7 AC#4): only one
+   * download per direction runs at a time; queued items are started by the
+   * `watch` on `activeDownloadId`.
    */
   async function filesDownload(tabId: string, path: string): Promise<void> {
     const tab = tabs.value.find((t) => t.id === tabId);
@@ -1211,108 +1218,218 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (!conn) return;
     tab.fileError = null;
     const name = path.split('/').pop() || path;
+    const knownEntry = tab.fileList?.entries.find((e) => e.path === path);
+    const size = knownEntry?.size ?? 0;
 
-    // --- SW streaming path (GAP-D ruling) ---
-    // Feature-detect first; if SW is unsupported, skip straight to fallback.
-    // Registration is lazy: the first download triggers `registerDownloadSW`.
-    const MAX_BLOB_FALLBACK_BYTES = 200 * 1024 * 1024;
-    let swHandle: TransferHandle | null = null;
-    if (swAvailable()) {
-      try {
-        const reg = await registerDownloadSW();
-        if (reg) {
-          const { port1, port2 } = new MessageChannel();
+    // Enqueue before starting any I/O (spec §7.7 AC#4).
+    const queueId = crypto.randomUUID();
+    const item = transferQueue.enqueue({
+      id: queueId,
+      name,
+      path,
+      size,
+      direction: 'download',
+    });
 
-          // The writer needs the transferId from download(), but onChunk (passed
-          // to download()) needs the writer. Break the cycle with a holder the
-          // closure reads lazily — the writer is assigned synchronously before
-          // any chunk can arrive (download is receive-side via async data channel).
-          const writerRef: { current: ServiceWorkerStreamWriter | null } = {
-            current: null,
-          };
-          const handle = conn.client.download(
-            path,
-            fileProgressHandler(tab),
-            (chunk) => {
-              void writerRef.current?.writeChunk(chunk).catch(() => {
-                // Chunk write failed (e.g. port closed or navigated away).
-                // Abort the writer and cancel the transfer so handle.done
-                // settles and we can cleanly fall through to saveBlob fallback.
-                writerRef.current?.abort();
-                handle.cancel();
-              });
-            },
-          );
-          swHandle = handle;
+    // The actual download logic, extracted so both the active and queued paths
+    // run the same code. Returns a promise that settles the queue item.
+    const startDownload = (): Promise<void> => {
+      // Re-check the tab/connection are still alive.
+      const live = tabs.value.find((t) => t.id === tabId);
+      if (!live || live.kind !== 'files') {
+        transferQueue.cancel(queueId, 'tab closed before download started');
+        return Promise.resolve();
+      }
+      const tab = live;
+      const conn2 = fileConnections.get(tab.agentId);
+      if (!conn2) {
+        transferQueue.cancel(
+          queueId,
+          'connection lost before download started',
+        );
+        return Promise.resolve();
+      }
 
-          // Absorb a rejection in the initDownloadStream window: a chunk-write
-          // failure can reject handle.done before the `await handle.done` below
-          // attaches its handler, which would surface as an unhandledrejection.
-          // Marking it handled here preserves the awaited consumer below (same
-          // promise; it still receives the rejection and drives the existing
-          // fallback flow).
-          void handle.done.catch(() => {});
+      const MAX_BLOB_FALLBACK_BYTES = 200 * 1024 * 1024;
 
-          const writer = new ServiceWorkerStreamWriter(port1, {
-            transferId: handle.transferId,
-            filename: name,
-            size: 0,
-          });
-          writerRef.current = writer;
+      // --- SW streaming path (GAP-D ruling) ---
+      if (swAvailable()) {
+        return runSwDownload(
+          live as TabItem,
+          conn2.client,
+          name,
+          path,
+          queueId,
+          transferQueue,
+        );
+      }
 
-          // Register the transfer entry on the tab (progress tracking).
-          tab.fileTransfers = [
-            ...(tab.fileTransfers ?? []),
-            {
-              transferId: handle.transferId,
-              direction: handle.direction,
-              bytesTransferred: 0,
-              totalBytes: 0,
-              chunkIndex: -1,
-              handle,
-              name,
-            },
-          ];
-
-          try {
-            // Post STREAM_INIT with the port to the SW, then navigate.
-            await initDownloadStream(handle.transferId, name, 0, port2);
-            window.location.assign(
-              `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`,
-            );
-
-            // Wait for the download to complete, then end the stream.
-            await handle.done;
-            await writer.end();
-          } finally {
-            // Clean up the transfer entry regardless of outcome.
-            tab.fileTransfers = tab.fileTransfers?.filter(
-              (t) => t.transferId !== handle.transferId,
-            );
+      // --- Fallback: in-memory saveBlob (spec ADR-38: <= 200 MB) ---
+      if (knownEntry && knownEntry.size > MAX_BLOB_FALLBACK_BYTES) {
+        tab.fileError =
+          'File is too large to download without Service Worker support (over 200 MB)';
+        transferQueue.cancel(queueId, 'file too large for saveBlob fallback');
+        return Promise.resolve();
+      }
+      const handle = conn2.client.download(path, fileProgressHandler(tab));
+      // Register the transfer entry on the tab synchronously (matches trackTransfer).
+      tab.fileTransfers = [
+        ...(tab.fileTransfers ?? []),
+        {
+          transferId: handle.transferId,
+          direction: handle.direction,
+          bytesTransferred: 0,
+          totalBytes: 0,
+          chunkIndex: -1,
+          handle,
+          name,
+        },
+      ];
+      return (async () => {
+        try {
+          const bytes = (await handle.done) as Uint8Array | void;
+          if (bytes) {
+            saveBlob(name, bytes);
           }
-          swHandle = null;
-          return;
+          transferQueue.markCompleted(queueId);
+        } catch (e) {
+          if (isCancelledError(e)) {
+            transferQueue.cancel(queueId);
+          } else {
+            tab.fileError = fileErrorText(e);
+            transferQueue.cancel(queueId, fileErrorText(e));
+          }
+        } finally {
+          tab.fileTransfers = tab.fileTransfers?.filter(
+            (t) => t.transferId !== handle.transferId,
+          );
         }
-      } catch {
-        // SW path failed (registration or stream error) — cancel any transfer
-        // that was started so it doesn't keep streaming/acking orphaned, then
-        // fall through to the saveBlob fallback below.
-        swHandle?.cancel();
-        swHandle = null;
+      })();
+    };
+
+    if (item.status === 'active') {
+      // Slot is free — start immediately. startDownload executes synchronously
+      // up to the first await, so the handle is registered on fileTransfers
+      // before the caller yields.
+      return startDownload();
+    }
+
+    // Slot is busy — register the pending start for promotion.
+    pendingDownloadStarts.set(queueId, startDownload);
+  }
+
+  /**
+   * The SW streaming download path: register the SW, stream chunks to it via a
+   * MessagePort, then navigate to the download URL. Settles the queue item.
+   */
+  async function runSwDownload(
+    live: TabItem,
+    client: FileClient,
+    name: string,
+    path: string,
+    queueId: string,
+    transferQueue: ReturnType<typeof useTransferQueueStore>,
+  ): Promise<void> {
+    let swHandle: TransferHandle | null = null;
+    try {
+      const reg = await registerDownloadSW();
+      if (reg) {
+        const { port1, port2 } = new MessageChannel();
+
+        const writerRef: { current: ServiceWorkerStreamWriter | null } = {
+          current: null,
+        };
+        const handle = client.download(
+          path,
+          fileProgressHandler(live),
+          (chunk) => {
+            void writerRef.current?.writeChunk(chunk).catch(() => {
+              writerRef.current?.abort();
+              handle.cancel();
+            });
+          },
+        );
+        swHandle = handle;
+        void handle.done.catch(() => {});
+
+        const writer = new ServiceWorkerStreamWriter(port1, {
+          transferId: handle.transferId,
+          filename: name,
+          size: 0,
+        });
+        writerRef.current = writer;
+
+        // Register the transfer entry on the tab.
+        live.fileTransfers = [
+          ...(live.fileTransfers ?? []),
+          {
+            transferId: handle.transferId,
+            direction: handle.direction,
+            bytesTransferred: 0,
+            totalBytes: 0,
+            chunkIndex: -1,
+            handle,
+            name,
+          },
+        ];
+
+        try {
+          await initDownloadStream(handle.transferId, name, 0, port2);
+          window.location.assign(
+            `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`,
+          );
+          await handle.done;
+          await writer.end();
+          transferQueue.markCompleted(queueId);
+        } catch (e) {
+          if (isCancelledError(e)) {
+            transferQueue.cancel(queueId);
+          } else {
+            live.fileError = fileErrorText(e);
+            transferQueue.cancel(queueId, fileErrorText(e));
+          }
+        } finally {
+          live.fileTransfers = live.fileTransfers?.filter(
+            (t) => t.transferId !== handle.transferId,
+          );
+          swHandle = null;
+        }
+      }
+    } catch {
+      // SW path failed — cancel any transfer started, fall through to fallback.
+      swHandle?.cancel();
+      swHandle = null;
+      // Retry with the in-memory fallback.
+      const handle = client.download(path, fileProgressHandler(live));
+      live.fileTransfers = [
+        ...(live.fileTransfers ?? []),
+        {
+          transferId: handle.transferId,
+          direction: handle.direction,
+          bytesTransferred: 0,
+          totalBytes: 0,
+          chunkIndex: -1,
+          handle,
+          name,
+        },
+      ];
+      try {
+        const bytes = (await handle.done) as Uint8Array | void;
+        if (bytes) saveBlob(name, bytes);
+        transferQueue.markCompleted(queueId);
+      } catch (e) {
+        if (isCancelledError(e)) {
+          transferQueue.cancel(queueId);
+        } else {
+          live.fileError = fileErrorText(e);
+          transferQueue.cancel(queueId, fileErrorText(e));
+        }
+      } finally {
+        live.fileTransfers = live.fileTransfers?.filter(
+          (t) => t.transferId !== handle.transferId,
+        );
       }
     }
-
-    // --- Fallback: in-memory saveBlob (spec ADR-38: <= 200 MB) ---
-    // Gate on file size from the directory listing (context §59): if known and
-    // over 200 MB, refuse to buffer in memory — show a warning instead.
-    const knownEntry = tab.fileList?.entries.find((e) => e.path === path);
-    if (knownEntry && knownEntry.size > MAX_BLOB_FALLBACK_BYTES) {
-      tab.fileError =
-        'File is too large to download without Service Worker support (over 200 MB)';
-      return;
-    }
-    const handle = conn.client.download(path, fileProgressHandler(tab));
-    await trackTransfer(tab, handle, name, (bytes) => saveBlob(name, bytes));
   }
 
   /** Upload one picked file into the current directory (spec §7.2). */
@@ -1322,17 +1439,84 @@ export const useTerminalStore = defineStore('terminal', () => {
     const conn = fileConnections.get(tab.agentId);
     if (!conn) return;
     tab.fileError = null;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    // The tab may have been closed while the file was read; the connection
-    // would be disposed by now and the upload must not start.
-    if (!isTabOpen(tabId)) return;
-    const handle = conn.client.upload(
-      tab.filesPath ?? '',
-      file.name,
-      bytes,
-      fileProgressHandler(tab),
-    );
-    await trackTransfer(tab, handle, file.name);
+    const name = file.name;
+
+    // Enqueue before starting any I/O (spec §7.7 AC#4): the queue store gates
+    // concurrency so concurrent drops don't overwhelm the Rust agent.
+    const queueId = crypto.randomUUID();
+    const item = transferQueue.enqueue({
+      id: queueId,
+      name,
+      path: tab.filesPath ?? '',
+      size: file.size,
+      direction: 'upload',
+    });
+
+    // The actual upload work, deferred until the item is promoted to `active`.
+    const start = async () => {
+      // Re-check the tab is still open; a queued item whose tab closed must
+      // not start against a dead connection.
+      const live = tabs.value.find((t) => t.id === tabId);
+      if (!live || live.kind !== 'files') {
+        transferQueue.cancel(queueId, 'tab closed before upload started');
+        return;
+      }
+      const tab = live;
+      const conn2 = fileConnections.get(tab.agentId);
+      if (!conn2) {
+        transferQueue.cancel(queueId, 'connection lost before upload started');
+        return;
+      }
+      // Read file bytes only when promoted (spec §7.7 AC#3: < 50 MB tab memory).
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!isTabOpen(tabId)) {
+        transferQueue.cancel(queueId, 'tab closed during upload');
+        return;
+      }
+      const handle = conn2.client.upload(
+        tab.filesPath ?? '',
+        file.name,
+        bytes,
+        fileProgressHandler(tab),
+      );
+      // Register the handle on the tab and settle the queue based on outcome.
+      tab.fileTransfers = [
+        ...(tab.fileTransfers ?? []),
+        {
+          transferId: handle.transferId,
+          direction: handle.direction,
+          bytesTransferred: 0,
+          totalBytes: 0,
+          chunkIndex: -1,
+          handle,
+          name: file.name,
+        },
+      ];
+      try {
+        await handle.done;
+        transferQueue.markCompleted(queueId);
+      } catch (e) {
+        if (isCancelledError(e)) {
+          transferQueue.cancel(queueId);
+        } else {
+          tab.fileError = fileErrorText(e);
+          transferQueue.cancel(queueId, fileErrorText(e));
+        }
+      } finally {
+        tab.fileTransfers = tab.fileTransfers?.filter(
+          (t) => t.transferId !== handle.transferId,
+        );
+      }
+    };
+
+    if (item.status === 'active') {
+      // Slot is free — start immediately and await settlement.
+      return start();
+    }
+
+    // Slot is busy — register the pending start for promotion. The watch on
+    // activeUploadId will invoke `start` when this item is promoted.
+    pendingUploadStarts.set(queueId, start);
   }
 
   /** Cancel one active transfer by id (idempotent). */
