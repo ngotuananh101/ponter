@@ -11,6 +11,7 @@ import TerminalTabBar from '@/components/terminal/TerminalTabBar.vue';
 import XtermTerminal from '@/components/terminal/XtermTerminal.vue';
 import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import DesktopView from '@/components/desktop/DesktopView.vue';
+import FilesView from '@/components/files/FilesView.vue';
 import MobileAccessoryBar from '@/components/terminal/MobileAccessoryBar.vue';
 import { Button } from '@/components/ui/button';
 import {
@@ -46,6 +47,13 @@ function handleConnect(agent: Agent) {
 
 function handleConnectDesktop(agent: Agent) {
   terminalStore.openDesktopTab(
+    agent.id,
+    agent.hostname || `Agent ${agent.id.slice(0, 6)}`,
+  );
+}
+
+function handleConnectFiles(agent: Agent) {
+  terminalStore.openFilesTab(
     agent.id,
     agent.hostname || `Agent ${agent.id.slice(0, 6)}`,
   );
@@ -139,6 +147,7 @@ onUnmounted(() => {
       v-show="sidebarOpen"
       @connect-agent="handleConnect"
       @connect-desktop="handleConnectDesktop"
+      @connect-files="handleConnectFiles"
     />
 
     <!-- Toggle button -->
@@ -202,16 +211,22 @@ onUnmounted(() => {
             :key="terminalStore.activeTab.id"
             :tab="terminalStore.activeTab as TabItem"
           />
+          <FilesView
+            v-else-if="terminalStore.activeTab.kind === 'files'"
+            :key="terminalStore.activeTab.id"
+            :tab="terminalStore.activeTab as TabItem"
+          />
 
-          <!-- The step list overlays the body while a terminal handshake runs,
-               including the "Opening shell" stage after the session exists —
-               xterm is already mounted underneath, so the first PTY output
-               flips the tab active and reveals it. (Desktop owns its own
+          <!-- The step list overlays the body while a terminal or files
+               handshake runs, including the final stage after the session
+               exists — xterm is already mounted underneath, so the first PTY
+               output flips the tab active and reveals it. (Desktop owns its own
                progress overlay inside DesktopView, next to its error overlay.)
                A failed tab shows the error overlay below instead. -->
           <ConnectionProgress
             v-if="
-              terminalStore.activeTab.kind === 'terminal' &&
+              (terminalStore.activeTab.kind === 'terminal' ||
+                terminalStore.activeTab.kind === 'files') &&
               terminalStore.activeTab.status === 'connecting'
             "
             :tab="terminalStore.activeTab as TabItem"
@@ -222,7 +237,8 @@ onUnmounted(() => {
                had no way to tell an offline agent from a blocked port. -->
           <div
             v-if="
-              terminalStore.activeTab.kind === 'terminal' &&
+              (terminalStore.activeTab.kind === 'terminal' ||
+                terminalStore.activeTab.kind === 'files') &&
               terminalStore.activeTab.status === 'error'
             "
             class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
@@ -353,6 +369,9 @@ onUnmounted(() => {
                     : 'input off'
                 }}
               </template>
+            </span>
+            <span v-else-if="terminalStore.activeTab.kind === 'files'">
+              Channel: files (64 KiB buffer)
             </span>
             <span v-else>Channel: terminal (64 KiB buffer)</span>
           </span>

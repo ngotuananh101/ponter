@@ -2,7 +2,14 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
 import type { Agent } from '@ponter/shared';
-import { Terminal, Monitor, RefreshCw, Server, Search } from '@lucide/vue';
+import {
+  Terminal,
+  Monitor,
+  Folder,
+  RefreshCw,
+  Server,
+  Search,
+} from '@lucide/vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -10,6 +17,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 defineEmits<{
   (e: 'connectAgent', agent: Agent): void;
   (e: 'connectDesktop', agent: Agent): void;
+  (e: 'connectFiles', agent: Agent): void;
 }>();
 
 const agents = ref<Agent[]>([]);
@@ -157,6 +165,16 @@ onMounted(() => {
               @click="$emit('connectDesktop', a)"
             >
               <Monitor class="w-3.5 h-3.5" />
+            </button>
+            <button
+              v-if="a.capabilities.includes('files')"
+              class="p-1 rounded bg-muted/50 hover:bg-primary/10 hover:text-primary transition-colors text-muted-foreground"
+              title="Browse files"
+              :aria-label="`Browse files on ${a.hostname || a.id}`"
+              :data-test="`connect-files-${a.id}`"
+              @click="$emit('connectFiles', a)"
+            >
+              <Folder class="w-3.5 h-3.5" />
             </button>
           </div>
         </div>

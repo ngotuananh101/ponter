@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   Terminal,
   Monitor,
+  Folder,
   Check,
 } from '@lucide/vue';
 
@@ -30,7 +31,7 @@ const emit = defineEmits<{
  * registration dialog grants; anything else the agent reports is preserved
  * verbatim (see `handleSubmit`).
  */
-const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop'] as const;
+const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
 
 const hostname = ref('');
 const platform = ref('');
@@ -77,7 +78,7 @@ async function handleSubmit() {
   error.value = null;
 
   // Preserve any capability this dialog does not manage, so editing hostname
-  // never silently drops e.g. a future 'files' capability.
+  // never silently drops an unrecognized one.
   const extras = agent.capabilities.filter(
     (c) => !(TOGGLEABLE_CAPABILITIES as readonly string[]).includes(c),
   );
@@ -260,6 +261,22 @@ async function handleSubmit() {
               >
                 <Monitor class="w-3.5 h-3.5" />
                 Desktop
+              </button>
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+                :class="
+                  capabilities.includes('files')
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+                "
+                :aria-pressed="capabilities.includes('files')"
+                :disabled="loading"
+                data-test="edit-cap-files"
+                @click="toggleCapability('files')"
+              >
+                <Folder class="w-3.5 h-3.5" />
+                Files
               </button>
             </div>
           </fieldset>

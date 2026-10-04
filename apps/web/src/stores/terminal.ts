@@ -12,6 +12,13 @@ import {
   WebSocketSignalTransport,
 } from '@ponter/webrtc-core';
 import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
+import {
+  FileClient,
+  FilesError,
+  type FileListResult,
+  type TransferHandle,
+  type TransferProgress,
+} from '@ponter/file-core';
 import type {
   DesktopInput,
   DesktopSourceInfo,
@@ -20,12 +27,14 @@ import type {
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
 import type { InitStep } from '@/lib/connection-steps';
+import { fileErrorMessage } from '@/lib/file-errors';
+import { saveBlob } from '@/lib/save-blob';
 
 export interface TabItem {
   id: string;
   agentId: string;
   /** Discriminates the tab body and which connection map owns its lifecycle. */
-  kind: 'terminal' | 'desktop';
+  kind: 'terminal' | 'desktop' | 'files';
   terminalId: string;
   title: string;
   status: 'connecting' | 'active' | 'exited' | 'error';
@@ -50,6 +59,17 @@ export interface TabItem {
   desktopSourceId?: string;
   /** Desktop tabs only: true iff the agent's input gate is open (ADR-29). */
   desktopInputEnabled?: boolean;
+  /** Files tabs only: current directory ('' = root, spec §7.2). */
+  filesPath?: string;
+  /** Files tabs only: the latest listing (spec §7.2). */
+  fileList?: FileListResult;
+  /** Files tabs only: last error text, mapped from `FilesError.code`. */
+  fileError?: string | null;
+  /** Files tabs only: active transfers with their handles (spec §7.2; `name`
+   *  is what the §7.1 footer renders — see the ruling above). */
+  fileTransfers?: Array<
+    TransferProgress & { handle: TransferHandle; name: string }
+  >;
 }
 
 /** Best-effort message from an unknown catch value; never `[object Object]`. */
@@ -57,6 +77,18 @@ function toErrorMessage(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   if (typeof cause === 'string') return cause;
   return 'unknown error';
+}
+
+/** True when `cause` is the client's synthetic local cancel code. */
+function isCancelledError(cause: unknown): boolean {
+  return cause instanceof FilesError && cause.code === 'CANCELLED';
+}
+
+/** Map a caught failure to banner text: wire code when known, else message. */
+function fileErrorText(cause: unknown): string {
+  return cause instanceof FilesError
+    ? fileErrorMessage(cause.code)
+    : toErrorMessage(cause);
 }
 
 /** An unsubscribe returned by every `on*` subscription in the transport stack. */
@@ -106,6 +138,18 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   >();
 
+  // Files clients are kept apart like desktop ones: the tab holds only the
+  // listing/transfer state; lifecycle stays here (spec §7.2).
+  const fileConnections = new Map<
+    string,
+    {
+      peer: PeerConnection;
+      client: FileClient;
+      sessionId: string;
+      unsubscribers: Unsubscribe[];
+    }
+  >();
+
   const activeTab = computed(() =>
     tabs.value.find((t) => t.id === activeTabId.value),
   );
@@ -128,7 +172,7 @@ export const useTerminalStore = defineStore('terminal', () => {
    */
   function setInitStep(
     agentId: string,
-    kind: 'terminal' | 'desktop',
+    kind: 'terminal' | 'desktop' | 'files',
     step: InitStep,
   ): void {
     for (const tab of tabs.value) {
@@ -299,15 +343,19 @@ export const useTerminalStore = defineStore('terminal', () => {
   ): Promise<string> {
     const tabId = `tab-${crypto.randomUUID()}`;
 
-    // Reverse ADR-19 guard: if the agent already has an open desktop tab, refuse
-    // before any network call. ADR-14 makes the server refuse a second session
-    // anyway, but the user should see why without a round-trip.
-    if (tabs.value.some((t) => t.agentId === agentId && t.kind === 'desktop')) {
+    // ADR-14 guard, extended for Week 10: a files session holds the agent's
+    // single slot too (spec §7.2), so it blocks a terminal like a desktop does.
+    const blocking = tabs.value.find(
+      (t) => t.agentId === agentId && t.kind !== 'terminal',
+    );
+    if (blocking) {
       recordFailedTab(
         tabId,
         agentId,
         title,
-        'Close the desktop stream before opening a terminal.',
+        blocking.kind === 'files'
+          ? 'Close the file transfer session before opening a terminal.'
+          : 'Close the desktop stream before opening a terminal.',
       );
       return tabId;
     }
@@ -478,6 +526,27 @@ export const useTerminalStore = defineStore('terminal', () => {
       id: tabId,
       agentId,
       kind: 'desktop',
+      terminalId: '',
+      title: title || `Agent ${agentId.slice(0, 8)}`,
+      status: 'error',
+      error: message,
+    });
+    activeTabId.value = tabId;
+  }
+
+  /**
+   * A files tab that shows a failure instead of a file browser.
+   */
+  function recordFilesErrorTab(
+    tabId: string,
+    agentId: string,
+    title: string | undefined,
+    message: string,
+  ): void {
+    tabs.value.push({
+      id: tabId,
+      agentId,
+      kind: 'files',
       terminalId: '',
       title: title || `Agent ${agentId.slice(0, 8)}`,
       status: 'error',
@@ -682,6 +751,160 @@ export const useTerminalStore = defineStore('terminal', () => {
   }
 
   /**
+   * Open a files tab (Week 10, spec §7.2). Mirrors `openDesktopTab` step by
+   * step: exclusivity first, tab pushed before the handshake, orphan release,
+   * then the first `list('')` populates the view.
+   */
+  async function openFilesTab(
+    agentId: string,
+    title?: string,
+  ): Promise<string> {
+    const tabId = `tab-${crypto.randomUUID()}`;
+
+    if (tabs.value.some((t) => t.agentId === agentId)) {
+      recordFilesErrorTab(
+        tabId,
+        agentId,
+        title,
+        'This agent already has an open session tab (one session per agent). Close it first.',
+      );
+      return tabId;
+    }
+
+    tabs.value.push({
+      id: tabId,
+      agentId,
+      kind: 'files',
+      terminalId: '',
+      title: title || `Agent ${agentId.slice(0, 8)}`,
+      status: 'connecting',
+      initStep: 'session',
+      filesPath: '',
+    });
+    activeTabId.value = tabId;
+    const live = tabs.value.find((t) => t.id === tabId);
+
+    let sessionId: string | null = null;
+
+    try {
+      const sessionResp = await apiClient.sessions.create({ agentId });
+      sessionId = sessionResp.id;
+      const transport = await createSignalingTransport(sessionResp.id);
+      if (live) live.initStep = 'ice';
+      const iceServers = await apiClient.webrtc.getIceServers();
+      const rtcPeer = createBrowserAdapter({ iceServers });
+
+      const peer = new PeerConnection(rtcPeer, transport, {
+        role: 'offerer',
+        channelLabels: ['files'],
+        capabilities: ['files'],
+      });
+
+      const unsubscribers: Unsubscribe[] = [];
+
+      if (transport instanceof WebSocketSignalTransport) {
+        unsubscribers.push(
+          transport.onServerError((code) => {
+            if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+            const message =
+              code === 'SESSION_TERMINATED'
+                ? 'Session terminated: the agent disconnected or the session was closed.'
+                : 'Session not found on the server.';
+            for (const tab of tabs.value) {
+              if (tab.agentId !== agentId || tab.kind !== 'files') continue;
+              tab.status = 'error';
+              tab.error = message;
+              tab.initStep = undefined;
+            }
+            discardFilesConnection(agentId);
+          }),
+        );
+      }
+
+      unsubscribers.push(
+        peer.onConnectionStateChange((state) => {
+          if (state !== 'failed') return;
+          const message =
+            'Connection failed: no direct route to the agent (ICE). Check that ' +
+            'TURN is reachable, or that the agent is not behind a blocking NAT.';
+          for (const tab of tabs.value) {
+            if (tab.agentId !== agentId || tab.kind !== 'files') continue;
+            tab.status = 'error';
+            tab.error = message;
+            tab.initStep = undefined;
+          }
+          discardFilesConnection(agentId);
+        }),
+      );
+
+      await peer.start();
+      if (live) live.initStep = 'negotiating';
+
+      try {
+        await peer.waitForChannel('files');
+      } catch {
+        // Spec §7.4: webrtc-core's hardcoded refusal message says "one session
+        // per agent", which is wrong for a gate refusal (ADR-32) and
+        // indistinguishable from one. Show the honest combined wording.
+        throw new Error(
+          'The agent refused this session. It may be busy (one session per agent) or file access may not be configured on the agent.',
+        );
+      }
+
+      if (live) live.initStep = 'channel';
+      const client = new FileClient(agentId, peer.dataChannels);
+      fileConnections.set(agentId, {
+        peer,
+        client,
+        sessionId: sessionResp.id,
+        unsubscribers,
+      });
+
+      // The tab may have been closed while the handshake ran; `closeTab` found
+      // no registered connection then, so release the one just built (ADR-14).
+      if (!isTabOpen(tabId)) {
+        client.dispose();
+        void peer.close();
+        runUnsubscribers(unsubscribers);
+        fileConnections.delete(agentId);
+        void apiClient.sessions.terminate(sessionResp.id).catch(() => {});
+        return tabId;
+      }
+
+      const first = await client.list('');
+      if (live) {
+        live.fileList = first;
+        live.filesPath = first.path;
+        live.status = 'active';
+        live.initStep = undefined;
+      }
+      return tabId;
+    } catch (e) {
+      const message = toErrorMessage(e);
+      const half = fileConnections.get(agentId);
+      if (half) {
+        half.client.dispose();
+        void half.peer.close();
+        runUnsubscribers(half.unsubscribers);
+        fileConnections.delete(agentId);
+      }
+      if (sessionId) {
+        void apiClient.sessions.terminate(sessionId).catch(() => {
+          // Best-effort: the session may already be gone server-side.
+        });
+      }
+      if (live) {
+        live.status = 'error';
+        live.error = message;
+        live.initStep = undefined;
+      } else {
+        recordFilesErrorTab(tabId, agentId, title, message);
+      }
+      return tabId;
+    }
+  }
+
+  /**
    * Re-attempt a failed tab.
    *
    * Any half-built connection for the agent is dropped first, otherwise the
@@ -707,6 +930,18 @@ export const useTerminalStore = defineStore('terminal', () => {
         });
       }
       await openDesktopTab(failed.agentId, failed.title);
+    } else if (failed.kind === 'files') {
+      const conn = fileConnections.get(failed.agentId);
+      if (conn) {
+        conn.client.dispose();
+        void conn.peer.close();
+        runUnsubscribers(conn.unsubscribers);
+        fileConnections.delete(failed.agentId);
+        void apiClient.sessions.terminate(conn.sessionId).catch(() => {
+          // Best-effort: the session may already be gone server-side.
+        });
+      }
+      await openFilesTab(failed.agentId, failed.title);
     } else {
       const conn = connections.get(failed.agentId);
       if (conn) {
@@ -749,6 +984,34 @@ export const useTerminalStore = defineStore('terminal', () => {
     void conn.peer.close();
     runUnsubscribers(conn.unsubscribers);
     desktopConnections.delete(agentId);
+    void apiClient.sessions.terminate(conn.sessionId).catch(() => {});
+  }
+
+  /**
+   * Drop a cached files connection and detach its subscriptions, without
+   * touching the server session. Used by the error callbacks. The client is
+   * disposed first so in-flight transfer handles reject with 'CANCELLED'
+   * immediately instead of languishing until the idle timeout.
+   */
+  function discardFilesConnection(agentId: string): void {
+    const conn = fileConnections.get(agentId);
+    if (!conn) return;
+    conn.client.dispose();
+    runUnsubscribers(conn.unsubscribers);
+    fileConnections.delete(agentId);
+  }
+
+  /**
+   * Close a files tab's connection: dispose the client (which rejects in-flight
+   * handles with 'CANCELLED'), close the peer, release the session.
+   */
+  function closeFilesConnection(agentId: string): void {
+    const conn = fileConnections.get(agentId);
+    if (!conn) return;
+    conn.client.dispose();
+    void conn.peer.close();
+    runUnsubscribers(conn.unsubscribers);
+    fileConnections.delete(agentId);
     void apiClient.sessions.terminate(conn.sessionId).catch(() => {});
   }
 
@@ -805,6 +1068,8 @@ export const useTerminalStore = defineStore('terminal', () => {
 
     if (removed.kind === 'desktop') {
       closeDesktopConnection(removed.agentId);
+    } else if (removed.kind === 'files') {
+      closeFilesConnection(removed.agentId);
     } else {
       closeTerminalConnection(removed);
     }
@@ -844,18 +1109,143 @@ export const useTerminalStore = defineStore('terminal', () => {
     conn.client.sendInput(event);
   }
 
+  /** The files-only fields a tab needs while transfers run. */
+  interface FileTabLike {
+    fileTransfers?: Array<
+      TransferProgress & { handle: TransferHandle; name: string }
+    >;
+    fileError?: string | null;
+  }
+
+  /** Update the tab's transfer entry from a progress callback. */
+  function fileProgressHandler(tab: FileTabLike) {
+    return (p: TransferProgress): void => {
+      const entry = tab.fileTransfers?.find(
+        (t) => t.transferId === p.transferId,
+      );
+      if (!entry) return;
+      entry.bytesTransferred = p.bytesTransferred;
+      entry.totalBytes = p.totalBytes;
+      entry.chunkIndex = p.chunkIndex;
+    };
+  }
+
+  /**
+   * Register a handle on the tab and settle it: resolve with the save hook
+   * (download) or nothing (upload), record non-cancel failures on the tab,
+   * and drop the entry either way.
+   */
+  async function trackTransfer(
+    tab: FileTabLike,
+    handle: TransferHandle,
+    name: string,
+    onSaved?: (bytes: Uint8Array) => void,
+  ): Promise<void> {
+    tab.fileTransfers = [
+      ...(tab.fileTransfers ?? []),
+      {
+        transferId: handle.transferId,
+        direction: handle.direction,
+        bytesTransferred: 0,
+        totalBytes: 0,
+        chunkIndex: -1,
+        handle,
+        name,
+      },
+    ];
+    try {
+      const bytes = (await handle.done) as Uint8Array | void;
+      if (onSaved && bytes) onSaved(bytes);
+    } catch (e) {
+      if (!isCancelledError(e)) tab.fileError = fileErrorText(e);
+    } finally {
+      tab.fileTransfers = tab.fileTransfers?.filter(
+        (t) => t.transferId !== handle.transferId,
+      );
+    }
+  }
+
+  /** List `path` and show it (spec §7.2). */
+  async function filesNavigate(tabId: string, path: string): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    tab.fileError = null;
+    try {
+      const result = await conn.client.list(path);
+      tab.filesPath = result.path;
+      tab.fileList = result;
+    } catch (e) {
+      tab.fileError = fileErrorText(e);
+    }
+  }
+
+  /** Download `path` and save it on completion (spec §7.1/§7.2). */
+  async function filesDownload(tabId: string, path: string): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    tab.fileError = null;
+    const name = path.split('/').pop() || path;
+    const handle = conn.client.download(path, fileProgressHandler(tab));
+    await trackTransfer(tab, handle, name, (bytes) => saveBlob(name, bytes));
+  }
+
+  /** Upload one picked file into the current directory (spec §7.2). */
+  async function filesUpload(tabId: string, file: File): Promise<void> {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    const conn = fileConnections.get(tab.agentId);
+    if (!conn) return;
+    tab.fileError = null;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    // The tab may have been closed while the file was read; the connection
+    // would be disposed by now and the upload must not start.
+    if (!isTabOpen(tabId)) return;
+    const handle = conn.client.upload(
+      tab.filesPath ?? '',
+      file.name,
+      bytes,
+      fileProgressHandler(tab),
+    );
+    await trackTransfer(tab, handle, file.name);
+  }
+
+  /** Cancel one active transfer by id (idempotent). */
+  function filesCancelTransfer(tabId: string, transferId: string): void {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind !== 'files') return;
+    tab.fileTransfers
+      ?.find((t) => t.transferId === transferId)
+      ?.handle.cancel();
+  }
+
+  /** Dismiss the tab's error banner. */
+  function clearFileError(tabId: string): void {
+    const tab = tabs.value.find((t) => t.id === tabId);
+    if (tab?.kind === 'files') tab.fileError = null;
+  }
+
   return {
     tabs,
     activeTabId,
     activeTab,
     openTab,
     openDesktopTab,
+    openFilesTab,
     retryTab,
     setActiveTab,
     closeTab,
     selectDesktopSource,
     setDesktopBitrate,
     sendDesktopInput,
+    filesNavigate,
+    filesDownload,
+    filesUpload,
+    filesCancelTransfer,
+    clearFileError,
     getOrConnectAgentForTest: getOrConnectAgent,
   };
 });

@@ -4,7 +4,8 @@
  * workspace can show the user where the connection actually is, instead of a
  * blank screen (terminal) or an unexplained spinner (desktop).
  */
-export type InitStep = 'session' | 'ice' | 'negotiating' | 'shell' | 'stream';
+export type InitStep =
+  'session' | 'ice' | 'negotiating' | 'shell' | 'stream' | 'channel';
 
 export interface InitStepDef {
   key: InitStep;
@@ -16,7 +17,10 @@ export interface InitStepDef {
  * stream ends by waiting for the first video track. Both share the leading
  * session / ICE / negotiation stages.
  */
-export const INIT_STEPS: Record<'terminal' | 'desktop', InitStepDef[]> = {
+export const INIT_STEPS: Record<
+  'terminal' | 'desktop' | 'files',
+  InitStepDef[]
+> = {
   terminal: [
     { key: 'session', label: 'Creating session' },
     { key: 'ice', label: 'Preparing connection' },
@@ -28,11 +32,17 @@ export const INIT_STEPS: Record<'terminal' | 'desktop', InitStepDef[]> = {
     { key: 'ice', label: 'Preparing connection' },
     { key: 'stream', label: 'Negotiating video stream' },
   ],
+  files: [
+    { key: 'session', label: 'Creating session' },
+    { key: 'ice', label: 'Preparing connection' },
+    { key: 'negotiating', label: 'Negotiating WebRTC channel' },
+    { key: 'channel', label: 'Opening file channel' },
+  ],
 };
 
 /** Index of `step` within the kind's step list; falls back to the first step. */
 export function stepIndex(
-  kind: 'terminal' | 'desktop',
+  kind: 'terminal' | 'desktop' | 'files',
   step: InitStep,
 ): number {
   const idx = INIT_STEPS[kind].findIndex((s) => s.key === step);

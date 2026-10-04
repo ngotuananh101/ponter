@@ -32,6 +32,19 @@ export type {
   RemoteFile,
   FileTransfer,
   FileChunkMessage,
+  FilesPath,
+  FilesListRequest,
+  FilesListResult,
+  FilesDownloadRequest,
+  FilesDownloadBegin,
+  FilesDownloadEnd,
+  FilesUploadBeginRequest,
+  FilesUploadEndRequest,
+  FilesUploadComplete,
+  FilesAckMessage,
+  FilesCancelMessage,
+  FilesErrorCode,
+  FilesErrorMessage,
 } from './files.js';
 
 export type {
