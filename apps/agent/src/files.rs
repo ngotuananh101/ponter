@@ -140,7 +140,12 @@ pub struct FilesError {
 
 impl FilesError {
     pub fn new(code: FilesErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), request_id: None, transfer_id: None }
+        Self {
+            code,
+            message: message.into(),
+            request_id: None,
+            transfer_id: None,
+        }
     }
 
     /// Attach the ids the failure belongs to (builder style).
@@ -155,7 +160,10 @@ impl FilesError {
     }
 
     pub fn outside_root() -> Self {
-        Self::new(FilesErrorCode::PathOutsideRoot, "path escapes the configured root")
+        Self::new(
+            FilesErrorCode::PathOutsideRoot,
+            "path escapes the configured root",
+        )
     }
 
     pub fn not_a_directory() -> Self {
@@ -335,7 +343,6 @@ pub enum Outbound {
     Error(FilesErrorMessage),
 }
 
-
 /// Decode an inbound frame; same guard shape as `decode_pty_input`
 /// (`pty.rs:124-144`): the size cap is checked **before** `serde_json` parses,
 /// the channel/type match is strict, and a non-matching frame is `Ok(None)`.
@@ -345,7 +352,10 @@ pub enum Outbound {
 /// (warn-and-ignore, spec §2.2) — only the seven known types decode.
 pub fn decode_files_frame(raw: &str) -> AnyhowResult<Option<FilesInbound>> {
     if raw.len() > crate::pty::MAX_FRAME_BYTES {
-        anyhow::bail!("inbound frame exceeds {} bytes", crate::pty::MAX_FRAME_BYTES);
+        anyhow::bail!(
+            "inbound frame exceeds {} bytes",
+            crate::pty::MAX_FRAME_BYTES
+        );
     }
 
     let envelope: crate::pty::DataChannelMessage<serde_json::Value> =
@@ -479,7 +489,9 @@ impl FilesRoot {
             return Err(FilesError::invalid_path("path contains a NUL"));
         }
         if wire.contains('\\') {
-            return Err(FilesError::invalid_path("backslash is not a POSIX path separator"));
+            return Err(FilesError::invalid_path(
+                "backslash is not a POSIX path separator",
+            ));
         }
         if wire.starts_with('/') {
             return Err(FilesError::invalid_path("absolute paths are not allowed"));
@@ -651,7 +663,11 @@ pub struct FilesSession {
 
 impl FilesSession {
     pub fn new(root: FilesRoot) -> Self {
-        Self { root, download: None, upload: None }
+        Self {
+            root,
+            download: None,
+            upload: None,
+        }
     }
 
     /// Handle one inbound frame; the returned frames are the ones to send.
@@ -699,7 +715,12 @@ impl FilesSession {
     }
 
     fn timeout_frame(direction: &str, transfer_id: &str) -> Outbound {
-        tracing::info!(transfer_id, direction, code = "TRANSFER_TIMEOUT", "files transfer timed out");
+        tracing::info!(
+            transfer_id,
+            direction,
+            code = "TRANSFER_TIMEOUT",
+            "files transfer timed out"
+        );
         FilesError::new(
             FilesErrorCode::TransferTimeout,
             format!("{direction} transfer idle for more than {FILES_IDLE_TIMEOUT_MS} ms"),
@@ -710,9 +731,12 @@ impl FilesSession {
 
     /// The `TRANSFER_UNKNOWN` frame for a chunk/ack that matches nothing.
     fn transfer_unknown(transfer_id: &str) -> Outbound {
-        FilesError::new(FilesErrorCode::TransferUnknown, format!("no transfer with id `{transfer_id}`"))
-            .with_ids(None, Some(transfer_id.to_string()))
-            .into_frame()
+        FilesError::new(
+            FilesErrorCode::TransferUnknown,
+            format!("no transfer with id `{transfer_id}`"),
+        )
+        .with_ids(None, Some(transfer_id.to_string()))
+        .into_frame()
     }
 
     /// Serve `files-list` in one pass (spec §5.2): sorted, dirs first, capped.
@@ -782,12 +806,17 @@ impl FilesSession {
         // busy slot is reported only for an otherwise-valid request.
         let target = match self.download_target(&request.path).await {
             Ok(target) => target,
-            Err(error) => return vec![error.with_ids(None, Some(request.transfer_id)).into_frame()],
+            Err(error) => {
+                return vec![error.with_ids(None, Some(request.transfer_id)).into_frame()]
+            }
         };
         if self.download.is_some() {
-            return vec![FilesError::new(FilesErrorCode::TransferBusy, "a download is already running")
-                .with_ids(None, Some(request.transfer_id))
-                .into_frame()];
+            return vec![FilesError::new(
+                FilesErrorCode::TransferBusy,
+                "a download is already running",
+            )
+            .with_ids(None, Some(request.transfer_id))
+            .into_frame()];
         }
         match self.start_download(request, target).await {
             Ok(frames) => frames,
@@ -803,7 +832,10 @@ impl FilesSession {
             .await
             .map_err(|error| FilesError::io(&format!("stat `{path}`"), error))?;
         if !metadata.is_file() {
-            return Err(FilesError::new(FilesErrorCode::NotAFile, format!("`{path}` is not a regular file")));
+            return Err(FilesError::new(
+                FilesErrorCode::NotAFile,
+                format!("`{path}` is not a regular file"),
+            ));
         }
         ensure_within_cap(metadata.len())?;
         let file = tokio::fs::File::open(&canonical)
@@ -830,12 +862,20 @@ impl FilesSession {
         };
         let mut frames = vec![Outbound::DownloadBegin(FilesDownloadBegin {
             transfer_id: transfer_id.clone(),
-            name: request.path.rsplit('/').next().unwrap_or_default().to_string(),
+            name: request
+                .path
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_string(),
             path: request.path,
             size,
             total_chunks: total,
         })];
-        let pumped = self.pump_download(&mut state).await.map_err(|error| (transfer_id, error))?;
+        let pumped = self
+            .pump_download(&mut state)
+            .await
+            .map_err(|error| (transfer_id, error))?;
         frames.extend(pumped);
         // A finished transfer (the empty file: begin + end in this one call)
         // does not occupy the slot (ADR-34: one *in-flight* transfer).
@@ -872,7 +912,9 @@ impl FilesSession {
         // End when every chunk is acked; `acked >= total` is also true for
         // the empty file (0 >= 0), which sends begin + end in one call.
         if state.acked >= state.total_chunks {
-            frames.push(Outbound::DownloadEnd(FilesDownloadEnd { transfer_id: state.transfer_id.clone() }));
+            frames.push(Outbound::DownloadEnd(FilesDownloadEnd {
+                transfer_id: state.transfer_id.clone(),
+            }));
         }
         Ok(frames)
     }
@@ -892,9 +934,11 @@ impl FilesSession {
         };
         if beyond_sent {
             let state = self.download.take().expect("checked above");
-            return vec![FilesError::new(FilesErrorCode::BadFrame, "ack beyond what was sent")
-                .with_ids(None, Some(state.transfer_id))
-                .into_frame()];
+            return vec![
+                FilesError::new(FilesErrorCode::BadFrame, "ack beyond what was sent")
+                    .with_ids(None, Some(state.transfer_id))
+                    .into_frame(),
+            ];
         }
         let mut state = self.download.take().expect("checked above");
         if ack.next_chunk_index > state.acked {
@@ -923,12 +967,17 @@ impl FilesSession {
         let result = self.prepare_upload(&request).await;
         let (dest_rel, dest) = match result {
             Ok(prepared) => prepared,
-            Err(error) => return vec![error.with_ids(None, Some(request.transfer_id)).into_frame()],
+            Err(error) => {
+                return vec![error.with_ids(None, Some(request.transfer_id)).into_frame()]
+            }
         };
         if self.upload.is_some() {
-            return vec![FilesError::new(FilesErrorCode::TransferBusy, "an upload is already running")
-                .with_ids(None, Some(request.transfer_id))
-                .into_frame()];
+            return vec![FilesError::new(
+                FilesErrorCode::TransferBusy,
+                "an upload is already running",
+            )
+            .with_ids(None, Some(request.transfer_id))
+            .into_frame()];
         }
         match self.start_upload(request, dest_rel, dest).await {
             Ok(frames) => frames,
@@ -939,13 +988,25 @@ impl FilesSession {
     /// Validate everything an upload-begin must satisfy, without touching
     /// session state: `(wire path of the final file, absolute final path)`.
     /// Follows spec §2.6's order: path/type, existence, then caps.
-    async fn prepare_upload(&self, request: &FilesUploadBeginRequest) -> FilesResult<(String, PathBuf)> {
+    async fn prepare_upload(
+        &self,
+        request: &FilesUploadBeginRequest,
+    ) -> FilesResult<(String, PathBuf)> {
         // Name grammar and parent resolution/type are `resolve_parent_for_create`'s
         // job (ADR-33 rule 1; NOT_FOUND/NOT_A_DIRECTORY/INVALID_PATH).
-        let (parent, name) = self.root.resolve_parent_for_create(&request.path, &request.name).await?;
+        let (parent, name) = self
+            .root
+            .resolve_parent_for_create(&request.path, &request.name)
+            .await?;
         let dest = parent.join(&name);
-        if tokio::fs::try_exists(&dest).await.map_err(|error| FilesError::io("probing the upload target", error))? {
-            return Err(FilesError::new(FilesErrorCode::FileExists, format!("`{}` already exists", request.name)));
+        if tokio::fs::try_exists(&dest)
+            .await
+            .map_err(|error| FilesError::io("probing the upload target", error))?
+        {
+            return Err(FilesError::new(
+                FilesErrorCode::FileExists,
+                format!("`{}` already exists", request.name),
+            ));
         }
         ensure_within_cap(request.size)?;
         Ok((join_rel(&request.path, &name), dest))
@@ -961,20 +1022,38 @@ impl FilesSession {
         let part = part_path(&dest);
         // Exclusive create; a stale `.part` (a crashed run) is removed and
         // retried once, then it is a real IO_ERROR (spec §6.1).
-        let file = match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&part).await {
+        let file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .await
+        {
             Ok(file) => file,
             Err(first) if first.kind() == std::io::ErrorKind::AlreadyExists => {
-                tokio::fs::remove_file(&part)
-                    .await
-                    .map_err(|error| (transfer_id.clone(), FilesError::io("removing a stale .part", error)))?;
+                tokio::fs::remove_file(&part).await.map_err(|error| {
+                    (
+                        transfer_id.clone(),
+                        FilesError::io("removing a stale .part", error),
+                    )
+                })?;
                 tokio::fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(&part)
                     .await
-                    .map_err(|error| (transfer_id.clone(), FilesError::io("creating the upload .part", error)))?
+                    .map_err(|error| {
+                        (
+                            transfer_id.clone(),
+                            FilesError::io("creating the upload .part", error),
+                        )
+                    })?
             }
-            Err(error) => return Err((transfer_id, FilesError::io("creating the upload .part", error))),
+            Err(error) => {
+                return Err((
+                    transfer_id,
+                    FilesError::io("creating the upload .part", error),
+                ))
+            }
         };
         let state = UploadState {
             transfer_id: transfer_id.clone(),
@@ -990,7 +1069,10 @@ impl FilesSession {
         };
         self.upload = Some(state);
         // The begin is answered with the first cumulative ack (spec §6.1).
-        Ok(vec![Outbound::UploadAck(FilesAckMessage { transfer_id, next_chunk_index: 0 })])
+        Ok(vec![Outbound::UploadAck(FilesAckMessage {
+            transfer_id,
+            next_chunk_index: 0,
+        })])
     }
 
     async fn handle_upload_chunk(&mut self, chunk: FileChunkMessage) -> Vec<Outbound> {
@@ -1058,7 +1140,10 @@ impl FilesSession {
 /// The `.part` sibling path of a destination (ADR-33: the final name must
 /// never appear half-written).
 fn part_path(dest: &Path) -> PathBuf {
-    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     dest.with_file_name(part_name(&name))
 }
 
@@ -1075,7 +1160,10 @@ fn join_rel(dir_wire: &str, name: &str) -> String {
 /// `Err` hands the state back so the caller can remove the file (fail-soft
 /// cleanup, spec §2.6).
 #[allow(clippy::result_large_err)]
-async fn accept_chunk(mut state: UploadState, chunk: FileChunkMessage) -> Result<UploadState, (UploadState, FilesError)> {
+async fn accept_chunk(
+    mut state: UploadState,
+    chunk: FileChunkMessage,
+) -> Result<UploadState, (UploadState, FilesError)> {
     use tokio::io::AsyncWriteExt as _;
     let fail = |state: UploadState, message: &str| {
         Err((state, FilesError::new(FilesErrorCode::BadFrame, message)))
@@ -1093,7 +1181,8 @@ async fn accept_chunk(mut state: UploadState, chunk: FileChunkMessage) -> Result
         Ok(bytes) => bytes,
         Err(_) => return fail(state, "chunk data is not valid base64"),
     };
-    let expected = expected_chunk_len(state.total_chunks, state.expected_size, state.next_chunk) as usize;
+    let expected =
+        expected_chunk_len(state.total_chunks, state.expected_size, state.next_chunk) as usize;
     if bytes.len() != expected {
         return fail(state, "chunk length does not match the declared size");
     }
@@ -1114,7 +1203,13 @@ async fn finalize_upload(mut state: UploadState) -> Result<Outbound, (String, Fi
     let transfer_id = state.transfer_id.clone();
     if state.next_chunk != state.total_chunks || state.written != state.expected_size {
         state.discard().await;
-        return Err((transfer_id, FilesError::new(FilesErrorCode::BadFrame, "upload ended before every chunk arrived")));
+        return Err((
+            transfer_id,
+            FilesError::new(
+                FilesErrorCode::BadFrame,
+                "upload ended before every chunk arrived",
+            ),
+        ));
     }
     if let Err(error) = state.file.flush().await {
         state.discard().await;
@@ -1133,7 +1228,10 @@ async fn finalize_upload(mut state: UploadState) -> Result<Outbound, (String, Fi
     if let Err(error) = tokio::fs::hard_link(&state.part, &state.dest).await {
         tokio::fs::remove_file(&state.part).await.ok();
         let mapped = if error.kind() == std::io::ErrorKind::AlreadyExists {
-            FilesError::new(FilesErrorCode::FileExists, "the destination was created while the upload ran")
+            FilesError::new(
+                FilesErrorCode::FileExists,
+                "the destination was created while the upload ran",
+            )
         } else {
             FilesError::io("linking the upload into place", error)
         };
@@ -1146,7 +1244,12 @@ async fn finalize_upload(mut state: UploadState) -> Result<Outbound, (String, Fi
     }
     Ok(Outbound::UploadComplete(FilesUploadComplete {
         transfer_id,
-        name: state.dest_rel.rsplit('/').next().unwrap_or_default().to_string(),
+        name: state
+            .dest_rel
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string(),
         path: state.dest_rel,
         size: state.written,
     }))
@@ -1162,7 +1265,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("ponter-files-test-{}-{}", std::process::id(), n));
+        let dir =
+            std::env::temp_dir().join(format!("ponter-files-test-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1180,7 +1284,10 @@ mod tests {
 
     /// A `files-list` frame for the decode tests.
     fn list_frame() -> String {
-        envelope("files-list", serde_json::json!({ "requestId": "r-1", "path": "" }))
+        envelope(
+            "files-list",
+            serde_json::json!({ "requestId": "r-1", "path": "" }),
+        )
     }
 
     #[test]
@@ -1266,7 +1373,10 @@ mod tests {
         assert_eq!(decode_files_frame(&wrong_type).unwrap(), None);
 
         // Oversize → Err BEFORE parsing (the payload is not even valid JSON).
-        let huge = format!("{{\"type\": \"x\", \"pad\": \"{}\"}}", "x".repeat(crate::pty::MAX_FRAME_BYTES));
+        let huge = format!(
+            "{{\"type\": \"x\", \"pad\": \"{}\"}}",
+            "x".repeat(crate::pty::MAX_FRAME_BYTES)
+        );
         assert!(decode_files_frame(&huge).is_err());
 
         // Malformed JSON → Err.
@@ -1279,7 +1389,10 @@ mod tests {
         assert_eq!(request_id.as_deref(), Some("r-1"));
         assert_eq!(transfer_id, None);
 
-        let download = envelope("files-download", serde_json::json!({ "transferId": "t-9", "path": "a.bin" }));
+        let download = envelope(
+            "files-download",
+            serde_json::json!({ "transferId": "t-9", "path": "a.bin" }),
+        );
         let (request_id, transfer_id) = extract_ids(&download);
         assert_eq!(request_id, None);
         assert_eq!(transfer_id.as_deref(), Some("t-9"));
@@ -1293,23 +1406,50 @@ mod tests {
         let list = decode_files_frame(&list_frame()).unwrap().unwrap();
         assert!(matches!(list, FilesInbound::List(ref l) if l.request_id == "r-1"));
 
-        let download = envelope("files-download", serde_json::json!({ "transferId": "t-1", "path": "a.bin" }));
-        assert!(matches!(decode_files_frame(&download).unwrap().unwrap(), FilesInbound::Download(ref d) if d.transfer_id == "t-1"));
+        let download = envelope(
+            "files-download",
+            serde_json::json!({ "transferId": "t-1", "path": "a.bin" }),
+        );
+        assert!(
+            matches!(decode_files_frame(&download).unwrap().unwrap(), FilesInbound::Download(ref d) if d.transfer_id == "t-1")
+        );
 
-        let begin = envelope("files-upload-begin", serde_json::json!({ "transferId": "t-2", "path": "dir", "name": "up.bin", "size": 5 }));
-        assert!(matches!(decode_files_frame(&begin).unwrap().unwrap(), FilesInbound::UploadBegin(ref b) if b.name == "up.bin" && b.size == 5));
+        let begin = envelope(
+            "files-upload-begin",
+            serde_json::json!({ "transferId": "t-2", "path": "dir", "name": "up.bin", "size": 5 }),
+        );
+        assert!(
+            matches!(decode_files_frame(&begin).unwrap().unwrap(), FilesInbound::UploadBegin(ref b) if b.name == "up.bin" && b.size == 5)
+        );
 
-        let chunk = envelope("files-upload-chunk", serde_json::json!({ "transferId": "t-2", "chunkIndex": 0, "totalChunks": 1, "data": "AA==" }));
-        assert!(matches!(decode_files_frame(&chunk).unwrap().unwrap(), FilesInbound::UploadChunk(ref c) if c.chunk_index == 0));
+        let chunk = envelope(
+            "files-upload-chunk",
+            serde_json::json!({ "transferId": "t-2", "chunkIndex": 0, "totalChunks": 1, "data": "AA==" }),
+        );
+        assert!(
+            matches!(decode_files_frame(&chunk).unwrap().unwrap(), FilesInbound::UploadChunk(ref c) if c.chunk_index == 0)
+        );
 
-        let end = envelope("files-upload-end", serde_json::json!({ "transferId": "t-2" }));
-        assert!(matches!(decode_files_frame(&end).unwrap().unwrap(), FilesInbound::UploadEnd(ref e) if e.transfer_id == "t-2"));
+        let end = envelope(
+            "files-upload-end",
+            serde_json::json!({ "transferId": "t-2" }),
+        );
+        assert!(
+            matches!(decode_files_frame(&end).unwrap().unwrap(), FilesInbound::UploadEnd(ref e) if e.transfer_id == "t-2")
+        );
 
         let cancel = envelope("files-cancel", serde_json::json!({ "transferId": "t-2" }));
-        assert!(matches!(decode_files_frame(&cancel).unwrap().unwrap(), FilesInbound::Cancel(ref c) if c.transfer_id.as_deref() == Some("t-2")));
+        assert!(
+            matches!(decode_files_frame(&cancel).unwrap().unwrap(), FilesInbound::Cancel(ref c) if c.transfer_id.as_deref() == Some("t-2"))
+        );
 
-        let ack = envelope("files-download-ack", serde_json::json!({ "transferId": "t-1", "nextChunkIndex": 3 }));
-        assert!(matches!(decode_files_frame(&ack).unwrap().unwrap(), FilesInbound::DownloadAck(ref a) if a.next_chunk_index == 3));
+        let ack = envelope(
+            "files-download-ack",
+            serde_json::json!({ "transferId": "t-1", "nextChunkIndex": 3 }),
+        );
+        assert!(
+            matches!(decode_files_frame(&ack).unwrap().unwrap(), FilesInbound::DownloadAck(ref a) if a.next_chunk_index == 3)
+        );
     }
 
     #[test]
@@ -1333,7 +1473,8 @@ mod tests {
 
     #[test]
     fn error_frames_carry_the_code_and_attribution() {
-        let error = FilesError::new(FilesErrorCode::BadFrame, "chunk gap").with_ids(None, Some("t-1".to_string()));
+        let error = FilesError::new(FilesErrorCode::BadFrame, "chunk gap")
+            .with_ids(None, Some("t-1".to_string()));
         let frame = frame_files(&Outbound::Error(FilesErrorMessage::from_error(&error)), 0);
         let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
         assert_eq!(value["type"], "files-error");
@@ -1412,7 +1553,9 @@ mod tests {
         std::fs::create_dir_all(&sibling).unwrap();
         std::fs::write(sibling.join("x"), b"x").unwrap();
 
-        let root = FilesRoot::resolve(root_dir.to_str().unwrap()).await.unwrap();
+        let root = FilesRoot::resolve(root_dir.to_str().unwrap())
+            .await
+            .unwrap();
         let err = root.resolve_existing("../files2/x").await.unwrap_err();
         assert_eq!(err.code, FilesErrorCode::PathOutsideRoot);
         std::fs::remove_dir_all(&base).ok();
@@ -1424,12 +1567,18 @@ mod tests {
         std::fs::create_dir(dir.join("dir")).unwrap();
         let root = FilesRoot::resolve(dir.to_str().unwrap()).await.unwrap();
 
-        let (parent, name) = root.resolve_parent_for_create("dir", "name.txt").await.unwrap();
+        let (parent, name) = root
+            .resolve_parent_for_create("dir", "name.txt")
+            .await
+            .unwrap();
         assert_eq!(parent, dir.join("dir").canonicalize().unwrap());
         assert_eq!(name, "name.txt");
 
         for bad in ["../x", "a/b", "..", "."] {
-            let err = root.resolve_parent_for_create("dir", bad).await.unwrap_err();
+            let err = root
+                .resolve_parent_for_create("dir", bad)
+                .await
+                .unwrap_err();
             assert_eq!(err.code, FilesErrorCode::InvalidPath, "name: {bad}");
         }
         std::fs::remove_dir_all(&dir).ok();
@@ -1445,11 +1594,17 @@ mod tests {
     }
 
     fn list_req(id: &str, path: &str) -> FilesInbound {
-        FilesInbound::List(FilesListRequest { request_id: id.to_string(), path: path.to_string() })
+        FilesInbound::List(FilesListRequest {
+            request_id: id.to_string(),
+            path: path.to_string(),
+        })
     }
 
     fn download_req(id: &str, path: &str) -> FilesInbound {
-        FilesInbound::Download(FilesDownloadRequest { transfer_id: id.to_string(), path: path.to_string() })
+        FilesInbound::Download(FilesDownloadRequest {
+            transfer_id: id.to_string(),
+            path: path.to_string(),
+        })
     }
 
     fn upload_begin(id: &str, dir: &str, name: &str, size: u64) -> FilesInbound {
@@ -1472,15 +1627,23 @@ mod tests {
     }
 
     fn upload_end(id: &str) -> FilesInbound {
-        FilesInbound::UploadEnd(FilesUploadEndRequest { transfer_id: id.to_string() })
+        FilesInbound::UploadEnd(FilesUploadEndRequest {
+            transfer_id: id.to_string(),
+        })
     }
 
     fn ack(id: &str, next: u64) -> FilesInbound {
-        FilesInbound::DownloadAck(FilesAckMessage { transfer_id: id.to_string(), next_chunk_index: next })
+        FilesInbound::DownloadAck(FilesAckMessage {
+            transfer_id: id.to_string(),
+            next_chunk_index: next,
+        })
     }
 
     fn cancel(id: &str) -> FilesInbound {
-        FilesInbound::Cancel(FilesCancelMessage { request_id: None, transfer_id: Some(id.to_string()) })
+        FilesInbound::Cancel(FilesCancelMessage {
+            request_id: None,
+            transfer_id: Some(id.to_string()),
+        })
     }
 
     /// The decoded bytes of one `files-download-chunk` frame.
@@ -1489,7 +1652,9 @@ mod tests {
         let Outbound::DownloadChunk(chunk) = frame else {
             panic!("not a download chunk: {frame:?}");
         };
-        base64::engine::general_purpose::STANDARD.decode(&chunk.data).unwrap()
+        base64::engine::general_purpose::STANDARD
+            .decode(&chunk.data)
+            .unwrap()
     }
 
     /// The wire code of the single error frame in `frames` (panics otherwise).
@@ -1517,7 +1682,11 @@ mod tests {
         assert_eq!(result.request_id, "r-1");
         assert!(!result.truncated);
         let names: Vec<&str> = result.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["zz-dir", "a.txt", "b.txt"], "dirs first, then name bytewise");
+        assert_eq!(
+            names,
+            ["zz-dir", "a.txt", "b.txt"],
+            "dirs first, then name bytewise"
+        );
         assert!(result.entries[0].is_directory);
         assert_eq!(result.entries[0].path, "zz-dir");
         assert_eq!(result.entries[1].size, 1);
@@ -1563,7 +1732,9 @@ mod tests {
         let mut session = session_for(&dir).await;
 
         let frames = session.handle(download_req("t-1", "big.bin")).await;
-        assert!(matches!(frames.first(), Some(Outbound::DownloadBegin(b)) if b.total_chunks == 20 && b.size == size as u64));
+        assert!(
+            matches!(frames.first(), Some(Outbound::DownloadBegin(b)) if b.total_chunks == 20 && b.size == size as u64)
+        );
         assert_eq!(frames.len(), 17, "begin + 16 chunks");
 
         // An ack beyond what was sent is BAD_FRAME and kills the transfer
@@ -1584,7 +1755,9 @@ mod tests {
     #[tokio::test]
     async fn download_assembles_byte_equal_content() {
         let dir = temp_dir_for_test();
-        let content: Vec<u8> = (0..(FILE_CHUNK_BYTES as usize + 3)).map(|i| (i % 251) as u8).collect();
+        let content: Vec<u8> = (0..(FILE_CHUNK_BYTES as usize + 3))
+            .map(|i| (i % 251) as u8)
+            .collect();
         std::fs::write(dir.join("a.bin"), &content).unwrap();
         let mut session = session_for(&dir).await;
 
@@ -1607,7 +1780,9 @@ mod tests {
         std::fs::write(dir.join("empty"), b"").unwrap();
         let mut session = session_for(&dir).await;
         let frames = session.handle(download_req("t-1", "empty")).await;
-        assert!(matches!(frames.as_slice(), [Outbound::DownloadBegin(b), Outbound::DownloadEnd(_)] if b.total_chunks == 0));
+        assert!(
+            matches!(frames.as_slice(), [Outbound::DownloadBegin(b), Outbound::DownloadEnd(_)] if b.total_chunks == 0)
+        );
 
         // Nothing was stored (the transfer completed in one call): a
         // follow-up download starts immediately instead of TRANSFER_BUSY.
@@ -1630,12 +1805,17 @@ mod tests {
     #[tokio::test]
     async fn oversize_size_is_rejected_by_the_pure_guard() {
         assert!(ensure_within_cap(FILE_MAX_BYTES).is_ok());
-        assert_eq!(ensure_within_cap(FILE_MAX_BYTES + 1).unwrap_err().code, FilesErrorCode::FileTooLarge);
+        assert_eq!(
+            ensure_within_cap(FILE_MAX_BYTES + 1).unwrap_err().code,
+            FilesErrorCode::FileTooLarge
+        );
 
         // The upload path calls it at begin, before any chunk or file.
         let dir = temp_dir_for_test();
         let mut session = session_for(&dir).await;
-        let frames = session.handle(upload_begin("t-1", "", "big", FILE_MAX_BYTES + 1)).await;
+        let frames = session
+            .handle(upload_begin("t-1", "", "big", FILE_MAX_BYTES + 1))
+            .await;
         assert_eq!(error_code(&frames), "FILE_TOO_LARGE");
         assert!(!dir.join(part_name("big")).exists());
         std::fs::remove_dir_all(&dir).ok();
@@ -1648,9 +1828,16 @@ mod tests {
         let payload = b"hello files";
 
         // Begin is answered with the first cumulative ack (spec §6.1).
-        let frames = session.handle(upload_begin("t-1", "", "note.txt", payload.len() as u64)).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.transfer_id == "t-1" && a.next_chunk_index == 0));
-        assert!(dir.join(part_name("note.txt")).exists(), ".part is created at begin");
+        let frames = session
+            .handle(upload_begin("t-1", "", "note.txt", payload.len() as u64))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.transfer_id == "t-1" && a.next_chunk_index == 0)
+        );
+        assert!(
+            dir.join(part_name("note.txt")).exists(),
+            ".part is created at begin"
+        );
 
         let frames = session.handle(chunk("t-1", 0, 1, payload)).await;
         assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 1));
@@ -1658,7 +1845,10 @@ mod tests {
         assert!(matches!(frames.as_slice(), [Outbound::UploadComplete(c)]
             if c.transfer_id == "t-1" && c.name == "note.txt" && c.path == "note.txt" && c.size == payload.len() as u64));
         assert_eq!(std::fs::read(dir.join("note.txt")).unwrap(), payload);
-        assert!(!dir.join(part_name("note.txt")).exists(), ".part renamed away");
+        assert!(
+            !dir.join(part_name("note.txt")).exists(),
+            ".part renamed away"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1678,8 +1868,14 @@ mod tests {
     async fn upload_into_a_missing_directory_is_not_found() {
         let dir = temp_dir_for_test();
         let mut session = session_for(&dir).await;
-        let frames = session.handle(upload_begin("t-1", "nope", "f.bin", 1)).await;
-        assert_eq!(error_code(&frames), "NOT_FOUND", "the missing dir fails the resolve");
+        let frames = session
+            .handle(upload_begin("t-1", "nope", "f.bin", 1))
+            .await;
+        assert_eq!(
+            error_code(&frames),
+            "NOT_FOUND",
+            "the missing dir fails the resolve"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1688,7 +1884,9 @@ mod tests {
         let dir = temp_dir_for_test();
         std::fs::write(dir.join("taken.txt"), b"x").unwrap();
         let mut session = session_for(&dir).await;
-        let frames = session.handle(upload_begin("t-1", "", "taken.txt", 1)).await;
+        let frames = session
+            .handle(upload_begin("t-1", "", "taken.txt", 1))
+            .await;
         assert_eq!(error_code(&frames), "FILE_EXISTS");
         assert!(!dir.join(part_name("taken.txt")).exists());
         std::fs::remove_dir_all(&dir).ok();
@@ -1701,8 +1899,15 @@ mod tests {
         std::fs::write(dir.join(part_name("note.txt")), b"stale").unwrap();
         let mut session = session_for(&dir).await;
         let frames = session.handle(upload_begin("t-1", "", "note.txt", 3)).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadAck(_)]), "begin succeeds over a stale .part");
-        assert_eq!(std::fs::read(dir.join(part_name("note.txt"))).unwrap(), b"", "stale bytes are gone");
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(_)]),
+            "begin succeeds over a stale .part"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(part_name("note.txt"))).unwrap(),
+            b"",
+            "stale bytes are gone"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1710,12 +1915,19 @@ mod tests {
     async fn upload_end_before_the_last_chunk_is_bad_frame() {
         let dir = temp_dir_for_test();
         let mut session = session_for(&dir).await;
-        session.handle(upload_begin("t-1", "", "two.bin", 2 * FILE_CHUNK_BYTES)).await;
-        session.handle(chunk("t-1", 0, 2, &vec![1u8; FILE_CHUNK_BYTES as usize])).await;
+        session
+            .handle(upload_begin("t-1", "", "two.bin", 2 * FILE_CHUNK_BYTES))
+            .await;
+        session
+            .handle(chunk("t-1", 0, 2, &vec![1u8; FILE_CHUNK_BYTES as usize]))
+            .await;
 
         let frames = session.handle(upload_end("t-1")).await;
         assert_eq!(error_code(&frames), "BAD_FRAME");
-        assert!(!dir.join(part_name("two.bin")).exists(), "state cleared and .part removed");
+        assert!(
+            !dir.join(part_name("two.bin")).exists(),
+            "state cleared and .part removed"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1739,7 +1951,9 @@ mod tests {
         let full = vec![9u8; FILE_CHUNK_BYTES as usize];
         let size = 2 * FILE_CHUNK_BYTES + 5;
 
-        let frames = session.handle(upload_begin("t-1", "", "three.bin", size)).await;
+        let frames = session
+            .handle(upload_begin("t-1", "", "three.bin", size))
+            .await;
         assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 0));
         let frames = session.handle(chunk("t-1", 0, 3, &full)).await;
         assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 1));
@@ -1769,7 +1983,9 @@ mod tests {
         let mut session = session_for(&dir).await;
         let size = FILE_CHUNK_BYTES + 3;
         session.handle(upload_begin("t-1", "", "s.bin", size)).await;
-        session.handle(chunk("t-1", 0, 2, &vec![1u8; FILE_CHUNK_BYTES as usize])).await;
+        session
+            .handle(chunk("t-1", 0, 2, &vec![1u8; FILE_CHUNK_BYTES as usize]))
+            .await;
         let frames = session.handle(chunk("t-1", 1, 2, b"ab")).await;
         assert_eq!(error_code(&frames), "BAD_FRAME");
         assert!(!dir.join(part_name("s.bin")).exists());
@@ -1780,7 +1996,9 @@ mod tests {
     async fn upload_totals_changed_mid_flight_is_bad_frame() {
         let dir = temp_dir_for_test();
         let mut session = session_for(&dir).await;
-        session.handle(upload_begin("t-1", "", "m.bin", FILE_CHUNK_BYTES)).await;
+        session
+            .handle(upload_begin("t-1", "", "m.bin", FILE_CHUNK_BYTES))
+            .await;
         let frames = session.handle(chunk("t-1", 0, 9, b"x")).await;
         assert_eq!(error_code(&frames), "BAD_FRAME");
         assert!(!dir.join(part_name("m.bin")).exists());
@@ -1799,7 +2017,11 @@ mod tests {
 
         let frames = session.handle(upload_end("t-1")).await;
         assert_eq!(error_code(&frames), "FILE_EXISTS");
-        assert_eq!(std::fs::read(dir.join("race.bin")).unwrap(), b"winner", "the existing file is untouched");
+        assert_eq!(
+            std::fs::read(dir.join("race.bin")).unwrap(),
+            b"winner",
+            "the existing file is untouched"
+        );
         assert!(!dir.join(part_name("race.bin")).exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1813,8 +2035,14 @@ mod tests {
         session.handle(download_req("t-1", "a.bin")).await;
         let frames = session.handle(download_req("t-2", "a.bin")).await;
         assert_eq!(error_code(&frames), "TRANSFER_BUSY");
-        let Outbound::Error(error) = &frames[0] else { unreachable!() };
-        assert_eq!(error.transfer_id.as_deref(), Some("t-2"), "the busy error names the offending id");
+        let Outbound::Error(error) = &frames[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            error.transfer_id.as_deref(),
+            Some("t-2"),
+            "the busy error names the offending id"
+        );
 
         session.handle(upload_begin("u-1", "", "up.bin", 1)).await;
         let frames = session.handle(upload_begin("u-2", "", "up2.bin", 1)).await;
@@ -1854,11 +2082,17 @@ mod tests {
         session.handle(download_req("t-1", "a.bin")).await;
         let frames = session.handle(ack("t-1", 1)).await;
         assert!(matches!(frames.as_slice(), [Outbound::DownloadEnd(_)]));
-        assert!(session.download.is_none(), "the slot is free after the end frame");
+        assert!(
+            session.download.is_none(),
+            "the slot is free after the end frame"
+        );
 
         // A second download (new id, other file) must begin, not be busy.
         let frames = session.handle(download_req("t-2", "b.bin")).await;
-        assert!(matches!(frames.first(), Some(Outbound::DownloadBegin(_))), "not TRANSFER_BUSY");
+        assert!(
+            matches!(frames.first(), Some(Outbound::DownloadBegin(_))),
+            "not TRANSFER_BUSY"
+        );
         // Reusing the finished id is not TRANSFER_BUSY either, and the idle
         // tick has nothing to time out for the completed transfer.
         assert!(session.check_idle().await.is_empty());
@@ -1892,7 +2126,10 @@ mod tests {
 
         let frames = session.handle(cancel("t-1")).await;
         assert!(frames.is_empty());
-        assert!(!dir.join(part_name("up.bin")).exists(), ".part removed on cancel");
+        assert!(
+            !dir.join(part_name("up.bin")).exists(),
+            ".part removed on cancel"
+        );
         assert!(!dir.join("up.bin").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1913,17 +2150,27 @@ mod tests {
         let mut session = session_for(&dir).await;
         session.handle(download_req("t-1", "a.bin")).await;
 
-        assert!(session.check_idle().await.is_empty(), "fresh transfer is not idle");
+        assert!(
+            session.check_idle().await.is_empty(),
+            "fresh transfer is not idle"
+        );
 
         // Rewind the deadline past the timeout; the tick then fails it.
-        session.download.as_mut().unwrap().deadline = tokio::time::Instant::now() - std::time::Duration::from_secs(1);
+        session.download.as_mut().unwrap().deadline =
+            tokio::time::Instant::now() - std::time::Duration::from_secs(1);
         let frames = session.check_idle().await;
-        let Outbound::Error(error) = &frames[0] else { panic!("expected the timeout frame, got {frames:?}") };
+        let Outbound::Error(error) = &frames[0] else {
+            panic!("expected the timeout frame, got {frames:?}")
+        };
         assert_eq!(error.code, "TRANSFER_TIMEOUT");
         assert_eq!(error.transfer_id.as_deref(), Some("t-1"));
 
         let frames = session.handle(ack("t-1", 1)).await;
-        assert_eq!(error_code(&frames), "TRANSFER_UNKNOWN", "state cleaned after timeout");
+        assert_eq!(
+            error_code(&frames),
+            "TRANSFER_UNKNOWN",
+            "state cleaned after timeout"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1932,11 +2179,15 @@ mod tests {
         let dir = temp_dir_for_test();
         let mut session = session_for(&dir).await;
         session.handle(upload_begin("u-1", "", "up.bin", 10)).await;
-        session.upload.as_mut().unwrap().deadline = tokio::time::Instant::now() - std::time::Duration::from_secs(1);
+        session.upload.as_mut().unwrap().deadline =
+            tokio::time::Instant::now() - std::time::Duration::from_secs(1);
 
         let frames = session.check_idle().await;
         assert!(matches!(frames.as_slice(), [Outbound::Error(e)] if e.code == "TRANSFER_TIMEOUT"));
-        assert!(!dir.join(part_name("up.bin")).exists(), ".part removed on timeout");
+        assert!(
+            !dir.join(part_name("up.bin")).exists(),
+            ".part removed on timeout"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1957,9 +2208,13 @@ mod tests {
     #[tokio::test]
     async fn root_resolution_fails_when_missing_not_a_dir_or_unreadable() {
         // Missing path.
-        let missing = std::env::temp_dir().join(format!("ponter-files-missing-{}", std::process::id()));
+        let missing =
+            std::env::temp_dir().join(format!("ponter-files-missing-{}", std::process::id()));
         assert_eq!(
-            FilesRoot::resolve(missing.to_str().unwrap()).await.unwrap_err().code,
+            FilesRoot::resolve(missing.to_str().unwrap())
+                .await
+                .unwrap_err()
+                .code,
             FilesErrorCode::NotFound
         );
 
@@ -1968,7 +2223,10 @@ mod tests {
         let file = dir.join("plain.txt");
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(
-            FilesRoot::resolve(file.to_str().unwrap()).await.unwrap_err().code,
+            FilesRoot::resolve(file.to_str().unwrap())
+                .await
+                .unwrap_err()
+                .code,
             FilesErrorCode::NotADirectory
         );
 
@@ -1985,7 +2243,10 @@ mod tests {
                 // Running as root: the permission probe cannot fail here.
             } else {
                 assert_eq!(
-                    FilesRoot::resolve(locked.to_str().unwrap()).await.unwrap_err().code,
+                    FilesRoot::resolve(locked.to_str().unwrap())
+                        .await
+                        .unwrap_err()
+                        .code,
                     FilesErrorCode::IoError
                 );
             }

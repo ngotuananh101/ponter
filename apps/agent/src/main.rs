@@ -14,9 +14,9 @@ mod desktop;
 // is compiled out. The musl artifact has no desktop session to inject into
 // (ADR-15), so nothing here is reachable on musl. `--allow-input` still exists
 // on every target (spec §6.4) — it lives in `Cli`, not in this module.
+mod files;
 #[cfg(not(target_env = "musl"))]
 mod input;
-mod files;
 mod logging;
 mod pty;
 mod rtc;
@@ -1224,7 +1224,10 @@ async fn run_files_session(
         }
     }
 
-    let dc = channel.get().context("the files channel vanished after opening")?.clone();
+    let dc = channel
+        .get()
+        .context("the files channel vanished after opening")?
+        .clone();
 
     // One session owns the state machine; frames travel over these channels.
     // Capacity 64 mirrors the terminal path's frame channel.
@@ -1345,9 +1348,12 @@ async fn handle_files_frame(session: &mut files::FilesSession, raw: &str) -> Vec
                 return Vec::new();
             }
             tracing::warn!(error = %error, "bad files frame");
-            vec![files::FilesError::new(files::FilesErrorCode::BadFrame, "the frame could not be decoded")
-                .with_ids(request_id, transfer_id)
-                .into_frame()]
+            vec![files::FilesError::new(
+                files::FilesErrorCode::BadFrame,
+                "the frame could not be decoded",
+            )
+            .with_ids(request_id, transfer_id)
+            .into_frame()]
         }
     }
 }
@@ -2260,18 +2266,21 @@ mod tests {
         assert!(resolve_files_root(None).await.is_none());
 
         // Missing path → closed.
-        let missing = std::env::temp_dir().join(format!("ponter-files-gate-missing-{}", std::process::id()));
+        let missing =
+            std::env::temp_dir().join(format!("ponter-files-gate-missing-{}", std::process::id()));
         assert!(resolve_files_root(missing.to_str()).await.is_none());
 
         // A file, not a directory → closed.
-        let file = std::env::temp_dir().join(format!("ponter-files-gate-file-{}", std::process::id()));
+        let file =
+            std::env::temp_dir().join(format!("ponter-files-gate-file-{}", std::process::id()));
         std::fs::write(&file, b"x").unwrap();
         assert!(resolve_files_root(file.to_str()).await.is_none());
         std::fs::remove_file(&file).ok();
 
         // A real directory → open, and the root is resolved fresh each call
         // (never cached): removing it closes the gate again.
-        let dir = std::env::temp_dir().join(format!("ponter-files-gate-dir-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ponter-files-gate-dir-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(resolve_files_root(dir.to_str()).await.is_some());
         std::fs::remove_dir_all(&dir).ok();
