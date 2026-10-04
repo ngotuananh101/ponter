@@ -1212,17 +1212,28 @@ export const useTerminalStore = defineStore('terminal', () => {
         const reg = await registerDownloadSW();
         if (reg) {
           const { port1, port2 } = new MessageChannel();
-          let writer: ServiceWorkerStreamWriter;
 
-          // Start the download; chunks are forwarded to the writer via onChunk.
-          // The writer is assigned synchronously before any chunk can arrive.
+          // The writer needs the transferId from download(), but onChunk (passed
+          // to download()) needs the writer. Break the cycle with a holder the
+          // closure reads lazily — the writer is assigned synchronously before
+          // any chunk can arrive (download is receive-side via async data channel).
+          const writerRef: { current: ServiceWorkerStreamWriter | null } = {
+            current: null,
+          };
           const handle = conn.client.download(
             path,
             fileProgressHandler(tab),
             (chunk) => {
-              void writer.writeChunk(chunk).catch(() => {});
+              void writerRef.current?.writeChunk(chunk).catch(() => {});
             },
           );
+
+          const writer = new ServiceWorkerStreamWriter(port1, {
+            transferId: handle.transferId,
+            filename: name,
+            size: 0,
+          });
+          writerRef.current = writer;
 
           // Register the transfer entry on the tab (progress tracking).
           tab.fileTransfers = [
@@ -1237,12 +1248,6 @@ export const useTerminalStore = defineStore('terminal', () => {
               name,
             },
           ];
-
-          writer = new ServiceWorkerStreamWriter(port1, {
-            transferId: handle.transferId,
-            filename: name,
-            size: 0,
-          });
 
           try {
             // Post STREAM_INIT with the port to the SW, then navigate.

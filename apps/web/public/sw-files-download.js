@@ -6,7 +6,7 @@
 // transferId -> MessagePort
 const ports = new Map();
 
-self.addEventListener('install', (event) => {
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
