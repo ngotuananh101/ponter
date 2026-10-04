@@ -61,6 +61,13 @@ pub const CONTROL_LABEL: &str = "control";
 /// The capability string that selects a desktop session (ADR-15).
 pub const DESKTOP_LABEL: &str = "desktop";
 
+/// The file transfer channel's label (Week 10, ADR-31). A files session is a
+/// data-channel session like the terminal, served over exactly this label.
+// Consumed by the files classification in Task 7 (classify_offer +
+// accepted_label). The allow is removed there.
+#[allow(dead_code)]
+pub const FILES_LABEL: &str = "files";
+
 /// Where GCC starts (spec §3.3). Deliberately low — the safe floor, not the
 /// 1080p30 target — because a path that opens congested should not open at
 /// 6 Mbps. The dispatcher ignores the estimate until it *moves off* this seed,
@@ -221,19 +228,36 @@ pub async fn attach_desktop_track(peer: &Arc<dyn PeerConnection>) -> Result<Desk
     Ok(DesktopMedia { track, sender })
 }
 
+/// Answer an offer with `approved: true` and the SDP just built.
+///
+/// The caller has already decided this offer is one it can serve (desktop
+/// track attached, or a files root resolved), so the flag is fixed to `true`;
+/// this is the same `set_remote_description → create_answer →
+/// set_local_description → send` core as [`answer_offer`].
+///
+/// **Not cfg-gated**: `files.rs` is compiled on every target (spec §6.1), so
+/// the files dispatch arm needs this on musl too. The desktop-named wrapper
+/// below keeps its cfg.
+pub async fn send_approved_answer(
+    peer: &Arc<dyn PeerConnection>,
+    offer: &SignalOffer,
+    outbound: &mpsc::Sender<SignalMessage>,
+) -> Result<()> {
+    send_answer(peer, offer, true, outbound).await
+}
+
 /// Answer a desktop offer with `approved: true` and the SDP just built.
 ///
-/// The track is attached by the caller *before* this runs (ADR-15); this is the
-/// same `set_remote_description → create_answer → set_local_description → send`
-/// core as [`answer_offer`], with the flag fixed to `true` because the caller
-/// has already decided the offer is a desktop offer it can serve.
+/// The track is attached by the caller *before* this runs (ADR-15). Kept as
+/// the desktop-specific name; delegates to [`send_approved_answer`] so the
+/// desktop and files approved paths cannot drift.
 #[cfg(not(target_env = "musl"))]
 pub async fn send_desktop_answer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
 ) -> Result<()> {
-    send_answer(peer, offer, true, outbound).await
+    send_approved_answer(peer, offer, outbound).await
 }
 
 /// Picks the payload type the desktop stream must be stamped with.
