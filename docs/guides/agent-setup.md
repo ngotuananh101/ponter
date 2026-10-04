@@ -63,6 +63,27 @@ Options:
 
 > **Bảo mật:** `--files-root` mở quyền đọc/ghi file trong đúng thư mục đó cho phiên đã xác thực nhưng **peer chưa được định danh** (H3 — Phase 5). Chỉ trỏ vào thư mục bạn chủ đích chia sẻ; không có mặc định, cổng đóng khi cờ vắng mặt.
 
+### 3.1 Vận hành sandbox files (Tuần 11)
+
+#### 3.1.1 TTL 24 giờ cho file `.ponter-part`
+
+Agent chạy một **janitor** (task nền, chạy mỗi giờ và khi khởi động/session init) quét toàn bộ sandbox root tìm các file kết thúc bằng `.ponter-part`:
+
+- Nếu `SystemTime::now() - metadata.modified() > 86400 giây` (24 h) → xóa file và ghi log `INFO`.
+- Nếu **`<= 86400 giây`** → giữ lại. Đây là trạng thái mở `resume`; **không được xóa tay** trong lúc transfer đang diễn ra — resume sẽ dựa vào `fromChunkIndex` + length validation để tiếp tục.
+- **Hủy muốn (explicit cancel)** qua `files-cancel` vẫn **xóa ngay** `.ponter-part` kể cả khi còn trong TTL — hành vi này không chờ janitor.
+
+Tóm lại: `.ponter-part` trẻ (<24 h) = trạng thái resume, để nguyên; `.ponter-part` già (>24 h) = rác, janitor dọn.
+
+#### 3.1.2 Quyền thao tác thư mục (sandbox root)
+
+Các phép toán `mkdir`, `delete`, `rename` chỉ áp dụng **bên trong sandbox root**:
+
+- **Root không thể bị xóa/đổi tên:** yêu cầu `path == ""` (hoặc canonicalize == root) bị từ chối ngay với lỗi **`PERMISSION_DENIED`** — ở cả giai đoạn syntactic và canonicalization.
+- **Delete thư mục rỗng:** được phép nếu là rỗng.
+- **Delete thư mục không rỗng:** yêu cầu `recursive: true` (API) hoặc xác nhận recursive qua UI dialog trước khi thực hiành — nếu không, trả về **`DIR_NOT_EMPTY`**.
+- **Rename:** cả `oldPath` và `newPath` phải nằm trong sandbox root (canonicalize + prefix check). Nếu `newPath` đã tồn tại → từ chối ngay với lỗi **`FILE_EXISTS`** (không ghi đè — rename không bao giờ overwrite).
+
 ---
 
 ## 4. Running the Agent
