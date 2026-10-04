@@ -536,6 +536,19 @@ export function sendTerminalResize(
   );
 }
 
+/** Format an error from openTerminalPeer / openFilesPeer with current agent and server logs. */
+function connectionFailure(err: unknown): string {
+  const agentLogs = agents
+    .map((a, i) => `=== AGENT #${i} ===\n${a.output()}`)
+    .join('\n');
+  const serverLogs = serverOutput();
+  return (
+    `${err instanceof Error ? err.message : String(err)}\n` +
+    `--- AGENT LOGS ---\n${agentLogs}\n` +
+    `--- SERVER LOGS ---\n${serverLogs}`
+  );
+}
+
 /**
  * Create and start a PeerConnection with the 'terminal' channel,
  * buffering received frames.
@@ -562,15 +575,7 @@ export async function openTerminalPeer(transport: SignalTransport): Promise<{
 
     return { offerer, frames };
   } catch (err) {
-    const agentLogs = agents
-      .map((a, i) => `=== AGENT #${i} ===\n${a.output()}`)
-      .join('\n');
-    const serverLogs = serverOutput();
-    throw new Error(
-      `${err instanceof Error ? err.message : String(err)}\n` +
-        `--- AGENT LOGS ---\n${agentLogs}\n` +
-        `--- SERVER LOGS ---\n${serverLogs}`,
-    );
+    throw new Error(connectionFailure(err));
   }
 }
 
@@ -647,15 +652,7 @@ export async function openFilesPeer(transport: SignalTransport): Promise<{
 
     return { offerer, frames };
   } catch (err) {
-    const agentLogs = agents
-      .map((a, i) => `=== AGENT #${i} ===\n${a.output()}`)
-      .join('\n');
-    const serverLogs = serverOutput();
-    throw new Error(
-      `${err instanceof Error ? err.message : String(err)}\n` +
-        `--- AGENT LOGS ---\n${agentLogs}\n` +
-        `--- SERVER LOGS ---\n${serverLogs}`,
-    );
+    throw new Error(connectionFailure(err));
   }
 }
 
