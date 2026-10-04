@@ -60,6 +60,27 @@ describe('ConnectionProgress.vue', () => {
     expect(text).toContain('Host D');
   });
 
+  it('renders the files-specific final step', () => {
+    const wrapper = mount(ConnectionProgress, {
+      props: {
+        tab: tab({ kind: 'files', initStep: 'channel', title: 'Host F' }),
+      },
+    });
+
+    const text = wrapper.text();
+    expect(text).toContain('Opening file channel');
+    expect(text).not.toContain('Opening shell');
+
+    const items = wrapper.findAll('li');
+    expect(items).toHaveLength(4);
+    expect(items.map((i) => i.attributes('data-state'))).toEqual([
+      'done',
+      'done',
+      'done',
+      'active',
+    ]);
+  });
+
   it('exposes the step list as a polite live region for screen readers', () => {
     const wrapper = mount(ConnectionProgress, { props: { tab: tab() } });
     const region = wrapper.find('[role="status"]');

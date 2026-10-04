@@ -116,7 +116,7 @@ describe('RegisterAgentDialog.vue', () => {
       hostname: 'node-alpha.lan',
       platform: 'windows',
       publicKey: 'mocked-spki-public-key',
-      capabilities: ['terminal', 'desktop'],
+      capabilities: ['terminal', 'desktop', 'files'],
     });
 
     // Check success step rendered
@@ -147,6 +147,22 @@ describe('RegisterAgentDialog.vue', () => {
     expect(wrapper.find('#agent-id').exists()).toBe(true);
   });
 
+  /** Mount the dialog, fill the agent id, and submit — shared by the success-flow tests. */
+  async function mountAndRegister(agentId: string) {
+    const wrapper = mount(RegisterAgentDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: true } },
+    });
+
+    await wrapper.find('#agent-id').setValue(agentId);
+    const submitBtn = wrapper
+      .findAll('button')
+      .find((b) => b.text().includes('Generate Agent'));
+    await submitBtn?.trigger('click');
+    await flushPromises();
+    return wrapper;
+  }
+
   it('6. Copies credential and command to clipboard', async () => {
     vi.mocked(apiClient.agents.create).mockResolvedValueOnce({
       agent: createMockAgent({
@@ -156,17 +172,7 @@ describe('RegisterAgentDialog.vue', () => {
       credential: 'ag_secret_copy_test',
     });
 
-    const wrapper = mount(RegisterAgentDialog, {
-      props: { open: true },
-      global: { stubs: { Teleport: true } },
-    });
-
-    await wrapper.find('#agent-id').setValue('node-beta-02');
-    const submitBtn = wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('Generate Agent'));
-    await submitBtn?.trigger('click');
-    await flushPromises();
+    const wrapper = await mountAndRegister('node-beta-02');
 
     // Copy credential
     const copyCredBtn = wrapper
@@ -198,17 +204,7 @@ describe('RegisterAgentDialog.vue', () => {
       credential: 'ag_secret_test',
     });
 
-    const wrapper = mount(RegisterAgentDialog, {
-      props: { open: true },
-      global: { stubs: { Teleport: true } },
-    });
-
-    await wrapper.find('#agent-id').setValue('node-gamma-03');
-    const submitBtn = wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('Generate Agent'));
-    await submitBtn?.trigger('click');
-    await flushPromises();
+    const wrapper = await mountAndRegister('node-gamma-03');
 
     const doneBtn = wrapper
       .findAll('button')

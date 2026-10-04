@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { Plus, RefreshCw, X, Terminal, Monitor, Loader2 } from '@lucide/vue';
+import {
+  Plus,
+  RefreshCw,
+  X,
+  Terminal,
+  Monitor,
+  Folder,
+  Loader2,
+} from '@lucide/vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import FullscreenToggle from '@/components/terminal/FullscreenToggle.vue';
 
@@ -8,7 +16,7 @@ defineProps<{
     id: string;
     title: string;
     status: string;
-    kind: 'terminal' | 'desktop';
+    kind: 'terminal' | 'desktop' | 'files';
   }>;
   activeTabId: string | null;
   /** Fullscreen state of the session body, owned by the workspace view. */
@@ -63,6 +71,10 @@ defineEmits<{
           />
           <Monitor
             v-if="tab.kind === 'desktop'"
+            class="w-3.5 h-3.5 flex-shrink-0"
+          />
+          <Folder
+            v-else-if="tab.kind === 'files'"
             class="w-3.5 h-3.5 flex-shrink-0"
           />
           <Terminal v-else class="w-3.5 h-3.5 flex-shrink-0" />

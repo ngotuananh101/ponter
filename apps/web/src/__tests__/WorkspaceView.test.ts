@@ -179,6 +179,74 @@ describe('WorkspaceView.vue', () => {
     expect(wrapper.find('video').exists()).toBe(true);
   });
 
+  it('renders FilesView and the files channel footer for a files tab', async () => {
+    const store = useTerminalStore();
+    store.tabs.push({
+      id: 'tab-f',
+      agentId: 'ag-1',
+      kind: 'files',
+      terminalId: '',
+      title: 'Host 1',
+      status: 'active',
+      filesPath: '',
+      fileList: {
+        path: '',
+        entries: [
+          {
+            name: 'notes.txt',
+            path: 'notes.txt',
+            size: 3,
+            isDirectory: false,
+            modifiedAt: '2026-10-04T10:00:00Z',
+          },
+        ],
+        truncated: false,
+      },
+    });
+    store.setActiveTab('tab-f');
+
+    const wrapper = mountWorkspace();
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="files-view"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain('notes.txt');
+    // The footer must not claim a terminal channel for a files session.
+    expect(wrapper.text()).toContain('Channel: files (64 KiB buffer)');
+  });
+
+  /** Push an error-status tab and mount the workspace on it, flushing updates. */
+  async function mountErrorTab(
+    id: string,
+    kind: 'files' | 'terminal',
+    error: string,
+  ) {
+    const store = useTerminalStore();
+    store.tabs.push({
+      id,
+      agentId: 'ag-1',
+      kind,
+      terminalId: '',
+      title: 'Host 1',
+      status: 'error',
+      error,
+    });
+    store.setActiveTab(id);
+    const wrapper = mountWorkspace();
+    await flushPromises();
+    return wrapper;
+  }
+
+  it('shows the error overlay, not the stepper, for a failed files tab', async () => {
+    const wrapper = await mountErrorTab(
+      'tab-fe',
+      'files',
+      'The agent refused this session.',
+    );
+
+    expect(wrapper.text()).toContain('The agent refused this session.');
+    expect(wrapper.text()).not.toContain('Connecting to');
+  });
+
   it('shows the connection stepper for a terminal tab still connecting', async () => {
     const store = useTerminalStore();
     // The store pushes this tab before its session exists; the body must show
@@ -207,20 +275,7 @@ describe('WorkspaceView.vue', () => {
   });
 
   it('shows the error overlay, not the stepper, for a failed terminal tab', async () => {
-    const store = useTerminalStore();
-    store.tabs.push({
-      id: 'tab-e',
-      agentId: 'ag-1',
-      kind: 'terminal',
-      terminalId: '',
-      title: 'Host 1',
-      status: 'error',
-      error: 'no route',
-    });
-    store.setActiveTab('tab-e');
-
-    const wrapper = mountWorkspace();
-    await flushPromises();
+    const wrapper = await mountErrorTab('tab-e', 'terminal', 'no route');
 
     expect(wrapper.text()).toContain('no route');
     expect(wrapper.text()).not.toContain('Connecting to');

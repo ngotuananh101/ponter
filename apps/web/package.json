@@ -17,6 +17,7 @@
     "@ponter/api-client": "workspace:*",
     "@ponter/crypto": "workspace:*",
     "@ponter/desktop-core": "workspace:*",
+    "@ponter/file-core": "workspace:*",
     "@ponter/shared": "workspace:*",
     "@ponter/terminal-core": "workspace:*",
     "@ponter/webrtc-core": "workspace:*",
