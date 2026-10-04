@@ -1158,7 +1158,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
 | Terminal Latency | < 10ms | P2P DataChannel |
 | Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
 | Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt |
-| File Transfer | > 10MB/s | Parallel chunks — **phạm vi Tuần 11, CHƯA đo** (Tuần 10 chỉ chạy đơn luồng tuần tự; số đo stopwatch trong demo là quan sát phi chính thức, không phải tiêu chí nghiệm thu) |
+| File Transfer | > 10MB/s | Parallel chunks — **phạm vi Tuần 11, CHƯA đo** (Tuần 10 chỉ chạy đơn luồng tuần tự; không ghi số đo throughput nào — đo hiệu năng là phạm vi Tuần 11, không phải tiêu chí nghiệm thu) |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |
 | Bundle Size | < 5MB | Tree-shaking |
