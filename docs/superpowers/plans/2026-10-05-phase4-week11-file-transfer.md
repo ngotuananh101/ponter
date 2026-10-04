@@ -239,6 +239,9 @@ git commit -m "feat(agent): implement binary frame codec and sandboxed directory
     - The session's frame channel carries an enum of text-or-binary payloads (e.g. `FilesFrame::Text(String) | FilesFrame::Binary(Vec<u8>)`).
     - `bytes` must resolve on all targets (files sessions are NOT musl-gated): move/add `bytes = "1"` to the general `[dependencies]` in `apps/agent/Cargo.toml` (it currently sits under the non-musl target table).
   - Ack batching (ADR-37): `ACK_FREQUENCY_CHUNKS: u64 = 16`, `ACK_FLUSH_INTERVAL: Duration = 20ms` — upload acks are cumulative (highest contiguous chunk index) and flush every 16 chunks or every 20 ms, whichever first.
+  - **Transfer-id codec (GAP-H ruling — the agent's binary codec does not match the client's):** `transfer_id_to_16` must strip dashes before the 32-hex decode (keep the raw-byte fallback for tests' short ids); `hex_encode_id` must re-insert the RFC 4122 dashes (8-4-4-4-12) so the decoded id equals the client's `crypto.randomUUID()` form. Spec §3.2 pins the wire as a raw 16-byte UUID; the client (Task 4) is correct. Add a regression test round-tripping a real dashed UUID.
+  - **Resume ack (GAP-G ruling — no producer of `files-resume-ack` exists):** add `FilesResumeAckMessage` (camelCase, `reason` skip-if-none), `Outbound::ResumeAck` → `"files-resume-ack"`. `handle_resume` success → `approved: true` + `from_chunk_index`; `.part` mismatch / wrong direction / not paused → `approved: false` + `reason` (not a raw error frame); truly-unknown id → keep `transfer_unknown`. Pause stays `files-pause-ack`.
+  - **Download pause/resume (GAP-J ruling — spec ADR-39 line 90 + AC#4 require it):** add `paused` to `DownloadState`. On download pause: keep the slot + state, emit `files-pause-ack` with `acked_chunk_index = state.acked`. On download resume: `seek(SeekFrom::Start(from_chunk_index * FILE_CHUNK_BYTES))`, set `sent = acked = from_chunk_index`, clear paused, emit `files-resume-ack { approved: true, from_chunk_index }`, then `pump_download`. `check_idle` must not reap a paused transfer (skip the deadline check while `paused`). Resume point is validated against `state.acked` (downloads have no `.part`). Add a unit test for download pause→resume offset continuity.
 
 - [ ] **Step 1: Write failing Rust unit tests for pause/resume and janitor in `apps/agent/src/files.rs`**
 
@@ -305,6 +308,9 @@ In `apps/agent/src/files.rs`:
 - In `UploadState`: handle `files-pause` without deleting `.part`.
 - Implement `verify_resume_upload` verifying `.part` length.
 - Implement `clean_stale_part_files` scanning directory recursively for `.ponter-part` files.
+- Fix the transfer-id codec per the GAP-H ruling (strip dashes before hex decode; re-insert dashes on encode) with a dashed-UUID regression test.
+- Emit `files-resume-ack` per the GAP-G ruling (`approved` true/false + reason), with regression tests.
+- Add download pause/resume per the GAP-J ruling (`DownloadState.paused`, seek on resume, `check_idle` skip-while-paused) with an offset-continuity test.
 
 In `apps/agent/src/main.rs`:
 - Change the files-session frame channel to carry text-or-binary payloads (enum).
