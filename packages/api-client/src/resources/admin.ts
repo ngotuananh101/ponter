@@ -38,7 +38,7 @@ export class AdminResource {
     if (params.page) query.set('page', String(params.page));
     if (params.limit) query.set('limit', String(params.limit));
     const qs = query.toString();
-    const path = `/api/admin/users${qs ? `?${qs}` : ''}`;
+    const path = qs ? `/api/admin/users?${qs}` : '/api/admin/users';
     return this.http.request<{ users: User[]; total: number }>('GET', path, {
       auth: true,
     });

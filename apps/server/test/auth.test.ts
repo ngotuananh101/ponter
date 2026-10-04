@@ -12,6 +12,40 @@ const REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters';
 process.env.JWT_SECRET = JWT_SECRET;
 process.env.REFRESH_TOKEN_SECRET = REFRESH_TOKEN_SECRET;
 
+const REG_BODY = {
+  password: 'Password123!',
+  publicKey: 'pk_admin',
+};
+
+async function postJson<T = unknown>(
+  app: ReturnType<typeof createApp>,
+  path: string,
+  body: unknown,
+  token?: string,
+): Promise<T> {
+  const res = await app.request(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  return res.json() as T;
+}
+
+async function registerWith(
+  app: ReturnType<typeof createApp>,
+  username: string,
+  overrides: Record<string, unknown> = {},
+): Promise<AuthResponse> {
+  return postJson<AuthResponse>(app, '/api/auth/register', {
+    ...REG_BODY,
+    username,
+    ...overrides,
+  });
+}
+
 type PublicUser = {
   id: string;
   username: string;
@@ -108,15 +142,7 @@ describe('Auth & Users REST API', () => {
     const app = createApp();
 
     // 1. Register
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'charlie',
-        password: 'SecretPassword!',
-        publicKey: 'pk_charlie',
-      }),
-    });
+    await registerWith(app, 'charlie', { password: 'SecretPassword!' });
 
     // 2. Login
     const loginRes = await app.request('/api/auth/login', {
@@ -145,15 +171,7 @@ describe('Auth & Users REST API', () => {
   it('rejects login with wrong password with 401 INVALID_CREDENTIALS', async () => {
     const app = createApp();
 
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'frank',
-        password: 'Password123!',
-        publicKey: 'pk_frank',
-      }),
-    });
+    await registerWith(app, 'frank');
 
     const res = await app.request('/api/auth/login', {
       method: 'POST',
@@ -194,16 +212,7 @@ describe('Auth & Users REST API', () => {
   it('revokes token on logout so subsequent requests fail with 401', async () => {
     const app = createApp();
 
-    const regRes = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'emma',
-        password: 'Password123!',
-        publicKey: 'pk_emma',
-      }),
-    });
-    const { token } = (await regRes.json()) as AuthResponse;
+    const { token } = await registerWith(app, 'emma');
 
     // Logout
     const logoutRes = await app.request('/api/auth/logout', {
@@ -262,16 +271,7 @@ describe('Auth & Users REST API', () => {
   it('rejects /api/users/me with a revoked access token with 401', async () => {
     const app = createApp();
 
-    const regRes = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'victor',
-        password: 'Password123!',
-        publicKey: 'pk_victor',
-      }),
-    });
-    const { token } = (await regRes.json()) as AuthResponse;
+    const { token } = await registerWith(app, 'victor');
 
     // Logout revokes the token
     await app.request('/api/auth/logout', {
@@ -290,16 +290,7 @@ describe('Auth & Users REST API', () => {
   it('rejects a refresh token used as an access token', async () => {
     const app = createApp();
 
-    const regRes = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'wendy',
-        password: 'Password123!',
-        publicKey: 'pk_wendy',
-      }),
-    });
-    const { refreshToken } = (await regRes.json()) as AuthResponse;
+    const { refreshToken } = await registerWith(app, 'wendy');
 
     const res = await app.request('/api/users/me', {
       headers: { Authorization: `Bearer ${refreshToken}` },
@@ -339,15 +330,7 @@ describe('Auth & Users REST API', () => {
   it('persists users across requests via the shared DB singleton', async () => {
     const app = createApp();
 
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'zoe',
-        password: 'Password123!',
-        publicKey: 'pk_zoe',
-      }),
-    });
+    await registerWith(app, 'zoe');
 
     // Direct DB read to confirm the row was persisted
     const rows = await db.select().from(users);

@@ -14,7 +14,7 @@ export const adminMiddleware: MiddlewareHandler<AppContext> = async (
   next,
 ) => {
   const user = c.get('user');
-  if (!user || user.role !== 'admin') {
+  if (user?.role !== 'admin') {
     throw new AppError(
       'Forbidden: Admin privileges required',
       403,

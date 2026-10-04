@@ -7,6 +7,42 @@ import { updateSystemSettings } from '../src/utils/settings';
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 process.env.REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters';
 
+interface RegisterBody {
+  password: string;
+  publicKey: string;
+}
+
+interface RegisterResult {
+  token?: string;
+  refreshToken?: string;
+  user: { id: string; role: string; approvalStatus: string };
+  requiresApproval: boolean;
+}
+
+const REG_BODY: RegisterBody = {
+  password: 'Password123!',
+  publicKey: 'pk_admin',
+};
+
+async function registerUser(
+  app: ReturnType<typeof createApp>,
+  username: string,
+): Promise<{ res: Response; body: RegisterResult }> {
+  const res = await app.request('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...REG_BODY, username }),
+  });
+  return { res, body: (await res.json()) as RegisterResult };
+}
+
+async function registerFirstAdmin(
+  app: ReturnType<typeof createApp>,
+): Promise<RegisterResult> {
+  const { body } = await registerUser(app, 'admin');
+  return body;
+}
+
 describe('Auth Approval & Registration Gate', () => {
   let db: Database;
 
@@ -21,18 +57,9 @@ describe('Auth Approval & Registration Gate', () => {
 
   it('bootstraps the first user as approved admin with tokens', async () => {
     const app = createApp();
-    const res = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'first_admin',
-        password: 'Password123!',
-        publicKey: 'pk_admin',
-      }),
-    });
+    const { res, body } = await registerUser(app, 'first_admin');
 
     expect(res.status).toBe(201);
-    const body = await res.json();
     expect(body.user.role).toBe('admin');
     expect(body.user.approvalStatus).toBe('approved');
     expect(body.token).toBeDefined();
@@ -42,29 +69,12 @@ describe('Auth Approval & Registration Gate', () => {
   it('registers second user as pending without tokens', async () => {
     const app = createApp();
     // 1. First user
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'first_admin',
-        password: 'Password123!',
-        publicKey: 'pk_admin',
-      }),
-    });
+    await registerUser(app, 'first_admin');
 
     // 2. Second user
-    const res = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'second_user',
-        password: 'Password123!',
-        publicKey: 'pk_user2',
-      }),
-    });
+    const { res, body } = await registerUser(app, 'second_user');
 
     expect(res.status).toBe(201);
-    const body = await res.json();
     expect(body.user.role).toBe('user');
     expect(body.user.approvalStatus).toBe('pending');
     expect(body.token).toBeUndefined();
@@ -74,25 +84,9 @@ describe('Auth Approval & Registration Gate', () => {
 
   it('blocks pending user from logging in with 403 USER_PENDING_APPROVAL', async () => {
     const app = createApp();
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'admin',
-        password: 'Password123!',
-        publicKey: 'pk_admin',
-      }),
-    });
+    await registerFirstAdmin(app);
 
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'bob_pending',
-        password: 'Password123!',
-        publicKey: 'pk_bob',
-      }),
-    });
+    await registerUser(app, 'bob_pending');
 
     const loginRes = await app.request('/api/auth/login', {
       method: 'POST',
@@ -130,30 +124,13 @@ describe('Auth Approval & Registration Gate', () => {
   it('registers second user as approved with tokens when autoApproveUsers is true', async () => {
     const app = createApp();
     // 1. First user (admin)
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'admin',
-        password: 'Password123!',
-        publicKey: 'pk_admin',
-      }),
-    });
+    await registerFirstAdmin(app);
     // 2. Enable autoApproveUsers
     await updateSystemSettings(db, { autoApproveUsers: true });
     // 3. Second user
-    const res = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'auto_approved',
-        password: 'Password123!',
-        publicKey: 'pk_auto',
-      }),
-    });
+    const { res, body } = await registerUser(app, 'auto_approved');
 
     expect(res.status).toBe(201);
-    const body = await res.json();
     expect(body.user.role).toBe('user');
     expect(body.user.approvalStatus).toBe('approved');
     expect(body.token).toBeDefined();
@@ -164,30 +141,13 @@ describe('Auth Approval & Registration Gate', () => {
     const app = createApp();
 
     // Register the first user (auto-approved admin) and a second user.
-    await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'admin',
-        password: 'Password123!',
-        publicKey: 'pk_admin',
-      }),
-    });
+    await registerFirstAdmin(app);
 
     // Enable autoApproveUsers so the second user gets tokens immediately.
     await updateSystemSettings(db, { autoApproveUsers: true });
 
-    const regRes = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'regular',
-        password: 'Password123!',
-        publicKey: 'pk_regular',
-      }),
-    });
-    const regData = await regRes.json();
-    const refreshToken = regData.refreshToken;
+    const regData = await registerUser(app, 'regular');
+    const refreshToken = regData.body.refreshToken;
     expect(refreshToken).toBeDefined();
 
     // Admin rejects the regular user's account.
@@ -200,7 +160,7 @@ describe('Auth Approval & Registration Gate', () => {
     ).json();
     const { token: adminAccessToken } = (await adminToken) as { token: string };
 
-    await app.request(`/api/admin/users/${regData.user.id}`, {
+    await app.request(`/api/admin/users/${regData.body.user.id}`, {
       method: 'PATCH',
       headers: {
         Authorization: `Bearer ${adminAccessToken}`,
@@ -224,17 +184,8 @@ describe('Auth Approval & Registration Gate', () => {
     const app = createApp();
 
     // Register the first user (auto-approved admin).
-    const res = await app.request('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: 'admin',
-        password: 'Password123!',
-        publicKey: 'pk_admin',
-      }),
-    });
-    const data = await res.json();
-    const refreshToken = data.refreshToken;
+    const body = await registerFirstAdmin(app);
+    const refreshToken = body.refreshToken;
     expect(refreshToken).toBeDefined();
 
     // Refresh with the original refresh token succeeds and returns a new access token.

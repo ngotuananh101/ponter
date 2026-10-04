@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import type { AppContext } from '../types.js';
+import type { Database } from '../db/client.js';
 import { AppError } from '../middleware/error.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { adminMiddleware } from '../middleware/admin.js';
 import { toPublicUser } from '../utils/user.js';
 import { getSystemSettings, updateSystemSettings } from '../utils/settings.js';
 import { users, agents, sessions } from '../db/schema.js';
-import type { SystemSettings } from '@ponter/shared';
-import type { UserRole, ApprovalStatus } from '@ponter/shared';
+import type { UserSelect } from '../db/schema.js';
+import type { SystemSettings, UserRole, ApprovalStatus } from '@ponter/shared';
 import {
   eq,
   and,
@@ -148,9 +149,9 @@ admin.get('/users', async (c) => {
   const url = new URL(c.req.url);
   const status = (url.searchParams.get('status') ?? 'all') as UserListStatus;
   const search = url.searchParams.get('search')?.trim();
-  const pageRaw = parseInt(url.searchParams.get('page') ?? '1', 10);
+  const pageRaw = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
   const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
-  const limitRaw = parseInt(url.searchParams.get('limit') ?? '20', 10);
+  const limitRaw = Number.parseInt(url.searchParams.get('limit') ?? '20', 10);
   const limit =
     Number.isFinite(limitRaw) && limitRaw >= 1 ? Math.min(100, limitRaw) : 20;
   const offset = (page - 1) * limit;
@@ -204,31 +205,19 @@ interface UserPatchBody {
   role?: UserRole;
 }
 
-const PATCHABLE_USER_FIELDS: (keyof UserPatchBody)[] = [
+const PATCHABLE_USER_FIELDS = new Set<keyof UserPatchBody>([
   'approvalStatus',
   'isActive',
   'role',
-];
+]);
 
-admin.patch('/users/:id', async (c) => {
-  const db = c.get('db');
-  const currentUser = c.get('user');
-  const targetId = c.req.param('id');
-
-  const body = (await c.req.json().catch(() => null)) as UserPatchBody | null;
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    throw new AppError(
-      'A JSON object body is required',
-      400,
-      'VALIDATION_ERROR',
-    );
-  }
-
+/** Validate a PATCH user body and return the normalized update map. */
+function validatePatchBody(body: UserPatchBody): Record<string, unknown> {
   const updates: Record<string, unknown> = {};
 
   // Reject unknown fields explicitly rather than silently ignoring them.
   for (const key of Object.keys(body)) {
-    if (!PATCHABLE_USER_FIELDS.includes(key as keyof UserPatchBody)) {
+    if (!PATCHABLE_USER_FIELDS.has(key as keyof UserPatchBody)) {
       throw new AppError(`Unknown field: ${key}`, 400, 'VALIDATION_ERROR');
     }
   }
@@ -262,6 +251,62 @@ admin.patch('/users/:id', async (c) => {
     throw new AppError('No updatable fields provided', 400, 'VALIDATION_ERROR');
   }
 
+  return updates;
+}
+
+/**
+ * Apply a role-demotion update to the last active admin, protected by the
+ * LAST_ADMIN_PROTECTED guard inside a transaction for atomicity.
+ */
+function applyDemoteWithLastAdminProtection(
+  db: Database,
+  targetId: string,
+  updates: Record<string, unknown>,
+): UserSelect | undefined {
+  return db.transaction((tx) => {
+    const activeAdminsRow = tx
+      .select({ value: count() })
+      .from(users)
+      .where(and(eq(users.role, 'admin'), eq(users.isActive, true)))
+      .get();
+
+    const activeAdmins = activeAdminsRow?.value ?? 0;
+    if (activeAdmins <= 1) {
+      throw new AppError(
+        'Cannot demote the only active admin',
+        400,
+        'LAST_ADMIN_PROTECTED',
+      );
+    }
+
+    updates.updatedAt = new Date().toISOString();
+    const [result] = tx
+      .update(users)
+      .set(updates)
+      .where(eq(users.id, targetId))
+      .returning()
+      .all();
+
+    return result;
+  });
+}
+
+admin.patch('/users/:id', async (c) => {
+  const db = c.get('db');
+  const currentUser = c.get('user');
+  const targetId = c.req.param('id');
+
+  const body = (await c.req.json().catch(() => null)) as UserPatchBody | null;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new AppError(
+      'A JSON object body is required',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  const updates = validatePatchBody(body);
+
   // Fetch the target user row to evaluate safety rules and apply updates.
   const target = await db
     .select()
@@ -284,32 +329,7 @@ admin.patch('/users/:id', async (c) => {
 
   // Safety: cannot demote the last active admin.
   if (updates.role === 'user' && target.role === 'admin' && target.isActive) {
-    const updated = db.transaction((tx) => {
-      const activeAdminsRow = tx
-        .select({ value: count() })
-        .from(users)
-        .where(and(eq(users.role, 'admin'), eq(users.isActive, true)))
-        .get();
-
-      const activeAdmins = activeAdminsRow?.value ?? 0;
-      if (activeAdmins <= 1) {
-        throw new AppError(
-          'Cannot demote the only active admin',
-          400,
-          'LAST_ADMIN_PROTECTED',
-        );
-      }
-
-      updates.updatedAt = new Date().toISOString();
-      const [result] = tx
-        .update(users)
-        .set(updates)
-        .where(eq(users.id, targetId))
-        .returning()
-        .all();
-
-      return result;
-    });
+    const updated = applyDemoteWithLastAdminProtection(db, targetId, updates);
 
     if (!updated) {
       throw new AppError('User not found', 404, 'NOT_FOUND');

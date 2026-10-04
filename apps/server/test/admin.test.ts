@@ -91,7 +91,7 @@ describe('Admin REST Routes', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.users.length).toBe(2);
+    expect(body.users).toHaveLength(2);
   });
 
   it('returns a numeric top-level total for GET /api/admin/users?status=all', async () => {

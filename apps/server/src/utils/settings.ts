@@ -41,15 +41,18 @@ export async function updateSystemSettings(
     entries.push(['max_agents_per_user', String(updates.maxAgentsPerUser)]);
   }
 
-  for (const [key, value] of entries) {
-    await db
-      .insert(systemSettings)
-      .values({ key, value, updatedAt: new Date().toISOString() })
-      .onConflictDoUpdate({
-        target: systemSettings.key,
-        set: { value, updatedAt: new Date().toISOString() },
-      });
-  }
+  const updatedAt = new Date().toISOString();
+  await Promise.all(
+    entries.map(([key, value]) =>
+      db
+        .insert(systemSettings)
+        .values({ key, value, updatedAt })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value, updatedAt },
+        }),
+    ),
+  );
 
   return getSystemSettings(db);
 }
