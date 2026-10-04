@@ -383,6 +383,7 @@ Expected: FAIL with module not found.
 - [ ] **Step 3: Implement binary codec in `packages/file-core/src/binary.ts` and operations in `packages/file-core/src/client.ts`**
 
 - Use `crypto.randomUUID()` and DataView to pack/unpack 16-byte UUID and 64-bit integer chunk index.
+- Enforce BOTH frame-length bounds in `unpackBinaryChunk` per spec §5.4: length `< 25` → throw `/truncated/i`; length `> 25 + 32768 = 32793` → throw (oversized payload). Reuse `BINARY_HEADER_LEN` and `FILE_CHUNK_BYTES` from shared.
 - Add `mkdir`, `delete`, `rename`, and `uploadStream` using chunk slicing to `FileClient`.
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -409,27 +410,43 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
 **Interfaces:**
 - Produces:
   - `ServiceWorkerStreamWriter` managing `MessageChannel` streaming.
-  - `FileClient.pauseTransfer(transferId: string): Promise<void>`
-  - `FileClient.resumeTransfer(transferId: string, fromChunkIndex: number): Promise<void>`
+  - `FileClient.pauseTransfer(transferId: string, direction: 'upload' | 'download'): Promise<void>` — resolves on `files-pause-ack`. (2-arg: `direction` is required by `FilesPauseMessage`; the Interfaces block previously said 1-arg — the wire type wins.)
+  - `FileClient.resumeTransfer(transferId: string, fromChunkIndex: number): Promise<void>` — the client looks up `direction` and `path` from the transfer it tracked at `download()`/`upload()` time; sends `FilesResumeRequest`; resolves on `files-resume-ack` with `approved: true`, rejects with `FilesError('RESUME_INVALID')` when `approved: false` (reason carried in the message).
 
 - [ ] **Step 1: Write failing test in `packages/file-core/test/pause-resume.test.ts`**
+
+> **Mock shape:** `FileClient`'s constructor takes a `DataChannelManager` (`sendJson(label, type, payload)` + `onMessage(label, handler)`), not a raw channel. Reuse the `makeFakeManager()` fake from `test/client.test.ts` (copy it into this file — it is small) and assert on the captured frames.
 
 ```typescript
 import { describe, it, expect, vi } from 'vitest';
 import { FileClient } from '../src/client';
 
+// makeFakeManager(): same shape as test/client.test.ts — captures sendJson
+// frames into `sent` and exposes emit(type, payload) to replay agent frames.
+
 describe('FileClient Pause and Resume', () => {
   it('sends files-pause frame and settles on pause ack', async () => {
-    const mockChannel = {
-      send: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    };
-    const client = new FileClient('ag-1', { getChannel: () => mockChannel } as any);
+    const fake = makeFakeManager();
+    const client = new FileClient('ag-1', fake.manager);
 
-    // Assert pause sends files-pause envelope
-    const pausePromise = client.pauseTransfer('t-1', 'upload');
-    expect(mockChannel.send).toHaveBeenCalledWith(expect.stringContaining('"type":"files-pause"'));
+    // Start an upload so the transfer is tracked, then pause it.
+    const handle = client.upload('docs', 'f.bin', new Uint8Array(64));
+    const pausePromise = client.pauseTransfer(handle.transferId, 'upload');
+
+    const frame = fake.sent.at(-1);
+    expect(frame).toMatchObject({
+      label: 'files',
+      type: 'files-pause',
+      payload: { transferId: handle.transferId, direction: 'upload' },
+    });
+
+    // Replay the ack; the promise settles.
+    fake.emit('files-pause-ack', {
+      transferId: handle.transferId,
+      ackedChunkIndex: 0,
+      bytesTransferred: 0,
+    });
+    await expect(pausePromise).resolves.toBeUndefined();
   });
 });
 ```
@@ -510,6 +527,8 @@ Expected: FAIL with module not found.
 
 Implement store state, actions (`enqueue`, `pause`, `resume`, `cancel`, `markCompleted`, `updateProgress`), and auto-pump logic.
 
+> **Notes:** `enqueue` takes a partial item (`id`, `name`, `path`, `size`, `direction`) and defaults `bytesTransferred: 0`, `speedBytesPerSec: 0`, `etaSeconds: null`, `status` per the concurrency gate. The store's `activeUploadId`/`activeDownloadId` getters are store-local names; the shared `QueueStatus` type (`activeUpload`/`activeDownload`) is the wire/persisted shape only — no need to rename the store's getters.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm --filter @ponter/web test src/__tests__/transfer-queue.test.ts`  
@@ -539,23 +558,19 @@ git commit -m "feat(web): implement transfer queue Pinia store with concurrency 
 
 - [ ] **Step 1: Write failing component tests in `apps/web/src/__tests__/FilesView.test.ts`**
 
-```typescript
-import { describe, it, expect, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
-import FilesView from '../components/files/FilesView.vue';
+> **Shape note:** `FilesView.vue` takes a single `tab: TabItem` prop (see the existing suite's `filesTab()` helper and `mountFiles()`), NOT a `tabId`. Extend the existing test file — reuse its helpers rather than rewriting.
 
+```typescript
+// Append to the existing FilesView.test.ts (reusing its filesTab/mountFiles helpers).
 describe('FilesView Advanced UI (Week 11)', () => {
   it('renders New Folder and Transfers toolbar buttons', () => {
-    const wrapper = mount(FilesView, {
-      props: { tabId: 'tab-1' },
-      global: { stubs: { TransferQueueDrawer: true } },
-    });
+    const wrapper = mountFiles();
     expect(wrapper.find('[data-test="files-new-folder-btn"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="files-transfers-btn"]').exists()).toBe(true);
   });
 
   it('triggers dragover visual state when dragging files over table', async () => {
-    const wrapper = mount(FilesView, { props: { tabId: 'tab-1' } });
+    const wrapper = mountFiles();
     const dropzone = wrapper.find('[data-test="files-dropzone"]');
     await dropzone.trigger('dragover');
     expect(wrapper.classes()).toContain('drag-active');
