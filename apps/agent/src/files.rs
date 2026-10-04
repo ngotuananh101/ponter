@@ -1491,6 +1491,14 @@ impl FilesSession {
             state.acked = ack.next_chunk_index;
             state.touch();
         }
+        // paused ⇒ absorb acks (acked reflects reality) but do not resume
+        // pumping; `handle_resume` re-pumps. Without this, in-flight acks arriving
+        // after a pause reopen the window and emit chunks the client paused for
+        // (GAP-J).
+        if state.paused {
+            self.download = Some(state);
+            return Vec::new();
+        }
         // Duplicate/regressive acks are ignored, not errors (spec §2.4).
         match self.pump_download(&mut state).await {
             Ok(frames) => {
@@ -3316,6 +3324,49 @@ mod tests_week11 {
         })
     }
 
+    /// Builders for inbound download/pause/resume frames (mirror the `tests`
+    /// module's helpers; this module can't reach those).
+    fn download_req(id: &str, path: &str) -> FilesInbound {
+        FilesInbound::Download(FilesDownloadRequest {
+            transfer_id: id.to_string(),
+            path: path.to_string(),
+        })
+    }
+    fn ack(id: &str, next: u64) -> FilesInbound {
+        FilesInbound::DownloadAck(FilesAckMessage {
+            transfer_id: id.to_string(),
+            next_chunk_index: next,
+        })
+    }
+    fn pause_req(id: &str, dir: FilesDirection) -> FilesInbound {
+        FilesInbound::Pause(FilesPauseMessage {
+            transfer_id: id.to_string(),
+            direction: dir,
+        })
+    }
+    fn resume_req(id: &str, dir: FilesDirection, from: u64) -> FilesInbound {
+        FilesInbound::Resume(FilesResumeRequest {
+            transfer_id: id.to_string(),
+            path: String::new(),
+            direction: dir,
+            from_chunk_index: from,
+        })
+    }
+    /// Legacy base64 decode upload chunk (used by some upload tests).
+    fn chunk(id: &str, index: u64, total: u64, bytes: &[u8]) -> FilesInbound {
+        use base64::Engine as _;
+        FilesInbound::UploadChunk(FileChunkMessage {
+            transfer_id: id.to_string(),
+            chunk_index: index,
+            total_chunks: total,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+    async fn session_for(dir: &std::path::Path) -> FilesSession {
+        let root = FilesRoot::new(dir).await.unwrap();
+        FilesSession::new(root)
+    }
+
     /// Unique temp dir under `std::env::temp_dir()` (mirrors the `tests`
     /// helper; duplicated here because `tempfile` is not a declared dev-dep).
     fn temp_dir_for_test() -> std::path::PathBuf {
@@ -3586,5 +3637,213 @@ mod tests_week11 {
             "end flushes the final ack + complete: {frames:?}"
         );
         std::fs::remove_dir_all(&temp).ok();
+    }
+
+    // ---- GAP-G: resume emits files-resume-ack (not files-pause-ack) ----
+
+    #[tokio::test]
+    async fn resume_approved_after_upload_pause() {
+        let dir = temp_dir_for_test();
+        let mut session = session_for(&dir).await;
+        // Begin a 3-chunk upload (size = 2 * CHUNK + 1 so total_chunks >= 2).
+        let size = 2 * FILE_CHUNK_BYTES + 1;
+        session.handle(upload_begin("t-1", "", "u.bin", size)).await;
+        // Send 2 chunks so the upload is mid-flight.
+        session
+            .handle(chunk("t-1", 0, 3, &vec![1u8; FILE_CHUNK_BYTES as usize]))
+            .await;
+        session
+            .handle(chunk("t-1", 1, 3, &vec![2u8; FILE_CHUNK_BYTES as usize]))
+            .await;
+        // Pause → PauseAck with acked_chunk_index == 2.
+        let frames = session
+            .handle(pause_req("t-1", FilesDirection::Upload))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::PauseAck(a)]
+                if a.transfer_id == "t-1" && a.acked_chunk_index == 2),
+            "pause acks the resume point: {frames:?}"
+        );
+        // Resume → ResumeAck { approved: true, from_chunk_index: 2 }, NOT a
+        // PauseAck or error frame.
+        let frames = session
+            .handle(resume_req("t-1", FilesDirection::Upload, 2))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::ResumeAck(a)]
+                if a.transfer_id == "t-1"
+                    && a.approved
+                    && a.from_chunk_index == 2
+                    && a.reason.is_none()),
+            "resume emits files-resume-ack approved=true: {frames:?}"
+        );
+        // Upload the final chunk and end; the file is written.
+        session.handle(chunk("t-1", 2, 3, b"X")).await;
+        let frames = session.handle(upload_end("t-1")).await;
+        assert!(
+            matches!(
+                frames.as_slice(),
+                [Outbound::UploadAck(_), Outbound::UploadComplete(_)]
+            ),
+            "end flushes final ack + complete: {frames:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn resume_rejected_on_part_size_mismatch() {
+        let dir = temp_dir_for_test();
+        let mut session = session_for(&dir).await;
+        let size = 2 * FILE_CHUNK_BYTES; // 2 chunks exactly
+        session.handle(upload_begin("t-1", "", "u.bin", size)).await;
+        session
+            .handle(chunk("t-1", 0, 2, &vec![9u8; FILE_CHUNK_BYTES as usize]))
+            .await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Upload))
+            .await;
+
+        // Resume from chunk 2 claims 2 * 32 KiB of data, but the .part only has
+        // 1 chunk (32 KiB) → verify_resume_upload_inner fails.
+        let frames = session
+            .handle(resume_req("t-1", FilesDirection::Upload, 2))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::ResumeAck(a)]
+                if !a.approved
+                    && a.from_chunk_index == 2
+                    && a.reason.is_some()),
+            "resume rejected on .part mismatch: {frames:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- GAP-J: download pause/resume + idle survival ----
+
+    #[tokio::test]
+    async fn download_pause_ack_reports_acked_chunk_index() {
+        let dir = temp_dir_for_test();
+        // 5 chunks; window 64 admits all up front.
+        let size = 5 * FILE_CHUNK_BYTES as usize;
+        std::fs::write(dir.join("dl.bin"), vec![7u8; size]).unwrap();
+        let mut session = session_for(&dir).await;
+
+        let frames = session.handle(download_req("t-1", "dl.bin")).await;
+        assert_eq!(frames.len(), 6, "begin + 5 chunks");
+
+        // Ack 2. All 5 chunks are already sent (sent == total), so the pump
+        // produces no new frames — acked advances to 2.
+        let frames = session.handle(ack("t-1", 2)).await;
+        assert!(
+            frames.is_empty(),
+            "no new chunks (sent == total): {frames:?}"
+        );
+
+        // Pause → PauseAck with acked_chunk_index == 2.
+        let frames = session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::PauseAck(a)]
+                if a.transfer_id == "t-1" && a.acked_chunk_index == 2),
+            "download pause acks the current acked point: {frames:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn download_resume_seeks_and_pumps_from_resume_point() {
+        let dir = temp_dir_for_test();
+        let size = 5 * FILE_CHUNK_BYTES as usize;
+        let mut content: Vec<u8> = Vec::new();
+        for i in 0..size {
+            content.push((i % 251) as u8);
+        }
+        std::fs::write(dir.join("dl.bin"), &content).unwrap();
+        let mut session = session_for(&dir).await;
+
+        // Begin: all 5 chunks sent (window 64).
+        let frames = session.handle(download_req("t-1", "dl.bin")).await;
+        assert_eq!(frames.len(), 6, "begin + 5 chunks");
+
+        // Ack 2, then pause (GAP-J: acks after pause must NOT re-pump).
+        session.handle(ack("t-1", 2)).await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+
+        // Resume from chunk 3: seek to 3 * 32 KiB, pump from index 3.
+        let frames = session
+            .handle(resume_req("t-1", FilesDirection::Download, 3))
+            .await;
+        // First frame is ResumeAck { approved: true, from_chunk_index: 3 },
+        // followed by the resumed chunk(s) starting at index 3.
+        assert!(
+            matches!(frames.first(), Some(Outbound::ResumeAck(a))
+                if a.transfer_id == "t-1" && a.approved && a.from_chunk_index == 3),
+            "resume acks approved with from_chunk_index == 3: {frames:?}"
+        );
+        let chunk_frames: Vec<&BinaryChunkFrame> = frames
+            .iter()
+            .filter_map(|f| match f {
+                Outbound::DownloadChunkBinary(b) => Some(b),
+                _ => None,
+            })
+            .collect();
+        assert!(!chunk_frames.is_empty(), "resume must pump chunks");
+        assert_eq!(
+            chunk_frames[0].chunk_index, 3,
+            "first resumed chunk starts at index 3"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn paused_download_absorbs_acks_without_repumping() {
+        let dir = temp_dir_for_test();
+        let size = 5 * FILE_CHUNK_BYTES as usize;
+        std::fs::write(dir.join("dl.bin"), vec![7u8; size]).unwrap();
+        let mut session = session_for(&dir).await;
+
+        session.handle(download_req("t-1", "dl.bin")).await;
+        session.handle(ack("t-1", 2)).await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+
+        // Now ack the in-flight chunks (3,4,5 are sent but not yet acked).
+        // The pause must absorb these: NO new DownloadChunkBinary frames.
+        let frames = session.handle(ack("t-1", 5)).await;
+        assert!(
+            frames.is_empty(),
+            "paused download must not pump on ack: {frames:?}"
+        );
+        // The slot is still Some (not reaped).
+        assert!(session.download.is_some(), "slot preserved while paused");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn paused_state_survives_idle_timeout() {
+        let dir = temp_dir_for_test();
+        std::fs::write(dir.join("dl.bin"), vec![7u8; 5 * FILE_CHUNK_BYTES as usize]).unwrap();
+        let mut session = session_for(&dir).await;
+
+        session.handle(download_req("t-1", "dl.bin")).await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+
+        // Force the deadline into the past; check_idle must NOT reap a paused
+        // transfer (no TRANSFER_TIMEOUT, slot still Some).
+        session.download.as_mut().unwrap().deadline =
+            tokio::time::Instant::now() - Duration::from_secs(1);
+        let idle_frames = session.check_idle().await;
+        assert!(
+            idle_frames.is_empty(),
+            "paused transfer survives idle timeout: {idle_frames:?}"
+        );
+        assert!(session.download.is_some(), "paused download slot survives");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
