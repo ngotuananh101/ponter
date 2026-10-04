@@ -2,7 +2,14 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
 import type { Agent } from '@ponter/shared';
-import { Terminal, Monitor, Folder, RefreshCw, Server, Search } from '@lucide/vue';
+import {
+  Terminal,
+  Monitor,
+  Folder,
+  RefreshCw,
+  Server,
+  Search,
+} from '@lucide/vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';

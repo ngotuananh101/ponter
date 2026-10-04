@@ -743,7 +743,10 @@ export const useTerminalStore = defineStore('terminal', () => {
    * step: exclusivity first, tab pushed before the handshake, orphan release,
    * then the first `list('')` populates the view.
    */
-  async function openFilesTab(agentId: string, title?: string): Promise<string> {
+  async function openFilesTab(
+    agentId: string,
+    title?: string,
+  ): Promise<string> {
     const tabId = `tab-${crypto.randomUUID()}`;
 
     if (tabs.value.some((t) => t.agentId === agentId)) {
@@ -1114,7 +1117,9 @@ export const useTerminalStore = defineStore('terminal', () => {
   /** Update the tab's transfer entry from a progress callback. */
   function fileProgressHandler(tab: FileTabLike) {
     return (p: TransferProgress): void => {
-      const entry = tab.fileTransfers?.find((t) => t.transferId === p.transferId);
+      const entry = tab.fileTransfers?.find(
+        (t) => t.transferId === p.transferId,
+      );
       if (!entry) return;
       entry.bytesTransferred = p.bytesTransferred;
       entry.totalBytes = p.totalBytes;

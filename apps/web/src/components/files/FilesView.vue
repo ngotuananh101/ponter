@@ -41,7 +41,10 @@ function formatModified(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
-function percentOf(t: { bytesTransferred: number; totalBytes: number }): number {
+function percentOf(t: {
+  bytesTransferred: number;
+  totalBytes: number;
+}): number {
   if (t.totalBytes <= 0) return 0;
   return Math.min(100, Math.floor((t.bytesTransferred / t.totalBytes) * 100));
 }
@@ -115,7 +118,10 @@ function onFilePicked(event: Event): void {
         >
           root
         </button>
-        <template v-for="(segment, index) in segments" :key="`${index}-${segment}`">
+        <template
+          v-for="(segment, index) in segments"
+          :key="`${index}-${segment}`"
+        >
           <span class="flex-shrink-0 text-muted-foreground">/</span>
           <button
             :data-test="`files-crumb-${index}`"
@@ -171,9 +177,7 @@ function onFilePicked(event: Event): void {
     <!-- Listing -->
     <div class="min-h-0 flex-1 overflow-auto">
       <table class="w-full text-xs">
-        <thead
-          class="sticky top-0 bg-card/95 text-left text-muted-foreground"
-        >
+        <thead class="sticky top-0 bg-card/95 text-left text-muted-foreground">
           <tr>
             <th class="px-3 py-1.5 font-medium">Name</th>
             <th class="w-24 px-3 py-1.5 text-right font-medium">Size</th>
@@ -201,9 +205,7 @@ function onFilePicked(event: Event): void {
                 <span class="truncate">{{ entry.name }}</span>
               </span>
             </td>
-            <td
-              class="px-3 py-1.5 text-right font-mono text-muted-foreground"
-            >
+            <td class="px-3 py-1.5 text-right font-mono text-muted-foreground">
               {{ entry.isDirectory ? '—' : formatSize(entry.size) }}
             </td>
             <td class="px-3 py-1.5 font-mono text-muted-foreground">

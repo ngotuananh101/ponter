@@ -166,7 +166,9 @@ describe('FilesView', () => {
 
   it('renders the store-mapped error text and dismisses the banner', async () => {
     const store = useTerminalStore();
-    const clear = vi.spyOn(store, 'clearFileError').mockImplementation(() => {});
+    const clear = vi
+      .spyOn(store, 'clearFileError')
+      .mockImplementation(() => {});
     const wrapper = mountFiles({
       fileError: 'A file with that name already exists',
     });

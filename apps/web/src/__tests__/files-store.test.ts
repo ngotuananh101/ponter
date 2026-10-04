@@ -95,7 +95,6 @@ function deferred<T>() {
 let downloadDone = deferred<Uint8Array | void>();
 let uploadDone = deferred<Uint8Array | void>();
 let downloadProgress: ((p: TransferProgress) => void) | null = null;
-let uploadProgress: ((p: TransferProgress) => void) | null = null;
 
 const entry = (overrides: Partial<RemoteFile> = {}): RemoteFile => ({
   name: 'notes.txt',
@@ -113,7 +112,6 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     downloadDone = deferred<Uint8Array | void>();
     uploadDone = deferred<Uint8Array | void>();
     downloadProgress = null;
-    uploadProgress = null;
     waitForChannelImpl = async () => {};
     filesList.mockReset();
     filesDownloadFn.mockReset();
@@ -141,9 +139,8 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
         _dir: string,
         _name: string,
         _bytes: Uint8Array,
-        onProgress?: (p: TransferProgress) => void,
+        _onProgress?: (p: TransferProgress) => void,
       ) => {
-        uploadProgress = onProgress ?? null;
         return {
           transferId: 't-up-1',
           direction: 'upload',
@@ -246,7 +243,9 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     const tabId = await store.openDesktopTab('ag-4', 'Host 4');
 
     expect(apiClient.sessions.create).not.toHaveBeenCalled();
-    expect(store.tabs.find((t) => t.id === tabId)?.error).toMatch(/already has/i);
+    expect(store.tabs.find((t) => t.id === tabId)?.error).toMatch(
+      /already has/i,
+    );
   });
 
   it('pushes the tab before the handshake and releases an orphaned connection', async () => {
@@ -334,7 +333,9 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     await pending;
 
     expect(saveBlob).toHaveBeenCalledWith('notes.txt', bytes);
-    expect(store.tabs.find((t) => t.id === tabId)?.fileTransfers).toHaveLength(0);
+    expect(store.tabs.find((t) => t.id === tabId)?.fileTransfers).toHaveLength(
+      0,
+    );
   });
 
   it('filesDownload maps a wire error code to the banner text', async () => {
@@ -362,7 +363,9 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     await pending;
 
     expect(store.tabs.find((t) => t.id === tabId)?.fileError).toBeNull();
-    expect(store.tabs.find((t) => t.id === tabId)?.fileTransfers).toHaveLength(0);
+    expect(store.tabs.find((t) => t.id === tabId)?.fileTransfers).toHaveLength(
+      0,
+    );
   });
 
   it('filesUpload reads the picked file and creates an upload handle', async () => {
@@ -380,7 +383,9 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     );
     const bytes = filesUploadFn.mock.calls[0]?.[2] as Uint8Array;
     expect(Array.from(bytes)).toEqual([1, 2, 3]);
-    expect(store.tabs.find((t) => t.id === tabId)?.fileTransfers).toHaveLength(0);
+    expect(store.tabs.find((t) => t.id === tabId)?.fileTransfers).toHaveLength(
+      0,
+    );
   });
 
   it('closeTab disposes the client and settles an in-flight handle', async () => {

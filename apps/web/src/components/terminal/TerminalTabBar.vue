@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { Plus, RefreshCw, X, Terminal, Monitor, Folder, Loader2 } from '@lucide/vue';
+import {
+  Plus,
+  RefreshCw,
+  X,
+  Terminal,
+  Monitor,
+  Folder,
+  Loader2,
+} from '@lucide/vue';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import FullscreenToggle from '@/components/terminal/FullscreenToggle.vue';
 
