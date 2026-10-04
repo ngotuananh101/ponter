@@ -1,4 +1,5 @@
 import type { UserSelect } from '../db/schema.js';
+import type { UserRole, ApprovalStatus } from '@ponter/shared';
 
 /**
  * Projection of a `users` row that is safe to return over the API.
@@ -13,6 +14,8 @@ export type PublicUser = {
   email: string | null;
   publicKey: string;
   isActive: boolean;
+  role: UserRole;
+  approvalStatus: ApprovalStatus;
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string | null;
@@ -25,6 +28,8 @@ export function toPublicUser(user: UserSelect): PublicUser {
     email: user.email,
     publicKey: user.publicKey,
     isActive: user.isActive,
+    role: user.role as UserRole,
+    approvalStatus: user.approvalStatus as ApprovalStatus,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,

@@ -5,6 +5,7 @@ import { errorHandler } from './middleware/error.js';
 import { getDb } from './db/client.js';
 import { getAllowedOrigins } from './utils/cors.js';
 import auth from './routes/auth.js';
+import admin from './routes/admin.js';
 import users from './routes/users.js';
 import agents from './routes/agents.js';
 import devices from './routes/devices.js';
@@ -39,6 +40,7 @@ export function createApp() {
   app.get('/health', (c) => c.json({ status: 'ok' }));
 
   app.route('/api/auth', auth);
+  app.route('/api/admin', admin);
   app.route('/api/users', users);
   app.route('/api/agents', agents);
   app.route('/api/devices', devices);

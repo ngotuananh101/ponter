@@ -6,6 +6,7 @@ import type {
   AuthErrorHandler,
 } from './types';
 import { AuthResource } from './resources/auth';
+import { AdminResource } from './resources/admin';
 import { UsersResource } from './resources/users';
 import { DevicesResource } from './resources/devices';
 import { AgentsResource } from './resources/agents';
@@ -201,6 +202,7 @@ export class HttpClient {
 export class ApiClient {
   readonly http: HttpClient;
   readonly auth: AuthResource;
+  readonly admin: AdminResource;
   readonly users: UsersResource;
   readonly devices: DevicesResource;
   readonly agents: AgentsResource;
@@ -210,6 +212,7 @@ export class ApiClient {
   constructor(config: ApiClientConfig) {
     this.http = new HttpClient(config);
     this.auth = new AuthResource(this.http);
+    this.admin = new AdminResource(this.http);
     this.users = new UsersResource(this.http);
     this.devices = new DevicesResource(this.http);
     this.agents = new AgentsResource(this.http);

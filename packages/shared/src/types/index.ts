@@ -1,5 +1,14 @@
 export * from './terminal.js';
-export type { DeviceType, User, Device, Agent } from './user.js';
+export type {
+  DeviceType,
+  User,
+  Device,
+  Agent,
+  UserRole,
+  ApprovalStatus,
+  SystemStats,
+  SystemSettings,
+} from './user.js';
 
 export type { SessionStatus, Session } from './session.js';
 
@@ -30,6 +39,7 @@ export type {
   AuthTokens,
   LoginResponse,
   RegisterRequest,
+  RegisterResponse,
 } from './auth.js';
 
 export type {

@@ -105,6 +105,19 @@ async function handleLogout() {
             <Terminal class="w-4 h-4" />
             Workspace
           </router-link>
+          <router-link
+            v-if="authStore.user?.role === 'admin'"
+            to="/admin"
+            class="flex items-center gap-2 px-3 py-1.5 rounded-md font-medium transition-colors"
+            :class="
+              route.name === 'admin'
+                ? 'bg-secondary text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            "
+          >
+            <ShieldCheck class="w-4 h-4 text-violet-500" />
+            Admin
+          </router-link>
         </nav>
       </div>
 

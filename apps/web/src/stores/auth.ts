@@ -23,6 +23,7 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null);
   const status = ref<AuthStatus>('idle');
   const error = ref<string | null>(null);
+  const requiresApproval = ref<boolean>(false);
   const restored = ref<boolean>(false);
 
   const isAuthenticated = computed(
@@ -83,12 +84,22 @@ export const useAuthStore = defineStore('auth', () => {
         publicKey: keyPair.publicKeySpkiBase64,
       });
 
+      if (res.requiresApproval) {
+        status.value = 'idle';
+        user.value = null;
+        requiresApproval.value = true;
+        error.value = null;
+        return;
+      }
+
       await savePrivateKey(res.user.id, keyPair.privateKey);
 
       user.value = res.user;
+      requiresApproval.value = false;
       status.value = 'authenticated';
     } catch (err) {
       status.value = 'error';
+      requiresApproval.value = false;
       error.value = describeError(err, 'Registration failed');
       throw err;
     }
@@ -134,6 +145,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   function clearError(): void {
     error.value = null;
+    requiresApproval.value = false;
   }
 
   // Handle refresh failures emitted by the client
@@ -147,6 +159,7 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     status,
     error,
+    requiresApproval,
     restored,
     isAuthenticated,
     restore,
