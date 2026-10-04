@@ -460,14 +460,16 @@ export class FileClient {
    * Resume a tracked transfer. Looks up the transfer's `direction` and `path`
    * (recorded at download()/upload() time), sends `files-resume`; resolves on
    * `files-resume-ack` with `approved: true`, rejects with
-   * `FilesError('RESUME_INVALID')` when `approved: false`.
+   * `FilesError('RESUME_INVALID')` when `approved: false`. For an untracked
+   * transferId, rejects with `FilesError('TRANSFER_UNKNOWN')` (consistent with
+   * pauseTransfer).
    */
   resumeTransfer(transferId: string, fromChunkIndex: number): Promise<void> {
     this.assertLive();
     const active = this.transfers.get(transferId);
     if (!active) {
       return Promise.reject(
-        new FilesError('RESUME_INVALID', 'transfer not tracked', transferId),
+        new FilesError('TRANSFER_UNKNOWN', 'transfer not tracked', transferId),
       );
     }
     return new Promise<void>((resolve, reject) => {

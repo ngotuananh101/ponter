@@ -182,6 +182,21 @@ describe('FileClient Pause and Resume', () => {
     expect(writer.isClosed).toBe(true);
   });
 
+  it('untracked resumeTransfer rejects with TRANSFER_UNKNOWN', async () => {
+    const fake = makeFakeManager();
+    const client = new FileClient('ag-1', fake.manager);
+
+    // No transfer started for this id; resumeTransfer must reject with
+    // TRANSFER_UNKNOWN (consistent with pauseTransfer), NOT RESUME_INVALID
+    // which is the server-refusal code and would mislead the UI.
+    await expect(client.resumeTransfer('no-such-id', 0)).rejects.toThrow(
+      expect.objectContaining({ code: 'TRANSFER_UNKNOWN' }),
+    );
+
+    // No frame should have been sent for an untracked id.
+    expect(fake.sent).toHaveLength(0);
+  });
+
   it('resumeTransfer resolves on files-resume-ack approved (download does not pump)', async () => {
     // Regression: resumeTransfer on a download must NOT call pump() (which
     // throws for download direction); the promise must resolve cleanly.
@@ -212,16 +227,12 @@ describe('FileClient Pause and Resume', () => {
   });
 
   it('resumeTransfer on an upload refills the window', async () => {
-    // Upload resume: pump() is called (upload direction), so acked space
-    // in the window produces new upload-chunk frames.
+    // upload() sends only files-upload-begin (no pump); any upload-chunk frames
+    // present immediately after resume-ack resolves must come from resume()'s
+    // own pump() call.
     const fake = makeFakeManager();
     const client = new FileClient('ag-1', fake.manager);
 
-    // 128 chunks: window is 64; the begin request fills the window via the pump
-    // that upload() triggers through sendJson('files-upload-begin').
-    // Wait — upload() does NOT call pump() directly; it sends begin and returns.
-    // The first files-upload-ack triggers pump(). So: start upload, pause,
-    // then resume and emit ack to trigger pump.
     const bytes = new Uint8Array(128 * 32768);
     const handle = client.upload('dir', 'big.bin', bytes);
 
@@ -235,7 +246,14 @@ describe('FileClient Pause and Resume', () => {
     });
     await expect(resumePromise).resolves.toBeUndefined();
 
-    // Emitting files-upload-ack opens the window and triggers pump().
+    // BEFORE emitting files-upload-ack, assert upload-chunk frames already exist —
+    // they must have come from resume()'s pump(), not from the upload-ack handler.
+    const immediateChunks = fake.rawSent.filter(
+      (r) => r.bytes[0] === BINARY_TYPE_UPLOAD_CHUNK,
+    );
+    expect(immediateChunks.length).toBeGreaterThan(0);
+
+    // Emitting files-upload-ack opens the window further and triggers more pump().
     fake.emit('files-upload-ack', {
       transferId: handle.transferId,
       nextChunkIndex: 0,
