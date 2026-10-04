@@ -116,7 +116,7 @@ describe('RegisterAgentDialog.vue', () => {
       hostname: 'node-alpha.lan',
       platform: 'windows',
       publicKey: 'mocked-spki-public-key',
-      capabilities: ['terminal', 'desktop'],
+      capabilities: ['terminal', 'desktop', 'files'],
     });
 
     // Check success step rendered

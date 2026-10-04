@@ -69,6 +69,10 @@ describe('EditAgentDialog.vue', () => {
     expect(
       wrapper.find('[data-test="edit-cap-desktop"]').attributes('aria-pressed'),
     ).toBe('false');
+
+    expect(
+      wrapper.find('[data-test="edit-cap-files"]').attributes('aria-pressed'),
+    ).toBe('false');
   });
 
   it('3. Re-prefills when reopened for a different agent', async () => {
@@ -91,7 +95,7 @@ describe('EditAgentDialog.vue', () => {
   it('4. Submits the edited fields via agents.update and emits updated', async () => {
     const updated = createMockAgent({
       hostname: 'new-host',
-      capabilities: ['terminal', 'desktop'],
+      capabilities: ['terminal', 'desktop', 'files'],
     });
     vi.mocked(apiClient.agents.update).mockResolvedValueOnce(updated);
 
@@ -102,6 +106,7 @@ describe('EditAgentDialog.vue', () => {
 
     await wrapper.find('#edit-agent-hostname').setValue('new-host');
     await wrapper.find('[data-test="edit-cap-desktop"]').trigger('click');
+    await wrapper.find('[data-test="edit-cap-files"]').trigger('click');
     await wrapper.find('[data-test="edit-agent-submit"]').trigger('click');
     await flushPromises();
 
@@ -110,7 +115,7 @@ describe('EditAgentDialog.vue', () => {
       platform: 'linux',
       osVersion: '22.04',
       agentVersion: '0.1.0',
-      capabilities: ['terminal', 'desktop'],
+      capabilities: ['terminal', 'desktop', 'files'],
     });
     expect(wrapper.emitted('updated')?.[0]).toEqual([updated]);
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
