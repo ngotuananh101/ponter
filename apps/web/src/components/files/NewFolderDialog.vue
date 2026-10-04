@@ -54,10 +54,16 @@ function onKeydown(e: KeyboardEvent): void {
         @keydown="onKeydown"
       />
       <div class="dialog-actions">
-        <button data-test="new-folder-confirm" @click="onConfirm">
+        <button type="button" data-test="new-folder-confirm" @click="onConfirm">
           Create
         </button>
-        <button @click="emit('cancel')">Cancel</button>
+        <button
+          type="button"
+          data-test="new-folder-cancel"
+          @click="emit('cancel')"
+        >
+          Cancel
+        </button>
       </div>
     </form>
   </dialog>

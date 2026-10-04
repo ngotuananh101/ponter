@@ -430,3 +430,11 @@ function onCancel(id: string): void {
     />
   </div>
 </template>
+
+<style scoped>
+.drag-active {
+  outline: 2px dashed var(--primary, #3b82f6);
+  outline-offset: -2px;
+  background-color: var(--primary, #3b82f6) / 10;
+}
+</style>

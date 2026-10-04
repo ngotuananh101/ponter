@@ -257,6 +257,59 @@ describe('FilesView', () => {
       expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
     });
 
+    it('attaches to the document body: confirm calls filesMkdir exactly once', async () => {
+      const store = useTerminalStore();
+      const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
+      let wrapper;
+      try {
+        wrapper = mount(FilesView, {
+          props: { tab: filesTab() },
+          attachTo: document.body,
+        });
+
+        await wrapper
+          .find('[data-test="files-new-folder-btn"]')
+          .trigger('click');
+
+        const input = wrapper.find<HTMLInputElement>(
+          '[data-test="new-folder-input"]',
+        );
+        await input.setValue('NewDir');
+        await wrapper.find('[data-test="new-folder-confirm"]').trigger('click');
+
+        expect(mkdir).toHaveBeenCalledTimes(1);
+        expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
+      } finally {
+        wrapper?.unmount();
+      }
+    });
+
+    it('attaches to the document body: Cancel does not call filesMkdir', async () => {
+      const store = useTerminalStore();
+      const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
+      let wrapper;
+      try {
+        wrapper = mount(FilesView, {
+          props: { tab: filesTab() },
+          attachTo: document.body,
+        });
+
+        await wrapper
+          .find('[data-test="files-new-folder-btn"]')
+          .trigger('click');
+
+        const input = wrapper.find<HTMLInputElement>(
+          '[data-test="new-folder-input"]',
+        );
+        await input.setValue('NewDir');
+        await wrapper.find('[data-test="new-folder-cancel"]').trigger('click');
+
+        expect(mkdir).not.toHaveBeenCalled();
+      } finally {
+        wrapper?.unmount();
+      }
+    });
+
     it('opens the Rename dialog from a row action and confirms', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
@@ -273,6 +326,63 @@ describe('FilesView', () => {
       await wrapper.find('[data-test="rename-confirm"]').trigger('click');
 
       expect(rename).toHaveBeenCalledWith('tab-f1', 'notes.txt', 'renamed.txt');
+    });
+
+    it('attaches to the document body: Rename confirm calls filesRename exactly once', async () => {
+      const store = useTerminalStore();
+      const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
+      let wrapper;
+      try {
+        wrapper = mount(FilesView, {
+          props: { tab: filesTab() },
+          attachTo: document.body,
+        });
+
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .rename-action')
+          .trigger('click');
+
+        const input = wrapper.find<HTMLInputElement>(
+          '[data-test="rename-input"]',
+        );
+        await input.setValue('renamed.txt');
+        await wrapper.find('[data-test="rename-confirm"]').trigger('click');
+
+        expect(rename).toHaveBeenCalledTimes(1);
+        expect(rename).toHaveBeenCalledWith(
+          'tab-f1',
+          'notes.txt',
+          'renamed.txt',
+        );
+      } finally {
+        wrapper?.unmount();
+      }
+    });
+
+    it('attaches to the document body: Rename Cancel does not call filesRename', async () => {
+      const store = useTerminalStore();
+      const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
+      let wrapper;
+      try {
+        wrapper = mount(FilesView, {
+          props: { tab: filesTab() },
+          attachTo: document.body,
+        });
+
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .rename-action')
+          .trigger('click');
+
+        const input = wrapper.find<HTMLInputElement>(
+          '[data-test="rename-input"]',
+        );
+        await input.setValue('renamed.txt');
+        await wrapper.find('[data-test="rename-cancel"]').trigger('click');
+
+        expect(rename).not.toHaveBeenCalled();
+      } finally {
+        wrapper?.unmount();
+      }
     });
 
     it('opens the Delete confirmation dialog from a row action', async () => {

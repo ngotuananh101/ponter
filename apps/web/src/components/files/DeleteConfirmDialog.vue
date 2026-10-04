@@ -30,10 +30,16 @@ function onDelete(recursive: boolean): void {
         </span>
       </p>
       <div class="dialog-actions">
-        <button data-test="delete-confirm" @click="onDelete(isDirectory)">
+        <button
+          type="button"
+          data-test="delete-confirm"
+          @click="onDelete(isDirectory)"
+        >
           {{ isDirectory ? 'Delete folder' : 'Delete' }}
         </button>
-        <button @click="emit('cancel')">Cancel</button>
+        <button type="button" data-test="delete-cancel" @click="emit('cancel')">
+          Cancel
+        </button>
       </div>
     </form>
   </dialog>
