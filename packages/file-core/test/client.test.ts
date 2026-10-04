@@ -135,7 +135,7 @@ describe('FileClient (spec §5.2)', () => {
     fake.emit('files-download-end', { transferId });
 
     const bytes = (await handle.done) as Uint8Array;
-    expect(bytes.length).toBe(32769);
+    expect(bytes).toHaveLength(32769);
     expect(bytes[0]).toBe(7);
     expect(bytes[32768]).toBe(9);
 
