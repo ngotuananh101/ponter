@@ -2700,4 +2700,67 @@ mod tests_week11 {
 
         std::fs::remove_dir_all(&temp).ok();
     }
+
+    // ---- Fix round 1: boundary + rename + error-code mapping tests ----
+
+    #[test]
+    fn test_binary_frame_max_payload_decodes() {
+        // 32793 bytes = 25 header + 32768 payload (the exact boundary).
+        let transfer_id = [9u8; 16];
+        let payload = vec![0xABu8; 32768];
+        let encoded =
+            encode_files_binary_frame(BINARY_TYPE_DOWNLOAD_CHUNK, &transfer_id, 0, &payload);
+        assert_eq!(encoded.len(), 32793);
+
+        let decoded = decode_files_binary_frame(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.frame_type, BINARY_TYPE_DOWNLOAD_CHUNK);
+        assert_eq!(decoded.transfer_id, transfer_id);
+        assert_eq!(decoded.chunk_index, 0);
+        assert_eq!(decoded.data.len(), 32768);
+    }
+
+    #[test]
+    fn test_binary_frame_oversized_payload_rejected() {
+        // 32794 bytes = 25 header + 32769 payload (one byte over the cap).
+        let transfer_id = [9u8; 16];
+        let payload = vec![0xABu8; 32769];
+        let encoded =
+            encode_files_binary_frame(BINARY_TYPE_DOWNLOAD_CHUNK, &transfer_id, 0, &payload);
+        let err = decode_files_binary_frame(&encoded).unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::BadFrame);
+    }
+
+    #[tokio::test]
+    async fn test_rename_root_rejected() {
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+        // old path "" resolves to root -> PermissionDenied.
+        let err = root.rename("", "x.txt").await.unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::PermissionDenied);
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[tokio::test]
+    async fn test_rename_destination_existing_rejected() {
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+
+        // Create source and a pre-existing destination.
+        tokio::fs::write(temp.join("src.txt"), b"source")
+            .await
+            .unwrap();
+        tokio::fs::write(temp.join("dest.txt"), b"dest")
+            .await
+            .unwrap();
+
+        let err = root.rename("src.txt", "dest.txt").await.unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::FileExists);
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn test_error_code_str_mapping() {
+        assert_eq!(FilesErrorCode::ResumeInvalid.as_str(), "RESUME_INVALID");
+        assert_eq!(FilesErrorCode::QueueFull.as_str(), "QUEUE_FULL");
+    }
 }
