@@ -685,12 +685,14 @@ git commit -m "feat(web): add drag-and-drop, transfer queue drawer, and file ope
 - Modify: `packages/webrtc-core/test/e2e/files.e2e.test.ts` (Week 10 suite must be updated for Week 11: `WINDOW` 16 → 64, base64 JSON chunk assertions → binary frames, and the cancel test's `WINDOW + 1` no-show pin reworked for the new window)
 
 **Interfaces:**
-- Produces: E2E test verifying:
-  1. Sustained throughput >10 MB/s on large file transfer.
-  2. Binary framing byte-level integrity.
-  3. Pause and resume upload functionality.
-  4. Sandboxed directory operations (`mkdir`, `rename`, `delete`).
-  5. Queue concurrency limit.
+- Produces: E2E test verifying (against the real agent over werift):
+  1. Sustained throughput >10 MB/s on a large (50 MB) transfer.
+  2. Binary framing byte-level integrity (SHA-256 equality both directions).
+  3. Pause and resume upload (and download) — offset continuity, `.part` retained.
+  4. Sandboxed directory operations (`mkdir`, `rename`, `delete`) including the escape-refusal path.
+  5. Queue concurrency limit — **owned by Task 6's unit tests, NOT here**: this suite is Node/werift and has no Vue/Pinia runtime. Do not attempt to import the queue store.
+- Harness additions (`harness.ts`): capture inbound binary frames via `dataChannels.onRawMessage('files', …)` (ArrayBuffer → `Uint8Array`) alongside the existing JSON `frames` array; export a `sendRaw` helper (`offerer.dataChannels.sendRaw('files', bytes)`); a small `packBinary`/`unpackBinary` local helper mirroring the client codec (25-byte header, UUID dash handling) so the suite does not depend on `packages/file-core`'s browser-oriented module.
+- Wire reminder: after Tasks 3-4 the agent sends download chunks as binary `0x01` frames and expects upload chunks as binary `0x02` frames — the Week 10 suite's base64 JSON replays no longer match the agent; this suite and the updated `files.e2e.test.ts` must speak the binary protocol. Ack frames stay JSON (`files-download-ack` / `files-upload-ack`).
 
 - [ ] **Step 1: Write E2E test suite in `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts`**
 
