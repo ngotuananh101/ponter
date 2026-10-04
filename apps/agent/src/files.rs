@@ -158,10 +158,6 @@ impl FilesError {
         Self::new(FilesErrorCode::PathOutsideRoot, "path escapes the configured root")
     }
 
-    pub fn not_found() -> Self {
-        Self::new(FilesErrorCode::NotFound, "no such file or directory")
-    }
-
     pub fn not_a_directory() -> Self {
         Self::new(FilesErrorCode::NotADirectory, "not a directory")
     }
@@ -339,20 +335,6 @@ pub enum Outbound {
     Error(FilesErrorMessage),
 }
 
-impl Outbound {
-    /// The wire `type` string, for logging and assertions.
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Self::ListResult(_) => "files-list-result",
-            Self::DownloadBegin(_) => "files-download-begin",
-            Self::DownloadChunk(_) => "files-download-chunk",
-            Self::DownloadEnd(_) => "files-download-end",
-            Self::UploadAck(_) => "files-upload-ack",
-            Self::UploadComplete(_) => "files-upload-complete",
-            Self::Error(_) => "files-error",
-        }
-    }
-}
 
 /// Decode an inbound frame; same guard shape as `decode_pty_input`
 /// (`pty.rs:124-144`): the size cap is checked **before** `serde_json` parses,
@@ -481,11 +463,6 @@ impl FilesRoot {
             .map_err(|error| FilesError::io("files root is not readable", error))?;
 
         Ok(Self { canonical })
-    }
-
-    /// The canonical root path.
-    pub fn path(&self) -> &Path {
-        &self.canonical
     }
 
     /// Syntactic validation + join, no filesystem calls (spec §2.6 order:
@@ -1395,7 +1372,7 @@ mod tests {
     async fn path_policy_rejects_empty_components_and_dots() {
         let dir = temp_dir_for_test();
         let root = FilesRoot::resolve(dir.to_str().unwrap()).await.unwrap();
-        std::fs::create_dir(root.path().join("a")).unwrap();
+        std::fs::create_dir(dir.join("a")).unwrap();
         for wire in ["a//b", "a/./b", "./a", "a/"] {
             let err = root.resolve_existing(wire).await.unwrap_err();
             assert_eq!(err.code, FilesErrorCode::InvalidPath, "wire: {wire}");
@@ -1448,7 +1425,7 @@ mod tests {
         let root = FilesRoot::resolve(dir.to_str().unwrap()).await.unwrap();
 
         let (parent, name) = root.resolve_parent_for_create("dir", "name.txt").await.unwrap();
-        assert_eq!(parent, root.path().join("dir").canonicalize().unwrap());
+        assert_eq!(parent, dir.join("dir").canonicalize().unwrap());
         assert_eq!(name, "name.txt");
 
         for bad in ["../x", "a/b", "..", "."] {

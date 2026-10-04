@@ -16,10 +16,6 @@ mod desktop;
 // on every target (spec §6.4) — it lives in `Cli`, not in this module.
 #[cfg(not(target_env = "musl"))]
 mod input;
-// Consumed by the files dispatch in Task 7; until then clippy's `dead_code`
-// flags the wire layer (a binary crate has no library root, and test-only
-// uses do not count). Removed in Task 7.
-#[allow(dead_code)]
 mod files;
 mod logging;
 mod pty;
@@ -116,6 +112,11 @@ struct Cli {
         default_value_t = false,
     )]
     allow_input: bool,
+
+    /// Directory served by files sessions. Unset = the files gate is closed
+    /// (ADR-32); the root is resolved per offer, never cached at startup.
+    #[arg(long, env = "AGENT_FILES_ROOT")]
+    files_root: Option<String>,
 }
 
 /// `--credential-or-env` in the roadmap is realised as clap's
@@ -371,6 +372,7 @@ impl std::str::FromStr for StreamProfile {
 enum SessionMode {
     Terminal,
     Desktop,
+    Files,
     None,
 }
 
@@ -384,8 +386,25 @@ fn classify_offer(capabilities: &[String]) -> SessionMode {
         SessionMode::Terminal
     } else if capabilities.iter().any(|c| c == rtc::DESKTOP_LABEL) {
         SessionMode::Desktop
+    } else if capabilities.iter().any(|c| c == rtc::FILES_LABEL) {
+        SessionMode::Files
     } else {
         SessionMode::None
+    }
+}
+
+/// Resolve the operator's files root for one offer (ADR-32). `None` closes
+/// the gate: unset, missing, not a directory, or unreadable are one answer —
+/// the browser must not learn which. Evaluated **per offer**, never cached
+/// (a root that disappears mid-run closes the gate for the next offer).
+async fn resolve_files_root(files_root: Option<&str>) -> Option<files::FilesRoot> {
+    let raw = files_root?;
+    match files::FilesRoot::resolve(raw).await {
+        Ok(root) => Some(root),
+        Err(error) => {
+            tracing::warn!(error = %error, "files root unusable");
+            None
+        }
     }
 }
 
@@ -420,6 +439,8 @@ struct SessionConfig {
     /// there is no desktop session (same shape as `desktop_source`).
     #[allow(dead_code)]
     allow_input: bool,
+    /// The files sandbox root as configured (ADR-32). `None` closes the gate.
+    files_root: Option<String>,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -474,6 +495,7 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
         desktop_default_source: cli.desktop_default_source.clone(),
         desktop_select_timeout: Duration::from_millis(cli.desktop_select_timeout_ms),
         allow_input: cli.allow_input,
+        files_root: cli.files_root.clone(),
     };
 
     let mut delay = signal::BACKOFF_INITIAL;
@@ -732,6 +754,7 @@ async fn run_one_session(
     // mode never opens a session, so its label is never used.
     let accepted_label = match mode {
         SessionMode::Desktop => rtc::CONTROL_LABEL.to_string(),
+        SessionMode::Files => rtc::FILES_LABEL.to_string(),
         _ => rtc::TERMINAL_LABEL.to_string(),
     };
 
@@ -758,6 +781,21 @@ async fn run_one_session(
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
 
+    // ADR-32: the files gate is evaluated per offer, before the answer. An
+    // unset, missing, non-directory, or unreadable root is one refusal —
+    // `approved: false` and the peer closed, with a log line the E2E pins.
+    let files_root = if mode == SessionMode::Files {
+        resolve_files_root(cfg.files_root.as_deref()).await
+    } else {
+        None
+    };
+    if mode == SessionMode::Files && files_root.is_none() {
+        tracing::warn!(session_id = %offer.session_id, "refused: files root not configured or unusable");
+        rtc::refuse_offer(&peer, offer, outbound).await?;
+        let _ = peer.close().await;
+        return Ok(());
+    }
+
     // Branch on the classification made before the peer was built (ADR-15). A
     // desktop offer needs its sending track attached before the remote
     // description exists; an unsupported offer is refused with a real SDP
@@ -778,6 +816,25 @@ async fn run_one_session(
                 open_rx,
                 inbound,
                 abr_target,
+            )
+            .await;
+        }
+        SessionMode::Files => {
+            // The gate above guarantees `Some` for this arm.
+            let root = files_root.expect("the files gate refused a rootless offer");
+            return run_files_session(
+                offer,
+                &peer,
+                outbound,
+                pushed_ice,
+                cfg,
+                &mut pending,
+                end_rx,
+                end_tx,
+                channel.clone(),
+                open_rx,
+                inbound,
+                root,
             )
             .await;
         }
@@ -1110,6 +1167,189 @@ async fn run_one_session(
     poll_task.abort();
     let _ = peer.close().await;
     Ok(())
+}
+
+/// Serve a files offer end to end: answer, wait for the `files` channel,
+/// then pump frames in both directions until the peer or the session ends.
+///
+/// The root is resolved and validated by the gate in `run_one_session`
+/// (ADR-32); this function never re-checks it.
+#[allow(clippy::too_many_arguments)]
+async fn run_files_session(
+    offer: &signal::SignalOffer,
+    peer: &Arc<dyn PeerConnection>,
+    outbound: &mpsc::Sender<signal::SignalMessage>,
+    pushed_ice: &[signal::IceServerEntry],
+    cfg: &SessionConfig,
+    pending: &mut Vec<RTCIceCandidateInit>,
+    mut end_rx: mpsc::Receiver<&'static str>,
+    end_tx: mpsc::Sender<&'static str>,
+    channel: Arc<OnceLock<Arc<dyn DataChannel>>>,
+    mut open_rx: tokio::sync::oneshot::Receiver<()>,
+    inbound: &mut mpsc::Receiver<signal::SignalMessage>,
+    root: files::FilesRoot,
+) -> Result<()> {
+    // The gate already approved this offer; the answer carries `approved:
+    // true` and the SDP. Files never reaches `answer_offer` (its terminal-
+    // only approval at rtc.rs:722 is not consulted).
+    rtc::send_approved_answer(peer, offer, outbound).await?;
+    rtc::flush_pending_candidates(peer, pending).await?;
+
+    // Wait for the channel to open, draining candidates the whole time —
+    // identical shape to the terminal handshake (they are what it waits on).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        tokio::select! {
+            biased;
+
+            candidate = inbound.recv() => {
+                let Some(message) = candidate else {
+                    anyhow::bail!("the inbound channel closed while waiting for the files channel");
+                };
+                route_inbound(peer, &offer.session_id, pending, message, outbound, pushed_ice, cfg).await?;
+            }
+
+            reason = end_rx.recv() => {
+                anyhow::bail!("the session ended during the handshake: {}", reason.unwrap_or("the peer went away"));
+            }
+
+            result = &mut open_rx => {
+                result.context("the files channel was closed before it opened")?;
+                break;
+            }
+
+            _ = tokio::time::sleep_until(deadline) => {
+                anyhow::bail!("the files channel did not open within 20s");
+            }
+        }
+    }
+
+    let dc = channel.get().context("the files channel vanished after opening")?.clone();
+
+    // One session owns the state machine; frames travel over these channels.
+    // Capacity 64 mirrors the terminal path's frame channel.
+    let mut session = files::FilesSession::new(root);
+    let (frame_tx, mut frame_rx) = mpsc::channel::<String>(64);
+    let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<String>(64);
+
+    // The poll task forwards raw text; the session loop decodes it. The
+    // close event ends the session (the browser closed its last files tab,
+    // or the stack reset the stream) — the same shape as the terminal poll
+    // task, and the reason the ADR-14 slot frees immediately.
+    let dc_for_events = dc.clone();
+    let dispatch_tx_for_events = dispatch_tx.clone();
+    let end_tx_for_events = end_tx.clone();
+    let poll_task = tokio::spawn(async move {
+        while let Some(event) = dc_for_events.poll().await {
+            match event {
+                DataChannelEvent::OnMessage(msg) => {
+                    let Ok(text) = std::str::from_utf8(&msg.data) else {
+                        tracing::debug!("ignoring a non-UTF-8 frame");
+                        continue;
+                    };
+                    if dispatch_tx_for_events.send(text.to_string()).await.is_err() {
+                        tracing::debug!("files dispatch channel is gone");
+                        break;
+                    }
+                }
+                DataChannelEvent::OnClose => {
+                    let _ = end_tx_for_events.try_send("the files channel closed");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // The poll task's clone is the only sender left, so `dispatch_rx.recv()`
+    // returns `None` exactly when the poll task ends — the loop's exit arm.
+    drop(dispatch_tx);
+
+    // The single send point: drains outbound frames, sends each over the
+    // channel. Backpressure on a slow consumer comes for free.
+    let dc_for_pump = dc.clone();
+    let mut pump = tokio::spawn(async move {
+        while let Some(frame) = frame_rx.recv().await {
+            if let Err(e) = dc_for_pump.send_text(&frame).await {
+                tracing::debug!(error = %e, "files frame send failed");
+                break;
+            }
+        }
+    });
+
+    // The 1 s idle tick: `FilesSession::check_idle` fails any transfer with
+    // no chunk/ack progress for FILES_IDLE_TIMEOUT (30 s in production).
+    let mut idle_tick = tokio::time::interval(Duration::from_secs(1));
+    idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    let session_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
+    let reason = loop {
+        tokio::select! {
+            _ = &mut pump => break "the files pump ended",
+
+            message = inbound.recv() => {
+                match message {
+                    Some(message) => route_inbound(peer, &offer.session_id, pending, message, outbound, pushed_ice, cfg).await?,
+                    None => break "the agent is shutting down",
+                }
+            }
+
+            raw = dispatch_rx.recv() => {
+                let Some(raw) = raw else { break "the files dispatch channel closed" };
+                for outbound_frame in handle_files_frame(&mut session, &raw).await {
+                    let framed = files::frame_files(&outbound_frame, pty::now_ms());
+                    if frame_tx.send(framed).await.is_err() {
+                        tracing::debug!("files frame channel is gone");
+                    }
+                }
+            }
+
+            _ = idle_tick.tick() => {
+                for outbound_frame in session.check_idle().await {
+                    if frame_tx.send(files::frame_files(&outbound_frame, pty::now_ms())).await.is_err() {
+                        tracing::debug!("files frame channel is gone");
+                    }
+                }
+            }
+
+            reason = end_rx.recv() => break reason.unwrap_or("the peer went away"),
+            _ = tokio::time::sleep_until(session_deadline) => break "the 1h session cap",
+            _ = shutdown_signal() => break "a shutdown signal",
+        }
+    };
+    tracing::info!(session_id = %offer.session_id, reason, "files session loop finished");
+
+    // Teardown (spec §2.6): cancel both directions, remove any `.part`, then
+    // the same closing order as the terminal path.
+    session.teardown().await;
+    drop(frame_tx);
+    poll_task.abort();
+    let _ = peer.close().await;
+    Ok(())
+}
+
+/// Decode one raw frame and turn it into outbound frames.
+///
+/// `decode_files_frame` errors both when the envelope cannot be parsed and
+/// when a `files` payload fails validation; `extract_ids` distinguishes them
+/// (an id present ⇒ the JSON parsed ⇒ `BAD_FRAME` with the id; nothing
+/// extractable ⇒ log and drop, spec §2.6).
+async fn handle_files_frame(session: &mut files::FilesSession, raw: &str) -> Vec<files::Outbound> {
+    match files::decode_files_frame(raw) {
+        Ok(Some(inbound)) => session.handle(inbound).await,
+        Ok(None) => Vec::new(), // not a files frame: warn-and-ignore (ADR-09)
+        Err(error) => {
+            let (request_id, transfer_id) = files::extract_ids(raw);
+            if request_id.is_none() && transfer_id.is_none() {
+                tracing::debug!(error = %error, "dropping an unparseable frame");
+                return Vec::new();
+            }
+            tracing::warn!(error = %error, "bad files frame");
+            vec![files::FilesError::new(files::FilesErrorCode::BadFrame, "the frame could not be decoded")
+                .with_ids(request_id, transfer_id)
+                .into_frame()]
+        }
+    }
 }
 
 /// How long the dispatcher waits for the control channel before concluding the
@@ -2000,6 +2240,42 @@ mod tests {
             classify_offer(&["desktop".to_string(), "terminal".to_string()]),
             SessionMode::Terminal,
         );
+
+        // Week 10 (ADR-31): files is the lowest-precedence label; terminal
+        // and desktop win when a malformed client offers more than one.
+        assert_eq!(classify_offer(&["files".to_string()]), SessionMode::Files);
+        assert_eq!(
+            classify_offer(&["files".to_string(), "desktop".to_string()]),
+            SessionMode::Desktop,
+        );
+        assert_eq!(
+            classify_offer(&["files".to_string(), "terminal".to_string()]),
+            SessionMode::Terminal,
+        );
+    }
+
+    #[tokio::test]
+    async fn files_gate_closes_for_every_unusable_root() {
+        // Unset → closed (ADR-32: no default).
+        assert!(resolve_files_root(None).await.is_none());
+
+        // Missing path → closed.
+        let missing = std::env::temp_dir().join(format!("ponter-files-gate-missing-{}", std::process::id()));
+        assert!(resolve_files_root(missing.to_str()).await.is_none());
+
+        // A file, not a directory → closed.
+        let file = std::env::temp_dir().join(format!("ponter-files-gate-file-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(resolve_files_root(file.to_str()).await.is_none());
+        std::fs::remove_file(&file).ok();
+
+        // A real directory → open, and the root is resolved fresh each call
+        // (never cached): removing it closes the gate again.
+        let dir = std::env::temp_dir().join(format!("ponter-files-gate-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(resolve_files_root(dir.to_str()).await.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(resolve_files_root(dir.to_str()).await.is_none());
     }
 
     #[test]

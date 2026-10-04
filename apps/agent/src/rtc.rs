@@ -63,9 +63,6 @@ pub const DESKTOP_LABEL: &str = "desktop";
 
 /// The file transfer channel's label (Week 10, ADR-31). A files session is a
 /// data-channel session like the terminal, served over exactly this label.
-// Consumed by the files classification in Task 7 (classify_offer +
-// accepted_label). The allow is removed there.
-#[allow(dead_code)]
 pub const FILES_LABEL: &str = "files";
 
 /// Where GCC starts (spec §3.3). Deliberately low — the safe floor, not the
