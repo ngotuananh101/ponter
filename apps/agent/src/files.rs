@@ -1969,6 +1969,10 @@ impl FilesSession {
                         // The resume point IS the new contiguous count.
                         state.next_chunk = request.from_chunk_index;
                         state.last_acked = request.from_chunk_index;
+                        // Clear any staged-but-unflushed ack so a paused-and-
+                        // resumed upload doesn't carry a stale pending ack
+                        // (symmetric with last_acked/last_ack_time above).
+                        state.pending_ack = None;
                         vec![resume_ack(
                             &request.transfer_id,
                             true,
@@ -1990,9 +1994,6 @@ impl FilesSession {
             FilesDirection::Download => {
                 // GAP-F: downloads are pausable/resumable (ADR-39). The source
                 // file is read-only; seek the cursor to the resume point.
-                let Some(_state) = self.download.as_ref() else {
-                    return vec![Self::transfer_unknown(&request.transfer_id)];
-                };
                 // Validate id + paused state through the mutable borrow.
                 {
                     let Some(state) = self.download.as_mut() else {
