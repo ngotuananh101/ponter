@@ -372,6 +372,34 @@ describe('Binary Chunk Framing', () => {
   it('rejects frames with length < 25', () => {
     expect(() => unpackBinaryChunk(new Uint8Array(24))).toThrow(/truncated/i);
   });
+
+  it('rejects frames with length > 25 + 32768 (oversized payload)', () => {
+    expect(() => unpackBinaryChunk(new Uint8Array(25 + 32768 + 1))).toThrow(
+      /oversized/i,
+    );
+  });
+});
+```
+
+Also write `packages/file-core/test/operations.test.ts` — one test per operation (`mkdir`, `delete`, `rename`, `uploadStream`), each asserting the outgoing frame shape against the shared types and resolving on the agent's reply. Mirror `test/client.test.ts`'s `makeFakeManager()`:
+
+```typescript
+it('sends files-mkdir and resolves on files-action-result', async () => {
+  const fake = makeFakeManager();
+  const client = new FileClient('ag-1', fake.manager);
+  const promise = client.mkdir('docs', 'new');
+  const frame = fake.sent.at(-1);
+  expect(frame).toMatchObject({
+    label: 'files',
+    type: 'files-mkdir',
+    payload: { dir: 'docs', name: 'new' },
+  });
+  fake.emit('files-action-result', {
+    requestId: frame?.payload.requestId,
+    action: 'mkdir',
+    success: true,
+  });
+  await expect(promise).resolves.toBeUndefined();
 });
 ```
 
