@@ -5,6 +5,28 @@ import LoginView from '@/views/LoginView.vue';
 import { apiClient } from '@/services/client';
 import { ApiError } from '@ponter/api-client';
 
+/**
+ * Mount LoginView and drive a login submit through its LoginForm, settling the
+ * async handler so the resulting alert (if any) has rendered.
+ */
+async function submitLogin(credentials: {
+  username: string;
+  password: string;
+}) {
+  const wrapper = mount(LoginView, {
+    global: { stubs: { RouterLink: true, RouterView: true } },
+  });
+  await wrapper.vm.$nextTick();
+
+  const loginForm = wrapper.findComponent({ name: 'LoginForm' });
+  await loginForm.vm.$emit('submit', credentials);
+  await wrapper.vm.$nextTick();
+  await new Promise((r) => setTimeout(r, 0));
+  await wrapper.vm.$nextTick();
+
+  return wrapper;
+}
+
 describe('LoginView.vue', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -16,20 +38,10 @@ describe('LoginView.vue', () => {
       new ApiError('Awaiting approval', 403, 'USER_PENDING_APPROVAL'),
     );
 
-    const wrapper = mount(LoginView, {
-      global: { stubs: { RouterLink: true, RouterView: true } },
-    });
-    await wrapper.vm.$nextTick();
-
-    // Simulate the LoginForm submit event triggering handleLogin
-    const loginForm = wrapper.findComponent({ name: 'LoginForm' });
-    await loginForm.vm.$emit('submit', {
+    const wrapper = await submitLogin({
       username: 'pending',
       password: 'password',
     });
-    await wrapper.vm.$nextTick();
-    await new Promise((r) => setTimeout(r, 0));
-    await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-test="login-pending-alert"]').exists()).toBe(
       true,
@@ -41,19 +53,7 @@ describe('LoginView.vue', () => {
       new ApiError('Invalid credentials', 401, 'INVALID_CREDENTIALS'),
     );
 
-    const wrapper = mount(LoginView, {
-      global: { stubs: { RouterLink: true, RouterView: true } },
-    });
-    await wrapper.vm.$nextTick();
-
-    const loginForm = wrapper.findComponent({ name: 'LoginForm' });
-    await loginForm.vm.$emit('submit', {
-      username: 'user',
-      password: 'wrong',
-    });
-    await wrapper.vm.$nextTick();
-    await new Promise((r) => setTimeout(r, 0));
-    await wrapper.vm.$nextTick();
+    const wrapper = await submitLogin({ username: 'user', password: 'wrong' });
 
     expect(wrapper.find('[data-test="login-pending-alert"]').exists()).toBe(
       false,

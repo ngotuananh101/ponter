@@ -35,6 +35,20 @@ function makeUser(overrides: Partial<User> = {}): User {
   };
 }
 
+/** Mount AdminView with the default mocked admin API and settle initial loads. */
+async function mountAdminView() {
+  const wrapper = mount(AdminView);
+  await flushPromises();
+  return wrapper;
+}
+
+/** Mount AdminView and switch to the Users tab (default mocked data). */
+async function mountOnUsersTab() {
+  const wrapper = await mountAdminView();
+  await wrapper.find('[data-test="tab-users"]').trigger('click');
+  return wrapper;
+}
+
 describe('AdminView', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -47,8 +61,7 @@ describe('AdminView', () => {
   });
 
   it('renders stats overview and switches tabs', async () => {
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountAdminView();
 
     expect(wrapper.text()).toContain('System Overview');
     expect(wrapper.text()).toContain('5'); // Total users
@@ -65,10 +78,8 @@ describe('AdminView', () => {
       .mockResolvedValue({
         user: makeUser({ id: 'u1', approvalStatus: 'approved' }),
       });
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountOnUsersTab();
 
-    await wrapper.find('[data-test="tab-users"]').trigger('click');
     await wrapper.find('[data-test="btn-approve-u1"]').trigger('click');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
@@ -82,10 +93,8 @@ describe('AdminView', () => {
       .mockResolvedValue({
         user: makeUser({ id: 'u1', approvalStatus: 'rejected' }),
       });
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountOnUsersTab();
 
-    await wrapper.find('[data-test="tab-users"]').trigger('click');
     await wrapper.find('[data-test="btn-reject-u1"]').trigger('click');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
@@ -99,8 +108,7 @@ describe('AdminView', () => {
       .mockResolvedValue({
         settings: { ...SETTINGS, allowRegistration: false },
       });
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountAdminView();
 
     await wrapper.find('[data-test="tab-settings"]').trigger('click');
     await flushPromises();
@@ -132,9 +140,7 @@ describe('AdminView', () => {
     });
     vi.stubGlobal('confirm', () => true);
 
-    const wrapper = mount(AdminView);
-    await flushPromises();
-
+    const wrapper = await mountAdminView();
     await wrapper.find('[data-test="tab-users"]').trigger('click');
     await flushPromises();
 
@@ -148,8 +154,7 @@ describe('AdminView', () => {
     vi.spyOn(apiClient.admin, 'getStats').mockRejectedValue(
       new ApiError('boom', 500, 'INTERNAL_ERROR'),
     );
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountAdminView();
 
     // Failure alert with Retry button should appear
     expect(wrapper.text()).toContain('boom');
@@ -184,8 +189,7 @@ describe('AdminView', () => {
       total: 2,
     });
 
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountAdminView();
     await wrapper.find('[data-test="tab-users"]').trigger('click');
     await flushPromises();
 
@@ -218,8 +222,7 @@ describe('AdminView', () => {
       .spyOn(apiClient.admin, 'getUsers')
       .mockResolvedValue({ users: [], total: 0 });
 
-    const wrapper = mount(AdminView);
-    await flushPromises();
+    const wrapper = await mountAdminView();
 
     // The pending quick-action button should be visible on the overview.
     const quickAction = wrapper.find('[data-test="pending-quick-action"]');
@@ -235,5 +238,31 @@ describe('AdminView', () => {
     expect(getUsersSpy).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'pending' }),
     );
+  });
+
+  it('a11y: every input/select is associated with a label (Sonar a11y findings)', async () => {
+    const wrapper = await mountAdminView();
+    await wrapper.find('[data-test="tab-users"]').trigger('click');
+    await wrapper.find('[data-test="tab-settings"]').trigger('click');
+    await flushPromises();
+
+    const controls = wrapper.findAll('input, select');
+    expect(controls.length).toBeGreaterThan(0);
+
+    for (const control of controls) {
+      const el = control.element as HTMLInputElement;
+      const id = el.getAttribute('id');
+      const hasAria =
+        el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby');
+      // A control is labelled when it has aria-label(ledby), or there is a
+      // <label for="<id>">, or it is wrapped inside a <label>.
+      const hasLabelFor = !!id && wrapper.find(`label[for="${id}"]`).exists();
+      const wrappedInLabel = el.closest('label') !== null;
+
+      expect(
+        hasAria || hasLabelFor || wrappedInLabel,
+        `control (id="${id}", type="${el.getAttribute('type')}") must have an associated label`,
+      ).toBe(true);
+    }
   });
 });

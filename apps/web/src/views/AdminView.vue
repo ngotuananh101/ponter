@@ -524,7 +524,11 @@ onMounted(() => {
           <Search
             class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
           />
+          <label for="admin-user-search" class="sr-only"
+            >Search users by username or email</label
+          >
           <Input
+            id="admin-user-search"
             v-model="searchQuery"
             type="text"
             placeholder="Search by username or email..."
@@ -809,6 +813,7 @@ onMounted(() => {
         <CardContent class="space-y-4">
           <div class="space-y-2">
             <Label
+              for="settings-allow-registration"
               class="text-xs font-medium text-foreground flex items-center gap-1.5"
               >Allow Registration
             </Label>
@@ -835,6 +840,7 @@ onMounted(() => {
 
           <div class="space-y-2">
             <Label
+              for="settings-auto-approve"
               class="text-xs font-medium text-foreground flex items-center gap-1.5"
               >Auto-approve Users
             </Label>
@@ -861,6 +867,7 @@ onMounted(() => {
 
           <div class="space-y-2">
             <Label
+              for="settings-max-agents"
               class="text-xs font-medium text-foreground flex items-center gap-1.5"
               >Max Agents per User
             </Label>
