@@ -1,0 +1,620 @@
+# Phase 4 Week 11 — File Transfer Hardening, Streaming, Queue, Pause/Resume & High Throughput Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Complete Phase 4 File Transfer by adding hybrid binary multiplexing (>10 MB/s throughput), Service Worker disk streaming, chunk-sliced uploads, transfer queue with drag & drop, pause & resume with 24-hour part file TTL, and sandboxed file operations (`mkdir`, `delete`, `rename`).
+
+**Architecture:** Multiplex JSON control envelopes and raw binary chunks on the `'files'` data channel. Deliver streaming downloads through a Service Worker interceptor writing directly to disk, stream uploads via `File.slice()` chunks, coordinate transfers with a Pinia transfer queue (1 upload + 1 download concurrent), support pause/resume with byte-aligned part files, and enforce strict sandbox containment for directory management.
+
+**Tech Stack:** Rust (Tokio, async-fs, UUID), TypeScript, Vue 3, Pinia, WebRTC DataChannels, Service Worker API (`ReadableStream`, `MessageChannel`).
+
+**Spec:** `docs/superpowers/specs/2026-10-05-phase4-week11-file-transfer-design.md`
+
+## Global Constraints
+
+- **Exact Wire Compatibility:** Channel label must remain `'files'` (`main.rs`, `rtc.rs`).
+- **Binary Header Layout:** Exactly 25 bytes: `[Type: 1B] [TransferId: 16B] [ChunkIndex: 8B BE] [Payload: N <= 32768B]` (ADR-36).
+- **Throughput Windows:** Sliding window capacity of 64 chunks (~2 MiB in-flight). Cumulative acks flushed every 16 chunks or 20 ms timer (ADR-37).
+- **Service Worker Route:** Worker hosted at `/sw-files-download.js`, intercepting `/files-download-stream/:transferId/:filename` (ADR-38).
+- **TTL Janitor:** Stale `.ponter-part` files older than 24 hours (86,400 s) deleted automatically; fresh files preserved (ADR-39).
+- **Sandbox Root Immutability:** Deleting or renaming the root directory (`path == ""`) is strictly forbidden and must return `PERMISSION_DENIED` (ADR-40).
+- **Non-Overwrite Rule:** Uploads and renames must never overwrite existing files; return `FILE_EXISTS` (ADR-33, ADR-40).
+- **Commit Discipline:** Path-limited commits only (`git commit -m "..." -- <paths>`). No bare `git add .`.
+
+## Review Focus
+
+1. **Binary Frame Truncation / Malformed Header:** An incoming binary frame with length < 25 bytes or > 32813 bytes must be safely rejected without panicking the agent or breaking the client loop.
+2. **Resume Chunk Alignment Mismatch:** Resuming an upload with `fromChunkIndex` where existing `.part` size does not equal `fromChunkIndex * 32768` must return `RESUME_INVALID` and refuse to append corrupted data.
+3. **Sandbox Directory Traversal in Rename:** Renaming with `newPath` containing `../` or resolving outside the sandbox root must be rejected with `PATH_OUTSIDE_ROOT`.
+4. **Service Worker MessageChannel Drop:** If the user closes the download tab while Service Worker is streaming, the stream controller must close or error gracefully without leaving dangling worker channels.
+5. **Simultaneous Drag & Drop Batch Exhaustion:** Dropping 20+ files at once must safely enqueue all items into `transferQueue` while maintaining strictly 1 active upload at a time.
+
+---
+
+### Task 1: Shared Types & Wire Protocol Envelopes (`packages/shared`)
+
+**Files:**
+- Modify: `packages/shared/src/types/files.ts`
+- Test: `packages/shared/test/files-types.test.ts`
+
+**Interfaces:**
+- Produces:
+  - Binary layout constants: `BINARY_TYPE_DOWNLOAD_CHUNK = 0x01`, `BINARY_TYPE_UPLOAD_CHUNK = 0x02`, `BINARY_HEADER_LEN = 25`.
+  - Pause/Resume interfaces: `FilesPauseMessage`, `FilesPauseAckMessage`, `FilesResumeRequest`, `FilesResumeAckMessage`.
+  - Directory operations: `FilesMkdirRequest`, `FilesDeleteRequest`, `FilesRenameRequest`, `FilesActionResult`.
+  - Error codes: `FilesErrorCode` extended with `'RESUME_INVALID'`, `'DIR_NOT_EMPTY'`, `'PERMISSION_DENIED'`, `'QUEUE_FULL'`.
+  - Queue types: `QueueItem`, `QueueStatus`.
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// packages/shared/test/files-types.test.ts
+import { describe, it, expect } from 'vitest';
+import {
+  BINARY_TYPE_DOWNLOAD_CHUNK,
+  BINARY_TYPE_UPLOAD_CHUNK,
+  BINARY_HEADER_LEN,
+  type FilesPauseMessage,
+  type FilesResumeRequest,
+  type FilesMkdirRequest,
+  type FilesErrorCode,
+} from '../src/types/files';
+
+describe('Week 11 Shared File Transfer Types', () => {
+  it('exports binary frame constants', () => {
+    expect(BINARY_TYPE_DOWNLOAD_CHUNK).toBe(0x01);
+    expect(BINARY_TYPE_UPLOAD_CHUNK).toBe(0x02);
+    expect(BINARY_HEADER_LEN).toBe(25);
+  });
+
+  it('validates pause and resume types structure', () => {
+    const pause: FilesPauseMessage = { transferId: 't-1', direction: 'upload' };
+    const resume: FilesResumeRequest = {
+      transferId: 't-1',
+      path: 'docs/file.bin',
+      direction: 'upload',
+      fromChunkIndex: 10,
+    };
+    expect(pause.transferId).toBe('t-1');
+    expect(resume.fromChunkIndex).toBe(10);
+  });
+
+  it('validates mkdir request type structure', () => {
+    const mkdir: FilesMkdirRequest = {
+      requestId: 'r-1',
+      dir: 'sub',
+      name: 'nested',
+    };
+    expect(mkdir.name).toBe('nested');
+  });
+
+  it('includes new error codes in FilesErrorCode union', () => {
+    const errors: FilesErrorCode[] = [
+      'RESUME_INVALID',
+      'DIR_NOT_EMPTY',
+      'PERMISSION_DENIED',
+      'QUEUE_FULL',
+    ];
+    expect(errors).toHaveLength(4);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm --filter @ponter/shared test`  
+Expected: FAIL with missing exports in `files.ts`.
+
+- [ ] **Step 3: Write implementation in `packages/shared/src/types/files.ts`**
+
+Add the constants, interfaces, and extended union as specified in ADR-36 and ADR-40.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm --filter @ponter/shared test`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(shared): add Week 11 file transfer wire types and binary constants" -- packages/shared/src/types/files.ts packages/shared/test/files-types.test.ts
+```
+
+---
+
+### Task 2: Agent Binary Frame Parser & Basic File Operations (`apps/agent`)
+
+**Files:**
+- Modify: `apps/agent/src/files.rs`
+- Test: `apps/agent/src/files.rs` (unit test module)
+
+**Interfaces:**
+- Consumes: Wire contracts from Spec §3.2 & §3.3.
+- Produces:
+  - `pub fn decode_files_binary_frame(bytes: &[u8]) -> FilesResult<BinaryChunkFrame>`
+  - `pub fn encode_files_binary_frame(frame_type: u8, transfer_id: &[u8; 16], chunk_index: u64, payload: &[u8]) -> Vec<u8>`
+  - Sandbox directory operations: `handle_mkdir`, `handle_delete`, `handle_rename` on `FilesRoot`.
+
+- [ ] **Step 1: Write failing Rust unit tests in `apps/agent/src/files.rs`**
+
+```rust
+#[cfg(test)]
+mod tests_week11 {
+    use super::*;
+
+    #[test]
+    fn test_binary_frame_roundtrip() {
+        let transfer_id = [7u8; 16];
+        let chunk_index = 42u64;
+        let payload = b"hello binary world";
+        let encoded = encode_files_binary_frame(BINARY_TYPE_DOWNLOAD_CHUNK, &transfer_id, chunk_index, payload);
+        assert_eq!(encoded.len(), BINARY_HEADER_LEN + payload.len());
+
+        let decoded = decode_files_binary_frame(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.frame_type, BINARY_TYPE_DOWNLOAD_CHUNK);
+        assert_eq!(decoded.transfer_id, transfer_id);
+        assert_eq!(decoded.chunk_index, chunk_index);
+        assert_eq!(decoded.data, payload);
+    }
+
+    #[test]
+    fn test_binary_frame_truncated_header() {
+        let short_bytes = vec![0x01; 24]; // 1 byte short of 25-byte header
+        let err = decode_files_binary_frame(&short_bytes).unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::BadFrame);
+    }
+
+    #[tokio::test]
+    async fn test_mkdir_delete_rename_sandbox() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = FilesRoot::new(temp.path()).await.unwrap();
+
+        // 1. mkdir
+        root.mkdir("", "test_dir").await.unwrap();
+        let created = temp.path().join("test_dir");
+        assert!(created.is_dir());
+
+        // 2. rename
+        tokio::fs::write(created.join("sample.txt"), b"data").await.unwrap();
+        root.rename("test_dir/sample.txt", "test_dir/renamed.txt").await.unwrap();
+        assert!(created.join("renamed.txt").exists());
+        assert!(!created.join("sample.txt").exists());
+
+        // 3. delete root rejected
+        let del_err = root.delete("", false).await.unwrap_err();
+        assert_eq!(del_err.code(), FilesErrorCode::PermissionDenied);
+
+        // 4. delete non-empty directory without recursive rejected
+        let del_dir_err = root.delete("test_dir", false).await.unwrap_err();
+        assert_eq!(del_dir_err.code(), FilesErrorCode::DirNotEmpty);
+
+        // 5. delete directory with recursive
+        root.delete("test_dir", true).await.unwrap();
+        assert!(!created.exists());
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test --manifest-path apps/agent/Cargo.toml files::tests_week11`  
+Expected: FAIL with functions not found.
+
+- [ ] **Step 3: Implement binary encode/decode and directory handlers in `apps/agent/src/files.rs`**
+
+- Implement `decode_files_binary_frame` checking `bytes.len() >= 25` and `bytes.len() <= 25 + 32768`.
+- Implement `encode_files_binary_frame` allocating `25 + payload.len()` vector.
+- Implement `FilesRoot::mkdir`, `FilesRoot::delete`, and `FilesRoot::rename` with containment and collision checks.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cargo test --manifest-path apps/agent/Cargo.toml files::tests_week11`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(agent): implement binary frame codec and sandboxed directory operations" -- apps/agent/src/files.rs
+```
+
+---
+
+### Task 3: Agent Throughput Optimization, Pause/Resume & 24h Janitor (`apps/agent`)
+
+**Files:**
+- Modify: `apps/agent/src/files.rs`
+- Test: `apps/agent/src/files.rs`
+
+**Interfaces:**
+- Produces:
+  - Updated window capacity: `FILE_WINDOW_CHUNKS = 64`.
+  - Pause handler: flushes file, leaves `.part` on disk, returns `FilesPauseAckMessage`.
+  - Resume handler: validates `.part` size against `fromChunkIndex * 32768`, resumes streaming.
+  - Janitor function: `clean_stale_part_files(root: &Path, max_age: Duration) -> u32`.
+
+- [ ] **Step 1: Write failing Rust unit tests for pause/resume and janitor in `apps/agent/src/files.rs`**
+
+```rust
+#[cfg(test)]
+mod tests_throughput_resume {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    #[tokio::test]
+    async fn test_pause_and_resume_alignment_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = FilesRoot::new(temp.path()).await.unwrap();
+
+        // Create a fake .part file of 65536 bytes (2 chunks of 32 KiB)
+        let part_path = temp.path().join("upload.bin.ponter-part");
+        tokio::fs::write(&part_path, vec![0u8; 65536]).await.unwrap();
+
+        // Resume from chunk 2 should succeed (2 * 32768 = 65536)
+        let ok = root.verify_resume_upload("upload.bin", 2).await;
+        assert!(ok.is_ok());
+
+        // Resume from chunk 3 should fail with RESUME_INVALID (3 * 32768 != 65536)
+        let err = root.verify_resume_upload("upload.bin", 3).await.unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::ResumeInvalid);
+    }
+
+    #[tokio::test]
+    async fn test_janitor_cleans_stale_part_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let stale_part = temp.path().join("stale.bin.ponter-part");
+        let fresh_part = temp.path().join("fresh.bin.ponter-part");
+
+        tokio::fs::write(&stale_part, b"stale").await.unwrap();
+        tokio::fs::write(&fresh_part, b"fresh").await.unwrap();
+
+        // Set mtime of stale_part to 25 hours ago
+        let twenty_five_hours_ago = SystemTime::now() - Duration::from_secs(25 * 3600);
+        filetime::set_file_mtime(&stale_part, filetime::FileTime::from_system_time(twenty_five_hours_ago)).unwrap();
+
+        let removed = clean_stale_part_files(temp.path(), Duration::from_secs(24 * 3600)).await;
+        assert_eq!(removed, 1);
+        assert!(!stale_part.exists());
+        assert!(fresh_part.exists());
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test --manifest-path apps/agent/Cargo.toml files::tests_throughput_resume`  
+Expected: FAIL.
+
+- [ ] **Step 3: Implement window update, pause/resume state machine, and janitor in `apps/agent/src/files.rs`**
+
+- Update `FILE_WINDOW_CHUNKS` to 64.
+- In `UploadState`: handle `files-pause` without deleting `.part`.
+- Implement `verify_resume_upload` verifying `.part` length.
+- Implement `clean_stale_part_files` scanning directory recursively for `.ponter-part` files.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cargo test --manifest-path apps/agent/Cargo.toml files::tests_throughput_resume`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(agent): support pause/resume upload, window tuning, and 24h part file janitor" -- apps/agent/src/files.rs
+```
+
+---
+
+### Task 4: Client Binary Framing, Chunk Slicing & File Operations (`packages/file-core`)
+
+**Files:**
+- Create: `packages/file-core/src/binary.ts`
+- Modify: `packages/file-core/src/client.ts`
+- Test: `packages/file-core/test/binary.test.ts`
+- Test: `packages/file-core/test/operations.test.ts`
+
+**Interfaces:**
+- Consumes: Shared types from `packages/shared`.
+- Produces:
+  - `packBinaryChunk(type: number, transferId: string, chunkIndex: number, data: Uint8Array): Uint8Array`
+  - `unpackBinaryChunk(bytes: Uint8Array): { type: number; transferId: string; chunkIndex: number; data: Uint8Array }`
+  - `FileClient.uploadStream(dir: string, file: File, onProgress?): TransferHandle` (slices chunks via `file.slice()`)
+  - `FileClient.mkdir(dir: string, name: string): Promise<void>`
+  - `FileClient.delete(path: string, recursive?: boolean): Promise<void>`
+  - `FileClient.rename(oldPath: string, newPath: string): Promise<void>`
+
+- [ ] **Step 1: Write failing tests in `packages/file-core/test/binary.test.ts`**
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { packBinaryChunk, unpackBinaryChunk } from '../src/binary';
+import { BINARY_TYPE_UPLOAD_CHUNK } from '@ponter/shared';
+
+describe('Binary Chunk Framing', () => {
+  it('packs and unpacks binary chunks with exact offsets', () => {
+    const transferId = '12345678-1234-4234-8234-123456789abc';
+    const chunkIndex = 15;
+    const payload = new Uint8Array([10, 20, 30, 40]);
+
+    const packed = packBinaryChunk(BINARY_TYPE_UPLOAD_CHUNK, transferId, chunkIndex, payload);
+    expect(packed.byteLength).toBe(25 + 4);
+
+    const unpacked = unpackBinaryChunk(packed);
+    expect(unpacked.type).toBe(BINARY_TYPE_UPLOAD_CHUNK);
+    expect(unpacked.transferId).toBe(transferId);
+    expect(unpacked.chunkIndex).toBe(chunkIndex);
+    expect(Array.from(unpacked.data)).toEqual([10, 20, 30, 40]);
+  });
+
+  it('rejects frames with length < 25', () => {
+    expect(() => unpackBinaryChunk(new Uint8Array(24))).toThrow(/truncated/i);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm --filter @ponter/file-core test`  
+Expected: FAIL with module not found.
+
+- [ ] **Step 3: Implement binary codec in `packages/file-core/src/binary.ts` and operations in `packages/file-core/src/client.ts`**
+
+- Use `crypto.randomUUID()` and DataView to pack/unpack 16-byte UUID and 64-bit integer chunk index.
+- Add `mkdir`, `delete`, `rename`, and `uploadStream` using chunk slicing to `FileClient`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm --filter @ponter/file-core test`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, and directory operations" -- packages/file-core/src/binary.ts packages/file-core/src/client.ts packages/file-core/test/binary.test.ts packages/file-core/test/operations.test.ts
+```
+
+---
+
+### Task 5: Client Pause/Resume & Service Worker Streaming (`packages/file-core` & `apps/web`)
+
+**Files:**
+- Create: `apps/web/public/sw-files-download.js`
+- Create: `packages/file-core/src/sw-writer.ts`
+- Modify: `packages/file-core/src/client.ts`
+- Test: `packages/file-core/test/pause-resume.test.ts`
+
+**Interfaces:**
+- Produces:
+  - `ServiceWorkerStreamWriter` managing `MessageChannel` streaming.
+  - `FileClient.pauseTransfer(transferId: string): Promise<void>`
+  - `FileClient.resumeTransfer(transferId: string, fromChunkIndex: number): Promise<void>`
+
+- [ ] **Step 1: Write failing test in `packages/file-core/test/pause-resume.test.ts`**
+
+```typescript
+import { describe, it, expect, vi } from 'vitest';
+import { FileClient } from '../src/client';
+
+describe('FileClient Pause and Resume', () => {
+  it('sends files-pause frame and settles on pause ack', async () => {
+    const mockChannel = {
+      send: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const client = new FileClient('ag-1', { getChannel: () => mockChannel } as any);
+
+    // Assert pause sends files-pause envelope
+    const pausePromise = client.pauseTransfer('t-1', 'upload');
+    expect(mockChannel.send).toHaveBeenCalledWith(expect.stringContaining('"type":"files-pause"'));
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm --filter @ponter/file-core test`  
+Expected: FAIL with `pauseTransfer` not defined.
+
+- [ ] **Step 3: Implement Service Worker and pause/resume methods**
+
+- Write `apps/web/public/sw-files-download.js` intercepting download stream routes.
+- Implement `ServiceWorkerStreamWriter` and `pauseTransfer` / `resumeTransfer` in `FileClient`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm --filter @ponter/file-core test`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
+```
+
+---
+
+### Task 6: Web Transfer Queue Store (`apps/web`)
+
+**Files:**
+- Create: `apps/web/src/stores/transfer-queue.ts`
+- Test: `apps/web/src/__tests__/transfer-queue.test.ts`
+
+**Interfaces:**
+- Produces: Pinia store `useTransferQueueStore` maintaining queue state, concurrency gate (1 active upload + 1 active download), rolling speed metrics, and ETA.
+
+- [ ] **Step 1: Write failing unit test in `apps/web/src/__tests__/transfer-queue.test.ts`**
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { setActivePinia, createPinia } from 'pinia';
+import { useTransferQueueStore } from '../stores/transfer-queue';
+
+describe('Transfer Queue Store', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it('enqueues transfers and starts exactly one active upload', () => {
+    const store = useTransferQueueStore();
+    store.enqueue({ id: 't-1', name: 'f1.bin', path: 'f1.bin', size: 100, direction: 'upload' });
+    store.enqueue({ id: 't-2', name: 'f2.bin', path: 'f2.bin', size: 200, direction: 'upload' });
+
+    expect(store.items).toHaveLength(2);
+    expect(store.activeUploadId).toBe('t-1');
+    expect(store.items.find(i => i.id === 't-1')?.status).toBe('active');
+    expect(store.items.find(i => i.id === 't-2')?.status).toBe('queued');
+  });
+
+  it('dequeues next upload when active upload completes', () => {
+    const store = useTransferQueueStore();
+    store.enqueue({ id: 't-1', name: 'f1.bin', path: 'f1.bin', size: 100, direction: 'upload' });
+    store.enqueue({ id: 't-2', name: 'f2.bin', path: 'f2.bin', size: 200, direction: 'upload' });
+
+    store.markCompleted('t-1');
+    expect(store.activeUploadId).toBe('t-2');
+    expect(store.items.find(i => i.id === 't-2')?.status).toBe('active');
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm --filter @ponter/web test src/__tests__/transfer-queue.test.ts`  
+Expected: FAIL with module not found.
+
+- [ ] **Step 3: Implement `useTransferQueueStore`**
+
+Implement store state, actions (`enqueue`, `pause`, `resume`, `cancel`, `markCompleted`, `updateProgress`), and auto-pump logic.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm --filter @ponter/web test src/__tests__/transfer-queue.test.ts`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(web): implement transfer queue Pinia store with concurrency control" -- apps/web/src/stores/transfer-queue.ts apps/web/src/__tests__/transfer-queue.test.ts
+```
+
+---
+
+### Task 7: Web UI: Drag & Drop, Transfer Queue Drawer & Sandboxed Actions (`apps/web`)
+
+**Files:**
+- Modify: `apps/web/src/components/files/FilesView.vue`
+- Create: `apps/web/src/components/files/TransferQueueDrawer.vue`
+- Create: `apps/web/src/components/files/NewFolderDialog.vue`
+- Create: `apps/web/src/components/files/RenameDialog.vue`
+- Create: `apps/web/src/components/files/DeleteConfirmDialog.vue`
+- Test: `apps/web/src/__tests__/FilesView.test.ts`
+
+**Interfaces:**
+- Consumes: `useTransferQueueStore` and directory operations from `terminal.ts`.
+- Produces: Enhanced `FilesView.vue` with drag & drop highlight, action dialogs, and expandable transfers drawer.
+
+- [ ] **Step 1: Write failing component tests in `apps/web/src/__tests__/FilesView.test.ts`**
+
+```typescript
+import { describe, it, expect, vi } from 'vitest';
+import { mount } from '@vue/test-utils';
+import FilesView from '../components/files/FilesView.vue';
+
+describe('FilesView Advanced UI (Week 11)', () => {
+  it('renders New Folder and Transfers toolbar buttons', () => {
+    const wrapper = mount(FilesView, {
+      props: { tabId: 'tab-1' },
+      global: { stubs: { TransferQueueDrawer: true } },
+    });
+    expect(wrapper.find('[data-test="files-new-folder-btn"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="files-transfers-btn"]').exists()).toBe(true);
+  });
+
+  it('triggers dragover visual state when dragging files over table', async () => {
+    const wrapper = mount(FilesView, { props: { tabId: 'tab-1' } });
+    const dropzone = wrapper.find('[data-test="files-dropzone"]');
+    await dropzone.trigger('dragover');
+    expect(wrapper.classes()).toContain('drag-active');
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm --filter @ponter/web test src/__tests__/FilesView.test.ts`  
+Expected: FAIL.
+
+- [ ] **Step 3: Implement components & update `FilesView.vue`**
+
+- Add drag & drop event handlers (`@dragover`, `@dragleave`, `@drop`).
+- Add dialogs for New Folder, Rename, and Delete Confirmation.
+- Integrate `TransferQueueDrawer.vue` with progress bars, MB/s speed, ETA, and control buttons.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm --filter @ponter/web test src/__tests__/FilesView.test.ts`  
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(web): add drag-and-drop, transfer queue drawer, and file operation dialogs" -- apps/web/src/components/files/
+```
+
+---
+
+### Task 8: End-to-End Test Suite (`packages/webrtc-core`)
+
+**Files:**
+- Create: `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts`
+- Modify: `packages/webrtc-core/test/e2e/harness.ts`
+
+**Interfaces:**
+- Produces: E2E test verifying:
+  1. Sustained throughput >10 MB/s on large file transfer.
+  2. Binary framing byte-level integrity.
+  3. Pause and resume upload functionality.
+  4. Sandboxed directory operations (`mkdir`, `rename`, `delete`).
+  5. Queue concurrency limit.
+
+- [ ] **Step 1: Write E2E test suite in `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts`**
+
+Implement automated test cases executing against the live native Rust agent with `--files-root` enabled.
+
+- [ ] **Step 2: Run E2E test to verify it fails / passes**
+
+Run: `pnpm --filter @ponter/webrtc-core test test/e2e/files-advanced.e2e.test.ts`  
+Expected: PASS once Tasks 1-7 are integrated.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git commit -m "test(e2e): add Phase 4 Week 11 advanced file transfer e2e test suite" -- packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts packages/webrtc-core/test/e2e/harness.ts
+```
+
+---
+
+### Task 9: Documentation Reconciliation & Demo (`docs/`)
+
+**Files:**
+- Modify: `docs/ARCHITECTURE.md`
+- Modify: `docs/guides/agent-setup.md`
+- Create: `docs/demos/2026-10-05-phase4-week11-demo.md`
+
+- [ ] **Step 1: Update `docs/ARCHITECTURE.md`**
+
+Mark Phase 4 File Transfer as completely finished (`[x]` for Tuần 10 & Tuần 11). Document ADR-36 to ADR-40.
+
+- [ ] **Step 2: Update `docs/guides/agent-setup.md`**
+
+Add operational guidelines for `--files-root`, 24-hour part file TTL cleanup, and directory permissions.
+
+- [ ] **Step 3: Write demo walkthrough script**
+
+Document step-by-step commands to demonstrate drag & drop, queue, pause/resume, and >10 MB/s throughput.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "docs: reconcile Phase 4 Week 11 architecture, setup guide, and demo walkthrough" -- docs/ARCHITECTURE.md docs/guides/agent-setup.md docs/demos/2026-10-05-phase4-week11-demo.md
+```
