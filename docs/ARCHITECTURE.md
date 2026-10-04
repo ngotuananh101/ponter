@@ -978,7 +978,7 @@ gantt
 
 ### Phase 3: Desktop Streaming (Tuần 7-9)
 
-> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8 đã hoàn thành — profile 1080p30 (nền 720p30), điều khiển bitrate thủ công, chọn nguồn, GCC auto-ABR. Còn lại của Phase 3 là Tuần 9 (điều khiển chuột/phím — Spec B) và codec phần cứng (spike ADR-25, chưa cam kết).
+> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8 đã hoàn thành — profile 1080p30 (nền 720p30), điều khiển bitrate thủ công, chọn nguồn, GCC auto-ABR. Còn lại của Phase 3 là Tuần 9 (điều khiển chuột/phím — Spec B) và codec phần cứng (spike ADR-25, chưa cam kết, dời sang Phase 6).
 
 #### Tuần 7: Desktop Streaming — lát cắt mỏng (đã xong)
 - [x] `packages/webrtc-core` — seam media tuỳ chọn (`addTransceiver`/`onTrack`) + `media-channel.ts` (đóng ADR-06)
@@ -1013,6 +1013,14 @@ gantt
 - [ ] **WS3 — Agent session hardening:** shell allowlist, enforce cờ `approved`, xử lý WS close code, validate `candidate.session_id`
 - [ ] **WS4 — Auth hardening:** login rate-limit, refresh token rotation, JWT secret startup validation, WS revocation, siết `CORS_ORIGIN`
 - [ ] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, bỏ default secret
+
+### Phase 6: Low-latency Interaction (Tuần 15-16)
+
+> **Chưa thiết kế.** Trả nợ các ghi chú "later concern" của Phase 3 (spec Tuần 7 §1.2, Tuần 8 §1.2): pipeline WebCodecs low-latency, tinh chỉnh playoutDelayHint/jitter buffer, cursor prediction phía client, và kết quả spike codec phần cứng (ADR-25). Tối ưu trọn vẹn chỉ khả thi sau khi WS2/WS3 (Phase 5) mở cổng input. Nội dung chi tiết sẽ bổ sung khi có spec riêng.
+
+### Phase 7: Agent Desktop App (Tuần 17-18)
+
+> **Chưa thiết kế.** Đóng gói `ponter-agent` thành ứng dụng desktop: đăng nhập tài khoản, đăng ký/quản lý thiết bị (nối tiếp Admin Management), wizard setup trực quan (server, quyền màn hình, cổng input, auto-start), installer/tray/auto-update. Ứng viên framework: Tauri — chốt trong spec. Phụ thuộc WS2 (keypair thật cho agent). Nội dung chi tiết sẽ bổ sung khi có spec riêng.
 
 ---
 
