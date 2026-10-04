@@ -10,7 +10,11 @@ import type {
   FilesListRequest,
   FilesListResult,
   FilesMkdirRequest,
+  FilesPauseAckMessage,
+  FilesPauseMessage,
   FilesRenameRequest,
+  FilesResumeAckMessage,
+  FilesResumeRequest,
   FilesUploadBeginRequest,
   FilesUploadComplete,
   FilesUploadEndRequest,
@@ -97,6 +101,12 @@ interface ActiveTransfer {
   declaredSize: number;
   /** True once files-upload-end has been sent (acks can still arrive after the last chunk). */
   ended?: boolean;
+  /** Tracked at download()/upload() time for resume (FilesResumeRequest). */
+  path: string;
+  /** Tracked at download()/upload() time for resume (FilesResumeRequest). */
+  direction: TransferDirection;
+  /** Chunk-forwarding callback for streaming downloads (spec AC#3). */
+  onChunk?: (chunk: Uint8Array) => void;
 }
 
 function mintId(): string {
@@ -107,6 +117,14 @@ export class FileClient {
   private readonly pendingLists = new Map<string, PendingList>();
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly transfers = new Map<string, ActiveTransfer>();
+  private readonly pendingPauses = new Map<
+    string,
+    { resolve: () => void; reject: (e: FilesError) => void }
+  >();
+  private readonly pendingResumes = new Map<
+    string,
+    { resolve: () => void; reject: (e: FilesError) => void }
+  >();
   private readonly errorListeners: Array<
     (code: FileClientErrorCode, message: string) => void
   > = [];
@@ -192,10 +210,18 @@ export class FileClient {
     });
   }
 
-  /** Download a file; `onProgress` fires per accepted chunk. */
+  /**
+   * Download a file; `onProgress` fires per accepted chunk.
+   *
+   * When `onChunk` is provided, each decoded chunk is forwarded immediately and
+   * NOT retained in memory (spec AC#3: <50 MB during a 500 MB transfer); `done`
+   * resolves `void` in that mode. Without `onChunk`, behavior is unchanged
+   * (assembled `Uint8Array`).
+   */
   download(
     path: string,
     onProgress?: (progress: TransferProgress) => void,
+    onChunk?: (chunk: Uint8Array) => void,
   ): TransferHandle {
     this.assertLive();
     const transferId = mintId();
@@ -218,6 +244,9 @@ export class FileClient {
       buffer: [],
       receivedBytes: 0,
       declaredSize: 0,
+      path,
+      direction: 'download',
+      onChunk,
     };
     this.transfers.set(transferId, active);
     state.armIdleTimer();
@@ -292,6 +321,8 @@ export class FileClient {
       buffer: [],
       receivedBytes: 0,
       declaredSize: bytes.byteLength,
+      path: dirPath,
+      direction: 'upload',
     };
     this.transfers.set(transferId, active);
     state.armIdleTimer();
@@ -376,6 +407,8 @@ export class FileClient {
       buffer: [],
       receivedBytes: 0,
       declaredSize: file.size,
+      path: dirPath,
+      direction: 'upload',
     };
     this.transfers.set(transferId, active);
     state.armIdleTimer();
@@ -393,6 +426,59 @@ export class FileClient {
       done: state.settled as Promise<Uint8Array | void>,
       cancel: () => state.cancel(),
     };
+  }
+
+  /**
+   * Pause a tracked transfer. Sends `files-pause`; resolves on the matching
+   * `files-pause-ack`. The transfer's state must not pump while paused and its
+   * idle timer must be cleared (a paused transfer must NOT hit TRANSFER_TIMEOUT).
+   * Rejects with `FilesError('TRANSFER_UNKNOWN')` if the transfer is not tracked.
+   */
+  pauseTransfer(
+    transferId: string,
+    direction: 'download' | 'upload',
+  ): Promise<void> {
+    this.assertLive();
+    const active = this.transfers.get(transferId);
+    if (!active) {
+      return Promise.reject(
+        new FilesError('TRANSFER_UNKNOWN', 'transfer not tracked', transferId),
+      );
+    }
+    // A paused transfer must not pump and must not hit the idle timeout.
+    active.state.pause();
+    return new Promise<void>((resolve, reject) => {
+      this.pendingPauses.set(transferId, { resolve, reject });
+      this.sendJson('files-pause', {
+        transferId,
+        direction,
+      } satisfies FilesPauseMessage);
+    });
+  }
+
+  /**
+   * Resume a tracked transfer. Looks up the transfer's `direction` and `path`
+   * (recorded at download()/upload() time), sends `files-resume`; resolves on
+   * `files-resume-ack` with `approved: true`, rejects with
+   * `FilesError('RESUME_INVALID')` when `approved: false`.
+   */
+  resumeTransfer(transferId: string, fromChunkIndex: number): Promise<void> {
+    this.assertLive();
+    const active = this.transfers.get(transferId);
+    if (!active) {
+      return Promise.reject(
+        new FilesError('RESUME_INVALID', 'transfer not tracked', transferId),
+      );
+    }
+    return new Promise<void>((resolve, reject) => {
+      this.pendingResumes.set(transferId, { resolve, reject });
+      this.sendJson('files-resume', {
+        transferId,
+        path: active.path,
+        direction: active.direction,
+        fromChunkIndex,
+      } satisfies FilesResumeRequest);
+    });
   }
 
   /** Subscribe to unsolicited errors (e.g. TRANSFER_TIMEOUT); returns an unsubscribe. */
@@ -487,6 +573,11 @@ export class FileClient {
         const active = this.transfers.get(payload.transferId);
         if (!active) return;
         this.transfers.delete(payload.transferId);
+        if (active.onChunk) {
+          // Streaming mode: chunks were forwarded via onChunk, not buffered.
+          active.state.succeed();
+          return;
+        }
         const joined = new Uint8Array(active.receivedBytes);
         let offset = 0;
         for (const part of active.buffer) {
@@ -552,6 +643,35 @@ export class FileClient {
         }
         return;
       }
+      case 'files-pause-ack': {
+        const payload = msg.payload as FilesPauseAckMessage;
+        const pending = this.pendingPauses.get(payload.transferId);
+        if (!pending) return;
+        this.pendingPauses.delete(payload.transferId);
+        pending.resolve();
+        return;
+      }
+      case 'files-resume-ack': {
+        const payload = msg.payload as FilesResumeAckMessage;
+        const pending = this.pendingResumes.get(payload.transferId);
+        if (!pending) return;
+        this.pendingResumes.delete(payload.transferId);
+        if (payload.approved) {
+          // Resume the local transfer state: re-arm idle timer and refill window.
+          const active = this.transfers.get(payload.transferId);
+          if (active) active.state.resume();
+          pending.resolve();
+        } else {
+          pending.reject(
+            new FilesError(
+              'RESUME_INVALID',
+              payload.reason ?? 'resume refused',
+              payload.transferId,
+            ),
+          );
+        }
+        return;
+      }
       default:
         return;
     }
@@ -578,8 +698,14 @@ export class FileClient {
     if (!active) return;
     if (!active.state.onChunkReceived(frame.chunkIndex, frame.data.byteLength))
       return;
-    active.buffer.push(frame.data);
     active.receivedBytes += frame.data.byteLength;
+    // Streaming mode (spec AC#3): forward the chunk immediately, do NOT retain
+    // in memory. Without onChunk, buffer as before.
+    if (active.onChunk) {
+      active.onChunk(frame.data);
+    } else {
+      active.buffer.push(frame.data);
+    }
     this.sendJson('files-download-ack', {
       transferId: frame.transferId,
       nextChunkIndex: active.state.receivedCount,

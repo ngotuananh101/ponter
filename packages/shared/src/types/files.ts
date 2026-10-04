@@ -179,12 +179,7 @@ export interface FilesActionResult {
 // --- Transfer Queue ---
 
 export type QueueItemStatus =
-  | 'queued'
-  | 'active'
-  | 'paused'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+  'queued' | 'active' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 export interface QueueItem {
   id: string;

@@ -113,6 +113,25 @@ export class TransferState {
     }
   }
 
+  /**
+   * Pause the transfer: stop pumping and clear the idle timer so a paused
+   * transfer does NOT hit TRANSFER_TIMEOUT. The client re-arms the timer /
+   * resumes pumping when `resume()` is called.
+   */
+  pause(): void {
+    this.paused = true;
+    this.clearIdleTimer();
+  }
+
+  /** Resume after pause; re-arm the idle timer and, for uploads, refill the window. */
+  resume(): void {
+    this.paused = false;
+    this.armIdleTimer();
+    this.pump();
+  }
+
+  private paused = false;
+
   /** The send side: emit chunks while the window is open. */
   pump(): void {
     if (this.direction !== 'upload') {
@@ -121,6 +140,7 @@ export class TransferState {
       );
     }
     if (this.failure) return;
+    if (this.paused) return;
     while (this.windowOpen && this.sentCount < this.totalChunks) {
       const chunkIndex = this.sentCount;
       this.send({

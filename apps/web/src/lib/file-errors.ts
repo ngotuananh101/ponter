@@ -19,6 +19,10 @@ export const FILE_ERROR_TEXT: Record<FileClientErrorCode, string> = {
   IO_ERROR: 'The agent could not complete the operation',
   BAD_FRAME: 'The agent rejected a malformed message',
   CANCELLED: 'Transfer cancelled',
+  RESUME_INVALID: 'The file changed on the agent — the transfer cannot resume',
+  DIR_NOT_EMPTY: 'That folder is not empty',
+  PERMISSION_DENIED: 'The agent refused that operation',
+  QUEUE_FULL: 'Too many transfers are queued',
 };
 
 export function fileErrorMessage(code: FileClientErrorCode): string {

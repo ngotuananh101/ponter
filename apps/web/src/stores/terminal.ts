@@ -15,10 +15,16 @@ import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
 import {
   FileClient,
   FilesError,
+  ServiceWorkerStreamWriter,
   type FileListResult,
   type TransferHandle,
   type TransferProgress,
 } from '@ponter/file-core';
+import {
+  registerDownloadSW,
+  initDownloadStream,
+  swAvailable,
+} from '@/lib/sw-download';
 import type {
   DesktopInput,
   DesktopSourceInfo,
@@ -1181,7 +1187,15 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   }
 
-  /** Download `path` and save it on completion (spec §7.1/§7.2). */
+  /**
+   * Download `path` and save it on completion (spec §7.1/§7.2).
+   *
+   * Tries the Service Worker streaming path first (GAP-D): lazy, feature-detected
+   * SW registration; the download is streamed chunk-by-chunk to the SW via a
+   * MessagePort so a 500 MB file never sits fully in memory. Falls back to the
+   * in-memory `saveBlob` path for files <= 200 MB when the SW is unavailable or
+   * fails; files > 200 MB with no SW surface a warning banner.
+   */
   async function filesDownload(tabId: string, path: string): Promise<void> {
     const tab = tabs.value.find((t) => t.id === tabId);
     if (tab?.kind !== 'files') return;
@@ -1189,6 +1203,72 @@ export const useTerminalStore = defineStore('terminal', () => {
     if (!conn) return;
     tab.fileError = null;
     const name = path.split('/').pop() || path;
+
+    // --- SW streaming path (GAP-D ruling) ---
+    // Feature-detect first; if SW is unsupported, skip straight to fallback.
+    // Registration is lazy: the first download triggers `registerDownloadSW`.
+    if (swAvailable()) {
+      try {
+        const reg = await registerDownloadSW();
+        if (reg) {
+          const { port1, port2 } = new MessageChannel();
+          let writer: ServiceWorkerStreamWriter;
+
+          // Start the download; chunks are forwarded to the writer via onChunk.
+          // The writer is assigned synchronously before any chunk can arrive.
+          const handle = conn.client.download(
+            path,
+            fileProgressHandler(tab),
+            (chunk) => {
+              void writer.writeChunk(chunk).catch(() => {});
+            },
+          );
+
+          // Register the transfer entry on the tab (progress tracking).
+          tab.fileTransfers = [
+            ...(tab.fileTransfers ?? []),
+            {
+              transferId: handle.transferId,
+              direction: handle.direction,
+              bytesTransferred: 0,
+              totalBytes: 0,
+              chunkIndex: -1,
+              handle,
+              name,
+            },
+          ];
+
+          writer = new ServiceWorkerStreamWriter(port1, {
+            transferId: handle.transferId,
+            filename: name,
+            size: 0,
+          });
+
+          try {
+            // Post STREAM_INIT with the port to the SW, then navigate.
+            await initDownloadStream(handle.transferId, name, 0, port2);
+            window.location.assign(
+              `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`,
+            );
+
+            // Wait for the download to complete, then end the stream.
+            await handle.done;
+            await writer.end();
+          } finally {
+            // Clean up the transfer entry regardless of outcome.
+            tab.fileTransfers = tab.fileTransfers?.filter(
+              (t) => t.transferId !== handle.transferId,
+            );
+          }
+          return;
+        }
+      } catch {
+        // SW path failed (registration or stream error) — fall through to
+        // the saveBlob fallback below (spec ADR-38: <= 200 MB).
+      }
+    }
+
+    // --- Fallback: in-memory saveBlob (spec ADR-38: <= 200 MB) ---
     const handle = conn.client.download(path, fileProgressHandler(tab));
     await trackTransfer(tab, handle, name, (bytes) => saveBlob(name, bytes));
   }
