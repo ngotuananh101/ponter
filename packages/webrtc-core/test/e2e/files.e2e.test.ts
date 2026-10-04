@@ -22,9 +22,15 @@ import {
   waitForAgentOnline,
   openFilesPeer,
   waitForFilesFrame,
+  waitForBinaryFrame,
+  packBinary,
+  unpackBinary,
+  sendRaw,
   waitFor,
   agents,
   type FilesFrame,
+  FILE_CHUNK_BYTES,
+  WINDOW,
 } from './harness';
 import type {
   FilesAckMessage,
@@ -37,16 +43,22 @@ import type {
   FilesUploadBeginRequest,
   FilesUploadComplete,
   FilesUploadEndRequest,
-  FileChunkMessage,
 } from '@ponter/shared';
-
-const FILE_CHUNK_BYTES = 32768;
-const WINDOW = 16;
+import {
+  BINARY_TYPE_DOWNLOAD_CHUNK,
+  BINARY_TYPE_UPLOAD_CHUNK,
+} from '@ponter/shared';
 
 /**
  * Layer 3: a real Rust agent serving a real directory over a real
  * DTLS/SCTP channel, driven by a raw TypeScript offerer (spec §8.3).
  * No Xvfb, no capture stack — mirror of terminal.e2e.test.ts.
+ *
+ * Week 11 wire: download chunks are BINARY frames (type 0x01), upload chunks
+ * are BINARY frames (type 0x02), and acks stay JSON (ADR-37 batches acks every
+ * 16 chunks or 20 ms — the suite waits for nextChunkIndex, not one ack per chunk).
+ * The window widened from 16 to 64, so the seeded `big.bin` grew to 3 MiB
+ * (96 chunks) to still exercise the window boundary.
  */
 describe.skipIf(!isLinux)('cross-language files E2E', () => {
   let rootDir: string;
@@ -63,13 +75,13 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
     outsideDir = join(parent, 'outside');
     mkdirSync(rootDir);
     mkdirSync(outsideDir);
-    // Seed: a small file, a subdirectory with a file, and a 600 KiB file
-    // (19 chunks — larger than the 16-chunk window, so the sender must pause
-    // for acks; spec §8.3 "download").
+    // Seed: a small file, a subdirectory with a file, and a 3 MiB file (96
+    // chunks — larger than the 64-chunk window, so the sender must pause for
+    // acks; spec §8.3 "download").
     writeFileSync(join(rootDir, 'notes.txt'), 'hello ponter\n');
     mkdirSync(join(rootDir, 'docs'));
     writeFileSync(join(rootDir, 'docs', 'readme.md'), '# docs\n');
-    const big = Buffer.alloc(600 * 1024);
+    const big = Buffer.alloc(3 * 1024 * 1024);
     for (let i = 0; i < big.length; i += 1) big[i] = i % 251;
     writeFileSync(join(rootDir, 'big.bin'), big);
     // The escape target lives OUTSIDE the root; the path-escape test proves
@@ -90,15 +102,22 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
     agentId: string;
     sessionId: string;
     frames: FilesFrame[];
+    binaryFrames: Uint8Array[];
     offerer: PeerConnection;
     send: (type: string, payload: unknown) => void;
+    sendRawChunk: (
+      type: number,
+      transferId: string,
+      chunkIndex: number,
+      data: Uint8Array,
+    ) => void;
   }> {
     const { token, agentId, credential, sessionId } = await seed({
       capabilities: ['files'],
     });
     spawnAgent(agentId, credential, ['--files-root', rootDir]);
     await waitForAgentOnline(token, agentId);
-    const { offerer, frames } = await openFilesPeer(
+    const { offerer, frames, binaryFrames } = await openFilesPeer(
       new RESTPollingTransport({ baseUrl: BASE_URL, sessionId, token }),
     );
     return {
@@ -106,10 +125,74 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
       agentId,
       sessionId,
       frames,
+      binaryFrames,
       offerer,
       send: (type, payload) =>
         offerer.dataChannels.sendJson('files', type, payload),
+      sendRawChunk: (type, transferId, chunkIndex, data) =>
+        sendRaw(offerer, packBinary(type, transferId, chunkIndex, data)),
     };
+  }
+
+  /** Reassemble downloaded chunks (binary 0x01) into a single Buffer. */
+  function assembleDownload(
+    binaryFrames: Uint8Array[],
+    transferId: string,
+  ): Buffer {
+    const chunks = new Map<number, Buffer>();
+    for (const frame of binaryFrames) {
+      const decoded = unpackBinary(frame);
+      if (
+        decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
+        decoded.transferId === transferId
+      ) {
+        chunks.set(decoded.chunkIndex, Buffer.from(decoded.data));
+      }
+    }
+    return Buffer.concat(
+      [...chunks.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b),
+    );
+  }
+
+  /** Drive downloads: ack every batch of binary chunks, waiting for
+   * nextChunkIndex to reach `target` (ADR-37 ack semantics). */
+  async function drainDownload(
+    binaryFrames: Uint8Array[],
+    transferId: string,
+    totalChunks: number,
+    sendAck: (nextChunkIndex: number) => void,
+    timeoutMs = 60_000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const chunks = new Set<number>();
+    let cursor = 0;
+    let lastAcked = 0;
+    // Seed the window: the agent pumps the initial WINDOW (0..63) up front, so
+    // ack each one as it arrives and keep the pump draining.
+    while (chunks.size < totalChunks && Date.now() < deadline) {
+      for (let i = cursor; i < binaryFrames.length; i++) {
+        const frame = binaryFrames[i];
+        if (!frame) continue;
+        const decoded = unpackBinary(frame);
+        if (
+          decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
+          decoded.transferId === transferId
+        ) {
+          chunks.add(decoded.chunkIndex);
+        }
+      }
+      cursor = binaryFrames.length;
+      // Ack up to the highest contiguous chunk received so far.
+      let contiguous = 0;
+      while (chunks.has(contiguous)) contiguous++;
+      // Only re-ack when the contiguous frontier advances.
+      if (contiguous > lastAcked) {
+        lastAcked = contiguous;
+        sendAck(contiguous);
+      }
+      if (chunks.size < totalChunks) await delay(0);
+    }
+    expect(chunks.size).toBe(totalChunks);
   }
 
   it('lists the seeded directory with sizes and types', async () => {
@@ -144,8 +227,8 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
     }
   }, 90_000);
 
-  it('downloads a 600 KiB file byte-for-byte across the 16-chunk window', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+  it('downloads a 3 MiB file byte-for-byte across the 64-chunk window', async () => {
+    const { offerer, frames, binaryFrames, send } = await connectFilesAgent();
     try {
       const transferId = crypto.randomUUID();
       send('files-download', {
@@ -160,47 +243,29 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
           'files-download-begin',
         )
       ).payload as unknown as FilesDownloadBegin;
-      const totalChunks = Math.ceil((600 * 1024) / FILE_CHUNK_BYTES);
-      expect(begin.size).toBe(600 * 1024);
+      const totalChunks = Math.ceil((3 * 1024 * 1024) / FILE_CHUNK_BYTES);
+      expect(begin.size).toBe(3 * 1024 * 1024);
       expect(begin.totalChunks).toBe(totalChunks);
       expect(totalChunks).toBeGreaterThan(WINDOW); // the window is exercised
 
-      const chunks = new Map<number, Buffer>();
-      let acked = 0;
-
-      // Drive the sender: ack every chunk as it arrives. The agent pauses at
-      // the 16-chunk window until acks arrive (ADR-34).
-      const deadline = Date.now() + 60_000;
-      while (acked < totalChunks && Date.now() < deadline) {
-        const pending = frames.filter(
-          (f) =>
-            f.type === 'files-download-chunk' &&
-            !chunks.has(
-              (f.payload as unknown as FileChunkMessage).chunkIndex ?? -1,
-            ),
-        );
-        for (const frame of pending) {
-          const chunk = frame.payload as unknown as FileChunkMessage;
-          chunks.set(chunk.chunkIndex, Buffer.from(chunk.data, 'base64'));
-          acked = chunks.size;
+      await drainDownload(
+        binaryFrames,
+        transferId,
+        totalChunks,
+        (nextChunkIndex) =>
           send('files-download-ack', {
             transferId,
-            nextChunkIndex: acked,
-          } satisfies FilesAckMessage);
-        }
-        if (acked < totalChunks) await delay(50);
-      }
+            nextChunkIndex,
+          } satisfies FilesAckMessage),
+      );
 
-      expect(acked).toBe(totalChunks);
       await waitForFilesFrame(
         frames,
         (f) => f.type === 'files-download-end',
         'files-download-end',
       );
 
-      const assembled = Buffer.concat(
-        [...chunks.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b),
-      );
+      const assembled = assembleDownload(binaryFrames, transferId);
       expect(
         Buffer.compare(assembled, readFileSync(join(rootDir, 'big.bin'))),
       ).toBe(0);
@@ -210,7 +275,7 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('uploads a 100 KiB file that lands byte-equal with no .part left behind', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+    const { offerer, frames, send, sendRawChunk } = await connectFilesAgent();
     try {
       const transferId = crypto.randomUUID();
       const payload = Buffer.alloc(100 * 1024);
@@ -224,7 +289,7 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
         size: payload.length,
       } satisfies FilesUploadBeginRequest);
 
-      // Wait for the first ack before sending, then keep the window open.
+      // Wait for the first ack (nextChunkIndex: 0) before sending.
       await waitForFilesFrame(
         frames,
         (f) =>
@@ -234,28 +299,29 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
         'files-upload-ack { nextChunkIndex: 0 }',
       );
 
+      // Send each binary upload chunk (type 0x02); ack batching means we wait
+      // for nextChunkIndex to reach index+1 rather than one ack per chunk.
       for (let index = 0; index < totalChunks; index += 1) {
         const slice = payload.subarray(
           index * FILE_CHUNK_BYTES,
           Math.min((index + 1) * FILE_CHUNK_BYTES, payload.length),
         );
-        send('files-upload-chunk', {
+        sendRawChunk(
+          BINARY_TYPE_UPLOAD_CHUNK,
           transferId,
-          chunkIndex: index,
-          totalChunks,
-          data: slice.toString('base64'),
-        } satisfies FileChunkMessage);
+          index,
+          new Uint8Array(slice),
+        );
 
-        // The ack for chunk `index` is `nextChunkIndex: index + 1`.
         await waitForFilesFrame(
           frames,
           (f) =>
             f.type === 'files-upload-ack' &&
             (f.payload as unknown as FilesAckMessage).transferId ===
               transferId &&
-            (f.payload as unknown as FilesAckMessage).nextChunkIndex ===
+            (f.payload as unknown as FilesAckMessage).nextChunkIndex >=
               index + 1,
-          `files-upload-ack { nextChunkIndex: ${index + 1} }`,
+          `files-upload-ack { nextChunkIndex >= ${index + 1} }`,
         );
       }
 
@@ -281,7 +347,7 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('cancel mid-download stops the chunks, logs, and leaves the session usable', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+    const { offerer, frames, binaryFrames, send } = await connectFilesAgent();
     try {
       const transferId = crypto.randomUUID();
       send('files-download', {
@@ -290,23 +356,19 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
       } satisfies FilesDownloadRequest);
 
       // `files-download-begin` arrives, then `pump_download` emits the initial
-      // WINDOW-bounded batch in one call (spec §2.4: the sender fills the
-      // window on start). Ack exactly one chunk, then cancel. The cancel is a
-      // separate frame: the agent processes it, clears its download state
-      // (mirror of the Rust unit test `cancel_stops_the_download_and_removes_the_state`),
-      // and never pumps again — so the transfer can never reach the full 19
-      // chunks. The in-flight window (≤16) may still drain from the SCTP
-      // buffer; the contract is that the *pump* stops, not that already-queued
-      // frames are retracted (impossible on a fire-and-forget channel).
+      // WINDOW-bounded batch in one call (spec §2.4). Ack one chunk, then cancel.
+      // The cancel is a separate frame: the agent processes it, clears its
+      // download state, and never pumps again — the transfer can never reach the
+      // full 96 chunks.
       await waitForFilesFrame(
         frames,
         (f) => f.type === 'files-download-begin',
         'files-download-begin',
       );
       // Let the initial window land, then ack one and cancel.
-      await waitForFilesFrame(
-        frames,
-        (f) => f.type === 'files-download-chunk',
+      await waitForBinaryFrame(
+        binaryFrames,
+        (f) => unpackBinary(f).type === BINARY_TYPE_DOWNLOAD_CHUNK,
         'the first download chunk',
       );
       send('files-download-ack', {
@@ -327,22 +389,21 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
         10_000,
       );
 
-      // The cancel stops the pump: the initial WINDOW (indices 0..15) plus at
-      // most the one chunk the pre-cancel ack freed (index 16) may arrive — the
-      // ack and the cancel are distinct frames in the serial session loop, so
-      // an ack processed before the cancel can release one extra chunk. What
-      // must NEVER appear are indices >= WINDOW+1 (17, 18): those only exist if
-      // the pump kept running past the cancel, which the cancel precludes. The
-      // 19-chunk (600 KiB) file is thus never fully delivered on a cancelled
-      // transfer — the structural pin, independent of SCTP drain timing.
+      // With WINDOW=64, the initial batch is indices 0..63 (64 chunks). An ack
+      // processed before the cancel can free at most a few more. What must
+      // NEVER appear are indices >= WINDOW + 8 (72, the start of the next
+      // window page): the initial 64 + a small in-flight margin cannot reach
+      // that far before the cancel halts the pump. The 96-chunk file is thus
+      // never fully delivered on a cancelled transfer.
       await delay(2_000);
-      const beyondWindow = frames.filter(
-        (f) =>
-          f.type === 'files-download-chunk' &&
-          (f.payload as unknown as FileChunkMessage).transferId ===
-            transferId &&
-          (f.payload as unknown as FileChunkMessage).chunkIndex >= WINDOW + 1,
-      );
+      const beyondWindow = binaryFrames.filter((f) => {
+        const decoded = unpackBinary(f);
+        return (
+          decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
+          decoded.transferId === transferId &&
+          decoded.chunkIndex >= WINDOW + 8
+        );
+      });
       expect(beyondWindow).toHaveLength(0);
 
       // The agent logged the cancel at info level (spec §6.1).

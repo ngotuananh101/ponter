@@ -9,12 +9,21 @@ import { PeerConnection } from '../../src/connection';
 import { WeriftAdapter } from '../../src/adapters/werift';
 import { RESTPollingTransport } from '../../src/transport';
 import type { SignalTransport } from '../../src/types';
+import { BINARY_HEADER_LEN } from '@ponter/shared';
 import type {
   DataChannelMessage,
   TerminalCreateMessage,
   TerminalDataMessage,
   TerminalResizeMessage,
 } from '@ponter/shared';
+
+// Wire constants mirrored locally (Tasks 1-4 froze these). FILE_CHUNK_BYTES and
+// WINDOW are NOT re-exported by @ponter/shared (only the binary frame type
+// bytes and header length are), so they are defined here verbatim to match the
+// agent's ADR-34/ADR-36 values rather than importing from the browser-oriented
+// packages/file-core codec.
+export const FILE_CHUNK_BYTES = 32768;
+export const WINDOW = 64;
 
 /**
  * Linux-only flag for E2E tests.
@@ -629,10 +638,16 @@ export type FilesFrame = DataChannelMessage<Record<string, unknown>>;
 /**
  * Create and start a PeerConnection with the 'files' channel (spec §8.3),
  * buffering received frames. Mirrors `openTerminalPeer`.
+ *
+ * Captures BOTH typed JSON frames (via `onMessage`) and raw binary chunk
+ * frames (via `onRawMessage`) into separate arrays. The typed listener fires
+ * only for `string` payloads; binary chunk frames (ADR-36) arrive as
+ * `ArrayBuffer` and are collected in `binaryFrames`.
  */
 export async function openFilesPeer(transport: SignalTransport): Promise<{
   offerer: PeerConnection;
   frames: FilesFrame[];
+  binaryFrames: Uint8Array[];
 }> {
   const offerer = new PeerConnection(
     new WeriftAdapter({ iceServers: [] }),
@@ -645,12 +660,22 @@ export async function openFilesPeer(transport: SignalTransport): Promise<{
     frames.push(msg);
   });
 
+  const binaryFrames: Uint8Array[] = [];
+  offerer.dataChannels.onRawMessage('files', (data) => {
+    // onRawMessage receives string | ArrayBuffer. Only ArrayBuffer payloads are
+    // binary chunk frames (ADR-36); string payloads are JSON and already
+    // delivered to the typed listener above.
+    if (typeof data !== 'string') {
+      binaryFrames.push(new Uint8Array(data as ArrayBuffer));
+    }
+  });
+
   try {
     await offerer.start();
     const channel = await offerer.waitForChannel('files', 20_000);
     expect(channel.readyState).toBe('open');
 
-    return { offerer, frames };
+    return { offerer, frames, binaryFrames };
   } catch (err) {
     throw new Error(connectionFailure(err));
   }
@@ -680,6 +705,118 @@ export async function waitForFilesFrame(
     throw new Error(
       `timed out after ${timeoutMs}ms waiting for ${description}\n` +
         `--- frames seen ---\n${frames.map((f) => f.type).join('\n')}`,
+    );
+  }
+  return match;
+}
+
+/**
+ * Send a raw binary chunk frame over the `files` data channel. The caller is
+ * responsible for packing the wire bytes (see `packBinary`); this helper is the
+ * `sendRaw` seam the brief names.
+ */
+export function sendRaw(offerer: PeerConnection, bytes: Uint8Array): void {
+  offerer.dataChannels.sendRaw('files', bytes);
+}
+
+/**
+ * Pack a binary chunk frame per ADR-36:
+ * `[1 byte type][16 byte transferId][8 byte BE chunkIndex][payload]`.
+ *
+ * `transferId` is a dashed RFC 4122 UUID string (like `crypto.randomUUID()`);
+ * the dashes are stripped and the 32 hex chars are decoded to 16 raw bytes —
+ * a local mirror of `packages/file-core/src/binary.ts`'s `uuidToBytes`, kept
+ * inside the e2e dir so the suite does not import the browser-oriented codec.
+ */
+export function packBinary(
+  type: number,
+  transferId: string,
+  chunkIndex: number,
+  data: Uint8Array,
+): Uint8Array {
+  const hex = transferId.replace(/-/g, '');
+  if (hex.length !== 32) {
+    throw new Error('invalid uuid');
+  }
+  const out = new Uint8Array(BINARY_HEADER_LEN + data.byteLength);
+  out[0] = type & 0xff;
+  for (let i = 0; i < 16; i++) {
+    out[i + 1] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  new DataView(out.buffer, out.byteOffset, out.byteLength).setBigUint64(
+    17,
+    BigInt(chunkIndex),
+    false,
+  );
+  out.set(data, BINARY_HEADER_LEN);
+  return out;
+}
+
+/**
+ * Unpack an ADR-36 binary chunk frame: `[1 byte type][16 byte transferId]
+ * [8 byte BE chunkIndex][payload]`.
+ *
+ * Throws if the frame is shorter than `BINARY_HEADER_LEN` (25 bytes). The 16
+ * raw wire bytes are re-rendered as a dashed RFC 4122 UUID string — a local
+ * mirror of `packages/file-core/src/binary.ts`'s `bytesToUuid`.
+ */
+export function unpackBinary(bytes: Uint8Array): {
+  type: number;
+  transferId: string;
+  chunkIndex: number;
+  data: Uint8Array;
+} {
+  if (bytes.byteLength < BINARY_HEADER_LEN) {
+    throw new Error('binary frame truncated');
+  }
+  const type = bytes[0]!;
+  let hex = '';
+  for (let i = 0; i < 16; i++) {
+    hex += bytes[i + 1]!.toString(16).padStart(2, '0');
+  }
+  const transferId =
+    hex.slice(0, 8) +
+    '-' +
+    hex.slice(8, 12) +
+    '-' +
+    hex.slice(12, 16) +
+    '-' +
+    hex.slice(16, 20) +
+    '-' +
+    hex.slice(20, 32);
+  const chunkIndex = Number(
+    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(
+      17,
+      false,
+    ),
+  );
+  const data = bytes.subarray(BINARY_HEADER_LEN);
+  return { type, transferId, chunkIndex, data };
+}
+
+/**
+ * Poll `binaryFrames` until `predicate` matches one, and fail with
+ * `description` after `timeoutMs`. The binary twin of `waitForFilesFrame`.
+ */
+export async function waitForBinaryFrame(
+  binaryFrames: Uint8Array[],
+  predicate: (frame: Uint8Array) => boolean,
+  description: string,
+  timeoutMs = 15_000,
+): Promise<Uint8Array> {
+  let match: Uint8Array | undefined;
+  const found = await pollUntil(
+    () => {
+      match = binaryFrames.find(predicate);
+      return match !== undefined;
+    },
+    timeoutMs,
+    50,
+  );
+  if (!found || !match) {
+    throw new Error(
+      `timed out after ${timeoutMs}ms waiting for ${description}\n` +
+        `--- binary frames seen ---\n${binaryFrames.map((f) => f.byteLength).join('\n')}`,
     );
   }
   return match;
