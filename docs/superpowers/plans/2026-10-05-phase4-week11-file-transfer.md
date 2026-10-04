@@ -494,6 +494,18 @@ describe('FileClient Pause and Resume', () => {
     });
     await expect(pausePromise).resolves.toBeUndefined();
   });
+
+  it('tears down cleanly when the stream port closes mid-transfer (Review Focus #4)', async () => {
+    // ServiceWorkerStreamWriter over a mock MessagePort pair; close the far
+    // port after the first chunk. The next writeChunk/end must reject (or the
+    // writer must expose a settled/aborted state) and release its port —
+    // no dangling channels, no unhandled rejection.
+    const { writer, farPort } = makeMockStreamWriter();
+    await writer.writeChunk(new Uint8Array([1, 2, 3]));
+    farPort.close();
+    await expect(writer.end()).rejects.toThrow();
+    expect(writer.isClosed).toBe(true);
+  });
 });
 ```
 
@@ -562,6 +574,18 @@ describe('Transfer Queue Store', () => {
     store.markCompleted('t-1');
     expect(store.activeUploadId).toBe('t-2');
     expect(store.items.find(i => i.id === 't-2')?.status).toBe('active');
+  });
+
+  it('enqueues a 20-file drop batch with exactly one active upload (Review Focus #5)', () => {
+    const store = useTransferQueueStore();
+    for (let i = 0; i < 20; i++) {
+      store.enqueue({ id: `t-${i}`, name: `f${i}.bin`, path: `f${i}.bin`, size: 100, direction: 'upload' });
+    }
+
+    expect(store.items).toHaveLength(20);
+    expect(store.items.filter(i => i.status === 'active')).toHaveLength(1);
+    expect(store.activeUploadId).toBe('t-0');
+    expect(store.items.filter(i => i.status === 'queued')).toHaveLength(19);
   });
 });
 ```
