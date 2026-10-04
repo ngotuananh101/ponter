@@ -444,6 +444,7 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
 - Create: `apps/web/public/sw-files-download.js`
 - Create: `packages/file-core/src/sw-writer.ts`
 - Modify: `packages/file-core/src/client.ts`
+- Modify: `apps/web/src/stores/terminal.ts` (SW download routing — see Interfaces; GAP-D ruling)
 - Test: `packages/file-core/test/pause-resume.test.ts`
 
 **Interfaces:**
@@ -451,6 +452,12 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
   - `ServiceWorkerStreamWriter` managing `MessageChannel` streaming.
   - `FileClient.pauseTransfer(transferId: string, direction: 'upload' | 'download'): Promise<void>` — resolves on `files-pause-ack`. (2-arg: `direction` is required by `FilesPauseMessage`; the Interfaces block previously said 1-arg — the wire type wins.)
   - `FileClient.resumeTransfer(transferId: string, fromChunkIndex: number): Promise<void>` — the client looks up `direction` and `path` from the transfer it tracked at `download()`/`upload()` time; sends `FilesResumeRequest`; resolves on `files-resume-ack` with `approved: true`, rejects with `FilesError('RESUME_INVALID')` when `approved: false` (reason carried in the message).
+  - `FileClient.download(path, onProgress?, onChunk?: (chunk: Uint8Array) => void)` — when `onChunk` is provided, each decoded chunk is forwarded as it arrives and NOT retained in memory (spec AC#3: <50 MB during a 500 MB transfer); `done` resolves `void` in that mode. Without `onChunk`, behavior is unchanged (assembled `Uint8Array`).
+  - **SW download routing (GAP-D ruling — the writer needs a consumer or ADR-38 delivers nothing):** `terminal.ts` wires the SW path into `filesDownload`:
+    - Route pinned: `/files-download-stream/:transferId/:filename` (plan Global Constraints + spec §4.3.1; the `/api/virtual-download` spelling in spec ADR-38's decision bullet is the stale variant).
+    - Handshake: page posts `{ type: 'STREAM_INIT', transferId, filename, size }` with a `MessagePort` to the active SW; then navigates to the stream URL; per-chunk `{ type: 'CHUNK', chunk }` and a final `{ type: 'END' }` flow over the port. SW's fetch handler matches the route, looks up the port by transferId, and responds with a `ReadableStream` + `Content-Disposition`/`Content-Length`/`Content-Type` headers.
+    - Fallback (spec ADR-38): SW unsupported or registration failed → existing in-memory `saveBlob` path for files ≤ 200 MB; surface a warning for larger files.
+    - Registration is lazy (first files download), feature-detected (`navigator.serviceWorker`), and never throws into the download path.
 
 - [ ] **Step 1: Write failing test in `packages/file-core/test/pause-resume.test.ts`**
 
@@ -497,8 +504,10 @@ Expected: FAIL with `pauseTransfer` not defined.
 
 - [ ] **Step 3: Implement Service Worker and pause/resume methods**
 
-- Write `apps/web/public/sw-files-download.js` intercepting download stream routes.
+- Write `apps/web/public/sw-files-download.js` intercepting the `/files-download-stream/:transferId/:filename` route (MessagePort chunk forwarding → ReadableStream response with `Content-Disposition`, `Content-Length`, `Content-Type: application/octet-stream`).
 - Implement `ServiceWorkerStreamWriter` and `pauseTransfer` / `resumeTransfer` in `FileClient`.
+- Add the optional `onChunk` streaming callback to `FileClient.download()` (chunk-forwarding mode, no in-memory buffer).
+- Wire `terminal.ts`'s `filesDownload` to the SW path with the ≤200 MB Blob fallback (GAP-D ruling in Interfaces): lazy, feature-detected registration; on registration/stream failure fall back to `saveBlob`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -508,7 +517,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
+git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js apps/web/src/stores/terminal.ts packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
 ```
 
 ---
@@ -589,11 +598,12 @@ git commit -m "feat(web): implement transfer queue Pinia store with concurrency 
 - Create: `apps/web/src/components/files/NewFolderDialog.vue`
 - Create: `apps/web/src/components/files/RenameDialog.vue`
 - Create: `apps/web/src/components/files/DeleteConfirmDialog.vue`
+- Modify: `apps/web/src/stores/terminal.ts` (add `filesMkdir`/`filesDelete`/`filesRename` actions + pause/resume/cancel-queue wiring — GAP-C ruling)
 - Test: `apps/web/src/__tests__/FilesView.test.ts`
 
 **Interfaces:**
-- Consumes: `useTransferQueueStore` and directory operations from `terminal.ts`.
-- Produces: Enhanced `FilesView.vue` with drag & drop highlight, action dialogs, and expandable transfers drawer.
+- Consumes: `useTransferQueueStore`; `FileClient.mkdir/delete/rename/pauseTransfer/resumeTransfer` (Tasks 4-5).
+- Produces: Enhanced `FilesView.vue` with drag & drop highlight, action dialogs, and expandable transfers drawer; store actions `filesMkdir(tabId, name)`, `filesDelete(tabId, path, recursive?)`, `filesRename(tabId, oldPath, newPath)` — each delegates to the tab's `FileClient`, re-lists the current directory on success (`filesNavigate`), and maps failures to `tab.fileError` (GAP-C ruling: Task 7's Interfaces named these as consumed but no task created them).
 
 - [ ] **Step 1: Write failing component tests in `apps/web/src/__tests__/FilesView.test.ts`**
 
@@ -624,9 +634,11 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement components & update `FilesView.vue`**
 
-- Add drag & drop event handlers (`@dragover`, `@dragleave`, `@drop`).
-- Add dialogs for New Folder, Rename, and Delete Confirmation.
-- Integrate `TransferQueueDrawer.vue` with progress bars, MB/s speed, ETA, and control buttons.
+- Add drag & drop event handlers (`@dragover`, `@dragleave`, `@drop`) — `drop` extracts `DataTransfer.files` and routes each through `store.filesUpload(tab.id, file)`.
+- Add dialogs for New Folder, Rename, and Delete Confirmation — wired to `store.filesMkdir/filesRename/filesDelete`.
+- Integrate `TransferQueueDrawer.vue` with progress bars, MB/s speed, ETA, and Pause/Resume/Cancel buttons (pause/resume via `store.filesPauseTransfer/filesResumeTransfer`).
+- Add the store actions (`filesMkdir`, `filesDelete`, `filesRename`, `filesPauseTransfer`, `filesResumeTransfer`) to `terminal.ts` per the Interfaces block, and export them from the store's return object.
+- Add row actions: Rename and Delete on each row (Delete opens the confirm dialog; directories pass `recursive` after confirmation).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -636,7 +648,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(web): add drag-and-drop, transfer queue drawer, and file operation dialogs" -- apps/web/src/components/files/
+git commit -m "feat(web): add drag-and-drop, transfer queue drawer, and file operation dialogs" -- apps/web/src/components/files/ apps/web/src/stores/terminal.ts apps/web/src/__tests__/FilesView.test.ts
 ```
 
 ---
