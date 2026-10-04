@@ -149,8 +149,10 @@ function onFilePicked(event: Event): void {
       <!-- Hidden picker: one file per pick, uploaded into the current dir. -->
       <input
         ref="fileInput"
+        id="files-upload-input"
         data-test="files-upload-input"
         type="file"
+        aria-label="Upload a file"
         class="hidden"
         @change="onFilePicked"
       />
@@ -190,7 +192,9 @@ function onFilePicked(event: Event): void {
             :key="entry.path"
             :data-test="`files-row-${entry.name}`"
             class="cursor-pointer border-t border-border/50 hover:bg-muted/50"
+            tabindex="0"
             @click="onRowClick(entry)"
+            @keydown.enter="onRowClick(entry)"
           >
             <td class="px-3 py-1.5">
               <span class="flex items-center gap-2">

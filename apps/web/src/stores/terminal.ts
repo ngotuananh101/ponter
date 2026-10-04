@@ -79,6 +79,18 @@ function toErrorMessage(cause: unknown): string {
   return 'unknown error';
 }
 
+/** True when `cause` is the client's synthetic local cancel code. */
+function isCancelledError(cause: unknown): boolean {
+  return cause instanceof FilesError && cause.code === 'CANCELLED';
+}
+
+/** Map a caught failure to banner text: wire code when known, else message. */
+function fileErrorText(cause: unknown): string {
+  return cause instanceof FilesError
+    ? fileErrorMessage(cause.code)
+    : toErrorMessage(cause);
+}
+
 /** An unsubscribe returned by every `on*` subscription in the transport stack. */
 type Unsubscribe = () => void;
 
@@ -1095,18 +1107,6 @@ export const useTerminalStore = defineStore('terminal', () => {
     const conn = desktopConnections.get(tab.agentId);
     if (!conn) return;
     conn.client.sendInput(event);
-  }
-
-  /** True when `cause` is the client's synthetic local cancel code. */
-  function isCancelledError(cause: unknown): boolean {
-    return cause instanceof FilesError && cause.code === 'CANCELLED';
-  }
-
-  /** Map a caught failure to banner text: wire code when known, else message. */
-  function fileErrorText(cause: unknown): string {
-    return cause instanceof FilesError
-      ? fileErrorMessage(cause.code)
-      : toErrorMessage(cause);
   }
 
   /** The files-only fields a tab needs while transfers run. */
