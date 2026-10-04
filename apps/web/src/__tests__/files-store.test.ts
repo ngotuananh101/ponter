@@ -51,6 +51,9 @@ const peerOptions: Array<Record<string, unknown>> = [];
 const peerClose = vi.fn(async () => {});
 const peerStart = vi.fn(async () => {});
 let waitForChannelImpl: () => Promise<void> = async () => {};
+// Captures the onConnectionStateChange handler so tests can drive the
+// state-change callback that triggers discardFilesConnection (M5).
+const connectionStateChangeHandlers: Array<(state: string) => void> = [];
 
 vi.mock('@ponter/webrtc-core', () => ({
   PeerConnection: function (
@@ -63,7 +66,10 @@ vi.mock('@ponter/webrtc-core', () => ({
     this.start = peerStart;
     this.close = peerClose;
     this.waitForChannel = vi.fn(() => waitForChannelImpl());
-    this.onConnectionStateChange = vi.fn(() => () => {});
+    this.onConnectionStateChange = vi.fn((cb: (state: string) => void) => {
+      connectionStateChangeHandlers.push(cb);
+      return () => {};
+    });
     this.dataChannels = {};
   },
   createBrowserAdapter: vi.fn(() => ({})),
@@ -109,6 +115,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     peerOptions.length = 0;
+    connectionStateChangeHandlers.length = 0;
     downloadDone = deferred<Uint8Array | void>();
     uploadDone = deferred<Uint8Array | void>();
     downloadProgress = null;
@@ -405,6 +412,39 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     await pending;
     expect(store.tabs.find((t) => t.id === tabId)).toBeUndefined();
     expect(store.activeTabId).toBeNull();
+  });
+
+  it('discardFilesConnection on connection "failed" disposes the client and rejects an in-flight download handle with CANCELLED', async () => {
+    const { store, tabId } = await openFilesWithClient();
+    const { FilesError } = await import('@ponter/file-core');
+    store.filesDownload(tabId, 'a.bin');
+
+    // Capture the TransferHandle the client handed back so we can observe its
+    // `done` promise (the store's own filesDownload() swallows the rejection in
+    // trackTransfer; the handle contract is what we pin here).
+    const handle = filesDownloadFn.mock.results[0]?.value;
+    expect(handle).toBeTypeOf('object');
+    const donePromise = handle.done as Promise<Uint8Array | void>;
+
+    // The real FileClient.dispose() rejects in-flight handles with 'CANCELLED';
+    // the mock stands in for the client and must honor that contract so this pins
+    // that discardFilesConnection routes through dispose() on the 'failed' path.
+    filesDispose.mockImplementationOnce(() => {
+      downloadDone.reject(new FilesError('CANCELLED', 'client disposed'));
+    });
+
+    // Driving the captured onConnectionStateChange handler with 'failed'
+    // triggers discardFilesConnection (M5): the client must be disposed so
+    // in-flight handles reject with CANCELLED instead of hanging to timeout.
+    const handler = connectionStateChangeHandlers[0];
+    expect(handler).toBeTypeOf('function');
+    handler!('failed');
+
+    expect(filesDispose).toHaveBeenCalled();
+    await expect(donePromise).rejects.toMatchObject({
+      code: 'CANCELLED',
+      message: 'client disposed',
+    });
   });
 
   it('clearFileError resets the banner', async () => {

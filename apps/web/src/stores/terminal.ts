@@ -977,11 +977,14 @@ export const useTerminalStore = defineStore('terminal', () => {
 
   /**
    * Drop a cached files connection and detach its subscriptions, without
-   * touching the server session. Used by the error callbacks.
+   * touching the server session. Used by the error callbacks. The client is
+   * disposed first so in-flight transfer handles reject with 'CANCELLED'
+   * immediately instead of languishing until the idle timeout.
    */
   function discardFilesConnection(agentId: string): void {
     const conn = fileConnections.get(agentId);
     if (!conn) return;
+    conn.client.dispose();
     runUnsubscribers(conn.unsubscribers);
     fileConnections.delete(agentId);
   }
