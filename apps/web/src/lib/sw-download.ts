@@ -63,16 +63,31 @@ export async function initDownloadStream(
   if (sw.state !== 'activated') {
     await new Promise<void>((resolve, reject) => {
       if (!sw) return reject(new Error('service worker not active'));
+      const timer = setTimeout(() => {
+        sw.removeEventListener('statechange', onChange);
+        reject(new Error('service worker activation timed out'));
+      }, 3000);
       const onChange = () => {
         if (sw.state === 'activated') {
+          clearTimeout(timer);
           sw.removeEventListener('statechange', onChange);
           resolve();
+        } else if (sw.state === 'redundant') {
+          clearTimeout(timer);
+          sw.removeEventListener('statechange', onChange);
+          reject(new Error('service worker became redundant'));
         }
       };
       sw.addEventListener('statechange', onChange);
-      // If the SW has already settled by the time we attach, fire once.
+      // If the SW has already settled by the time we attach, resolve/reject once.
       if (sw.state === 'activated') {
+        clearTimeout(timer);
+        sw.removeEventListener('statechange', onChange);
         resolve();
+      } else if (sw.state === 'redundant') {
+        clearTimeout(timer);
+        sw.removeEventListener('statechange', onChange);
+        reject(new Error('service worker became redundant'));
       }
     });
   }

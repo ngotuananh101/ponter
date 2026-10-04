@@ -355,6 +355,8 @@ export class FileClient {
     this.assertLive();
     const transferId = mintId();
     const totalChunks = totalChunksFor(file.size);
+    // Chain that serializes chunk slice+send so chunks go out in order.
+    let sendChain = Promise.resolve();
     const state = new TransferState({
       transferId,
       direction: 'upload',
@@ -371,10 +373,14 @@ export class FileClient {
           // Slice from the File (never reads the whole file) then send raw.
           const start = chunkIndex * FILE_CHUNK_BYTES;
           const end = Math.min(start + FILE_CHUNK_BYTES, file.size);
-          void file
-            .slice(start, end)
-            .arrayBuffer()
-            .then((buf) => {
+          // Sequence chunk delivery with a promise chain so that chunks are
+          // sent in order. Because `arrayBuffer()` fulfillment order is
+          // non-deterministic, concurrent `void` promises could deliver chunk N+1
+          // before chunk N, triggering a "chunk out of order" error on the
+          // agent. The chain serializes slice + send per chunk.
+          sendChain = sendChain.then(async () => {
+            try {
+              const buf = await file.slice(start, end).arrayBuffer();
               this.dataChannelManager.sendRaw(
                 'files',
                 packBinaryChunk(
@@ -384,7 +390,10 @@ export class FileClient {
                   new Uint8Array(buf),
                 ),
               );
-            });
+            } catch {
+              // DataChannel or slice error handled by state
+            }
+          });
           onProgress?.({
             transferId,
             direction: 'upload',
@@ -423,7 +432,10 @@ export class FileClient {
     return {
       transferId,
       direction: 'upload',
-      done: state.settled as Promise<Uint8Array | void>,
+      done: Promise.all([
+        state.settled as Promise<Uint8Array | void>,
+        sendChain,
+      ]).then(([result]) => result),
       cancel: () => state.cancel(),
     };
   }

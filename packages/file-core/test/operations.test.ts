@@ -242,13 +242,19 @@ describe('FileClient uploadStream (spec §2.5 / GAP-B)', () => {
     const transferId = begin!.payload.transferId as string;
 
     // An ack of 0 lets the client pump; with window 64 and only 3 chunks,
-    // all 3 raw upload frames should be emitted immediately. The send path
-    // slices from the File asynchronously (file.slice().arrayBuffer()), so we
-    // flush the microtask queue before asserting on rawSent.
+    // all 3 raw upload frames should be emitted. The send path slices each
+    // chunk from the File asynchronously (file.slice().arrayBuffer()) and
+    // chains them so they go out in order, so we flush the microtask queue
+    // enough times for each link in the chain to resolve before asserting on
+    // rawSent.
     fake.emit('files-upload-ack', { transferId, nextChunkIndex: 0 });
-    // Allow the async slice→sendRaw closures to resolve.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Allow the async chain (slice→sendRaw per chunk) to resolve. Each chain
+    // link awaits `file.slice().arrayBuffer()` (a macrotask in jsdom) before
+    // sending the next chunk, so drain both microtasks and macrotasks to let
+    // all 3 chunks settle.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
 
     expect(fake.rawSent).toHaveLength(3);
     const sizes = fake.rawSent.map((r) => r.bytes.byteLength);

@@ -79,6 +79,7 @@ export interface TabItem {
       handle: TransferHandle;
       name: string;
       paused?: boolean;
+      queueId?: string;
     }
   >;
 }
@@ -1164,6 +1165,7 @@ export const useTerminalStore = defineStore('terminal', () => {
         handle: TransferHandle;
         name: string;
         paused?: boolean;
+        queueId?: string;
       }
     >;
     fileError?: string | null;
@@ -1283,6 +1285,7 @@ export const useTerminalStore = defineStore('terminal', () => {
           chunkIndex: -1,
           handle,
           name,
+          queueId,
         },
       ];
       return (async () => {
@@ -1372,14 +1375,22 @@ export const useTerminalStore = defineStore('terminal', () => {
           chunkIndex: -1,
           handle,
           name,
+          queueId,
         },
       ];
 
       try {
         await initDownloadStream(handle.transferId, name, 0, port2);
-        window.location.assign(
-          `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`,
-        );
+        // Trigger the virtual stream download via a hidden anchor rather than
+        // top-level navigation, so a SW routing failure can't tear down the SPA
+        // and destroy the WebRTC connection.
+        const a = document.createElement('a');
+        a.href = `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`;
+        a.download = name;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => a.remove(), 1000);
         await handle.done;
         await writer.end();
         transferQueue.markCompleted(queueId);
@@ -1505,6 +1516,7 @@ export const useTerminalStore = defineStore('terminal', () => {
           chunkIndex: -1,
           handle,
           name: file.name,
+          queueId,
         },
       ];
       try {
@@ -1616,6 +1628,9 @@ export const useTerminalStore = defineStore('terminal', () => {
     try {
       await conn.client.pauseTransfer(transferId, entry.direction);
       entry.paused = true;
+      if (entry.queueId) {
+        transferQueue.pause(entry.queueId);
+      }
     } catch (e) {
       tab.fileError = fileErrorText(e);
     }
@@ -1636,6 +1651,9 @@ export const useTerminalStore = defineStore('terminal', () => {
     try {
       await conn.client.resumeTransfer(transferId, entry.chunkIndex + 1);
       entry.paused = false;
+      if (entry.queueId) {
+        transferQueue.resume(entry.queueId);
+      }
     } catch (e) {
       tab.fileError = fileErrorText(e);
     }

@@ -331,6 +331,35 @@ describe('FilesView', () => {
       expect(rename).toHaveBeenCalledWith('tab-f1', 'notes.txt', 'renamed.txt');
     });
 
+    it('preserves the subdirectory path when renaming a file in a subdirectory', async () => {
+      const store = useTerminalStore();
+      const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
+      const wrapper = mountFiles({
+        filesPath: 'docs/sub',
+        fileList: {
+          path: 'docs/sub',
+          entries: [entry({ name: 'notes.txt', path: 'docs/sub/notes.txt' })],
+          truncated: false,
+        },
+      });
+
+      await wrapper
+        .find('[data-test="files-row-notes.txt"] .rename-action')
+        .trigger('click');
+
+      const input = wrapper.find<HTMLInputElement>(
+        '[data-test="rename-input"]',
+      );
+      await input.setValue('renamed.txt');
+      await wrapper.find('[data-test="rename-confirm"]').trigger('click');
+
+      expect(rename).toHaveBeenCalledWith(
+        'tab-f1',
+        'docs/sub/notes.txt',
+        'docs/sub/renamed.txt',
+      );
+    });
+
     it('attaches to the document body: Rename confirm calls filesRename exactly once', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();

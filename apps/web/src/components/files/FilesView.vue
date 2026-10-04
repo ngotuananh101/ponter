@@ -126,7 +126,10 @@ function onRename(entry: RemoteFile): void {
 function onRenameConfirm(name: string): void {
   const target = renameTarget.value;
   if (!target) return;
-  void store.filesRename(props.tab.id, target.path, name);
+  const lastSlash = target.path.lastIndexOf('/');
+  const newPath =
+    lastSlash >= 0 ? `${target.path.slice(0, lastSlash + 1)}${name}` : name;
+  void store.filesRename(props.tab.id, target.path, newPath);
   renameOpen.value = false;
   renameTarget.value = null;
 }
