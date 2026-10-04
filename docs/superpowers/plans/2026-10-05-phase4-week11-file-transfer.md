@@ -445,6 +445,7 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
 - Create: `packages/file-core/src/sw-writer.ts`
 - Modify: `packages/file-core/src/client.ts`
 - Modify: `apps/web/src/stores/terminal.ts` (SW download routing — see Interfaces; GAP-D ruling)
+- Modify: `apps/web/src/lib/file-errors.ts` (GAP-E ruling — add the four new error codes' UI text)
 - Test: `packages/file-core/test/pause-resume.test.ts`
 
 **Interfaces:**
@@ -458,6 +459,11 @@ git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, a
     - Handshake: page posts `{ type: 'STREAM_INIT', transferId, filename, size }` with a `MessagePort` to the active SW; then navigates to the stream URL; per-chunk `{ type: 'CHUNK', chunk }` and a final `{ type: 'END' }` flow over the port. SW's fetch handler matches the route, looks up the port by transferId, and responds with a `ReadableStream` + `Content-Disposition`/`Content-Length`/`Content-Type` headers.
     - Fallback (spec ADR-38): SW unsupported or registration failed → existing in-memory `saveBlob` path for files ≤ 200 MB; surface a warning for larger files.
     - Registration is lazy (first files download), feature-detected (`navigator.serviceWorker`), and never throws into the download path.
+  - **Error-text coverage (GAP-E ruling — Task 1 widened `FilesErrorCode` with `RESUME_INVALID`, `DIR_NOT_EMPTY`, `PERMISSION_DENIED`, `QUEUE_FULL`; no task owned `apps/web/src/lib/file-errors.ts`, so `Record<FileClientErrorCode, string>` lost four keys and `vue-tsc --noEmit` fails with TS2739):** add the four entries to `FILE_ERROR_TEXT` in `apps/web/src/lib/file-errors.ts`, in the existing voice:
+    - `RESUME_INVALID: 'The file changed on the agent — the transfer cannot resume'`
+    - `DIR_NOT_EMPTY: 'That folder is not empty'`
+    - `PERMISSION_DENIED: 'The agent refused that operation'`
+    - `QUEUE_FULL: 'Too many transfers are queued'`
 
 - [ ] **Step 1: Write failing test in `packages/file-core/test/pause-resume.test.ts`**
 
@@ -526,10 +532,12 @@ Expected: FAIL with `pauseTransfer` not defined.
 Run: `pnpm --filter @ponter/file-core test`  
 Expected: PASS.
 
+Also run `pnpm --filter @ponter/web typecheck` — it must exit 0 once `file-errors.ts` covers the four new codes (GAP-E). This is the only apps/web check this task owns.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js apps/web/src/stores/terminal.ts packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
+git commit -m "feat(file-core): add Service Worker disk stream writer and pause/resume client support" -- apps/web/public/sw-files-download.js apps/web/src/stores/terminal.ts apps/web/src/lib/file-errors.ts packages/file-core/src/sw-writer.ts packages/file-core/src/client.ts packages/file-core/test/pause-resume.test.ts
 ```
 
 ---
