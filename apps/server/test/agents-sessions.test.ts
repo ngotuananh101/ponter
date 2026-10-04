@@ -746,6 +746,36 @@ describe('Agents, Devices & Sessions REST API', () => {
         expect(res.status).toBe(401);
       });
     });
+
+    it('enforces maxAgentsPerUser limit via system settings', async () => {
+      const app = createApp();
+
+      // Set max_agents_per_user to 1 so the second registration must be rejected.
+      await updateSystemSettings(db, { maxAgentsPerUser: 1 });
+
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      // First agent registration succeeds.
+      const first = await app.request('/api/agents', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ id: 'agent_first', publicKey: 'pk_first' }),
+      });
+      expect(first.status).toBe(201);
+
+      // Second agent registration hits the limit and is rejected.
+      const second = await app.request('/api/agents', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ id: 'agent_second', publicKey: 'pk_second' }),
+      });
+      expect(second.status).toBe(403);
+      const err = (await second.json()) as ErrorResponse;
+      expect(err.code).toBe('AGENT_LIMIT_REACHED');
+    });
   });
 
   describe('isAgentOnline boundary (unit)', () => {

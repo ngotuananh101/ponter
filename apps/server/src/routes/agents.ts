@@ -3,8 +3,9 @@ import type { AppContext } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
 import { agents } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, count } from 'drizzle-orm';
 import { sha256Hex } from '../utils/crypto.js';
+import { getSystemSettings } from '../utils/settings.js';
 import {
   generateAgentCredential,
   toPublicAgent,
@@ -62,6 +63,18 @@ router.post('/', async (c) => {
 
   if (existing) {
     throw new AppError('Agent already exists', 409, 'AGENT_EXISTS');
+  }
+
+  // Enforce the operational max-agents-per-user limit declared in system settings.
+  const settings = await getSystemSettings(db);
+  const userAgentCount = await db
+    .select({ value: count() })
+    .from(agents)
+    .where(eq(agents.userId, user.id))
+    .get();
+
+  if ((userAgentCount?.value ?? 0) >= settings.maxAgentsPerUser) {
+    throw new AppError('Agent limit reached', 403, 'AGENT_LIMIT_REACHED');
   }
 
   // Minted only after the 409 pre-check: issuing a credential for an agent that

@@ -159,4 +159,92 @@ describe('Auth Approval & Registration Gate', () => {
     expect(body.token).toBeDefined();
     expect(body.requiresApproval).toBe(false);
   });
+
+  it('rejects refresh for a user whose approvalStatus was set to rejected after login', async () => {
+    const app = createApp();
+
+    // Register the first user (auto-approved admin) and a second user.
+    await app.request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'admin',
+        password: 'Password123!',
+        publicKey: 'pk_admin',
+      }),
+    });
+
+    // Enable autoApproveUsers so the second user gets tokens immediately.
+    await updateSystemSettings(db, { autoApproveUsers: true });
+
+    const regRes = await app.request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'regular',
+        password: 'Password123!',
+        publicKey: 'pk_regular',
+      }),
+    });
+    const regData = await regRes.json();
+    const refreshToken = regData.refreshToken;
+    expect(refreshToken).toBeDefined();
+
+    // Admin rejects the regular user's account.
+    const adminToken = (
+      await app.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'Password123!' }),
+      })
+    ).json();
+    const { token: adminAccessToken } = (await adminToken) as { token: string };
+
+    await app.request(`/api/admin/users/${regData.user.id}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${adminAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ approvalStatus: 'rejected' }),
+    });
+
+    // Refresh with the previously-issued refresh token now fails with 401.
+    const refreshRes = await app.request('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    expect(refreshRes.status).toBe(401);
+    const errBody = await refreshRes.json();
+    expect(errBody.code).toBe('ACCOUNT_INACTIVE');
+  });
+
+  it('allows refresh for a still-approved user', async () => {
+    const app = createApp();
+
+    // Register the first user (auto-approved admin).
+    const res = await app.request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'admin',
+        password: 'Password123!',
+        publicKey: 'pk_admin',
+      }),
+    });
+    const data = await res.json();
+    const refreshToken = data.refreshToken;
+    expect(refreshToken).toBeDefined();
+
+    // Refresh with the original refresh token succeeds and returns a new access token.
+    const refreshRes = await app.request('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    expect(refreshRes.status).toBe(200);
+    const refreshData = await refreshRes.json();
+    expect(refreshData.token).toBeDefined();
+  });
 });

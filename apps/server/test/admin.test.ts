@@ -94,6 +94,51 @@ describe('Admin REST Routes', () => {
     expect(body.users.length).toBe(2);
   });
 
+  it('returns a numeric top-level total for GET /api/admin/users?status=all', async () => {
+    const app = createApp();
+    const res = await app.request('/api/admin/users?status=all', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.total).toBe('number');
+    expect(body.total).toBe(2);
+  });
+
+  it('filters users by status=inactive (isActive = false)', async () => {
+    const app = createApp();
+
+    // Deactivate regularUser via admin patch.
+    const deactivateRes = await app.request(
+      `/api/admin/users/${regularUser.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isActive: false }),
+      },
+    );
+    expect(deactivateRes.status).toBe(200);
+
+    const res = await app.request('/api/admin/users?status=inactive', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // The deactivated user should appear in the inactive filter results.
+    expect(
+      body.users.some((u: { id: string }) => u.id === regularUser.id),
+    ).toBe(true);
+    // The active admin should NOT appear.
+    expect(body.users.some((u: { id: string }) => u.id === adminUser.id)).toBe(
+      false,
+    );
+    expect(body.total).toBe(1);
+  });
+
   it('approves a user and promotes to admin', async () => {
     const app = createApp();
     const patchRes = await app.request(`/api/admin/users/${regularUser.id}`, {

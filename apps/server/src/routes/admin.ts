@@ -141,7 +141,7 @@ admin.get('/stats', async (c) => {
   return c.json(stats);
 });
 
-type UserListStatus = 'all' | 'pending' | 'approved' | 'rejected';
+type UserListStatus = 'all' | 'pending' | 'approved' | 'rejected' | 'inactive';
 
 admin.get('/users', async (c) => {
   const db = c.get('db');
@@ -156,7 +156,10 @@ admin.get('/users', async (c) => {
   const offset = (page - 1) * limit;
 
   const conditions = [];
-  if (status !== 'all') {
+  if (status === 'inactive') {
+    // Spec §4.2: "Deactivated" filter — active accounts only when isActive is false.
+    conditions.push(eq(users.isActive, false));
+  } else if (status !== 'all') {
     conditions.push(eq(users.approvalStatus, status));
   }
   if (search) {
@@ -186,6 +189,7 @@ admin.get('/users', async (c) => {
 
   return c.json({
     users: rows.map((row) => toPublicUser(row)),
+    total: totalRows?.value ?? 0,
     pagination: {
       page,
       limit,

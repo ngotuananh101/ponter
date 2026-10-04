@@ -3,15 +3,7 @@ import {
   createWebHistory,
   type RouteRecordRaw,
 } from 'vue-router';
-import { defineAsyncComponent } from 'vue';
 import { useAuthStore } from '@/stores/auth';
-
-const adminViewPath = '@/views/AdminView.vue';
-const AdminView = defineAsyncComponent(
-  () =>
-    // @vite-ignore
-    import(adminViewPath),
-);
 
 const routes: RouteRecordRaw[] = [
   {
@@ -45,7 +37,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin',
     name: 'admin',
-    component: AdminView,
+    component: () => import('@/views/AdminView.vue'),
     meta: { requiresAuth: true, requiresAdmin: true },
   },
   {
