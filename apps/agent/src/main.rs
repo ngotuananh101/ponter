@@ -40,6 +40,14 @@ use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit};
 
 use crate::signal::SignalClient;
 
+/// A frame on the files session's outbound channel: either a JSON text frame
+/// (serialized by [`files::frame_files`]) or a raw binary chunk frame ready to
+/// send as-is (Task 3, ADR-36). Private to `main.rs`.
+enum FilesFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "ponter-agent", version, about = "Ponter remote desktop agent")]
 struct Cli {
@@ -1231,14 +1239,40 @@ async fn run_files_session(
 
     // One session owns the state machine; frames travel over these channels.
     // Capacity 64 mirrors the terminal path's frame channel.
+    //
+    // `frame_tx` carries outbound frames that may be text (JSON) or binary
+    // (raw chunk frames, ADR-36). `dispatch_tx` carries raw inbound bytes:
+    // text frames arrive as UTF-8 and binary frames as opaque bytes — the
+    // dispatch arm decodes each accordingly.
+    let files_root_path = std::path::PathBuf::from(root.path());
     let mut session = files::FilesSession::new(root);
-    let (frame_tx, mut frame_rx) = mpsc::channel::<String>(64);
-    let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<String>(64);
+    // Spawn the periodic .ponter-part janitor (spec §4.1.4, ADR-39): every
+    // hour, sweep the root for stale `.ponter-part` files older than 24 h.
+    // The task borrows the canonical root path (captured above) and is tied
+    // to this session's lifetime via the poll task's join handle downstream.
+    let janitor_root = files_root_path.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        let max_age = std::time::Duration::from_secs(24 * 3600);
+        loop {
+            interval.tick().await;
+            let removed = files::clean_stale_part_files(&janitor_root, max_age).await;
+            if removed > 0 {
+                tracing::info!(
+                    removed,
+                    "cleaned_stale_part_files: removed stale .part files"
+                );
+            }
+        }
+    });
+    let (frame_tx, mut frame_rx) = mpsc::channel::<FilesFrame>(64);
+    let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    // The poll task forwards raw text; the session loop decodes it. The
-    // close event ends the session (the browser closed its last files tab,
-    // or the stack reset the stream) — the same shape as the terminal poll
-    // task, and the reason the ADR-14 slot frees immediately.
+    // The poll task forwards raw frames: text frames keep the existing UTF-8
+    // path; binary frames are forwarded as raw bytes to the dispatch arm. The
+    // close event ends the session (the browser closed its last files tab, or
+    // the stack reset the stream) — the same shape as the terminal poll task,
+    // and the reason the ADR-14 slot frees immediately.
     let dc_for_events = dc.clone();
     let dispatch_tx_for_events = dispatch_tx.clone();
     let end_tx_for_events = end_tx.clone();
@@ -1246,11 +1280,11 @@ async fn run_files_session(
         while let Some(event) = dc_for_events.poll().await {
             match event {
                 DataChannelEvent::OnMessage(msg) => {
-                    let Ok(text) = std::str::from_utf8(&msg.data) else {
-                        tracing::debug!("ignoring a non-UTF-8 frame");
-                        continue;
-                    };
-                    if dispatch_tx_for_events.send(text.to_string()).await.is_err() {
+                    if dispatch_tx_for_events
+                        .send(msg.data.to_vec())
+                        .await
+                        .is_err()
+                    {
                         tracing::debug!("files dispatch channel is gone");
                         break;
                     }
@@ -1273,7 +1307,15 @@ async fn run_files_session(
     let dc_for_pump = dc.clone();
     let mut pump = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = dc_for_pump.send_text(&frame).await {
+            let result = match frame {
+                FilesFrame::Text(text) => dc_for_pump.send_text(&text).await,
+                FilesFrame::Binary(bytes) => {
+                    dc_for_pump
+                        .send(bytes::BytesMut::from(bytes.as_slice()))
+                        .await
+                }
+            };
+            if let Err(e) = result {
                 tracing::debug!(error = %e, "files frame send failed");
                 break;
             }
@@ -1284,6 +1326,11 @@ async fn run_files_session(
     // no chunk/ack progress for FILES_IDLE_TIMEOUT (30 s in production).
     let mut idle_tick = tokio::time::interval(Duration::from_secs(1));
     idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // ADR-37: a dedicated 20 ms tick flushes buffered upload acks so a trickle
+    // of chunks surfaces a cumulative ack within 20 ms (the 1 s idle tick is
+    // too coarse for ack latency).
+    let mut ack_tick = tokio::time::interval(files::ACK_FLUSH_INTERVAL);
+    ack_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let session_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
     let reason = loop {
@@ -1300,7 +1347,12 @@ async fn run_files_session(
             raw = dispatch_rx.recv() => {
                 let Some(raw) = raw else { break "the files dispatch channel closed" };
                 for outbound_frame in handle_files_frame(&mut session, &raw).await {
-                    let framed = files::frame_files(&outbound_frame, pty::now_ms());
+                    let framed = match outbound_frame {
+                        outbound @ files::Outbound::DownloadChunkBinary(_) => {
+                            FilesFrame::Binary(outbound.into_bytes())
+                        }
+                        _ => FilesFrame::Text(files::frame_files(&outbound_frame, pty::now_ms())),
+                    };
                     if frame_tx.send(framed).await.is_err() {
                         tracing::debug!("files frame channel is gone");
                     }
@@ -1309,7 +1361,17 @@ async fn run_files_session(
 
             _ = idle_tick.tick() => {
                 for outbound_frame in session.check_idle().await {
-                    if frame_tx.send(files::frame_files(&outbound_frame, pty::now_ms())).await.is_err() {
+                    if frame_tx.send(FilesFrame::Text(files::frame_files(&outbound_frame, pty::now_ms()))).await.is_err() {
+                        tracing::debug!("files frame channel is gone");
+                    }
+                }
+            }
+
+            _ = ack_tick.tick() => {
+                // ADR-37: flush buffered upload acks every 20 ms.
+                for outbound_frame in session.flush_upload_acks() {
+                    let framed = FilesFrame::Text(files::frame_files(&outbound_frame, pty::now_ms()));
+                    if frame_tx.send(framed).await.is_err() {
                         tracing::debug!("files frame channel is gone");
                     }
                 }
@@ -1331,35 +1393,60 @@ async fn run_files_session(
     Ok(())
 }
 
-/// Decode one raw frame and turn it into outbound frames.
+/// Decode one raw inbound frame and turn it into outbound frames.
 ///
-/// `decode_files_frame` errors both when the envelope cannot be parsed and
-/// when a `files` payload fails validation; `extract_ids` distinguishes them
-/// (an id present ⇒ the JSON parsed ⇒ `BAD_FRAME` with the id; nothing
-/// extractable ⇒ log and drop, spec §2.6).
-async fn handle_files_frame(session: &mut files::FilesSession, raw: &str) -> Vec<files::Outbound> {
-    match files::decode_files_frame(raw) {
-        Ok(Some(inbound)) => session.handle(inbound).await,
-        Ok(None) => {
-            tracing::warn!(
-                len = raw.len(),
-                "ignoring a non-files frame on the files channel"
-            );
-            Vec::new()
-        }
-        Err(error) => {
-            let (request_id, transfer_id) = files::extract_ids(raw);
-            if request_id.is_none() && transfer_id.is_none() {
-                tracing::debug!(error = %error, "dropping an unparseable frame");
-                return Vec::new();
+/// Text frames (`raw.is_ascii()` / valid UTF-8) follow the existing JSON path:
+/// `decode_files_frame` errors both when the envelope cannot be parsed and when
+/// a `files` payload fails validation; `extract_ids` distinguishes them (an id
+/// present ⇒ the JSON parsed ⇒ `BAD_FRAME` with the id; nothing extractable ⇒
+/// log and drop, spec §2.6).
+///
+/// Binary frames are routed by their leading type byte (ADR-36): type `0x02`
+/// (`BINARY_TYPE_UPLOAD_CHUNK`) is decoded with `decode_files_binary_frame` and
+/// fed to `handle_upload_chunk_binary`; other binary types are logged and
+/// dropped (warn-and-ignore).
+async fn handle_files_frame(session: &mut files::FilesSession, raw: &[u8]) -> Vec<files::Outbound> {
+    // Binary frame: route by the leading type byte (ADR-36).
+    if raw
+        .first()
+        .is_some_and(|first| *first == files::BINARY_TYPE_UPLOAD_CHUNK)
+    {
+        match files::decode_files_binary_frame(raw) {
+            Ok(frame) => session.handle_upload_chunk_binary(&frame).await,
+            Err(error) => {
+                tracing::warn!(error = %error, "bad binary upload chunk");
+                vec![error.into_frame()]
             }
-            tracing::warn!(error = %error, "bad files frame");
-            vec![files::FilesError::new(
-                files::FilesErrorCode::BadFrame,
-                "the frame could not be decoded",
-            )
-            .with_ids(request_id, transfer_id)
-            .into_frame()]
+        }
+    } else {
+        // Text frame: the JSON decode path.
+        let Ok(text) = std::str::from_utf8(raw) else {
+            tracing::debug!("ignoring a non-UTF-8, non-binary frame");
+            return Vec::new();
+        };
+        match files::decode_files_frame(text) {
+            Ok(Some(inbound)) => session.handle(inbound).await,
+            Ok(None) => {
+                tracing::warn!(
+                    len = text.len(),
+                    "ignoring a non-files frame on the files channel"
+                );
+                Vec::new()
+            }
+            Err(error) => {
+                let (request_id, transfer_id) = files::extract_ids(text);
+                if request_id.is_none() && transfer_id.is_none() {
+                    tracing::debug!(error = %error, "dropping an unparseable frame");
+                    return Vec::new();
+                }
+                tracing::warn!(error = %error, "bad files frame");
+                vec![files::FilesError::new(
+                    files::FilesErrorCode::BadFrame,
+                    "the frame could not be decoded",
+                )
+                .with_ids(request_id, transfer_id)
+                .into_frame()]
+            }
         }
     }
 }
