@@ -1237,6 +1237,14 @@ export const useTerminalStore = defineStore('terminal', () => {
           );
           swHandle = handle;
 
+          // Absorb a rejection in the initDownloadStream window: a chunk-write
+          // failure can reject handle.done before the `await handle.done` below
+          // attaches its handler, which would surface as an unhandledrejection.
+          // Marking it handled here preserves the awaited consumer below (same
+          // promise; it still receives the rejection and drives the existing
+          // fallback flow).
+          void handle.done.catch(() => {});
+
           const writer = new ServiceWorkerStreamWriter(port1, {
             transferId: handle.transferId,
             filename: name,
