@@ -62,6 +62,75 @@ pub fn part_name(name: &str) -> String {
     format!("{name}{PART_SUFFIX}")
 }
 
+// ---- binary frame codec (ADR-36) ----
+
+/// Binary frame type for a download chunk (Agent -> Browser, ADR-36).
+#[allow(dead_code)]
+pub const BINARY_TYPE_DOWNLOAD_CHUNK: u8 = 0x01;
+/// Binary frame type for an upload chunk (Browser -> Agent, ADR-36).
+#[allow(dead_code)]
+pub const BINARY_TYPE_UPLOAD_CHUNK: u8 = 0x02;
+/// Total length of a binary chunk frame header: type(1) + transfer_id(16) + chunk_index(8).
+#[allow(dead_code)]
+pub const BINARY_HEADER_LEN: usize = 25;
+
+/// A decoded binary chunk frame (ADR-36): raw bytes without base64 inflation.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryChunkFrame {
+    pub frame_type: u8,
+    pub transfer_id: [u8; 16],
+    pub chunk_index: u64,
+    pub data: Vec<u8>,
+}
+
+/// Encode a binary chunk frame per ADR-36:
+/// `[1 byte type][16 byte transfer_id][8 byte BE chunk_index][payload]`.
+#[allow(dead_code)]
+pub fn encode_files_binary_frame(
+    frame_type: u8,
+    transfer_id: &[u8; 16],
+    chunk_index: u64,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(BINARY_HEADER_LEN + payload.len());
+    out.push(frame_type);
+    out.extend_from_slice(transfer_id);
+    out.extend_from_slice(&chunk_index.to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Decode a binary chunk frame per ADR-36.
+///
+/// Errors: `BadFrame` when the header is truncated or the payload exceeds
+/// `FILE_CHUNK_BYTES` (spec §5.1).
+#[allow(dead_code)]
+pub fn decode_files_binary_frame(bytes: &[u8]) -> FilesResult<BinaryChunkFrame> {
+    if bytes.len() < BINARY_HEADER_LEN {
+        return Err(FilesError::new(
+            FilesErrorCode::BadFrame,
+            "binary frame header truncated",
+        ));
+    }
+    if bytes.len() > BINARY_HEADER_LEN + FILE_CHUNK_BYTES as usize {
+        return Err(FilesError::new(
+            FilesErrorCode::BadFrame,
+            "binary frame payload exceeds chunk cap",
+        ));
+    }
+    let frame_type = bytes[0];
+    let transfer_id: [u8; 16] = bytes[1..17].try_into().unwrap();
+    let chunk_index = u64::from_be_bytes(bytes[17..25].try_into().unwrap());
+    let data = bytes[BINARY_HEADER_LEN..].to_vec();
+    Ok(BinaryChunkFrame {
+        frame_type,
+        transfer_id,
+        chunk_index,
+        data,
+    })
+}
+
 /// Format epoch seconds as an RFC 3339 UTC string (`2026-10-04T12:00:00Z`).
 ///
 /// Std-only — the agent has no `time`/`chrono` dependency and must not gain
@@ -106,6 +175,14 @@ pub enum FilesErrorCode {
     TransferTimeout,
     IoError,
     BadFrame,
+    // Week 11 additions (spec §3.4, packages/shared/src/types/files.ts):
+    #[allow(dead_code)]
+    ResumeInvalid,
+    DirNotEmpty,
+    #[allow(dead_code)]
+    PermissionDenied,
+    #[allow(dead_code)]
+    QueueFull,
 }
 
 impl FilesErrorCode {
@@ -123,6 +200,10 @@ impl FilesErrorCode {
             Self::TransferTimeout => "TRANSFER_TIMEOUT",
             Self::IoError => "IO_ERROR",
             Self::BadFrame => "BAD_FRAME",
+            Self::ResumeInvalid => "RESUME_INVALID",
+            Self::DirNotEmpty => "DIR_NOT_EMPTY",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::QueueFull => "QUEUE_FULL",
         }
     }
 }
@@ -146,6 +227,12 @@ impl FilesError {
             request_id: None,
             transfer_id: None,
         }
+    }
+
+    /// Accessor for the error code (spec §6.4: tests inspect `err.code()`).
+    #[allow(dead_code)]
+    pub fn code(&self) -> FilesErrorCode {
+        self.code
     }
 
     /// Attach the ids the failure belongs to (builder style).
@@ -329,6 +416,10 @@ pub enum FilesInbound {
     UploadEnd(FilesUploadEndRequest),
     Cancel(FilesCancelMessage),
     DownloadAck(FilesAckMessage),
+    // Week 11 directory operations (ADR-40):
+    Mkdir(FilesMkdirRequest),
+    Delete(FilesDeleteRequest),
+    Rename(FilesRenameRequest),
 }
 
 /// One outbound frame (agent → browser), framed by [`frame_files`].
@@ -341,6 +432,48 @@ pub enum Outbound {
     UploadAck(FilesAckMessage),
     UploadComplete(FilesUploadComplete),
     Error(FilesErrorMessage),
+    // Week 11 directory operations (ADR-40):
+    ActionResult(FilesActionResult),
+}
+
+// ---- Week 11 wire types for directory operations (ADR-40) ----
+
+/// `files-mkdir` request (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesMkdirRequest {
+    pub request_id: String,
+    pub dir: String,
+    pub name: String,
+}
+
+/// `files-delete` request (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesDeleteRequest {
+    pub request_id: String,
+    pub path: String,
+    pub recursive: Option<bool>,
+}
+
+/// `files-rename` request (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesRenameRequest {
+    pub request_id: String,
+    pub old_path: String,
+    pub new_path: String,
+}
+
+/// `files-action-result` reply (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesActionResult {
+    pub request_id: String,
+    pub action: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Decode an inbound frame; same guard shape as `decode_pty_input`
@@ -388,6 +521,16 @@ pub fn decode_files_frame(raw: &str) -> AnyhowResult<Option<FilesInbound>> {
         "files-download-ack" => FilesInbound::DownloadAck(
             serde_json::from_value(payload).context("payload is not a FilesAckMessage")?,
         ),
+        // Week 11 directory operations (ADR-40):
+        "files-mkdir" => FilesInbound::Mkdir(
+            serde_json::from_value(payload).context("payload is not a FilesMkdirRequest")?,
+        ),
+        "files-delete" => FilesInbound::Delete(
+            serde_json::from_value(payload).context("payload is not a FilesDeleteRequest")?,
+        ),
+        "files-rename" => FilesInbound::Rename(
+            serde_json::from_value(payload).context("payload is not a FilesRenameRequest")?,
+        ),
         _ => return Ok(None),
     };
 
@@ -419,6 +562,7 @@ pub fn frame_files(outbound: &Outbound, timestamp_ms: i64) -> String {
         Outbound::UploadAck(p) => ("files-upload-ack", serde_json::to_value(p)),
         Outbound::UploadComplete(p) => ("files-upload-complete", serde_json::to_value(p)),
         Outbound::Error(p) => ("files-error", serde_json::to_value(p)),
+        Outbound::ActionResult(p) => ("files-action-result", serde_json::to_value(p)),
     };
     let message = crate::pty::DataChannelMessage {
         r#type: r#type.to_string(),
@@ -572,6 +716,149 @@ impl FilesRoot {
 
         Ok((parent, name.to_string()))
     }
+
+    /// Convenience constructor: canonicalize a path and return a `FilesRoot`.
+    ///
+    /// Delegates to [`FilesRoot::resolve`]; the path is converted to a string
+    /// via `to_str()` (rejecting paths that aren't valid UTF-8 on the host).
+    #[allow(dead_code)]
+    pub async fn new(path: impl AsRef<Path>) -> FilesResult<Self> {
+        let path = path.as_ref();
+        let raw = path.to_str().ok_or_else(|| {
+            FilesError::new(
+                FilesErrorCode::InvalidPath,
+                "files root path is not valid UTF-8",
+            )
+        })?;
+        Self::resolve(raw).await
+    }
+
+    /// Create a directory inside the sandbox (ADR-40).
+    ///
+    /// `dir` is the parent wire path (`''` = root), `name` a single component.
+    /// The parent must exist and be a directory; the target must not already
+    /// exist (collision ⇒ `FILE_EXISTS`).
+    pub async fn mkdir(&self, dir: &str, name: &str) -> FilesResult<()> {
+        let (parent, safe_name) = self.resolve_parent_for_create(dir, name).await?;
+        let target = parent.join(&safe_name);
+        if tokio::fs::try_exists(&target)
+            .await
+            .map_err(|error| FilesError::io("probing the mkdir target", error))?
+        {
+            return Err(FilesError::new(
+                FilesErrorCode::FileExists,
+                "directory already exists",
+            ));
+        }
+        tokio::fs::create_dir(&target)
+            .await
+            .map_err(|error| FilesError::io("creating directory", error))?;
+        Ok(())
+    }
+
+    /// Alias for [`FilesRoot::mkdir`] — the dispatch name used by the wire layer.
+    pub async fn handle_mkdir(&self, dir: &str, name: &str) -> FilesResult<()> {
+        self.mkdir(dir, name).await
+    }
+
+    /// Delete a file or directory inside the sandbox (ADR-40).
+    ///
+    /// `recursive == true` removes a non-empty directory tree; `false` rejects
+    /// a non-empty directory with `DIR_NOT_EMPTY`. The sandbox root itself is
+    /// never deleted (`PERMISSION_DENIED`).
+    pub async fn delete(&self, path: &str, recursive: bool) -> FilesResult<()> {
+        // Reject syntactic attempts to delete the root.
+        if path.is_empty() || path == "." {
+            return Err(FilesError::new(
+                FilesErrorCode::PermissionDenied,
+                "cannot delete sandbox root",
+            ));
+        }
+        let canonical = self.resolve_existing(path).await?;
+        // Reject canonical attempts to delete the root.
+        if canonical == self.canonical {
+            return Err(FilesError::new(
+                FilesErrorCode::PermissionDenied,
+                "cannot delete sandbox root",
+            ));
+        }
+        let metadata = tokio::fs::symlink_metadata(&canonical)
+            .await
+            .map_err(|error| FilesError::io("stat delete target", error))?;
+        if metadata.is_dir() {
+            if recursive {
+                tokio::fs::remove_dir_all(&canonical)
+                    .await
+                    .map_err(|error| FilesError::io("removing directory tree", error))?;
+            } else {
+                let mut rd = tokio::fs::read_dir(&canonical)
+                    .await
+                    .map_err(|error| FilesError::io("reading directory for emptiness", error))?;
+                if rd
+                    .next_entry()
+                    .await
+                    .map_err(|error| {
+                        FilesError::io("reading directory entry for emptiness", error)
+                    })?
+                    .is_some()
+                {
+                    return Err(FilesError::new(
+                        FilesErrorCode::DirNotEmpty,
+                        "directory is not empty",
+                    ));
+                }
+                tokio::fs::remove_dir(&canonical)
+                    .await
+                    .map_err(|error| FilesError::io("removing directory", error))?;
+            }
+        } else {
+            tokio::fs::remove_file(&canonical)
+                .await
+                .map_err(|error| FilesError::io("removing file", error))?;
+        }
+        Ok(())
+    }
+
+    /// Alias for [`FilesRoot::delete`] — the dispatch name used by the wire layer.
+    pub async fn handle_delete(&self, path: &str, recursive: bool) -> FilesResult<()> {
+        self.delete(path, recursive).await
+    }
+
+    /// Rename (move) a path within the sandbox (ADR-40).
+    ///
+    /// Both the source and destination must resolve inside the root. The
+    /// destination must not already exist (`FILE_EXISTS`).
+    pub async fn rename(&self, old_path: &str, new_path: &str) -> FilesResult<()> {
+        let canonical_old = self.resolve_existing(old_path).await?;
+        if canonical_old == self.canonical {
+            return Err(FilesError::new(
+                FilesErrorCode::PermissionDenied,
+                "cannot rename sandbox root",
+            ));
+        }
+        let (parent_dir, name) = new_path.rsplit_once('/').unwrap_or(("", new_path));
+        let (canonical_parent, safe_name) =
+            self.resolve_parent_for_create(parent_dir, name).await?;
+        let dest = canonical_parent.join(&safe_name);
+        if tokio::fs::try_exists(&dest)
+            .await
+            .map_err(|error| FilesError::io("probing the rename destination", error))?
+        {
+            return Err(FilesError::new(
+                FilesErrorCode::FileExists,
+                "destination already exists",
+            ));
+        }
+        tokio::fs::rename(&canonical_old, &dest)
+            .await
+            .map_err(|error| FilesError::io("renaming", error))?;
+        Ok(())
+    }
+
+    /// Alias for [`FilesRoot::rename`] — the dispatch name used by the wire layer.
+    pub async fn handle_rename(&self, old_path: &str, new_path: &str) -> FilesResult<()> {
+        self.rename(old_path, new_path).await
+    }
 }
 
 // ---- the session state machine (spec §6.1) ----
@@ -681,6 +968,10 @@ impl FilesSession {
             FilesInbound::UploadEnd(end) => self.handle_upload_end(end).await,
             FilesInbound::DownloadAck(ack) => self.handle_download_ack(ack).await,
             FilesInbound::Cancel(cancel) => self.handle_cancel(cancel).await,
+            // Week 11 directory operations (ADR-40):
+            FilesInbound::Mkdir(request) => self.handle_mkdir(request).await,
+            FilesInbound::Delete(request) => self.handle_delete(request).await,
+            FilesInbound::Rename(request) => self.handle_rename(request).await,
         }
     }
 
@@ -1134,6 +1425,79 @@ impl FilesSession {
         // `requestId` cancel has nothing pending to abort, spec §5.2.2).
         tracing::debug!(?cancel.request_id, ?cancel.transfer_id, "files cancel for nothing in flight");
         Vec::new()
+    }
+
+    /// `files-mkdir` — create a directory in the sandbox (ADR-40).
+    async fn handle_mkdir(&mut self, request: FilesMkdirRequest) -> Vec<Outbound> {
+        let result = self.root.handle_mkdir(&request.dir, &request.name).await;
+        let frame = match result {
+            Ok(()) => Outbound::ActionResult(FilesActionResult {
+                request_id: request.request_id,
+                action: "mkdir".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %error, "files mkdir failed");
+                Outbound::ActionResult(FilesActionResult {
+                    request_id: request.request_id,
+                    action: "mkdir".to_string(),
+                    success: false,
+                    error: Some(error.to_string()),
+                })
+            }
+        };
+        vec![frame]
+    }
+
+    /// `files-delete` — delete a file or directory in the sandbox (ADR-40).
+    async fn handle_delete(&mut self, request: FilesDeleteRequest) -> Vec<Outbound> {
+        let recursive = request.recursive.unwrap_or(false);
+        let result = self.root.handle_delete(&request.path, recursive).await;
+        let frame = match result {
+            Ok(()) => Outbound::ActionResult(FilesActionResult {
+                request_id: request.request_id,
+                action: "delete".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %error, "files delete failed");
+                Outbound::ActionResult(FilesActionResult {
+                    request_id: request.request_id,
+                    action: "delete".to_string(),
+                    success: false,
+                    error: Some(error.to_string()),
+                })
+            }
+        };
+        vec![frame]
+    }
+
+    /// `files-rename` — rename a path within the sandbox (ADR-40).
+    async fn handle_rename(&mut self, request: FilesRenameRequest) -> Vec<Outbound> {
+        let result = self
+            .root
+            .handle_rename(&request.old_path, &request.new_path)
+            .await;
+        let frame = match result {
+            Ok(()) => Outbound::ActionResult(FilesActionResult {
+                request_id: request.request_id,
+                action: "rename".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %error, "files rename failed");
+                Outbound::ActionResult(FilesActionResult {
+                    request_id: request.request_id,
+                    action: "rename".to_string(),
+                    success: false,
+                    error: Some(error.to_string()),
+                })
+            }
+        };
+        vec![frame]
     }
 }
 
@@ -2253,5 +2617,87 @@ mod tests {
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).ok();
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests_week11 {
+    use super::*;
+
+    /// Unique temp dir under `std::env::temp_dir()` (mirrors the `tests`
+    /// helper; duplicated here because `tempfile` is not a declared dev-dep).
+    fn temp_dir_for_test() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("ponter-files-w11-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_binary_frame_roundtrip() {
+        let transfer_id = [7u8; 16];
+        let chunk_index = 42u64;
+        let payload = b"hello binary world";
+        let encoded = encode_files_binary_frame(
+            BINARY_TYPE_DOWNLOAD_CHUNK,
+            &transfer_id,
+            chunk_index,
+            payload,
+        );
+        assert_eq!(encoded.len(), BINARY_HEADER_LEN + payload.len());
+
+        let decoded = decode_files_binary_frame(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.frame_type, BINARY_TYPE_DOWNLOAD_CHUNK);
+        assert_eq!(decoded.transfer_id, transfer_id);
+        assert_eq!(decoded.chunk_index, chunk_index);
+        assert_eq!(decoded.data, payload);
+    }
+
+    #[test]
+    fn test_binary_frame_truncated_header() {
+        let short_bytes = vec![0x01; 24]; // 1 byte short of 25-byte header
+        let err = decode_files_binary_frame(&short_bytes).unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::BadFrame);
+    }
+
+    #[tokio::test]
+    async fn test_mkdir_delete_rename_sandbox() {
+        // Adapt the brief's `tempfile::tempdir()` to the existing test helper
+        // (`tempfile` is a transitive dep in Cargo.lock but not declared in
+        // Cargo.toml; we cannot add it here).
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+
+        // 1. mkdir
+        root.mkdir("", "test_dir").await.unwrap();
+        let created = temp.join("test_dir");
+        assert!(created.is_dir());
+
+        // 2. rename
+        tokio::fs::write(created.join("sample.txt"), b"data")
+            .await
+            .unwrap();
+        root.rename("test_dir/sample.txt", "test_dir/renamed.txt")
+            .await
+            .unwrap();
+        assert!(created.join("renamed.txt").exists());
+        assert!(!created.join("sample.txt").exists());
+
+        // 3. delete root rejected
+        let del_err = root.delete("", false).await.unwrap_err();
+        assert_eq!(del_err.code(), FilesErrorCode::PermissionDenied);
+
+        // 4. delete non-empty directory without recursive rejected
+        let del_dir_err = root.delete("test_dir", false).await.unwrap_err();
+        assert_eq!(del_dir_err.code(), FilesErrorCode::DirNotEmpty);
+
+        // 5. delete directory with recursive
+        root.delete("test_dir", true).await.unwrap();
+        assert!(!created.exists());
+
+        std::fs::remove_dir_all(&temp).ok();
     }
 }
