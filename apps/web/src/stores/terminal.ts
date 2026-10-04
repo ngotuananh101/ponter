@@ -1272,7 +1272,7 @@ export const useTerminalStore = defineStore('terminal', () => {
         return Promise.resolve();
       }
       const handle = conn2.client.download(path, fileProgressHandler(tab));
-      // Register the transfer entry on the tab synchronously (matches trackTransfer).
+      // Register the transfer entry on the tab synchronously.
       tab.fileTransfers = [
         ...(tab.fileTransfers ?? []),
         {
@@ -1333,72 +1333,87 @@ export const useTerminalStore = defineStore('terminal', () => {
     let swHandle: TransferHandle | null = null;
     try {
       const reg = await registerDownloadSW();
-      if (reg) {
-        const { port1, port2 } = new MessageChannel();
+      if (!reg) {
+        throw new Error('Service Worker registration failed');
+      }
+      const { port1, port2 } = new MessageChannel();
 
-        const writerRef: { current: ServiceWorkerStreamWriter | null } = {
-          current: null,
-        };
-        const handle = client.download(
-          path,
-          fileProgressHandler(live),
-          (chunk) => {
-            void writerRef.current?.writeChunk(chunk).catch(() => {
-              writerRef.current?.abort();
-              handle.cancel();
-            });
-          },
-        );
-        swHandle = handle;
-        void handle.done.catch(() => {});
+      const writerRef: { current: ServiceWorkerStreamWriter | null } = {
+        current: null,
+      };
+      const handle = client.download(
+        path,
+        fileProgressHandler(live),
+        (chunk) => {
+          void writerRef.current?.writeChunk(chunk).catch(() => {
+            writerRef.current?.abort();
+            handle.cancel();
+          });
+        },
+      );
+      swHandle = handle;
+      void handle.done.catch(() => {});
 
-        const writer = new ServiceWorkerStreamWriter(port1, {
+      const writer = new ServiceWorkerStreamWriter(port1, {
+        transferId: handle.transferId,
+        filename: name,
+        size: 0,
+      });
+      writerRef.current = writer;
+
+      // Register the transfer entry on the tab.
+      live.fileTransfers = [
+        ...(live.fileTransfers ?? []),
+        {
           transferId: handle.transferId,
-          filename: name,
-          size: 0,
-        });
-        writerRef.current = writer;
+          direction: handle.direction,
+          bytesTransferred: 0,
+          totalBytes: 0,
+          chunkIndex: -1,
+          handle,
+          name,
+        },
+      ];
 
-        // Register the transfer entry on the tab.
-        live.fileTransfers = [
-          ...(live.fileTransfers ?? []),
-          {
-            transferId: handle.transferId,
-            direction: handle.direction,
-            bytesTransferred: 0,
-            totalBytes: 0,
-            chunkIndex: -1,
-            handle,
-            name,
-          },
-        ];
-
-        try {
-          await initDownloadStream(handle.transferId, name, 0, port2);
-          window.location.assign(
-            `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`,
-          );
-          await handle.done;
-          await writer.end();
-          transferQueue.markCompleted(queueId);
-        } catch (e) {
-          if (isCancelledError(e)) {
-            transferQueue.cancel(queueId);
-          } else {
-            live.fileError = fileErrorText(e);
-            transferQueue.cancel(queueId, fileErrorText(e));
-          }
-        } finally {
+      try {
+        await initDownloadStream(handle.transferId, name, 0, port2);
+        window.location.assign(
+          `/files-download-stream/${handle.transferId}/${encodeURIComponent(name)}`,
+        );
+        await handle.done;
+        await writer.end();
+        transferQueue.markCompleted(queueId);
+      } catch (e) {
+        if (isCancelledError(e)) {
+          // Explicit user cancellation: do not fall back, clean up and stop.
           live.fileTransfers = live.fileTransfers?.filter(
             (t) => t.transferId !== handle.transferId,
           );
           swHandle = null;
+          transferQueue.cancel(queueId);
+          return;
         }
+        // Streaming failure (chunk-write error, SW crashed, port closed):
+        // re-throw so the outer catch cancels swHandle and falls back to
+        // the in-memory saveBlob path.
+        throw e;
       }
+      swHandle = null;
     } catch {
       // SW path failed — cancel any transfer started, fall through to fallback.
       swHandle?.cancel();
       swHandle = null;
+      // Respect the 200 MB cap for the in-memory fallback: if the file is
+      // larger and the SW path already failed, surface an error instead of
+      // buffering >200 MB in memory.
+      const MAX_BLOB_FALLBACK_BYTES = 200 * 1024 * 1024;
+      const knownEntry = live.fileList?.entries.find((e) => e.path === path);
+      if (knownEntry && knownEntry.size > MAX_BLOB_FALLBACK_BYTES) {
+        live.fileError =
+          'File is too large to download without Service Worker support (over 200 MB)';
+        transferQueue.cancel(queueId, 'file too large for saveBlob fallback');
+        return;
+      }
       // Retry with the in-memory fallback.
       const handle = client.download(path, fileProgressHandler(live));
       live.fileTransfers = [
