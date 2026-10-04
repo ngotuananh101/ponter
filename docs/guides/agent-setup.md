@@ -55,9 +55,13 @@ Options:
       --shell <SHELL>            Shell mặc định để khởi chạy khi nhận session [default: /bin/bash or powershell]
       --cols <COLS>              Số cột mặc định cho PTY ban đầu [default: 80]
       --rows <ROWS>              Số hàng mặc định cho PTY ban đầu [default: 24]
+      --files-root <FILES_ROOT>  Thư mục được phục vụ cho các session files. KHÔNG có mặc định:
+                                 bỏ trống = cổng files đóng (offer bị từ chối) [env: AGENT_FILES_ROOT]
   -h, --help                     In ra help
   -V, --version                  In ra version
 ```
+
+> **Bảo mật:** `--files-root` mở quyền đọc/ghi file trong đúng thư mục đó cho phiên đã xác thực nhưng **peer chưa được định danh** (H3 — Phase 5). Chỉ trỏ vào thư mục bạn chủ đích chia sẻ; không có mặc định, cổng đóng khi cờ vắng mặt.
 
 ---
 
@@ -105,6 +109,8 @@ AGENT_ID=agent-myhost-01
 SERVER=wss://your-domain.com/api/ws/agent
 CREDENTIAL=ag_0123456789abcdef0123456789abcdef
 STUN=stun:stun.l.google.com:19302
+# Tùy chọn: mở cổng files. Bỏ trống = cổng đóng (mặc định an toàn).
+# AGENT_FILES_ROOT=/srv/ponter-files
 RUST_LOG=info
 ```
 

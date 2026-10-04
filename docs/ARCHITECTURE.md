@@ -1002,7 +1002,21 @@ gantt
 
 ### Phase 4: File Transfer (Tuần 10-11)
 
-> **Chưa thiết kế.** Mục này được giữ chỗ để lộ trình không nhảy cóc từ Phase 3 sang Phase 5; nội dung chi tiết sẽ bổ sung khi có spec riêng.
+> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming, hiệu năng) **chưa bắt đầu**.
+
+#### Tuần 10: File Transfer — lát cắt mỏng (đã xong)
+
+- [x] Chế độ session thứ ba `Files` với channel label `files` — `classify_offer` thứ tự terminal → desktop → files (ADR-31)
+- [x] Cổng từ chối tại offer: không có `--files-root` (hoặc root không dùng được) ⇒ trả lời `approved: false`, đóng peer, không mở session — mặc định TẮT, chỉ mở bằng cờ cục bộ (ADR-32)
+- [x] Sandbox một root canonicalize + prefix check; wire path POSIX-relative; upload qua `{name}.ponter-part` + atomic rename, từ chối ghi đè `FILE_EXISTS` (ADR-33)
+- [x] Giao thức chunk 32 KiB + base64 dưới trần frame 64 KiB; cửa sổ trượt 16 chunk với ack tích luỹ; timeout 30 s; một transfer mỗi chiều (ADR-34)
+- [x] Web — tab `files` (FilesView: breadcrumb, danh sách, tải xuống khi click, upload vào thư mục hiện tại, tiến độ + huỷ, banner lỗi), độc quyền ba chiều theo agent (ADR-14)
+- [x] E2E cross-language (`files.e2e.test.ts`) — list, download byte-equal, upload byte-equal, huỷ giữa chừng, path escape, cổng đóng, ghi đè, upload khai báo quá cỡ
+- [x] Server **không đổi** — không cột, không endpoint, không migration (ADR-35)
+
+> Tuần 11 (file lớn, streaming xuống đĩa, hiệu năng) **chưa bắt đầu** — mục Phase 4 không được đánh dấu hoàn thành.
+
+> **Cổng files là trạng thái tạm, không phải bản vá bảo mật.** Peer chưa được định danh (H3); `approved` chưa được enforce (H2); traffic file chỉ được bảo vệ bởi DTLS (H11/M7/M8). Cổng giữ *hệ quả* (file access trên peer chưa xác minh) khỏi mặc định, nhưng các finding còn nguyên — đóng bởi **WS1/WS2/WS3** (Phase 5). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md` và spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
 
 ### Phase 5: E2EE & Security & Polish (Tuần 12-14)
 
@@ -1144,7 +1158,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
 | Terminal Latency | < 10ms | P2P DataChannel |
 | Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
 | Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt |
-| File Transfer | > 10MB/s | Parallel chunks |
+| File Transfer | > 10MB/s | Parallel chunks — **phạm vi Tuần 11, CHƯA đo** (Tuần 10 chỉ chạy đơn luồng tuần tự; số đo stopwatch trong demo là quan sát phi chính thức, không phải tiêu chí nghiệm thu) |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |
 | Bundle Size | < 5MB | Tree-shaking |
