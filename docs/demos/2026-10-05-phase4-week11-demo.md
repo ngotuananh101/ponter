@@ -125,11 +125,10 @@ From the Files tab toolbar/row actions:
 - **Expected:** `files-rename` frame sent with `oldPath`/`newPath`. Because the typed name is used as-is (no path join — `onRenameConfirm` sends `name`, the exact text typed), the renamed file becomes **`hello-renamed.1k`** (not `hello-renamed.1k.bin`). No overwrite ever — if the new name already exists, the agent returns `FILE_EXISTS`.
 
 **(c) Delete a file** — select `hello-renamed.1k` → **Delete** → confirm.
-- **Expected:** a `DeleteConfirmDialog` appears; confirming emits `files-delete` with `recursive: true` (the dialog always sends `recursive = isDirectory`, so a file delete carries `recursive: true` as well); the file is removed and the listing refreshes. (Via the raw API without the dialog, deleting a non-empty directory without `recursive: true` returns `DIR_NOT_EMPTY`.)
+- **Expected:** a `DeleteConfirmDialog` appears; confirming emits `files-delete` with `recursive = isDirectory` (a **directory** delete carries `recursive: true`; a **file** delete carries `recursive: false`, since `isDirectory` is `false` for files — `DeleteConfirmDialog.vue:36`); the file is removed and the listing refreshes. (Via the raw API without the dialog, deleting a non-empty directory without `recursive: true` returns `DIR_NOT_EMPTY`.)
 
 **(d) Delete a non-empty directory** — select `archive/` (seed it with one file first) → **Delete** → confirm the recursive dialog.
 - **Expected:** the `DeleteConfirmDialog` confirm emits `files-delete` with `recursive: true`; the directory is removed. Without the confirm / without `recursive: true` (API path), the agent returns `DIR_NOT_EMPTY`.
-- **Expected (root refusal):** attempting to delete the root (`path == ""`) is rejected with `PERMISSION_DENIED` — the root itself can never be deleted or renamed.
 - **Expected (root refusal):** attempting to delete the root (`path == ""`) is rejected with `PERMISSION_DENIED` — the root itself can never be deleted or renamed.
 
 All of (a)–(d) are confined to `/tmp/ponter-demo-files`; `..` traversal and symlink escapes are canonicalized+prefix-checked and rejected.
@@ -163,7 +162,7 @@ Pick a large file (e.g. a ~200 MB fixture in the sandbox) and click download.
   - `Content-Disposition: attachment; filename="<filename>"`
   - `Content-Type: application/octet-stream`
   - `Content-Length` is **omitted**: the writer is constructed with `size: 0`
-    (`terminal.ts:1311`) and `initDownloadStream(..., 0, port2)` (`terminal.ts:1330`),
+    (`terminal.ts:1256`) and `initDownloadStream(..., 0, port2)` (`terminal.ts:1279`),
     so the SW only sets `Content-Length` when `size > 0`
     (`sw-files-download.js:66-68`) — which is never the case here.
 - Incoming binary download chunks (`0x01` frames) are forwarded over a `MessageChannel` `MessagePort` to the stream controller, which pipes to the native OS save dialog. The browser writes straight to disk — **tab memory stays flat**, not proportional to file size.

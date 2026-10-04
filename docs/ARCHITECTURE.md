@@ -1002,7 +1002,7 @@ gantt
 
 ### Phase 4: File Transfer (Tuần 10-11)
 
-> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming xuống đĩa, hàng đợi truyền, dừng/tiếp tục, giao thức nhị phân lai ca tốc độ >10 MB/s) **hoàn thành** — streaming nhị phân lai (HDR 25 byte, payload 32 KiB), cửa sổ trượt 64 chunk, SW stream xuống đĩa, hàng đợi 1 up + 1 down với pause/resume `.ponter-part`, và phép toán sandbox `mkdir`/`delete`/`rename`.
+> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming xuống đĩa, hàng đợi truyền, dừng/tiếp tục, giao thức nhị phân lai tốc độ cao >10 MB/s) **hoàn thành** — streaming nhị phân lai (HDR 25 byte, payload 32 KiB), cửa sổ trượt 64 chunk, SW stream xuống đĩa, hàng đợi 1 up + 1 down với pause/resume `.ponter-part`, và phép toán sandbox `mkdir`/`delete`/`rename`.
 
 #### Tuần 10: File Transfer — lát cắt mỏng (đã xong)
 
