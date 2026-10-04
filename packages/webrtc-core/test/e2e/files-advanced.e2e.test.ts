@@ -10,7 +10,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { PeerConnection } from '../../src/connection';
 import { RESTPollingTransport } from '../../src/transport';
@@ -31,6 +30,9 @@ import {
   type FilesFrame,
   FILE_CHUNK_BYTES,
   WINDOW,
+  sha256Hex,
+  assembleDownload,
+  drainDownload,
 } from './harness';
 import type {
   FilesAckMessage,
@@ -52,11 +54,6 @@ import {
   BINARY_TYPE_DOWNLOAD_CHUNK,
   BINARY_TYPE_UPLOAD_CHUNK,
 } from '@ponter/shared';
-
-/** SHA-256 hex digest of a Buffer. */
-function sha256Hex(buf: Buffer): string {
-  return createHash('sha256').update(buf).digest('hex');
-}
 
 /**
  * Layer 3 advanced E2E: the Week 11 file-transfer features against the real
@@ -136,64 +133,6 @@ describe.skipIf(!isLinux)('files advanced E2E', () => {
       sendRawChunk: (type, transferId, chunkIndex, data) =>
         sendRaw(offerer, packBinary(type, transferId, chunkIndex, data)),
     };
-  }
-
-  /** Reassemble downloaded binary chunks for a transfer into a Buffer. */
-  function assembleDownload(
-    binaryFrames: Uint8Array[],
-    transferId: string,
-  ): Buffer {
-    const chunks = new Map<number, Buffer>();
-    for (const frame of binaryFrames) {
-      const decoded = unpackBinary(frame);
-      if (
-        decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
-        decoded.transferId === transferId
-      ) {
-        chunks.set(decoded.chunkIndex, Buffer.from(decoded.data));
-      }
-    }
-    return Buffer.concat(
-      [...chunks.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b),
-    );
-  }
-
-  /** Drive a download to completion, acking by contiguous count (ADR-37). */
-  async function drainDownload(
-    binaryFrames: Uint8Array[],
-    transferId: string,
-    totalChunks: number,
-    sendAck: (nextChunkIndex: number) => void,
-    timeoutMs = 60_000,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    const chunks = new Set<number>();
-    let cursor = 0;
-    let lastAcked = 0;
-    while (chunks.size < totalChunks && Date.now() < deadline) {
-      for (let i = cursor; i < binaryFrames.length; i++) {
-        const frame = binaryFrames[i];
-        if (!frame) continue;
-        const decoded = unpackBinary(frame);
-        if (
-          decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
-          decoded.transferId === transferId
-        ) {
-          chunks.add(decoded.chunkIndex);
-        }
-      }
-      cursor = binaryFrames.length;
-      let contiguous = 0;
-      while (chunks.has(contiguous)) contiguous++;
-      // Only re-ack when the contiguous frontier advances (avoids re-sending
-      // the same ack every iteration).
-      if (contiguous > lastAcked) {
-        lastAcked = contiguous;
-        sendAck(contiguous);
-      }
-      if (chunks.size < totalChunks) await delay(0);
-    }
-    expect(chunks.size).toBe(totalChunks);
   }
 
   it('binary framing: header fields exact, payload length exact, UUID round-trips', async () => {
@@ -569,6 +508,9 @@ describe.skipIf(!isLinux)('files advanced E2E', () => {
       // The final file matches the payload byte-for-byte and no .part remains.
       expect(Buffer.compare(readFileSync(join(rootDir, name)), payload)).toBe(
         0,
+      );
+      expect(sha256Hex(readFileSync(join(rootDir, name)))).toBe(
+        sha256Hex(payload),
       );
       expect(existsSync(join(rootDir, `${name}.ponter-part`))).toBe(false);
     } finally {

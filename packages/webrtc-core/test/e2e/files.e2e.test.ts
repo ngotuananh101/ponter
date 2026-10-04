@@ -31,6 +31,9 @@ import {
   type FilesFrame,
   FILE_CHUNK_BYTES,
   WINDOW,
+  sha256Hex,
+  assembleDownload,
+  drainDownload,
 } from './harness';
 import type {
   FilesAckMessage,
@@ -134,67 +137,6 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
     };
   }
 
-  /** Reassemble downloaded chunks (binary 0x01) into a single Buffer. */
-  function assembleDownload(
-    binaryFrames: Uint8Array[],
-    transferId: string,
-  ): Buffer {
-    const chunks = new Map<number, Buffer>();
-    for (const frame of binaryFrames) {
-      const decoded = unpackBinary(frame);
-      if (
-        decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
-        decoded.transferId === transferId
-      ) {
-        chunks.set(decoded.chunkIndex, Buffer.from(decoded.data));
-      }
-    }
-    return Buffer.concat(
-      [...chunks.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b),
-    );
-  }
-
-  /** Drive downloads: ack every batch of binary chunks, waiting for
-   * nextChunkIndex to reach `target` (ADR-37 ack semantics). */
-  async function drainDownload(
-    binaryFrames: Uint8Array[],
-    transferId: string,
-    totalChunks: number,
-    sendAck: (nextChunkIndex: number) => void,
-    timeoutMs = 60_000,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    const chunks = new Set<number>();
-    let cursor = 0;
-    let lastAcked = 0;
-    // Seed the window: the agent pumps the initial WINDOW (0..63) up front, so
-    // ack each one as it arrives and keep the pump draining.
-    while (chunks.size < totalChunks && Date.now() < deadline) {
-      for (let i = cursor; i < binaryFrames.length; i++) {
-        const frame = binaryFrames[i];
-        if (!frame) continue;
-        const decoded = unpackBinary(frame);
-        if (
-          decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
-          decoded.transferId === transferId
-        ) {
-          chunks.add(decoded.chunkIndex);
-        }
-      }
-      cursor = binaryFrames.length;
-      // Ack up to the highest contiguous chunk received so far.
-      let contiguous = 0;
-      while (chunks.has(contiguous)) contiguous++;
-      // Only re-ack when the contiguous frontier advances.
-      if (contiguous > lastAcked) {
-        lastAcked = contiguous;
-        sendAck(contiguous);
-      }
-      if (chunks.size < totalChunks) await delay(0);
-    }
-    expect(chunks.size).toBe(totalChunks);
-  }
-
   it('lists the seeded directory with sizes and types', async () => {
     const { offerer, frames, send } = await connectFilesAgent();
     try {
@@ -269,6 +211,9 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
       expect(
         Buffer.compare(assembled, readFileSync(join(rootDir, 'big.bin'))),
       ).toBe(0);
+      expect(sha256Hex(assembled)).toBe(
+        sha256Hex(readFileSync(join(rootDir, 'big.bin'))),
+      );
     } finally {
       await offerer.close();
     }
@@ -340,6 +285,9 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
       expect(
         Buffer.compare(readFileSync(join(rootDir, 'uploaded.bin')), payload),
       ).toBe(0);
+      expect(sha256Hex(readFileSync(join(rootDir, 'uploaded.bin')))).toBe(
+        sha256Hex(payload),
+      );
       expect(existsSync(join(rootDir, 'uploaded.bin.ponter-part'))).toBe(false);
     } finally {
       await offerer.close();

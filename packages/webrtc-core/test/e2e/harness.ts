@@ -1,4 +1,5 @@
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,7 @@ import { PeerConnection } from '../../src/connection';
 import { WeriftAdapter } from '../../src/adapters/werift';
 import { RESTPollingTransport } from '../../src/transport';
 import type { SignalTransport } from '../../src/types';
-import { BINARY_HEADER_LEN } from '@ponter/shared';
+import { BINARY_HEADER_LEN, BINARY_TYPE_DOWNLOAD_CHUNK } from '@ponter/shared';
 import type {
   DataChannelMessage,
   TerminalCreateMessage,
@@ -820,4 +821,71 @@ export async function waitForBinaryFrame(
     );
   }
   return match;
+}
+
+/** SHA-256 hex digest of a Buffer. */
+export function sha256Hex(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * Reassemble downloaded binary chunk frames (ADR-36 type 0x01) for a single
+ * transfer into a contiguous Buffer, ordered by chunk index.
+ */
+export function assembleDownload(
+  binaryFrames: Uint8Array[],
+  transferId: string,
+): Buffer {
+  const chunks = new Map<number, Buffer>();
+  for (const frame of binaryFrames) {
+    const decoded = unpackBinary(frame);
+    if (
+      decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
+      decoded.transferId === transferId
+    ) {
+      chunks.set(decoded.chunkIndex, Buffer.from(decoded.data));
+    }
+  }
+  return Buffer.concat(
+    [...chunks.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b),
+  );
+}
+
+/**
+ * Drive a download to completion by acking contiguous chunk frontiers
+ * (ADR-37), waiting until `totalChunks` distinct chunks have been observed.
+ */
+export async function drainDownload(
+  binaryFrames: Uint8Array[],
+  transferId: string,
+  totalChunks: number,
+  sendAck: (nextChunkIndex: number) => void,
+  timeoutMs = 60_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const chunks = new Set<number>();
+  let cursor = 0;
+  let lastAcked = 0;
+  while (chunks.size < totalChunks && Date.now() < deadline) {
+    for (let i = cursor; i < binaryFrames.length; i++) {
+      const frame = binaryFrames[i];
+      if (!frame) continue;
+      const decoded = unpackBinary(frame);
+      if (
+        decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
+        decoded.transferId === transferId
+      ) {
+        chunks.add(decoded.chunkIndex);
+      }
+    }
+    cursor = binaryFrames.length;
+    let contiguous = 0;
+    while (chunks.has(contiguous)) contiguous++;
+    if (contiguous > lastAcked) {
+      lastAcked = contiguous;
+      sendAck(contiguous);
+    }
+    if (chunks.size < totalChunks) await delay(0);
+  }
+  expect(chunks.size).toBe(totalChunks);
 }
