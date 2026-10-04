@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { LoginResponse } from '@ponter/shared';
+import type { LoginResponse, RegisterResponse } from '@ponter/shared';
 
 export interface RegisterInput {
   username: string;
@@ -11,8 +11,8 @@ export interface RegisterInput {
 export class AuthResource {
   constructor(private readonly http: HttpClient) {}
 
-  async register(input: RegisterInput): Promise<LoginResponse> {
-    const res = await this.http.request<LoginResponse>(
+  async register(input: RegisterInput): Promise<RegisterResponse> {
+    const res = await this.http.request<RegisterResponse>(
       'POST',
       '/api/auth/register',
       {
@@ -20,10 +20,12 @@ export class AuthResource {
         auth: false,
       },
     );
-    await this.http.storage.setTokens({
-      accessToken: res.token,
-      refreshToken: res.refreshToken,
-    });
+    if (res.token && res.refreshToken) {
+      await this.http.storage.setTokens({
+        accessToken: res.token,
+        refreshToken: res.refreshToken,
+      });
+    }
     return res;
   }
 

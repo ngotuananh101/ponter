@@ -3,6 +3,7 @@ import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import RegisterForm from '@/components/auth/RegisterForm.vue';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -18,6 +19,10 @@ async function handleRegister(payload: {
 }) {
   try {
     await authStore.register(payload);
+    // When registration requires admin approval, the store sets user to null.
+    if (authStore.user === null) {
+      return; // Show the pending-approval confirmation below
+    }
     router.push('/dashboard');
   } catch {
     // Error state is captured in store
@@ -34,5 +39,16 @@ async function handleRegister(payload: {
       :error-message="authStore.error"
       @submit="handleRegister"
     />
+    <!-- Pending-approval confirmation (requiresApproval is set by the store on a pending registration) -->
+    <Alert
+      v-if="authStore.requiresApproval"
+      variant="default"
+      class="mt-4 max-w-md border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/30"
+    >
+      <AlertDescription class="text-xs text-emerald-800 dark:text-emerald-200">
+        Đăng ký thành công! Tài khoản của bạn đang chờ Quản trị viên phê duyệt
+        trước khi có thể đăng nhập.
+      </AlertDescription>
+    </Alert>
   </div>
 </template>

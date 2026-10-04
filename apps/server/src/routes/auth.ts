@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import type { AppContext } from '../types.js';
 import { users, revokedTokens } from '../db/schema.js';
-import { eq, or } from 'drizzle-orm';
+import { eq, or, count } from 'drizzle-orm';
 import { hashPassword, verifyPassword } from '../utils/crypto.js';
+import { getSystemSettings } from '../utils/settings.js';
 import {
   signAccessToken,
   signRefreshToken,
@@ -58,6 +59,8 @@ auth.post('/register', async (c) => {
   // Trim before validating so a username of only whitespace cannot slip past
   // the length check, and so uniqueness compares the stored value exactly.
   const username = body.username.trim();
+  const publicKey = body.publicKey;
+  const password = body.password;
 
   if (username.length < MIN_USERNAME_LENGTH) {
     throw new AppError(
@@ -67,7 +70,7 @@ auth.post('/register', async (c) => {
     );
   }
 
-  if (body.password.length < MIN_PASSWORD_LENGTH) {
+  if (password.length < MIN_PASSWORD_LENGTH) {
     throw new AppError(
       'Password must be at least 8 characters',
       400,
@@ -76,6 +79,16 @@ auth.post('/register', async (c) => {
   }
 
   const db = c.get('db');
+
+  // Enforce the registration gate before creating any user.
+  const settings = await getSystemSettings(db);
+  if (!settings.allowRegistration) {
+    throw new AppError(
+      'Registration is currently disabled',
+      403,
+      'REGISTRATION_DISABLED',
+    );
+  }
 
   // Check username or email uniqueness
   const conditions = [eq(users.username, username)];
@@ -95,23 +108,71 @@ auth.post('/register', async (c) => {
     throw new AppError('Email already registered', 409, 'EMAIL_EXISTS');
   }
 
-  const passwordHash = await hashPassword(body.password);
-  const userId = crypto.randomUUID();
+  const passwordHash = await hashPassword(password);
 
-  const [newUser] = await db
-    .insert(users)
-    .values({
-      id: userId,
-      username,
-      email: body.email ?? null,
-      publicKey: body.publicKey,
-      passwordHash,
-      isActive: true,
-    })
-    .returning();
+  // Bootstrap logic: the very first registered user becomes an approved admin;
+  // every subsequent user is a regular user whose approval status is governed by
+  // the `autoApproveUsers` setting (default: pending manual approval).
+  //
+  // The count check and insert are wrapped in a transaction so that concurrent
+  // registrations cannot both observe zero users and both bootstrap as admin.
+  // better-sqlite3 transactions are synchronous and SQLite acquires an exclusive
+  // write lock, making this race-free.
+  const { newUser, approvalStatus } = db.transaction((tx) => {
+    const userCountRow = tx.select({ value: count() }).from(users).get();
+    const isFirstUser = userCountRow?.value === 0;
 
-  if (!newUser) {
-    throw new AppError('Failed to create user', 500, 'DATABASE_ERROR');
+    let role: 'admin' | 'user';
+    let status: 'pending' | 'approved' | 'rejected';
+    if (isFirstUser) {
+      role = 'admin';
+      status = 'approved';
+    } else {
+      role = 'user';
+      // TEST-ONLY escape hatch for E2E: when E2E_AUTO_APPROVE_USERS='true' is
+      // set in the environment, treat auto-approve as on for this registration.
+      // This does NOT affect the admin UI / production default (getSystemSettings
+      // still returns autoApproveUsers=false by default); it is read here only.
+      const e2eAutoApprove = process.env.E2E_AUTO_APPROVE_USERS === 'true';
+      status =
+        settings.autoApproveUsers || e2eAutoApprove ? 'approved' : 'pending';
+    }
+
+    // In a sync transaction, `.returning()` yields a QueryPromise that cannot
+    // be awaited; `.all()` executes it synchronously and returns the result rows.
+    const createdResults = tx
+      .insert(users)
+      .values({
+        username,
+        email: body.email ? body.email : null,
+        publicKey,
+        passwordHash,
+        isActive: true,
+        role,
+        approvalStatus: status,
+      })
+      .returning()
+      .all();
+    const created = createdResults[0];
+
+    if (!created) {
+      throw new AppError('Failed to create user', 500, 'DATABASE_ERROR');
+    }
+
+    return { newUser: created, approvalStatus: status };
+  });
+
+  // Pending users cannot receive tokens — they must wait for admin approval.
+  if (approvalStatus === 'pending') {
+    return c.json(
+      {
+        user: toPublicUser(newUser),
+        requiresApproval: true,
+        message:
+          'Registration successful. Your account is pending administrator approval.',
+      },
+      201,
+    );
   }
 
   const ttl = getAccessTokenTtl();
@@ -130,6 +191,7 @@ auth.post('/register', async (c) => {
   return c.json(
     {
       user: toPublicUser(newUser),
+      requiresApproval: false,
       token,
       refreshToken,
       expiresIn: exp - Math.floor(Date.now() / 1000),
@@ -178,6 +240,20 @@ auth.post('/login', async (c) => {
     );
   }
 
+  if (user.approvalStatus === 'pending') {
+    throw new AppError(
+      'Your account is pending administrator approval',
+      403,
+      'USER_PENDING_APPROVAL',
+    );
+  }
+  if (user.approvalStatus === 'rejected') {
+    throw new AppError(
+      'Your account registration was rejected',
+      403,
+      'USER_REJECTED',
+    );
+  }
   if (!user.isActive) {
     throw new AppError('User account is inactive', 401, 'ACCOUNT_INACTIVE');
   }

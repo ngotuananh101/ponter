@@ -499,6 +499,8 @@ CREATE TABLE IF NOT EXISTS users (
     public_key TEXT NOT NULL,
     password_hash TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
+    role TEXT NOT NULL DEFAULT 'user',
+    approval_status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_login_at TEXT,
@@ -567,6 +569,13 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
     jti TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- System Settings (key-value runtime toggles)
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Indexes
@@ -648,9 +657,49 @@ GET    /api/ws/agent               # Agent WebSocket (Bearer ag_ credential, not
 # Browser WebSocket signaling
 POST   /api/ws/ticket              # Mint one-time WS ticket (Bearer JWT, TTL 15s)
 GET    /api/ws/browser?ticket=...  # Browser signaling socket (subscribe/replay/push)
+
+# Admin (all routes require Bearer JWT with role='admin'; others get 403)
+GET    /api/admin/stats            # System telemetry (users/agents/sessions counts)
+GET    /api/admin/users            # List users (status/search/page/limit filters)
+PATCH  /api/admin/users/:id        # Update role/approvalStatus/isActive (last-admin guard)
+GET    /api/admin/settings         # Read runtime system settings
+PUT    /api/admin/settings         # Update runtime system settings
 ```
 
-### 6.3 Agent WebSocket Protocol
+### 6.3 Admin Management, RBAC & Approval Workflow
+
+**Role-based access control.** `users.role` is `'admin'` or `'user'`. Every route under
+`/api/admin/*` passes through `adminMiddleware` (`apps/server/src/middleware/admin.ts`),
+which returns strict `403` with no data exposure for non-admin or unapproved callers.
+
+**Approval workflow.** `users.approval_status` is `'pending'` | `'approved'` | `'rejected'`.
+New registrations default to `pending` and receive **no** access/refresh tokens until an
+admin approves them; `/api/auth/login` returns `403 USER_PENDING_APPROVAL` /
+`USER_REJECTED` for non-approved accounts. The **first** registered user is bootstrapped
+atomically inside a transaction as `role='admin', approval_status='approved'`.
+
+**Safety invariants** (enforced server-side):
+- An admin cannot demote or deactivate their own account when they are the last active
+  admin — the PATCH endpoint returns `400 LAST_ADMIN_PROTECTED`.
+- An admin cannot deactivate their own account.
+- Login verifies the password **before** checking approval/active status, so an
+  unauthenticated attacker cannot enumerate usernames or account states.
+
+**Runtime system settings** (`system_settings` key-value table, surfaced by
+`getSystemSettings`/`updateSystemSettings` in `apps/server/src/utils/settings.ts`):
+
+| Key | Default | Effect |
+|---|---|---|
+| `allow_registration` | `true` | When `false`, `/api/auth/register` returns `403 REGISTRATION_DISABLED` without creating a user or hashing a password. |
+| `auto_approve_users` | `false` | When `true`, a new (non-first) registration is created as `approved` immediately; when `false` it starts `pending` and needs admin approval. |
+| `max_agents_per_user` | `10` | Maximum agents a single user may register. |
+
+**Web UI.** `/admin` (`apps/web/src/views/AdminView.vue`) is guarded by a
+`requiresAdmin` router guard and renders a 3-tab cockpit: Overview (telemetry),
+Users (approve/reject, promote/demote, activate/deactivate), and Settings. The
+`Admin` nav link in `AppHeader` is shown only to admins.
+
+### 6.4 Agent WebSocket Protocol
 
 ```typescript
 // packages/shared/src/types/signaling.ts
@@ -683,7 +732,7 @@ export type AgentErrorCode =
 - WebSocket handshake enforces tenancy: `session.userId == agent.userId` AND `session.agentId == agent.id`
 - Unauthenticated requests receive HTTP 401 before upgrade completes
 
-### 6.4 Browser WebSocket Protocol
+### 6.5 Browser WebSocket Protocol
 
 ```typescript
 // packages/shared/src/types/signaling.ts

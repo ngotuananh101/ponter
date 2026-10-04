@@ -35,6 +35,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/admin',
+    name: 'admin',
+    component: () => import('@/views/AdminView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
@@ -63,6 +69,10 @@ router.beforeEach(async (to, _from) => {
   }
 
   if (to.meta.requiresAuth === false && isAuth) {
+    return { path: '/dashboard' };
+  }
+
+  if (to.meta.requiresAdmin && authStore.user?.role !== 'admin') {
     return { path: '/dashboard' };
   }
 

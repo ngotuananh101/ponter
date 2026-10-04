@@ -120,5 +120,13 @@ export async function verifyTokenForUser(
     throw reject(failures.inactive);
   }
 
+  // A user whose approvalStatus is no longer 'approved' (e.g. admin set to
+  // 'rejected') must be denied, even if they were approved when the token was
+  // issued. Reuses the caller's `inactive` failure so the 401 shape and code
+  // stay stable across both call sites (authMiddleware + refresh endpoint).
+  if (user.approvalStatus !== 'approved') {
+    throw reject(failures.inactive);
+  }
+
   return { payload, user };
 }

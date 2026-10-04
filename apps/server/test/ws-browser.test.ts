@@ -5,6 +5,7 @@ import {
 } from '../src/index.js';
 import type { SignalingServerOptions } from '../src/index.js';
 import { getDb, closeDb } from '../src/db/client.js';
+import { updateSystemSettings } from '../src/utils/settings.js';
 import {
   agentConnections,
   browserConnections,
@@ -260,7 +261,11 @@ describe('browser WS ticket endpoint', () => {
   let userId: string;
 
   beforeEach(async () => {
-    getDb(':memory:');
+    closeDb();
+    const db = getDb(':memory:');
+    // Auto-approve users so registered users receive tokens without a separate
+    // approval step (pre-approval-flow behaviour expected by these tests).
+    await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token, userId } = await registerUser(app, 'tester'));
   });
@@ -342,7 +347,9 @@ describe('browser WS upgrade', () => {
   let token: string;
 
   beforeEach(async () => {
-    getDb(':memory:');
+    closeDb();
+    const db = getDb(':memory:');
+    await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token } = await registerUser(app, 'tester'));
   });
@@ -466,7 +473,9 @@ describe('browser subscribe + replay', () => {
   let sessionId: string;
 
   beforeEach(async () => {
+    closeDb();
     db = getDb(':memory:');
+    await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token, userId } = await registerUser(app, 'tester'));
     ({ agentId } = await registerAgent(app, token, 'agent_sub_1'));
@@ -720,7 +729,9 @@ describe('browser live push', () => {
   let sessionId: string;
 
   beforeEach(async () => {
+    closeDb();
     db = getDb(':memory:');
+    await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token } = await registerUser(app, 'tester'));
     ({ agentId, credential } = await registerAgent(app, token, 'agent_push_1'));
@@ -916,7 +927,9 @@ describe('SESSION_TERMINATED notification', () => {
   let sessionId: string;
 
   beforeEach(async () => {
-    getDb(':memory:');
+    closeDb();
+    const db = getDb(':memory:');
+    await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token } = await registerUser(app, 'tester'));
     ({ agentId, credential } = await registerAgent(app, token, 'agent_term_1'));
@@ -969,7 +982,9 @@ describe('browser keepalive and lifecycle', () => {
   let credential: string;
 
   beforeEach(async () => {
-    getDb(':memory:');
+    closeDb();
+    const db = getDb(':memory:');
+    await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token } = await registerUser(app, 'tester'));
     ({ credential } = await registerAgent(app, token, 'agent_ka_1'));

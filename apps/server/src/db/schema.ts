@@ -10,6 +10,8 @@ export const users = sqliteTable('users', {
   publicKey: text('public_key').notNull(),
   passwordHash: text('password_hash'),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  role: text('role').notNull().default('user'),
+  approvalStatus: text('approval_status').notNull().default('pending'),
   createdAt: text('created_at')
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -118,6 +120,14 @@ export const revokedTokens = sqliteTable(
   },
   (table) => [index('idx_revoked_tokens_expires').on(table.expiresAt)],
 );
+
+export const systemSettings = sqliteTable('system_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: text('updated_at')
+    .notNull()
+    .default(sql`(datetime('now'))`),
+});
 
 export type UserSelect = typeof users.$inferSelect;
 export type UserInsert = typeof users.$inferInsert;

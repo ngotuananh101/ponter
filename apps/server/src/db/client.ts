@@ -18,6 +18,8 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
       public_key TEXT NOT NULL,
       password_hash TEXT,
       is_active INTEGER NOT NULL DEFAULT 1,
+      role TEXT NOT NULL DEFAULT 'user',
+      approval_status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_login_at TEXT,
@@ -85,9 +87,27 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
 
     CREATE INDEX IF NOT EXISTS signals_session_created_idx ON signals(session_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
+
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `;
 
   sqlite.exec(createTables);
+
+  // Migration: add role and approval_status columns to existing users tables
+  try {
+    sqlite.exec(`
+      ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';
+    `);
+  } catch {}
+  try {
+    sqlite.exec(`
+      ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'pending';
+    `);
+  } catch {}
 }
 
 /**

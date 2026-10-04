@@ -24,3 +24,12 @@ export interface RegisterRequest {
   password: string;
   publicKey: string;
 }
+
+export interface RegisterResponse {
+  user: User;
+  token?: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  requiresApproval?: boolean;
+  message?: string;
+}

@@ -178,4 +178,51 @@ describe('Auth Store (Pinia)', () => {
     expect(store.status).toBe('idle');
     expect(await tokenStorage.getAccessToken()).toBeNull();
   });
+
+  it('9. register with 409/403 rejection leaves requiresApproval false and sets error', async () => {
+    const store = useAuthStore();
+    vi.mocked(cryptoPkg.generateUserKeyPair).mockResolvedValue({
+      publicKeySpkiBase64: 'pk',
+      privateKey: {} as CryptoKey,
+      publicKey: {} as CryptoKey,
+    });
+
+    vi.spyOn(apiClient.auth, 'register').mockRejectedValue(
+      new Error('Username already taken'),
+    );
+
+    await expect(
+      store.register({ username: 'dup', password: 'password123' }),
+    ).rejects.toThrow('Username already taken');
+
+    expect(store.requiresApproval).toBe(false);
+    expect(store.error).toBe('Username already taken');
+    expect(store.user).toBeNull();
+  });
+
+  it('10. register with requiresApproval sets flag and clears error (no success banner)', async () => {
+    const store = useAuthStore();
+    vi.mocked(cryptoPkg.generateUserKeyPair).mockResolvedValue({
+      publicKeySpkiBase64: 'pk',
+      privateKey: {} as CryptoKey,
+      publicKey: {} as CryptoKey,
+    });
+
+    vi.spyOn(apiClient.auth, 'register').mockResolvedValue({
+      user: { id: 'u-pending', username: 'newuser' } as unknown as User,
+      requiresApproval: true,
+      message:
+        'Registration successful. Your account is pending administrator approval.',
+    });
+
+    vi.spyOn(cryptoPkg, 'savePrivateKey').mockResolvedValue();
+
+    await store.register({ username: 'newuser', password: 'password123' });
+
+    expect(store.requiresApproval).toBe(true);
+    expect(store.error).toBeNull();
+    expect(store.user).toBeNull();
+    expect(store.status).toBe('idle');
+    expect(cryptoPkg.savePrivateKey).not.toHaveBeenCalled();
+  });
 });
