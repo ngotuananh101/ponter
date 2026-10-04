@@ -617,3 +617,73 @@ export async function waitForTerminalOutput(
 
   return decoded;
 }
+
+/** A frame on the `files` channel, as received by the offerer. */
+export type FilesFrame = DataChannelMessage<Record<string, unknown>>;
+
+/**
+ * Create and start a PeerConnection with the 'files' channel (spec §8.3),
+ * buffering received frames. Mirrors `openTerminalPeer`.
+ */
+export async function openFilesPeer(transport: SignalTransport): Promise<{
+  offerer: PeerConnection;
+  frames: FilesFrame[];
+}> {
+  const offerer = new PeerConnection(
+    new WeriftAdapter({ iceServers: [] }),
+    transport,
+    { role: 'offerer', channelLabels: ['files'], capabilities: ['files'] },
+  );
+
+  const frames: FilesFrame[] = [];
+  offerer.dataChannels.onMessage<Record<string, unknown>>('files', (msg) => {
+    frames.push(msg);
+  });
+
+  try {
+    await offerer.start();
+    const channel = await offerer.waitForChannel('files', 20_000);
+    expect(channel.readyState).toBe('open');
+
+    return { offerer, frames };
+  } catch (err) {
+    const agentLogs = agents
+      .map((a, i) => `=== AGENT #${i} ===\n${a.output()}`)
+      .join('\n');
+    const serverLogs = serverOutput();
+    throw new Error(
+      `${err instanceof Error ? err.message : String(err)}\n` +
+        `--- AGENT LOGS ---\n${agentLogs}\n` +
+        `--- SERVER LOGS ---\n${serverLogs}`,
+    );
+  }
+}
+
+/**
+ * Poll `frames` until `predicate` matches one, and fail with `description`
+ * (plus the last frames seen) after `timeoutMs`. The shared waiter keeps the
+ * per-test polling blocks out of the suite (Sonar duplication budget).
+ */
+export async function waitForFilesFrame(
+  frames: FilesFrame[],
+  predicate: (frame: FilesFrame) => boolean,
+  description: string,
+  timeoutMs = 15_000,
+): Promise<FilesFrame> {
+  let match: FilesFrame | undefined;
+  const found = await pollUntil(
+    () => {
+      match = frames.find(predicate);
+      return match !== undefined;
+    },
+    timeoutMs,
+    50,
+  );
+  if (!found || !match) {
+    throw new Error(
+      `timed out after ${timeoutMs}ms waiting for ${description}\n` +
+        `--- frames seen ---\n${frames.map((f) => f.type).join('\n')}`,
+    );
+  }
+  return match;
+}
