@@ -214,21 +214,34 @@ describe('WorkspaceView.vue', () => {
     expect(wrapper.text()).toContain('Channel: files (64 KiB buffer)');
   });
 
-  it('shows the error overlay, not the stepper, for a failed files tab', async () => {
+  /** Push an error-status tab and mount the workspace on it, flushing updates. */
+  async function mountErrorTab(
+    id: string,
+    kind: 'files' | 'terminal',
+    error: string,
+  ) {
     const store = useTerminalStore();
     store.tabs.push({
-      id: 'tab-fe',
+      id,
       agentId: 'ag-1',
-      kind: 'files',
+      kind,
       terminalId: '',
       title: 'Host 1',
       status: 'error',
-      error: 'The agent refused this session.',
+      error,
     });
-    store.setActiveTab('tab-fe');
-
+    store.setActiveTab(id);
     const wrapper = mountWorkspace();
     await flushPromises();
+    return wrapper;
+  }
+
+  it('shows the error overlay, not the stepper, for a failed files tab', async () => {
+    const wrapper = await mountErrorTab(
+      'tab-fe',
+      'files',
+      'The agent refused this session.',
+    );
 
     expect(wrapper.text()).toContain('The agent refused this session.');
     expect(wrapper.text()).not.toContain('Connecting to');
@@ -262,20 +275,7 @@ describe('WorkspaceView.vue', () => {
   });
 
   it('shows the error overlay, not the stepper, for a failed terminal tab', async () => {
-    const store = useTerminalStore();
-    store.tabs.push({
-      id: 'tab-e',
-      agentId: 'ag-1',
-      kind: 'terminal',
-      terminalId: '',
-      title: 'Host 1',
-      status: 'error',
-      error: 'no route',
-    });
-    store.setActiveTab('tab-e');
-
-    const wrapper = mountWorkspace();
-    await flushPromises();
+    const wrapper = await mountErrorTab('tab-e', 'terminal', 'no route');
 
     expect(wrapper.text()).toContain('no route');
     expect(wrapper.text()).not.toContain('Connecting to');

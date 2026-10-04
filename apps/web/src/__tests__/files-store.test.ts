@@ -7,6 +7,8 @@ import type { RemoteFile } from '@ponter/shared';
 import type { TransferProgress } from '@ponter/file-core';
 import { saveBlob } from '@/lib/save-blob';
 
+type TerminalStore = ReturnType<typeof useTerminalStore>;
+
 // The store builds a FileClient for every files tab. Mock the module so the
 // test drives `list`/`download`/`upload` deterministically and can assert
 // `dispose` (mirrors the desktop mock in terminal-store.test.ts:24-51).
@@ -209,50 +211,62 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     expect(tab?.error).toMatch(/already has/i);
   });
 
-  it('openTab refuses when a files tab exists (extended guard)', async () => {
-    const { apiClient } = await import('@/services/client');
-    const store = useTerminalStore();
+  /** Seed an active files tab in the store — shared by the guard tests. */
+  function pushFilesTab(
+    store: TerminalStore,
+    agentId: string,
+    title: string,
+  ): void {
     store.tabs.push({
       id: 'tab-f-1',
-      agentId: 'ag-3',
+      agentId,
       kind: 'files',
       terminalId: '',
-      title: 'Host 3',
+      title,
       status: 'active',
       filesPath: '',
       fileList: { path: '', entries: [], truncated: false },
     });
+  }
+
+  /** Assert that `create` was never called and the guard tab landed on 'error'. */
+  function assertGuardRefused(
+    apiClient: { sessions: { create: unknown } },
+    store: TerminalStore,
+    tabId: string,
+    errorPattern: RegExp,
+  ): void {
+    expect(apiClient.sessions.create).not.toHaveBeenCalled();
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.status).toBe('error');
+    expect(tab?.error).toMatch(errorPattern);
+  }
+
+  it('openTab refuses when a files tab exists (extended guard)', async () => {
+    const { apiClient } = await import('@/services/client');
+    const store = useTerminalStore();
+    pushFilesTab(store, 'ag-3', 'Host 3');
     vi.mocked(apiClient.sessions.create).mockClear();
 
     const tabId = await store.openTab('ag-3', 'Host 3');
 
-    expect(apiClient.sessions.create).not.toHaveBeenCalled();
-    const tab = store.tabs.find((t) => t.id === tabId);
-    expect(tab?.status).toBe('error');
-    expect(tab?.error).toMatch(/close the file transfer session/i);
+    assertGuardRefused(
+      apiClient,
+      store,
+      tabId,
+      /close the file transfer session/i,
+    );
   });
 
   it('openDesktopTab refuses when a files tab exists', async () => {
     const { apiClient } = await import('@/services/client');
     const store = useTerminalStore();
-    store.tabs.push({
-      id: 'tab-f-1',
-      agentId: 'ag-4',
-      kind: 'files',
-      terminalId: '',
-      title: 'Host 4',
-      status: 'active',
-      filesPath: '',
-      fileList: { path: '', entries: [], truncated: false },
-    });
+    pushFilesTab(store, 'ag-4', 'Host 4');
     vi.mocked(apiClient.sessions.create).mockClear();
 
     const tabId = await store.openDesktopTab('ag-4', 'Host 4');
 
-    expect(apiClient.sessions.create).not.toHaveBeenCalled();
-    expect(store.tabs.find((t) => t.id === tabId)?.error).toMatch(
-      /already has/i,
-    );
+    assertGuardRefused(apiClient, store, tabId, /already has/i);
   });
 
   it('pushes the tab before the handshake and releases an orphaned connection', async () => {
