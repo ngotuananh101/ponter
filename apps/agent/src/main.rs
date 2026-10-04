@@ -16,6 +16,11 @@ mod desktop;
 // on every target (spec §6.4) — it lives in `Cli`, not in this module.
 #[cfg(not(target_env = "musl"))]
 mod input;
+// Consumed by the files dispatch in Task 7; until then clippy's `dead_code`
+// flags the wire layer (a binary crate has no library root, and test-only
+// uses do not count). Removed in Task 7.
+#[allow(dead_code)]
+mod files;
 mod logging;
 mod pty;
 mod rtc;
