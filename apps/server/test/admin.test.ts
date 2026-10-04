@@ -291,4 +291,30 @@ describe('Admin REST Routes', () => {
     const err = await loginRes.json();
     expect(err.code).toBe('USER_REJECTED');
   });
+
+  it('returns 200 (not 500) for invalid page/limit params', async () => {
+    const app = createApp();
+    const res = await app.request('/api/admin/users?page=abc&limit=xyz', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.users)).toBe(true);
+    expect(typeof body.total).toBe('number');
+  });
+
+  it('rejects maxAgentsPerUser > 100 with 400', async () => {
+    const app = createApp();
+    const res = await app.request('/api/admin/settings', {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ maxAgentsPerUser: 101 }),
+    });
+    expect(res.status).toBe(400);
+    const err = await res.json();
+    expect(err.code).toBe('VALIDATION_ERROR');
+  });
 });

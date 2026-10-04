@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import AdminView from '@/views/AdminView.vue';
 import { apiClient } from '@/services/client';
+import { useAuthStore } from '@/stores/auth';
 import { ApiError } from '@ponter/api-client';
 import type { SystemStats, SystemSettings, User } from '@ponter/shared';
 
@@ -162,5 +163,77 @@ describe('AdminView', () => {
     await flushPromises();
 
     expect(wrapper.text()).not.toContain('boom');
+  });
+
+  it('self-protection: disables all six action buttons on the current admin own row', async () => {
+    // The current admin is u1 (the user in the auth store).
+    const authStore = useAuthStore();
+    authStore.user = makeUser({
+      id: 'u1',
+      username: 'self_admin',
+      role: 'admin',
+    });
+    authStore.status = 'authenticated';
+
+    // u1 is pending + active admin => renders approve, reject, demote, deactivate.
+    vi.spyOn(apiClient.admin, 'getUsers').mockResolvedValue({
+      users: [
+        makeUser({ id: 'u1', username: 'self_admin', role: 'admin' }),
+        makeUser({ id: 'u2', username: 'other_user', role: 'user' }),
+      ],
+      total: 2,
+    });
+
+    const wrapper = mount(AdminView);
+    await flushPromises();
+    await wrapper.find('[data-test="tab-users"]').trigger('click');
+    await flushPromises();
+
+    // Self row (u1): every action button present must be disabled.
+    for (const action of [
+      'approve',
+      'reject',
+      'promote',
+      'demote',
+      'deactivate',
+      'activate',
+    ]) {
+      const btn = wrapper.find(`[data-test="btn-${action}-u1"]`);
+      if (btn.exists()) {
+        expect(btn.attributes('disabled')).toBeDefined();
+      }
+    }
+    // Other-user row (u2): buttons must NOT be disabled.
+    const otherBtn = wrapper.find('[data-test="btn-approve-u2"]');
+    expect(otherBtn.exists()).toBe(true);
+    expect(otherBtn.attributes('disabled')).toBeUndefined();
+  });
+
+  it('quick action: pending banner button switches to users tab with pending filter', async () => {
+    vi.spyOn(apiClient.admin, 'getStats').mockResolvedValue({
+      ...STATS,
+      users: { ...STATS.users, pending: 1 },
+    });
+    const getUsersSpy = vi
+      .spyOn(apiClient.admin, 'getUsers')
+      .mockResolvedValue({ users: [], total: 0 });
+
+    const wrapper = mount(AdminView);
+    await flushPromises();
+
+    // The pending quick-action button should be visible on the overview.
+    const quickAction = wrapper.find('[data-test="pending-quick-action"]');
+    expect(quickAction.exists()).toBe(true);
+
+    await quickAction.trigger('click');
+    await flushPromises();
+
+    // Users tab is now active and getUsers was called with status=pending.
+    expect(wrapper.find('[data-test="tab-users"]').classes()).toContain(
+      'bg-card',
+    );
+    expect(getUsersSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'pending' }),
+    );
   });
 });

@@ -148,11 +148,11 @@ admin.get('/users', async (c) => {
   const url = new URL(c.req.url);
   const status = (url.searchParams.get('status') ?? 'all') as UserListStatus;
   const search = url.searchParams.get('search')?.trim();
-  const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10));
-  const limit = Math.min(
-    100,
-    Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10)),
-  );
+  const pageRaw = parseInt(url.searchParams.get('page') ?? '1', 10);
+  const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
+  const limitRaw = parseInt(url.searchParams.get('limit') ?? '20', 10);
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw >= 1 ? Math.min(100, limitRaw) : 20;
   const offset = (page - 1) * limit;
 
   const conditions = [];
@@ -378,9 +378,13 @@ admin.put('/settings', async (c) => {
   }
 
   if (body.maxAgentsPerUser !== undefined) {
-    if (!Number.isInteger(body.maxAgentsPerUser) || body.maxAgentsPerUser < 1) {
+    if (
+      !Number.isInteger(body.maxAgentsPerUser) ||
+      body.maxAgentsPerUser < 1 ||
+      body.maxAgentsPerUser > 100
+    ) {
       throw new AppError(
-        'maxAgentsPerUser must be an integer >= 1',
+        'maxAgentsPerUser must be an integer between 1 and 100',
         400,
         'VALIDATION_ERROR',
       );

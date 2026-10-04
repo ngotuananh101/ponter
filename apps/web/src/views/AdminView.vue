@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { apiClient } from '@/services/client';
+import { useAuthStore } from '@/stores/auth';
 import {
   Card,
   CardHeader,
@@ -38,6 +39,8 @@ import type {
 } from '@ponter/shared';
 import { isApiError } from '@ponter/api-client';
 
+const authStore = useAuthStore();
+
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected' | 'inactive';
 type Tab = 'overview' | 'users' | 'settings';
 
@@ -64,6 +67,9 @@ const statusFilter = ref<StatusFilter>('all');
 function clearNotice() {
   notice.value = null;
 }
+
+// Self-protection (spec §4.2): the current admin may not act on their own row.
+const isSelf = (u: User) => u.id === authStore.user?.id;
 
 async function loadOverview() {
   overviewLoading.value = true;
@@ -405,6 +411,19 @@ onMounted(() => {
                 There are
                 <strong>{{ stats.users.pending }}</strong>
                 pending user registrations awaiting approval.
+                <Button
+                  data-test="pending-quick-action"
+                  variant="outline"
+                  size="sm"
+                  class="ml-auto text-xs"
+                  @click="
+                    activeTab = 'users';
+                    statusFilter = 'pending';
+                    loadUsers();
+                  "
+                >
+                  Review pending
+                </Button>
               </AlertDescription>
             </Alert>
           </CardContent>
@@ -687,7 +706,8 @@ onMounted(() => {
               v-if="u.approvalStatus === 'pending'"
               type="button"
               :data-test="`btn-approve-${u.id}`"
-              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+              :disabled="isSelf(u)"
+              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Approve user"
               @click="approve(u.id)"
             >
@@ -697,7 +717,8 @@ onMounted(() => {
               v-if="u.approvalStatus !== 'approved'"
               type="button"
               :data-test="`btn-reject-${u.id}`"
-              class="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+              :disabled="isSelf(u)"
+              class="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Reject user"
               @click="reject(u.id)"
             >
@@ -709,7 +730,8 @@ onMounted(() => {
               v-if="u.role === 'user'"
               type="button"
               :data-test="`btn-promote-${u.id}`"
-              class="p-1.5 rounded-md text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors"
+              :disabled="isSelf(u)"
+              class="p-1.5 rounded-md text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Promote to admin"
               @click="promote(u.id)"
             >
@@ -719,7 +741,8 @@ onMounted(() => {
               v-else
               type="button"
               :data-test="`btn-demote-${u.id}`"
-              class="p-1.5 rounded-md text-slate-600 dark:text-slate-400 hover:bg-slate-500/10 transition-colors"
+              :disabled="isSelf(u)"
+              class="p-1.5 rounded-md text-slate-600 dark:text-slate-400 hover:bg-slate-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Demote admin"
               @click="demote(u.id)"
             >
@@ -731,7 +754,8 @@ onMounted(() => {
               v-if="u.isActive"
               type="button"
               :data-test="`btn-deactivate-${u.id}`"
-              class="p-1.5 rounded-md text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors"
+              :disabled="isSelf(u)"
+              class="p-1.5 rounded-md text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Deactivate user"
               @click="deactivate(u.id)"
             >
@@ -741,7 +765,8 @@ onMounted(() => {
               v-else
               type="button"
               :data-test="`btn-activate-${u.id}`"
-              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+              :disabled="isSelf(u)"
+              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Activate user"
               @click="activate(u.id)"
             >
@@ -844,6 +869,7 @@ onMounted(() => {
               data-test="settings-max-agents"
               type="number"
               min="1"
+              max="100"
               :value="settings.maxAgentsPerUser"
               @input="
                 settings.maxAgentsPerUser =
