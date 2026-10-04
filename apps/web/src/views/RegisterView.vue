@@ -46,7 +46,8 @@ async function handleRegister(payload: {
       class="mt-4 max-w-md border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/30"
     >
       <AlertDescription class="text-xs text-emerald-800 dark:text-emerald-200">
-        Đăng ký thành công! Tài khoản của bạn đang chờ Quản trị viên phê duyệt trước khi có thể đăng nhập.
+        Đăng ký thành công! Tài khoản của bạn đang chờ Quản trị viên phê duyệt
+        trước khi có thể đăng nhập.
       </AlertDescription>
     </Alert>
   </div>

@@ -119,10 +119,7 @@ auth.post('/register', async (c) => {
   // better-sqlite3 transactions are synchronous and SQLite acquires an exclusive
   // write lock, making this race-free.
   const { newUser, approvalStatus } = db.transaction((tx) => {
-    const userCountRow = tx
-      .select({ value: count() })
-      .from(users)
-      .get();
+    const userCountRow = tx.select({ value: count() }).from(users).get();
     const isFirstUser = userCountRow?.value === 0;
 
     let role: 'admin' | 'user';
@@ -165,7 +162,8 @@ auth.post('/register', async (c) => {
       {
         user: toPublicUser(newUser),
         requiresApproval: true,
-        message: 'Registration successful. Your account is pending administrator approval.',
+        message:
+          'Registration successful. Your account is pending administrator approval.',
       },
       201,
     );

@@ -218,7 +218,9 @@ onMounted(() => {
 
 <template>
   <div class="container mx-auto px-4 sm:px-6 py-6 space-y-6">
-    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div
+      class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4"
+    >
       <div>
         <div class="flex items-center gap-2">
           <h1 class="text-2xl sm:text-3xl font-bold tracking-tight">
@@ -256,11 +258,11 @@ onMounted(() => {
       :variant="noticeType === 'error' ? 'destructive' : 'default'"
       class="border-border/30"
     >
-      <AlertDescription class="text-xs font-medium flex justify-between items-center">
+      <AlertDescription
+        class="text-xs font-medium flex justify-between items-center"
+      >
         <span>{{ notice }}</span>
-        <Button variant="ghost" size="sm" @click="clearNotice"
-          >×</Button
-        >
+        <Button variant="ghost" size="sm" @click="clearNotice">×</Button>
       </AlertDescription>
     </Alert>
 
@@ -354,23 +356,31 @@ onMounted(() => {
               class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 text-center"
             >
               <div>
-                <p class="text-2xl font-bold font-mono">{{ stats.users.total }}</p>
+                <p class="text-2xl font-bold font-mono">
+                  {{ stats.users.total }}
+                </p>
                 <p class="text-xs text-muted-foreground">Total</p>
               </div>
               <div>
-                <p class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                <p
+                  class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400"
+                >
                   {{ stats.users.approved }}
                 </p>
                 <p class="text-xs text-muted-foreground">Approved</p>
               </div>
               <div>
-                <p class="text-2xl font-bold font-mono text-amber-600 dark:text-amber-400">
+                <p
+                  class="text-2xl font-bold font-mono text-amber-600 dark:text-amber-400"
+                >
                   {{ stats.users.pending }}
                 </p>
                 <p class="text-xs text-muted-foreground">Pending</p>
               </div>
               <div>
-                <p class="text-2xl font-bold font-mono text-red-600 dark:text-red-400">
+                <p
+                  class="text-2xl font-bold font-mono text-red-600 dark:text-red-400"
+                >
                   {{ stats.users.rejected }}
                 </p>
                 <p class="text-xs text-muted-foreground">Rejected</p>
@@ -388,7 +398,9 @@ onMounted(() => {
               variant="default"
               class="mt-4 border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30"
             >
-              <AlertDescription class="text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2">
+              <AlertDescription
+                class="text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2"
+              >
                 <Activity class="w-4 h-4" />
                 There are
                 <strong>{{ stats.users.pending }}</strong>
@@ -418,7 +430,9 @@ onMounted(() => {
                 <p class="text-xs text-muted-foreground">Total Agents</p>
               </div>
               <div>
-                <p class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                <p
+                  class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400"
+                >
                   {{ stats.agents.online }}
                 </p>
                 <p class="text-xs text-muted-foreground">Online</p>
@@ -431,7 +445,10 @@ onMounted(() => {
               </div>
             </div>
 
-            <div v-if="Object.keys(stats.agents.byPlatform).length > 0" class="mt-4 flex flex-wrap gap-2">
+            <div
+              v-if="Object.keys(stats.agents.byPlatform).length > 0"
+              class="mt-4 flex flex-wrap gap-2"
+            >
               <Badge
                 v-for="(count, platform) in stats.agents.byPlatform"
                 :key="platform"
@@ -485,7 +502,9 @@ onMounted(() => {
     <div v-show="activeTab === 'users'" class="space-y-4">
       <div class="flex flex-col sm:flex-row gap-4 items-start sm:items-end">
         <div class="relative flex-1">
-          <Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Search
+            class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+          />
           <Input
             v-model="searchQuery"
             type="text"
@@ -625,10 +644,15 @@ onMounted(() => {
             </div>
             <div class="space-y-1 min-w-0 flex-1">
               <div class="flex items-center gap-2 flex-wrap">
-                <span class="font-semibold text-sm tracking-tight text-foreground truncate">
+                <span
+                  class="font-semibold text-sm tracking-tight text-foreground truncate"
+                >
                   {{ u.username }}
                 </span>
-                <Badge :variant="statusBadgeVariant(u.approvalStatus)" class="text-[10px] font-mono">
+                <Badge
+                  :variant="statusBadgeVariant(u.approvalStatus)"
+                  class="text-[10px] font-mono"
+                >
                   {{ u.approvalStatus }}
                 </Badge>
                 <Badge
@@ -737,10 +761,7 @@ onMounted(() => {
       >
         <AlertDescription class="flex justify-between items-center text-xs">
           <span>{{ settingsError }}</span>
-          <Button
-            variant="outline"
-            size="sm"
-            @click="loadSettings"
+          <Button variant="outline" size="sm" @click="loadSettings"
             >Retry</Button
           >
         </AlertDescription>
@@ -750,10 +771,7 @@ onMounted(() => {
         <p class="text-sm text-muted-foreground">Loading settings...</p>
       </div>
 
-      <Card
-        v-else-if="settings"
-        class="border-border/80 bg-card/95 shadow-sm"
-      >
+      <Card v-else-if="settings" class="border-border/80 bg-card/95 shadow-sm">
         <CardHeader class="pb-3">
           <CardTitle class="text-base font-bold flex items-center gap-2">
             <Settings class="w-4 h-4 text-primary" />
@@ -775,7 +793,11 @@ onMounted(() => {
                 data-test="settings-allow-registration"
                 type="checkbox"
                 :checked="settings.allowRegistration"
-                @change="settings.allowRegistration = ($event.target as HTMLInputElement).checked"
+                @change="
+                  settings.allowRegistration = (
+                    $event.target as HTMLInputElement
+                  ).checked
+                "
                 class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
               />
               <Label
@@ -797,7 +819,11 @@ onMounted(() => {
                 data-test="settings-auto-approve"
                 type="checkbox"
                 :checked="settings.autoApproveUsers"
-                @change="settings.autoApproveUsers = ($event.target as HTMLInputElement).checked"
+                @change="
+                  settings.autoApproveUsers = (
+                    $event.target as HTMLInputElement
+                  ).checked
+                "
                 class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
               />
               <Label
@@ -819,7 +845,10 @@ onMounted(() => {
               type="number"
               min="1"
               :value="settings.maxAgentsPerUser"
-              @input="settings.maxAgentsPerUser = parseInt(($event.target as HTMLInputElement).value, 10) || 0"
+              @input="
+                settings.maxAgentsPerUser =
+                  parseInt(($event.target as HTMLInputElement).value, 10) || 0
+              "
               class="w-32 bg-background/60 font-mono text-sm focus-visible:ring-primary"
             />
             <p class="text-[11px] text-muted-foreground">

@@ -30,11 +30,15 @@ describe('AdminResource', () => {
 
     const res = await admin.getStats();
     expect(res).toEqual(mockStats);
-    expect(http.request).toHaveBeenCalledWith('GET', '/api/admin/stats', { auth: true });
+    expect(http.request).toHaveBeenCalledWith('GET', '/api/admin/stats', {
+      auth: true,
+    });
   });
 
   it('updates a user status via PATCH /api/admin/users/:id', async () => {
-    vi.spyOn(http, 'request').mockResolvedValue({ user: { id: 'u1', approvalStatus: 'approved' } });
+    vi.spyOn(http, 'request').mockResolvedValue({
+      user: { id: 'u1', approvalStatus: 'approved' },
+    });
 
     const res = await admin.updateUser('u1', { approvalStatus: 'approved' });
     expect(res.user.approvalStatus).toBe('approved');
@@ -52,7 +56,9 @@ describe('AdminResource', () => {
     };
     vi.spyOn(http, 'request')
       .mockResolvedValueOnce(mockSettings)
-      .mockResolvedValueOnce({ settings: { ...mockSettings, autoApproveUsers: true } });
+      .mockResolvedValueOnce({
+        settings: { ...mockSettings, autoApproveUsers: true },
+      });
 
     const current = await admin.getSettings();
     expect(current.allowRegistration).toBe(true);

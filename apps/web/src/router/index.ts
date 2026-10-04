@@ -7,9 +7,10 @@ import { defineAsyncComponent } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 
 const adminViewPath = '@/views/AdminView.vue';
-const AdminView = defineAsyncComponent(() =>
-  // @vite-ignore
-  import(adminViewPath),
+const AdminView = defineAsyncComponent(
+  () =>
+    // @vite-ignore
+    import(adminViewPath),
 );
 
 const routes: RouteRecordRaw[] = [

@@ -85,9 +85,7 @@ describe('AdminView', () => {
     await flushPromises();
 
     await wrapper.find('[data-test="tab-users"]').trigger('click');
-    await wrapper
-      .find('[data-test="btn-reject-u1"]')
-      .trigger('click');
+    await wrapper.find('[data-test="btn-reject-u1"]').trigger('click');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
       approvalStatus: 'rejected',
@@ -97,7 +95,9 @@ describe('AdminView', () => {
   it('saves settings with toggled value', async () => {
     const updateSpy = vi
       .spyOn(apiClient.admin, 'updateSettings')
-      .mockResolvedValue({ settings: { ...SETTINGS, allowRegistration: false } });
+      .mockResolvedValue({
+        settings: { ...SETTINGS, allowRegistration: false },
+      });
     const wrapper = mount(AdminView);
     await flushPromises();
 
@@ -152,7 +152,9 @@ describe('AdminView', () => {
 
     // Failure alert with Retry button should appear
     expect(wrapper.text()).toContain('boom');
-    expect(wrapper.find('[data-test="btn-retry-overview"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="btn-retry-overview"]').exists()).toBe(
+      true,
+    );
 
     // Restore stats and retry
     vi.spyOn(apiClient.admin, 'getStats').mockResolvedValue(STATS);

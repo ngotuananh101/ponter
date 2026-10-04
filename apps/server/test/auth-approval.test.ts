@@ -97,7 +97,10 @@ describe('Auth Approval & Registration Gate', () => {
     const loginRes = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'bob_pending', password: 'Password123!' }),
+      body: JSON.stringify({
+        username: 'bob_pending',
+        password: 'Password123!',
+      }),
     });
 
     expect(loginRes.status).toBe(403);

@@ -26,7 +26,10 @@ describe('DB Schema & Settings Helpers', () => {
   });
 
   it('updates system settings correctly', async () => {
-    await updateSystemSettings(db, { allowRegistration: false, maxAgentsPerUser: 5 });
+    await updateSystemSettings(db, {
+      allowRegistration: false,
+      maxAgentsPerUser: 5,
+    });
     const updated = await getSystemSettings(db);
     expect(updated.allowRegistration).toBe(false);
     expect(updated.autoApproveUsers).toBe(false);

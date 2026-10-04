@@ -4,16 +4,18 @@ import { getDb, closeDb } from '../src/db/client';
 import type { Database } from '../src/db/client';
 import { users } from '../src/db/schema';
 import { eq } from 'drizzle-orm';
+import type { User } from '@ponter/shared';
 
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
-process.env.REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters-long';
+process.env.REFRESH_TOKEN_SECRET =
+  'test-refresh-secret-at-least-32-characters-long';
 
 describe('Admin REST Routes', () => {
   let db: Database;
   let adminToken: string;
-  let adminUser: any;
+  let adminUser: User;
   let regularToken: string;
-  let regularUser: any;
+  let regularUser: User;
 
   beforeEach(async () => {
     db = getDb(':memory:');
@@ -23,7 +25,11 @@ describe('Admin REST Routes', () => {
     const adminRes = await app.request('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'superadmin', password: 'Password123!', publicKey: 'pk_admin' }),
+      body: JSON.stringify({
+        username: 'superadmin',
+        password: 'Password123!',
+        publicKey: 'pk_admin',
+      }),
     });
     const adminData = await adminRes.json();
     adminToken = adminData.token;
@@ -33,12 +39,19 @@ describe('Admin REST Routes', () => {
     const regRes = await app.request('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'user1', password: 'Password123!', publicKey: 'pk_user1' }),
+      body: JSON.stringify({
+        username: 'user1',
+        password: 'Password123!',
+        publicKey: 'pk_user1',
+      }),
     });
     regularUser = (await regRes.json()).user;
 
     // Manually approve user1 to get a token for testing regular user access
-    await db.update(users).set({ approvalStatus: 'approved' }).where(eq(users.id, regularUser.id));
+    await db
+      .update(users)
+      .set({ approvalStatus: 'approved' })
+      .where(eq(users.id, regularUser.id));
     const loginRes = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -156,14 +169,17 @@ describe('Admin REST Routes', () => {
     expect(demoted.user.role).toBe('user');
 
     // Demote adminUser (last remaining active admin → blocked, RF4-05).
-    const lastDemoteRes = await app.request(`/api/admin/users/${adminUser.id}`, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${adminToken}`,
-        'Content-Type': 'application/json',
+    const lastDemoteRes = await app.request(
+      `/api/admin/users/${adminUser.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ role: 'user' }),
       },
-      body: JSON.stringify({ role: 'user' }),
-    });
+    );
     expect(lastDemoteRes.status).toBe(400);
     const err = await lastDemoteRes.json();
     expect(err.code).toBe('LAST_ADMIN_PROTECTED');
@@ -183,14 +199,17 @@ describe('Admin REST Routes', () => {
     const app = createApp();
 
     // Deactivating another user is allowed (only self-deactivation is blocked).
-    const deactivateRes = await app.request(`/api/admin/users/${regularUser.id}`, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${adminToken}`,
-        'Content-Type': 'application/json',
+    const deactivateRes = await app.request(
+      `/api/admin/users/${regularUser.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isActive: false }),
       },
-      body: JSON.stringify({ isActive: false }),
-    });
+    );
     expect(deactivateRes.status).toBe(200);
 
     // regularToken was issued in beforeEach while the user was active; the

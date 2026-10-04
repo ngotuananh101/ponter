@@ -24,10 +24,14 @@ export class AdminResource {
   constructor(private readonly http: HttpClient) {}
 
   async getStats(): Promise<SystemStats> {
-    return this.http.request<SystemStats>('GET', '/api/admin/stats', { auth: true });
+    return this.http.request<SystemStats>('GET', '/api/admin/stats', {
+      auth: true,
+    });
   }
 
-  async getUsers(params: GetUsersQuery = {}): Promise<{ users: User[]; total: number }> {
+  async getUsers(
+    params: GetUsersQuery = {},
+  ): Promise<{ users: User[]; total: number }> {
     const query = new URLSearchParams();
     if (params.status) query.set('status', params.status);
     if (params.search) query.set('search', params.search);
@@ -35,24 +39,41 @@ export class AdminResource {
     if (params.limit) query.set('limit', String(params.limit));
     const qs = query.toString();
     const path = `/api/admin/users${qs ? `?${qs}` : ''}`;
-    return this.http.request<{ users: User[]; total: number }>('GET', path, { auth: true });
-  }
-
-  async updateUser(id: string, payload: UpdateUserPayload): Promise<{ user: User }> {
-    return this.http.request<{ user: User }>('PATCH', `/api/admin/users/${id}`, {
-      body: payload,
+    return this.http.request<{ users: User[]; total: number }>('GET', path, {
       auth: true,
     });
+  }
+
+  async updateUser(
+    id: string,
+    payload: UpdateUserPayload,
+  ): Promise<{ user: User }> {
+    return this.http.request<{ user: User }>(
+      'PATCH',
+      `/api/admin/users/${id}`,
+      {
+        body: payload,
+        auth: true,
+      },
+    );
   }
 
   async getSettings(): Promise<SystemSettings> {
-    return this.http.request<SystemSettings>('GET', '/api/admin/settings', { auth: true });
-  }
-
-  async updateSettings(settings: Partial<SystemSettings>): Promise<{ settings: SystemSettings }> {
-    return this.http.request<{ settings: SystemSettings }>('PUT', '/api/admin/settings', {
-      body: settings,
+    return this.http.request<SystemSettings>('GET', '/api/admin/settings', {
       auth: true,
     });
+  }
+
+  async updateSettings(
+    settings: Partial<SystemSettings>,
+  ): Promise<{ settings: SystemSettings }> {
+    return this.http.request<{ settings: SystemSettings }>(
+      'PUT',
+      '/api/admin/settings',
+      {
+        body: settings,
+        auth: true,
+      },
+    );
   }
 }

@@ -1,4 +1,3 @@
-import { eq } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import { systemSettings } from '../db/schema.js';
 import type { SystemSettings } from '@ponter/shared';
@@ -21,7 +20,8 @@ export async function getSystemSettings(db: Database): Promise<SystemSettings> {
       ? map.get('auto_approve_users') === 'true'
       : DEFAULT_SETTINGS.autoApproveUsers,
     maxAgentsPerUser: map.has('max_agents_per_user')
-      ? Number(map.get('max_agents_per_user')) || DEFAULT_SETTINGS.maxAgentsPerUser
+      ? Number(map.get('max_agents_per_user')) ||
+        DEFAULT_SETTINGS.maxAgentsPerUser
       : DEFAULT_SETTINGS.maxAgentsPerUser,
   };
 }

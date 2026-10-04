@@ -8,7 +8,17 @@ import { getSystemSettings, updateSystemSettings } from '../utils/settings.js';
 import { users, agents, sessions } from '../db/schema.js';
 import type { SystemSettings } from '@ponter/shared';
 import type { UserRole, ApprovalStatus } from '@ponter/shared';
-import { eq, and, count, like, desc, ne, isNotNull, isNull, or } from 'drizzle-orm';
+import {
+  eq,
+  and,
+  count,
+  like,
+  desc,
+  ne,
+  isNotNull,
+  isNull,
+  or,
+} from 'drizzle-orm';
 
 const admin = new Hono<AppContext>();
 
@@ -36,16 +46,32 @@ admin.get('/stats', async (c) => {
     onlineAgentsRow,
   ] = await Promise.all([
     db.select({ value: count() }).from(users).get(),
-    db.select({ value: count() }).from(users).where(eq(users.approvalStatus, 'pending')).get(),
-    db.select({ value: count() }).from(users).where(eq(users.approvalStatus, 'approved')).get(),
-    db.select({ value: count() }).from(users).where(eq(users.approvalStatus, 'rejected')).get(),
+    db
+      .select({ value: count() })
+      .from(users)
+      .where(eq(users.approvalStatus, 'pending'))
+      .get(),
+    db
+      .select({ value: count() })
+      .from(users)
+      .where(eq(users.approvalStatus, 'approved'))
+      .get(),
+    db
+      .select({ value: count() })
+      .from(users)
+      .where(eq(users.approvalStatus, 'rejected'))
+      .get(),
     db
       .select({ value: count() })
       .from(users)
       .where(and(eq(users.role, 'admin'), eq(users.isActive, true)))
       .get(),
     db.select({ value: count() }).from(agents).get(),
-    db.select({ value: count() }).from(agents).where(eq(agents.isOnline, true)).get(),
+    db
+      .select({ value: count() })
+      .from(agents)
+      .where(eq(agents.isOnline, true))
+      .get(),
   ]);
 
   // Active sessions = those not terminated or expired.
@@ -123,7 +149,10 @@ admin.get('/users', async (c) => {
   const status = (url.searchParams.get('status') ?? 'all') as UserListStatus;
   const search = url.searchParams.get('search')?.trim();
   const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10));
-  const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10)));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10)),
+  );
   const offset = (page - 1) * limit;
 
   const conditions = [];
@@ -134,7 +163,9 @@ admin.get('/users', async (c) => {
     const pattern = `%${search}%`;
     // Partial match on either username or email. SQLite LIKE is case-insensitive
     // for ASCII by default, so 'BOB' matches 'bob@example.com'.
-    conditions.push(or(like(users.username, pattern), like(users.email, pattern)));
+    conditions.push(
+      or(like(users.username, pattern), like(users.email, pattern)),
+    );
   }
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -182,7 +213,11 @@ admin.patch('/users/:id', async (c) => {
 
   const body = (await c.req.json().catch(() => null)) as UserPatchBody | null;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    throw new AppError('A JSON object body is required', 400, 'VALIDATION_ERROR');
+    throw new AppError(
+      'A JSON object body is required',
+      400,
+      'VALIDATION_ERROR',
+    );
   }
 
   const updates: Record<string, unknown> = {};
@@ -196,7 +231,11 @@ admin.patch('/users/:id', async (c) => {
 
   if (body.approvalStatus !== undefined) {
     if (!['pending', 'approved', 'rejected'].includes(body.approvalStatus)) {
-      throw new AppError('Invalid approvalStatus value', 400, 'VALIDATION_ERROR');
+      throw new AppError(
+        'Invalid approvalStatus value',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
     updates.approvalStatus = body.approvalStatus;
   }
@@ -298,24 +337,38 @@ admin.get('/settings', async (c) => {
 
 admin.put('/settings', async (c) => {
   const db = c.get('db');
-  const body = (await c.req.json().catch(() => null)) as Partial<SystemSettings> | null;
+  const body = (await c.req
+    .json()
+    .catch(() => null)) as Partial<SystemSettings> | null;
 
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    throw new AppError('A JSON object body is required', 400, 'VALIDATION_ERROR');
+    throw new AppError(
+      'A JSON object body is required',
+      400,
+      'VALIDATION_ERROR',
+    );
   }
 
   const updates: Partial<SystemSettings> = {};
 
   if (body.allowRegistration !== undefined) {
     if (typeof body.allowRegistration !== 'boolean') {
-      throw new AppError('allowRegistration must be a boolean', 400, 'VALIDATION_ERROR');
+      throw new AppError(
+        'allowRegistration must be a boolean',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
     updates.allowRegistration = body.allowRegistration;
   }
 
   if (body.autoApproveUsers !== undefined) {
     if (typeof body.autoApproveUsers !== 'boolean') {
-      throw new AppError('autoApproveUsers must be a boolean', 400, 'VALIDATION_ERROR');
+      throw new AppError(
+        'autoApproveUsers must be a boolean',
+        400,
+        'VALIDATION_ERROR',
+      );
     }
     updates.autoApproveUsers = body.autoApproveUsers;
   }
@@ -332,7 +385,10 @@ admin.put('/settings', async (c) => {
   }
 
   const unknownFields = Object.keys(body).filter(
-    (key) => !['allowRegistration', 'autoApproveUsers', 'maxAgentsPerUser'].includes(key),
+    (key) =>
+      !['allowRegistration', 'autoApproveUsers', 'maxAgentsPerUser'].includes(
+        key,
+      ),
   );
   if (unknownFields.length > 0) {
     throw new AppError(
