@@ -115,6 +115,11 @@ export class TransferState {
 
   /** The send side: emit chunks while the window is open. */
   pump(): void {
+    if (this.direction !== 'upload') {
+      throw new Error(
+        'TransferState.pump() is upload-only; download is receive-side (spec §5.2.5)',
+      );
+    }
     if (this.failure) return;
     while (this.windowOpen && this.sentCount < this.totalChunks) {
       const chunkIndex = this.sentCount;

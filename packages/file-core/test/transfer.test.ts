@@ -190,4 +190,19 @@ describe('TransferState window + acks (spec §2.4)', () => {
     expect(state.settled).toBeInstanceOf(Promise);
     expect(send).toHaveBeenCalledTimes(1); // one files-cancel frame, not two
   });
+
+  it('pump() is a loud tripwire on a download state', () => {
+    const { send } = makeSend();
+    const state = new TransferState({
+      transferId: 't-dl',
+      direction: 'download',
+      totalChunks: 2,
+      size: 2 * FILE_CHUNK_BYTES,
+      windowSize: 16,
+      idleTimeoutMs: 30_000,
+      send,
+    });
+    state.settled.catch(() => {});
+    expect(() => state.pump()).toThrow(/upload-only/i);
+  });
 });
