@@ -333,11 +333,14 @@ git commit -m "feat(agent): binary transport, ack batching, pause/resume upload,
 **Files:**
 - Create: `packages/file-core/src/binary.ts`
 - Modify: `packages/file-core/src/client.ts`
+- Modify: `packages/file-core/src/transfer.ts` (`DEFAULT_WINDOW_SIZE` 16 → 64)
 - Test: `packages/file-core/test/binary.test.ts`
 - Test: `packages/file-core/test/operations.test.ts`
+- Modify: `packages/file-core/test/client.test.ts` (binary download replay + 64-window upload)
+- Modify: `packages/file-core/test/transfer.test.ts` (window constant + expectations)
 
 **Interfaces:**
-- Consumes: Shared types from `packages/shared`.
+- Consumes: Shared types from `packages/shared`; `DataChannelManager` (`@ponter/webrtc-core`) — `sendRaw(label, data)`, `onRawMessage(label, handler)` already exist and are the binary seams; no webrtc-core changes needed.
 - Produces:
   - `packBinaryChunk(type: number, transferId: string, chunkIndex: number, data: Uint8Array): Uint8Array`
   - `unpackBinaryChunk(bytes: Uint8Array): { type: number; transferId: string; chunkIndex: number; data: Uint8Array }`
@@ -345,6 +348,12 @@ git commit -m "feat(agent): binary transport, ack batching, pause/resume upload,
   - `FileClient.mkdir(dir: string, name: string): Promise<void>`
   - `FileClient.delete(path: string, recursive?: boolean): Promise<void>`
   - `FileClient.rename(oldPath: string, newPath: string): Promise<void>`
+  - **Binary transport switch (GAP-B ruling — no other task owns this):** `FileClient` must speak the ADR-36 hybrid protocol end-to-end, matching the agent after Task 3:
+    - Inbound: subscribe `onRawMessage('files', …)` alongside the existing typed `onMessage` — string data keeps the JSON path; `ArrayBuffer` data is `unpackBinaryChunk`ed; type `0x01` (`BINARY_TYPE_DOWNLOAD_CHUNK`) feeds the download path (bytes straight from the frame, NO base64).
+    - Outbound: upload chunks are sent with `dataChannelManager.sendRaw('files', packBinaryChunk(BINARY_TYPE_UPLOAD_CHUNK, transferId, chunkIndex, slice))` instead of `sendJson('files-upload-chunk', …)`; `sendJson` stays for all control envelopes.
+    - Chunk-index encoding: the wire carries a 16-byte UUID (RFC 4122, no dashes) — `packBinaryChunk` strips dashes for the frame, `unpackBinaryChunk` re-inserts them so the returned `transferId` is the dashed string.
+    - Window: `DEFAULT_WINDOW_SIZE` 16 → 64 (ADR-37, spec §2.2). Update `test/transfer.test.ts`'s `expect(DEFAULT_WINDOW_SIZE).toBe(16)` and the `test/client.test.ts` upload test that pins the 16-chunk window fill.
+    - `client.test.ts`'s download test currently replays base64 JSON `files-download-chunk` frames — rework it to emit binary frames through the fake manager's raw seam (extend `makeFakeManager()` with `sendRaw` capture + an `emitRaw(bytes)` helper).
 
 - [ ] **Step 1: Write failing tests in `packages/file-core/test/binary.test.ts`**
 
@@ -410,9 +419,11 @@ Expected: FAIL with module not found.
 
 - [ ] **Step 3: Implement binary codec in `packages/file-core/src/binary.ts` and operations in `packages/file-core/src/client.ts`**
 
-- Use `crypto.randomUUID()` and DataView to pack/unpack 16-byte UUID and 64-bit integer chunk index.
+- Use `crypto.randomUUID()` and DataView to pack/unpack 16-byte UUID and 64-bit integer chunk index (strip/re-insert dashes; `BigInt` for the u64 write, `Number` is safe for chunk indices in practice but write via `setBigUint64` and read via `getBigUint64` + `Number()`).
 - Enforce BOTH frame-length bounds in `unpackBinaryChunk` per spec §5.4: length `< 25` → throw `/truncated/i`; length `> 25 + 32768 = 32793` → throw (oversized payload). Reuse `BINARY_HEADER_LEN` and `FILE_CHUNK_BYTES` from shared.
 - Add `mkdir`, `delete`, `rename`, and `uploadStream` using chunk slicing to `FileClient`.
+- Switch the existing download receive path and upload send path to binary per the Interfaces block (GAP-B): `onRawMessage` subscription for `ArrayBuffer` frames, `sendRaw` + `packBinaryChunk` for upload chunks, base64 helpers deleted once unused.
+- Bump `DEFAULT_WINDOW_SIZE` to 64 and update the tests it breaks (`transfer.test.ts` constant assertion; `client.test.ts` window-fill and base64 replay tests).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -422,7 +433,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, and directory operations" -- packages/file-core/src/binary.ts packages/file-core/src/client.ts packages/file-core/test/binary.test.ts packages/file-core/test/operations.test.ts
+git commit -m "feat(file-core): implement binary chunk framing, chunk slicing, and directory operations" -- packages/file-core/src/binary.ts packages/file-core/src/client.ts packages/file-core/src/transfer.ts packages/file-core/test/binary.test.ts packages/file-core/test/operations.test.ts packages/file-core/test/client.test.ts packages/file-core/test/transfer.test.ts
 ```
 
 ---
