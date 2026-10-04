@@ -336,7 +336,7 @@ pub enum Outbound {
     DownloadEnd(FilesDownloadEnd),
     UploadAck(FilesAckMessage),
     UploadComplete(FilesUploadComplete),
-    Error(FilesError),
+    Error(FilesErrorMessage),
 }
 
 impl Outbound {
@@ -426,7 +426,7 @@ pub fn frame_files(outbound: &Outbound, timestamp_ms: i64) -> String {
         Outbound::DownloadEnd(p) => ("files-download-end", serde_json::to_value(p)),
         Outbound::UploadAck(p) => ("files-upload-ack", serde_json::to_value(p)),
         Outbound::UploadComplete(p) => ("files-upload-complete", serde_json::to_value(p)),
-        Outbound::Error(p) => ("files-error", serde_json::to_value(FilesErrorMessage::from_error(p))),
+        Outbound::Error(p) => ("files-error", serde_json::to_value(p)),
     };
     let message = crate::pty::DataChannelMessage {
         r#type: r#type.to_string(),
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn error_frames_carry_the_code_and_attribution() {
         let error = FilesError::new(FilesErrorCode::BadFrame, "chunk gap").with_ids(None, Some("t-1".to_string()));
-        let frame = frame_files(&Outbound::Error(error), 0);
+        let frame = frame_files(&Outbound::Error(FilesErrorMessage::from_error(&error)), 0);
         let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
         assert_eq!(value["type"], "files-error");
         assert_eq!(value["payload"]["code"], "BAD_FRAME");
