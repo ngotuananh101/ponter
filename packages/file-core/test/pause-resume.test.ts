@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DataChannelManager } from '@ponter/webrtc-core';
+import { BINARY_TYPE_UPLOAD_CHUNK } from '@ponter/shared';
 import { FileClient } from '../src/client';
 import { ServiceWorkerStreamWriter } from '../src/sw-writer';
 
@@ -179,5 +180,69 @@ describe('FileClient Pause and Resume', () => {
     farPort.close();
     await expect(writer.end()).rejects.toThrow();
     expect(writer.isClosed).toBe(true);
+  });
+
+  it('resumeTransfer resolves on files-resume-ack approved (download does not pump)', async () => {
+    // Regression: resumeTransfer on a download must NOT call pump() (which
+    // throws for download direction); the promise must resolve cleanly.
+    const fake = makeFakeManager();
+    const client = new FileClient('ag-1', fake.manager);
+
+    const handle = client.download('f.bin');
+    const resumePromise = client.resumeTransfer(handle.transferId, 0);
+
+    const frame = fake.sent.at(-1);
+    expect(frame).toMatchObject({
+      label: 'files',
+      type: 'files-resume',
+      payload: {
+        transferId: handle.transferId,
+        path: 'f.bin',
+        direction: 'download',
+        fromChunkIndex: 0,
+      },
+    });
+
+    fake.emit('files-resume-ack', {
+      transferId: handle.transferId,
+      approved: true,
+      fromChunkIndex: 0,
+    });
+    await expect(resumePromise).resolves.toBeUndefined();
+  });
+
+  it('resumeTransfer on an upload refills the window', async () => {
+    // Upload resume: pump() is called (upload direction), so acked space
+    // in the window produces new upload-chunk frames.
+    const fake = makeFakeManager();
+    const client = new FileClient('ag-1', fake.manager);
+
+    // 128 chunks: window is 64; the begin request fills the window via the pump
+    // that upload() triggers through sendJson('files-upload-begin').
+    // Wait — upload() does NOT call pump() directly; it sends begin and returns.
+    // The first files-upload-ack triggers pump(). So: start upload, pause,
+    // then resume and emit ack to trigger pump.
+    const bytes = new Uint8Array(128 * 32768);
+    const handle = client.upload('dir', 'big.bin', bytes);
+
+    const resumePromise = client.resumeTransfer(handle.transferId, 0);
+
+    // Emit the resume ack; it should resolve and trigger pump().
+    fake.emit('files-resume-ack', {
+      transferId: handle.transferId,
+      approved: true,
+      fromChunkIndex: 0,
+    });
+    await expect(resumePromise).resolves.toBeUndefined();
+
+    // Emitting files-upload-ack opens the window and triggers pump().
+    fake.emit('files-upload-ack', {
+      transferId: handle.transferId,
+      nextChunkIndex: 0,
+    });
+    const uploadChunks = fake.rawSent.filter(
+      (r) => r.bytes[0] === BINARY_TYPE_UPLOAD_CHUNK,
+    );
+    expect(uploadChunks.length).toBeGreaterThan(0);
   });
 });

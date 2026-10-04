@@ -123,11 +123,17 @@ export class TransferState {
     this.clearIdleTimer();
   }
 
-  /** Resume after pause; re-arm the idle timer and, for uploads, refill the window. */
+  /**
+   * Resume after pause; re-arm the idle timer and, for uploads only, refill the
+   * window (pump is upload-side; download is receive-side — do NOT call pump
+   * for downloads, see the Task-4 tripwire at spec §5.2.5).
+   */
   resume(): void {
     this.paused = false;
     this.armIdleTimer();
-    this.pump();
+    if (this.direction === 'upload') {
+      this.pump();
+    }
   }
 
   private paused = false;
