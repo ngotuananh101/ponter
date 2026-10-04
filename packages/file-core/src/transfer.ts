@@ -52,8 +52,8 @@ export interface TransferStateOptions {
 export class TransferState {
   readonly transferId: string;
   readonly direction: 'upload' | 'download';
-  readonly totalChunks: number;
-  readonly size: number;
+  totalChunks: number;
+  size: number;
 
   sentCount = 0;
   ackedCount = 0;
