@@ -8,6 +8,11 @@ import { startServer } from '../src/index.js';
 import { getDb, closeDb } from '../src/db/client.js';
 import { users } from '../src/db/schema.js';
 
+// `startServer` now validates its environment before listening, so the test
+// must supply the secrets a real deployment would.
+process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
+process.env.REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters';
+
 /**
  * `startServer` must open the SQLite file named by `DATABASE_PATH`.
  *

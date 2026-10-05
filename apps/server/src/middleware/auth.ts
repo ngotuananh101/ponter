@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from 'hono';
 import type { AppContext } from '../types.js';
 import { AppError } from './error.js';
 import { verifyTokenForUser } from '../utils/auth.js';
+import { getJwtSecret } from '../utils/env.js';
 
 const MISSING_HEADER = 'Missing or invalid Authorization header';
 
@@ -28,7 +29,7 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (
   const { payload, user } = await verifyTokenForUser(
     c,
     token,
-    process.env.JWT_SECRET!,
+    getJwtSecret(),
     'access',
     {
       invalid: {

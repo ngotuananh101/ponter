@@ -15,6 +15,7 @@ import type { BrowserWebSocketOptions } from './routes/ws.js';
 import { getDb } from './db/client.js';
 import type { Database } from './db/client.js';
 import { runCleanup } from './utils/cleanup.js';
+import { validateEnv } from './utils/validate-env.js';
 
 export type SignalingServerOptions = BrowserWebSocketOptions;
 
@@ -218,6 +219,10 @@ export function startCleanup(
 export const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 
 export function startServer(port?: number) {
+  // Before anything binds a port: a missing or weak secret must stop the
+  // process here, not surface as a 500 on the first login.
+  validateEnv();
+
   const portNum = port ?? (Number(process.env.PORT) || 8080);
   const { server } = createSignalingServer();
 
