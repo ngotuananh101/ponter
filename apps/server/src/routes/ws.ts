@@ -460,8 +460,28 @@ async function handleBrowserMessage(
       return;
     }
 
+    // Enrich the offer with the server-sourced user signing public key before
+    // forwarding to the agent, mirroring POST /api/signal/offer — the agent
+    // authenticates with its credential and cannot read user rows, so the
+    // session owner's signing public key is delivered with the offer.
+    let pushed = message;
+    if (message.type === 'offer') {
+      const owner = await db
+        .select({ signingPublicKey: users.signingPublicKey })
+        .from(users)
+        .where(eq(users.id, session.userId))
+        .get();
+      pushed = {
+        type: 'offer',
+        data: {
+          ...message.data,
+          userSigningPublicKey: owner?.signingPublicKey ?? null,
+        },
+      };
+    }
+
     // Fire-and-forget to the agent, mirroring the REST routes.
-    pushToAgent(session.agentId, message);
+    pushToAgent(session.agentId, pushed);
 
     // Fan out to this user's other browser sockets subscribed to the session,
     // but never echo back to the sender.
