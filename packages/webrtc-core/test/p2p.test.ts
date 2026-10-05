@@ -166,11 +166,13 @@ describe('Real P2P Handshake (werift)', () => {
     const adapterB = new WeriftAdapter({ iceServers: [] });
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal', 'control'],
     });
 
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -226,11 +228,13 @@ describe('Real P2P Handshake (werift)', () => {
     const recorder = new OrderRecorder(new WeriftAdapter({ iceServers: [] }));
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
 
     answererPC = new PeerConnection(recorder, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -258,11 +262,13 @@ describe('Real P2P Handshake (werift)', () => {
     const adapterB = new WeriftAdapter({ iceServers: [] });
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['desktop', 'files'],
     });
 
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -285,11 +291,13 @@ describe('Real P2P Handshake (werift)', () => {
     const adapterB = new WeriftAdapter({ iceServers: [] });
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['control'],
     });
 
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -313,6 +321,7 @@ describe('Real P2P Handshake (werift)', () => {
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -331,6 +340,7 @@ describe('Real P2P Handshake (werift)', () => {
 
     const adapterB = new WeriftAdapter({ iceServers: [] });
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -392,6 +402,7 @@ describe('Real P2P Handshake (werift)', () => {
     };
 
     answererPC = new PeerConnection(recorder, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -415,6 +426,7 @@ describe('Real P2P Handshake (werift)', () => {
     const offererAdapter = new WeriftAdapter({ iceServers: [] });
     const tA = bus.createTransport('A', 'B');
     offererPC = new PeerConnection(offererAdapter, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -452,6 +464,7 @@ describe('Real P2P Handshake (werift)', () => {
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     offererPC = new PeerConnection(adapterA, capturingTransport, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
       capabilities: ['desktop'],
@@ -477,6 +490,7 @@ describe('Real P2P Handshake (werift)', () => {
     const recorder = new OrderRecorder(new WeriftAdapter({ iceServers: [] }));
 
     offererPC = new PeerConnection(recorder, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: [],
       capabilities: ['desktop'],
@@ -484,6 +498,7 @@ describe('Real P2P Handshake (werift)', () => {
     });
 
     answererPC = new PeerConnection(new WeriftAdapter({ iceServers: [] }), tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });

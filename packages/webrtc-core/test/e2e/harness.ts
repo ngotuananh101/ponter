@@ -570,7 +570,7 @@ export async function openTerminalPeer(transport: SignalTransport): Promise<{
   const offerer = new PeerConnection(
     new WeriftAdapter({ iceServers: [] }),
     transport,
-    { role: 'offerer', channelLabels: ['terminal'] },
+    { sessionId: 'test-session', role: 'offerer', channelLabels: ['terminal'] },
   );
 
   const frames: Array<DataChannelMessage<TerminalDataMessage>> = [];
@@ -653,7 +653,12 @@ export async function openFilesPeer(transport: SignalTransport): Promise<{
   const offerer = new PeerConnection(
     new WeriftAdapter({ iceServers: [] }),
     transport,
-    { role: 'offerer', channelLabels: ['files'], capabilities: ['files'] },
+    {
+      sessionId: 'test-session',
+      role: 'offerer',
+      channelLabels: ['files'],
+      capabilities: ['files'],
+    },
   );
 
   const frames: FilesFrame[] = [];

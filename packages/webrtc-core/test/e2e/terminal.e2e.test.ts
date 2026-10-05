@@ -350,7 +350,11 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       const offerer2 = new PeerConnection(
         new WeriftAdapter({ iceServers: [] }),
         transport2,
-        { role: 'offerer', channelLabels: ['terminal'] },
+        {
+          role: 'offerer',
+          channelLabels: ['terminal'],
+          sessionId: session2.id,
+        },
       );
 
       try {

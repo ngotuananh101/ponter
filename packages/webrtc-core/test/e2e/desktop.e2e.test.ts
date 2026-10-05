@@ -106,6 +106,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
         channelLabels: control ? ['control'] : [],
         capabilities: ['desktop'],
         media: { video: true },
+        sessionId,
       },
     );
 

@@ -47,11 +47,26 @@ export interface PeerConnectionOptions {
   iceServers?: IceServerConfig[];
   role: 'offerer' | 'answerer';
   channelLabels: string[];
+  /**
+   * The server-assigned session ID the offer/answer signals carry. Used as the
+   * binding in the WS2 identity proof so the signature cannot be replayed across
+   * sessions.
+   */
+  sessionId: string;
   /** Capabilities sent in the offer. Falls back to `channelLabels`. */
   capabilities?: string[];
   /** Request receive-side media setup before the offer is created. */
   media?: { video?: boolean };
   connectTimeoutMs?: number;
+  /**
+   * WS2 peer identity: signs this peer's SDP and verifies the remote proof.
+   * Absent → no verification (legacy/loopback path). When present, fail-closed.
+   */
+  identity?: {
+    role: 'offerer' | 'answerer';
+    sign: (message: string) => Promise<string>;
+    verifyPeer: (message: string, signatureBase64: string) => Promise<boolean>;
+  };
 }
 
 export interface SignalTransport {
