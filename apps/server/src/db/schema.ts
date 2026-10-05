@@ -121,6 +121,27 @@ export const revokedTokens = sqliteTable(
   (table) => [index('idx_revoked_tokens_expires').on(table.expiresAt)],
 );
 
+export const refreshTokens = sqliteTable(
+  'refresh_tokens',
+  {
+    jti: text('jti').primaryKey(),
+    familyId: text('family_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: integer('expires_at').notNull(),
+    /** Unix **milliseconds** at which this token was rotated; null while current. */
+    usedAt: integer('used_at'),
+    /** The token this one was rotated into, replayed inside the grace window. */
+    replacedByToken: text('replaced_by_token'),
+    replacedByExpiresAt: integer('replaced_by_expires_at'),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => [index('idx_refresh_tokens_family').on(table.familyId)],
+);
+
 export const systemSettings = sqliteTable('system_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
