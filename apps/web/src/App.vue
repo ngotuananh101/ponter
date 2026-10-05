@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '@/components/layout/AppLayout.vue';
+import { Toaster } from '@/components/ui/sonner';
 
 const route = useRoute();
 
@@ -17,4 +18,5 @@ const fluidShell = computed(() => route.name === 'workspace');
   <AppLayout :fluid="fluidShell">
     <router-view />
   </AppLayout>
+  <Toaster position="top-right" :rich-colors="true" close-button />
 </template>
