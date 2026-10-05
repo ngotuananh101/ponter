@@ -91,6 +91,32 @@ the documented boundary of Phase 5 (spec §8): "H6 is closed with a keypair,
 not a full PKI." WS3 (spec §3.3) may address server-side identity attestation
 in a future phase.
 
+### Residual downgrade: a hostile server omits the agent key (PB-9/PB-11)
+
+A signaling server under the trust boundary (TOFU) can also attack **liveness**
+rather than confidentiality. The server may simply **omit** the agent's
+`signingPublicKey` from `GET /api/agents` (or the browser may fail to load its
+local copy of the key). The effect chain is:
+
+- `apps/web/src/stores/terminal.ts:143-162` — `resolvePeerIdentity` returns
+  `undefined` when `!agent.signingPublicKey` (line 152) or when the local
+  signing key fails to load. The doc-comment there already notes this fallback
+  is "identical to the pre-WS2 behavior."
+- With no `identity`, the caller connects with `identity: undefined`. The
+  browser therefore builds no `IdentityProof` and sends no
+  `userSigningPublicKey` on the offer.
+- `apps/agent/src/main.rs:765-796` (`verify_offer_identity`) rejects the offer
+  ("offer carries no identity proof" / "offer carries no user signing key")
+  **before** `rtc::answer_offer` (main.rs:956→958). The answer is never produced,
+  so no answer SDP is sent and no PTY is spawned.
+
+This is a **denial of service** (the session cannot open), **not** a
+confidentiality break: the failure mode is fail-closed — it cannot cause an
+unverified session to run. The omission simply falls back to the pre-WS2 path
+that never authenticated the peer. This is accepted at WS2 by design: Phase 5's
+WS2 is a TOFU/bootstrap layer (spec §8). Full PKI / server-side attestation of
+peer keys is explicitly out of scope here; WS3 (spec §3.3) may revisit it.
+
 ## What WS2 does NOT do
 
 - WS2 does **not** encrypt session payloads. That is WS1 (spec §3.1, H1).
