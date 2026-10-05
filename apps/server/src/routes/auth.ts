@@ -16,6 +16,14 @@ import { authMiddleware } from '../middleware/auth.js';
 import { verifyTokenForUser } from '../utils/auth.js';
 import { toPublicUser } from '../utils/user.js';
 import { getJwtSecret, getRefreshSecret } from '../utils/env.js';
+import { closeUserSockets } from './ws.js';
+import {
+  storeRefreshToken,
+  findRefreshToken,
+  claimRefreshToken,
+  revokeFamily,
+  getReuseGraceMs,
+} from '../utils/refresh-tokens.js';
 
 const auth = new Hono<AppContext>();
 
@@ -182,18 +190,24 @@ auth.post('/register', async (c) => {
     getJwtSecret(),
     ttl,
   );
-  const { token: refreshToken } = await signRefreshToken(
+  const refresh = await signRefreshToken(
     newUser.id,
     getRefreshSecret(),
     getRefreshTokenTtl(),
   );
+  await storeRefreshToken(c.get('db'), {
+    jti: refresh.jti,
+    familyId: refresh.familyId,
+    userId: newUser.id,
+    expiresAt: refresh.exp,
+  });
 
   return c.json(
     {
       user: toPublicUser(newUser),
       requiresApproval: false,
       token,
-      refreshToken,
+      refreshToken: refresh.token,
       expiresIn: exp - Math.floor(Date.now() / 1000),
     },
     201,
@@ -270,16 +284,22 @@ auth.post('/login', async (c) => {
     getJwtSecret(),
     ttl,
   );
-  const { token: refreshToken } = await signRefreshToken(
+  const refresh = await signRefreshToken(
     user.id,
     getRefreshSecret(),
     getRefreshTokenTtl(),
   );
+  await storeRefreshToken(c.get('db'), {
+    jti: refresh.jti,
+    familyId: refresh.familyId,
+    userId: user.id,
+    expiresAt: refresh.exp,
+  });
 
   return c.json({
     user: toPublicUser(user),
     token,
-    refreshToken,
+    refreshToken: refresh.token,
     expiresIn: exp - Math.floor(Date.now() / 1000),
   });
 });
@@ -293,7 +313,7 @@ auth.post('/refresh', async (c) => {
   // The refresh token is held to the same four checks as an access token in
   // `authMiddleware`; only the wording and codes differ, so the shared helper
   // takes those as parameters.
-  const { user } = await verifyTokenForUser(
+  const { user, payload } = await verifyTokenForUser(
     c,
     body.refreshToken,
     getRefreshSecret(),
@@ -318,19 +338,120 @@ auth.post('/refresh', async (c) => {
     },
   );
 
-  const ttl = getAccessTokenTtl();
-  const { token, exp } = await signAccessToken(
+  const db = c.get('db');
+  const row = await findRefreshToken(db, payload.jti);
+  if (!row) {
+    // Unknown jti: minted before this migration, or a family already revoked.
+    throw new AppError(
+      'Invalid or expired refresh token',
+      401,
+      'INVALID_REFRESH_TOKEN',
+    );
+  }
+
+  const nowMs = Date.now();
+  if (row.usedAt) {
+    // `usedAt` is stored in milliseconds so a `REFRESH_REUSE_GRACE_MS=0` test
+    // is deterministic: a second use in the same millisecond is still reuse.
+    const withinGrace =
+      row.replacedByToken &&
+      row.replacedByExpiresAt &&
+      nowMs - row.usedAt < getReuseGraceMs();
+    if (withinGrace) {
+      // A concurrent refresh from another tab: hand back the same replacement
+      // rather than treating a race as theft.
+      const { token, exp } = await signAccessToken(
+        user.id,
+        user.username,
+        getJwtSecret(),
+        getAccessTokenTtl(),
+      );
+      return c.json({
+        token,
+        refreshToken: row.replacedByToken,
+        expiresIn: exp - Math.floor(nowMs / 1000),
+      });
+    }
+    // A rotated token replayed later is theft: burn the whole family.
+    await revokeFamily(db, row.familyId);
+    throw new AppError(
+      'Refresh token reuse detected',
+      401,
+      'REFRESH_TOKEN_REUSED',
+    );
+  }
+
+  // Mint the replacement BEFORE claiming — `signRefreshToken` is async and
+  // yields the event loop during crypto.subtle.sign, which is exactly the window
+  // a concurrent request slides into. Minting early is harmless: if the claim
+  // loses we simply discard this replacement.
+  const replacement = await signRefreshToken(
     user.id,
-    user.username,
-    getJwtSecret(),
-    ttl,
+    getRefreshSecret(),
+    getRefreshTokenTtl(),
+    row.familyId,
   );
 
-  return c.json({
-    token,
-    refreshToken: body.refreshToken,
-    expiresIn: exp - Math.floor(Date.now() / 1000),
-  });
+  const won = await claimRefreshToken(
+    db,
+    payload.jti,
+    { token: replacement.token, expiresAt: replacement.exp },
+    nowMs,
+  );
+
+  if (won) {
+    // You are the winner: persist the new token and return it.
+    await storeRefreshToken(db, {
+      jti: replacement.jti,
+      familyId: replacement.familyId,
+      userId: user.id,
+      expiresAt: replacement.exp,
+    });
+
+    const { token, exp } = await signAccessToken(
+      user.id,
+      user.username,
+      getJwtSecret(),
+      getAccessTokenTtl(),
+    );
+    return c.json({
+      token,
+      refreshToken: replacement.token,
+      expiresIn: exp - Math.floor(nowMs / 1000),
+    });
+  }
+
+  // You lost the race: another request already rotated this token. Re-read the
+  // row so we see its replacement and `usedAt`, then apply the grace logic.
+  const updatedRow = await findRefreshToken(db, payload.jti);
+  if (
+    updatedRow &&
+    updatedRow.usedAt &&
+    updatedRow.replacedByToken &&
+    updatedRow.replacedByExpiresAt &&
+    nowMs - updatedRow.usedAt < getReuseGraceMs()
+  ) {
+    // Within the grace window: hand back the same replacement (multi-tab).
+    const { token, exp } = await signAccessToken(
+      user.id,
+      user.username,
+      getJwtSecret(),
+      getAccessTokenTtl(),
+    );
+    return c.json({
+      token,
+      refreshToken: updatedRow.replacedByToken,
+      expiresIn: exp - Math.floor(nowMs / 1000),
+    });
+  }
+
+  // No replacement or grace elapsed: this is reuse (or a stale token).
+  await revokeFamily(db, row.familyId);
+  throw new AppError(
+    'Refresh token reuse detected',
+    401,
+    'REFRESH_TOKEN_REUSED',
+  );
 });
 
 auth.post('/logout', authMiddleware, async (c) => {
@@ -351,7 +472,8 @@ auth.post('/logout', authMiddleware, async (c) => {
     })
     .onConflictDoNothing();
 
-  // Also revoke the refresh token if one was passed in the body.
+  // A logout kills the whole refresh family, not just the presented token:
+  // any sibling token from the same login is now unusable.
   const body = await c.req.json<{ refreshToken?: string }>().catch(() => null);
   if (body?.refreshToken) {
     try {
@@ -359,18 +481,16 @@ auth.post('/logout', authMiddleware, async (c) => {
         body.refreshToken,
         getRefreshSecret(),
       );
-      const refreshTtl = refreshPayload.exp - now;
-      await db
-        .insert(revokedTokens)
-        .values({
-          jti: refreshPayload.jti,
-          expiresAt: now + (refreshTtl > 0 ? refreshTtl : 60),
-        })
-        .onConflictDoNothing();
+      if (refreshPayload.fam) {
+        await revokeFamily(db, refreshPayload.fam);
+      }
     } catch {
       // Ignore invalid refresh token during logout
     }
   }
+
+  // A revoked access token must not leave a live socket behind.
+  closeUserSockets(tokenPayload.sub, 4401, 'Logged out');
 
   return c.json({ success: true });
 });

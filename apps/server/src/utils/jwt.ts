@@ -52,6 +52,8 @@ export interface TokenPayload {
    * work as a ticket.
    */
   scope?: string;
+  /** Refresh-token family id. Present on `type: 'refresh'` tokens only. */
+  fam?: string;
   [key: string]: unknown;
 }
 
@@ -178,7 +180,8 @@ export async function signRefreshToken(
   userId: string,
   secret: string,
   expiresInSeconds = 604800, // 7 days
-): Promise<{ token: string; jti: string; exp: number }> {
+  familyId: string = crypto.randomUUID(),
+): Promise<{ token: string; jti: string; exp: number; familyId: string }> {
   const jti = crypto.randomUUID();
   const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
   const payload: TokenPayload = {
@@ -186,10 +189,11 @@ export async function signRefreshToken(
     type: 'refresh',
     jti,
     exp,
+    fam: familyId,
   };
 
   const token = await sign(payload, secret);
-  return { token, jti, exp };
+  return { token, jti, exp, familyId };
 }
 
 /**

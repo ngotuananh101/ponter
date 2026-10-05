@@ -33,7 +33,7 @@ services:
       - DATABASE_PATH=/app/data/remote.db
       - JWT_SECRET=${JWT_SECRET}
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
-      - CORS_ORIGIN=${CORS_ORIGIN}
+      - CORS_ORIGIN=${CORS_ORIGIN:?CORS_ORIGIN must be set to an explicit allowlist}
     volumes:
       - ./data:/app/data
 

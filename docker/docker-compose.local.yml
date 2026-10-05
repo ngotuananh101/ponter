@@ -33,6 +33,6 @@ services:
       - DATABASE_PATH=/app/data/remote.db
       - JWT_SECRET=local-dev-jwt-secret-key-32-chars-min
       - REFRESH_TOKEN_SECRET=local-dev-refresh-secret-key-32-chars
-      - CORS_ORIGIN=*
+      - CORS_ORIGIN=http://localhost:5173
     volumes:
       - ./data:/app/data

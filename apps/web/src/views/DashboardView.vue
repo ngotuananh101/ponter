@@ -266,7 +266,7 @@ onUnmounted(() => {
               class="flex items-center gap-1.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400"
             >
               <ShieldCheck class="w-4 h-4" />
-              <span>Zero-Trust E2EE</span>
+              <span>DTLS-Secured Transport</span>
             </div>
             <p class="text-[11px] text-muted-foreground">
               DTLS 1.2 · SCTP · Sub-10ms PTY
@@ -563,7 +563,7 @@ onUnmounted(() => {
           </CardContent>
         </Card>
 
-        <!-- Zero-Trust Architecture Insight Card -->
+        <!-- DTLS-Secured Transport Insight Card -->
         <Card class="border-border/80 bg-secondary/30 shadow-sm">
           <CardHeader class="pb-2">
             <CardTitle

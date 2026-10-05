@@ -35,7 +35,7 @@ ponter/
 ├── packages/
 │   ├── shared/            # Shared TypeScript types, schemas, and wire protocol models
 │   ├── api-client/        # Type-safe HTTP & WebSocket client SDK with token auto-refresh
-│   ├── crypto/            # Client-side cryptographic primitives (E2EE, Web Crypto keys)
+│   ├── crypto/            # Web Crypto key generation & local key storage (E2EE planned, Phase 5)
 │   ├── terminal-core/     # Headless pure TypeScript terminal manager (RingBuffer, TerminalClient)
 │   ├── webrtc-core/       # WebRTC connection orchestration & DataChannel management
 │   └── ui-components/     # Shared Vue 3 UI component library

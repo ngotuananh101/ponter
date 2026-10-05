@@ -6,7 +6,7 @@ import { eq, and, inArray, sql } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
 import type { Database } from '../db/client.js';
 import type { AppContext } from '../types.js';
-import { agents, sessions } from '../db/schema.js';
+import { agents, sessions, users } from '../db/schema.js';
 import { sha256Hex } from '../utils/crypto.js';
 import { NOW_SQL, recordSignal } from '../utils/signals.js';
 import { buildIceServers } from '../utils/ice.js';
@@ -85,6 +85,30 @@ export interface BrowserConnection {
 }
 
 export const browserConnections = new Map<string, Set<BrowserConnection>>();
+
+/**
+ * Close every live browser socket belonging to a user.
+ *
+ * Called when the user's right to be connected ends — a logout, or an admin
+ * deactivating or rejecting the account. Without it a revocation only stopped
+ * *new* connections: an already-open socket kept streaming until the tab
+ * closed.
+ */
+export function closeUserSockets(
+  userId: string,
+  code = 4401,
+  reason = 'Session revoked',
+): void {
+  const connections = browserConnections.get(userId);
+  if (!connections) return;
+  for (const connection of connections) {
+    try {
+      connection.socket.close(code, reason);
+    } catch {
+      // A socket already closing is an ordinary outcome.
+    }
+  }
+}
 
 /**
  * Best-effort delivery of a message to every browser socket of a user that is
@@ -558,6 +582,19 @@ export async function handleBrowserUpgrade(
   // One-time: a consumed or unknown jti is indistinguishable from an invalid
   // ticket, and the response is the same 401.
   if (!consumeWsTicket(payload.jti)) {
+    return reject(401, 'Unauthorized');
+  }
+
+  // A ticket is minted with a 15s TTL, so a user can be deactivated between
+  // mint and upgrade. Re-check the account here: the ticket proves the token
+  // was valid at mint time, not that the account still is.
+  const db = getDb(process.env.DATABASE_PATH);
+  const user = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, payload.sub))
+    .get();
+  if (!user?.isActive || user.approvalStatus !== 'approved') {
     return reject(401, 'Unauthorized');
   }
 

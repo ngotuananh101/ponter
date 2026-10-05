@@ -5,6 +5,7 @@ import { AppError } from '../middleware/error.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { adminMiddleware } from '../middleware/admin.js';
 import { toPublicUser } from '../utils/user.js';
+import { closeUserSockets } from './ws.js';
 import { getSystemSettings, updateSystemSettings } from '../utils/settings.js';
 import { users, agents, sessions } from '../db/schema.js';
 import type { UserSelect } from '../db/schema.js';
@@ -348,6 +349,13 @@ admin.patch('/users/:id', async (c) => {
 
   if (!updated) {
     throw new AppError('User not found', 404, 'NOT_FOUND');
+  }
+
+  // Deactivation or rejection must reach live sockets, not just the next
+  // login. The demotion branch above returns early and leaves the account
+  // active, so it needs no close here.
+  if (updates.isActive === false || updates.approvalStatus === 'rejected') {
+    closeUserSockets(targetId, 4401, 'Account disabled');
   }
 
   return c.json({ user: toPublicUser(updated) });

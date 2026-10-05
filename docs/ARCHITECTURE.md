@@ -24,14 +24,14 @@ Xây dựng nền tảng remote access toàn diện cung cấp:
 - **Remote Terminal** với độ trễ < 10ms
 - **Remote Desktop** streaming 60fps
 - **Remote File Manager** với transfer tốc độ cao
-- **Zero-Trust Security** với end-to-end encryption
+- **Zero-Trust Security** (xác thực đã có; định danh peer & E2EE tầng ứng dụng — Phase 5)
 
 ### 1.2 Nguyên tắc Thiết kế
 
 | Nguyên tắc | Mô tả |
 |-----------|-------|
 | **Speed First** | Tối ưu mọi layer cho độ trễ thấp nhất |
-| **Security by Default** | Zero-trust, E2EE mọi data channel |
+| **Security by Default** | Zero-trust (auth đã có); định danh peer & E2EE tầng ứng dụng — Phase 5 (không áp dụng cho video/file transfer) |
 | **Cross-Platform** | Web + Desktop + Mobile từ một codebase |
 | **Scalable** | Self-hosted Node.js, P2P data transfer |
 | **Developer Friendly** | Monorepo, TypeScript-first, clear docs |
@@ -241,6 +241,8 @@ sequenceDiagram
 ```
 
 ### 2.6 Kiến trúc Bảo mật
+
+> **⚠️ Trạng thái thực tế (2026-10-05):** sơ đồ dưới đây là kiến trúc phòng thủ mục tiêu. Các control sau **chưa được hiện thực**: IP whitelisting (B1), geo-blocking (B3), bot detection (B4), certificate pinning (C2), HSTS (C3), device match (E2). Một số control có hiện thực nhưng chỉ một phần: rate limiting (B2/D3) chỉ áp cho endpoint đăng nhập (`/api/auth/login`); TLS (C1) do Caddy/Let's Encrypt kết thúc nhưng không ghim TLS 1.3+. Đã hiện thực: JWT validation (D1), scope check (D2), session validity (E1), concurrent limit (E3).
 
 ```mermaid
 flowchart TD
