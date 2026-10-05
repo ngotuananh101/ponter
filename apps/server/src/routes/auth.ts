@@ -19,7 +19,7 @@ import { getJwtSecret, getRefreshSecret } from '../utils/env.js';
 import {
   storeRefreshToken,
   findRefreshToken,
-  markRefreshTokenUsed,
+  claimRefreshToken,
   revokeFamily,
   getReuseGraceMs,
 } from '../utils/refresh-tokens.js';
@@ -380,36 +380,77 @@ auth.post('/refresh', async (c) => {
     );
   }
 
+  // Mint the replacement BEFORE claiming — `signRefreshToken` is async and
+  // yields the event loop during crypto.subtle.sign, which is exactly the window
+  // a concurrent request slides into. Minting early is harmless: if the claim
+  // loses we simply discard this replacement.
   const replacement = await signRefreshToken(
     user.id,
     getRefreshSecret(),
     getRefreshTokenTtl(),
     row.familyId,
   );
-  await markRefreshTokenUsed(
+
+  const won = await claimRefreshToken(
     db,
     payload.jti,
     { token: replacement.token, expiresAt: replacement.exp },
     nowMs,
   );
-  await storeRefreshToken(db, {
-    jti: replacement.jti,
-    familyId: replacement.familyId,
-    userId: user.id,
-    expiresAt: replacement.exp,
-  });
 
-  const { token, exp } = await signAccessToken(
-    user.id,
-    user.username,
-    getJwtSecret(),
-    getAccessTokenTtl(),
+  if (won) {
+    // You are the winner: persist the new token and return it.
+    await storeRefreshToken(db, {
+      jti: replacement.jti,
+      familyId: replacement.familyId,
+      userId: user.id,
+      expiresAt: replacement.exp,
+    });
+
+    const { token, exp } = await signAccessToken(
+      user.id,
+      user.username,
+      getJwtSecret(),
+      getAccessTokenTtl(),
+    );
+    return c.json({
+      token,
+      refreshToken: replacement.token,
+      expiresIn: exp - Math.floor(nowMs / 1000),
+    });
+  }
+
+  // You lost the race: another request already rotated this token. Re-read the
+  // row so we see its replacement and `usedAt`, then apply the grace logic.
+  const updatedRow = await findRefreshToken(db, payload.jti);
+  if (
+    updatedRow &&
+    updatedRow.usedAt &&
+    updatedRow.replacedByToken &&
+    updatedRow.replacedByExpiresAt &&
+    nowMs - updatedRow.usedAt < getReuseGraceMs()
+  ) {
+    // Within the grace window: hand back the same replacement (multi-tab).
+    const { token, exp } = await signAccessToken(
+      user.id,
+      user.username,
+      getJwtSecret(),
+      getAccessTokenTtl(),
+    );
+    return c.json({
+      token,
+      refreshToken: updatedRow.replacedByToken,
+      expiresIn: exp - Math.floor(nowMs / 1000),
+    });
+  }
+
+  // No replacement or grace elapsed: this is reuse (or a stale token).
+  await revokeFamily(db, row.familyId);
+  throw new AppError(
+    'Refresh token reuse detected',
+    401,
+    'REFRESH_TOKEN_REUSED',
   );
-  return c.json({
-    token,
-    refreshToken: replacement.token,
-    expiresIn: exp - Math.floor(nowMs / 1000),
-  });
 });
 
 auth.post('/logout', authMiddleware, async (c) => {

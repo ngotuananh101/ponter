@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
 import { refreshTokens } from '../db/schema.js';
 
@@ -42,20 +42,30 @@ export async function findRefreshToken(db: Database, jti: string) {
   return db.select().from(refreshTokens).where(eq(refreshTokens.jti, jti)).get();
 }
 
-export async function markRefreshTokenUsed(
+/**
+ * Atomically claim a refresh token for rotation.
+ *
+ * The `used_at IS NULL` guard is what makes this single-use: two concurrent
+ * requests both reach here with `used_at = null` in hand, but only the first
+ * UPDATE matches. The loser gets an empty result and must treat the token as
+ * already rotated rather than minting a second replacement.
+ */
+export async function claimRefreshToken(
   db: Database,
   jti: string,
   replacement: { token: string; expiresAt: number },
   usedAt: number,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const rows = await db
     .update(refreshTokens)
     .set({
       usedAt,
       replacedByToken: replacement.token,
       replacedByExpiresAt: replacement.expiresAt,
     })
-    .where(eq(refreshTokens.jti, jti));
+    .where(and(eq(refreshTokens.jti, jti), isNull(refreshTokens.usedAt)))
+    .returning({ jti: refreshTokens.jti });
+  return rows.length === 1;
 }
 
 /**

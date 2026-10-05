@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createApp } from '../src/app';
 import { getDb, closeDb } from '../src/db/client';
+import { claimRefreshToken } from '../src/utils/refresh-tokens.js';
 
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 process.env.REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters';
+process.env.E2E_AUTO_APPROVE_USERS = 'true';
 
 async function register(app: ReturnType<typeof createApp>, username: string) {
   const res = await app.request('/api/auth/register', {
@@ -61,5 +63,25 @@ describe('refresh token rotation', () => {
     // The family is dead: the replacement is now rejected too.
     const after = await refresh(app, first.body.refreshToken!);
     expect(after.status).toBe(401);
+  });
+
+  it('claims a refresh token atomically: a second claim on the same jti loses', async () => {
+    const app = createApp();
+    const { refreshToken } = await register(app, 'dave');
+    const db = getDb();
+    // Extract the jti from the refresh token payload (no secret needed to read payload).
+    const payloadJson = JSON.parse(
+      atob(refreshToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')),
+    ) as { jti: string; fam: string; exp: number; sub: string };
+    const first = await claimRefreshToken(db, payloadJson.jti, {
+      token: 'replacement-1',
+      expiresAt: payloadJson.exp,
+    }, Date.now());
+    expect(first).toBe(true);
+    const second = await claimRefreshToken(db, payloadJson.jti, {
+      token: 'replacement-2',
+      expiresAt: payloadJson.exp,
+    }, Date.now());
+    expect(second).toBe(false);
   });
 });
