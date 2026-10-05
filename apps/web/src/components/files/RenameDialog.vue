@@ -40,6 +40,7 @@ function onKeydown(e: KeyboardEvent): void {
     data-test="rename-dialog"
     open
     @click.self="emit('cancel')"
+    @keydown.escape="emit('cancel')"
   >
     <form @submit.prevent="onConfirm">
       <label for="rename-input">Rename</label>

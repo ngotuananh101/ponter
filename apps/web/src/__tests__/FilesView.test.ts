@@ -41,6 +41,46 @@ function filesTab(overrides: Partial<TabItem> = {}): TabItem {
 const mountFiles = (overrides: Partial<TabItem> = {}) =>
   mount(FilesView, { props: { tab: filesTab(overrides) } });
 
+/** Mount FilesView attached to the document body (for dialog keyboard events). */
+function mountAttached(overrides: Partial<TabItem> = {}) {
+  const wrapper = mount(FilesView, {
+    props: { tab: filesTab(overrides) },
+    attachTo: document.body,
+  });
+  return wrapper;
+}
+
+/** Open the New Folder dialog, enter a name, and click confirm or cancel. */
+async function newFolderAction(
+  wrapper: ReturnType<typeof mountFiles>,
+  name: string,
+  confirm = true,
+) {
+  await wrapper.find('[data-test="files-new-folder-btn"]').trigger('click');
+  const input = wrapper.find<HTMLInputElement>(
+    '[data-test="new-folder-input"]',
+  );
+  await input.setValue(name);
+  await wrapper
+    .find(`[data-test="new-folder-${confirm ? 'confirm' : 'cancel'}"]`)
+    .trigger('click');
+}
+
+/** Open the Rename dialog for the given row, enter a name, and click confirm or cancel. */
+async function renameAction(
+  wrapper: ReturnType<typeof mountFiles>,
+  rowSelector: string,
+  name: string,
+  confirm = true,
+) {
+  await wrapper.find(`${rowSelector} .rename-action`).trigger('click');
+  const input = wrapper.find<HTMLInputElement>('[data-test="rename-input"]');
+  await input.setValue(name);
+  await wrapper
+    .find(`[data-test="rename-${confirm ? 'confirm' : 'cancel'}"]`)
+    .trigger('click');
+}
+
 describe('FilesView', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -263,53 +303,27 @@ describe('FilesView', () => {
     it('attaches to the document body: confirm calls filesMkdir exactly once', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      let wrapper;
+      const wrapper = mountAttached();
       try {
-        wrapper = mount(FilesView, {
-          props: { tab: filesTab() },
-          attachTo: document.body,
-        });
-
-        await wrapper
-          .find('[data-test="files-new-folder-btn"]')
-          .trigger('click');
-
-        const input = wrapper.find<HTMLInputElement>(
-          '[data-test="new-folder-input"]',
-        );
-        await input.setValue('NewDir');
-        await wrapper.find('[data-test="new-folder-confirm"]').trigger('click');
+        await newFolderAction(wrapper, 'NewDir', true);
 
         expect(mkdir).toHaveBeenCalledTimes(1);
         expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
       } finally {
-        wrapper?.unmount();
+        wrapper.unmount();
       }
     });
 
     it('attaches to the document body: Cancel does not call filesMkdir', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      let wrapper;
+      const wrapper = mountAttached();
       try {
-        wrapper = mount(FilesView, {
-          props: { tab: filesTab() },
-          attachTo: document.body,
-        });
-
-        await wrapper
-          .find('[data-test="files-new-folder-btn"]')
-          .trigger('click');
-
-        const input = wrapper.find<HTMLInputElement>(
-          '[data-test="new-folder-input"]',
-        );
-        await input.setValue('NewDir');
-        await wrapper.find('[data-test="new-folder-cancel"]').trigger('click');
+        await newFolderAction(wrapper, 'NewDir', false);
 
         expect(mkdir).not.toHaveBeenCalled();
       } finally {
-        wrapper?.unmount();
+        wrapper.unmount();
       }
     });
 
@@ -363,22 +377,14 @@ describe('FilesView', () => {
     it('attaches to the document body: Rename confirm calls filesRename exactly once', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      let wrapper;
+      const wrapper = mountAttached();
       try {
-        wrapper = mount(FilesView, {
-          props: { tab: filesTab() },
-          attachTo: document.body,
-        });
-
-        await wrapper
-          .find('[data-test="files-row-notes.txt"] .rename-action')
-          .trigger('click');
-
-        const input = wrapper.find<HTMLInputElement>(
-          '[data-test="rename-input"]',
+        await renameAction(
+          wrapper,
+          '[data-test="files-row-notes.txt"]',
+          'renamed.txt',
+          true,
         );
-        await input.setValue('renamed.txt');
-        await wrapper.find('[data-test="rename-confirm"]').trigger('click');
 
         expect(rename).toHaveBeenCalledTimes(1);
         expect(rename).toHaveBeenCalledWith(
@@ -387,33 +393,25 @@ describe('FilesView', () => {
           'renamed.txt',
         );
       } finally {
-        wrapper?.unmount();
+        wrapper.unmount();
       }
     });
 
     it('attaches to the document body: Rename Cancel does not call filesRename', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      let wrapper;
+      const wrapper = mountAttached();
       try {
-        wrapper = mount(FilesView, {
-          props: { tab: filesTab() },
-          attachTo: document.body,
-        });
-
-        await wrapper
-          .find('[data-test="files-row-notes.txt"] .rename-action')
-          .trigger('click');
-
-        const input = wrapper.find<HTMLInputElement>(
-          '[data-test="rename-input"]',
+        await renameAction(
+          wrapper,
+          '[data-test="files-row-notes.txt"]',
+          'renamed.txt',
+          false,
         );
-        await input.setValue('renamed.txt');
-        await wrapper.find('[data-test="rename-cancel"]').trigger('click');
 
         expect(rename).not.toHaveBeenCalled();
       } finally {
-        wrapper?.unmount();
+        wrapper.unmount();
       }
     });
 

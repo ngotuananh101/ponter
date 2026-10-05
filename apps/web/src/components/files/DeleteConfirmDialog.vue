@@ -20,6 +20,7 @@ function onDelete(recursive: boolean): void {
     data-test="delete-dialog"
     open
     @click.self="emit('cancel')"
+    @keydown.escape="emit('cancel')"
   >
     <form method="dialog">
       <p>

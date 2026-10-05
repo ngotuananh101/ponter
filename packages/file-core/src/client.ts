@@ -652,7 +652,7 @@ export class FileClient {
           pending.reject(error);
           return;
         }
-        for (const listener of [...this.errorListeners]) {
+        for (const listener of this.errorListeners) {
           listener(payload.code, payload.message);
         }
         return;

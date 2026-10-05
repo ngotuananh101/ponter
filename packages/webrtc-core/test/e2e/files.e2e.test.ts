@@ -10,7 +10,6 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { PeerConnection } from '../../src/connection';
 import { RESTPollingTransport } from '../../src/transport';
 import {
   isLinux,
@@ -23,17 +22,15 @@ import {
   openFilesPeer,
   waitForFilesFrame,
   waitForBinaryFrame,
-  packBinary,
   unpackBinary,
-  sendRaw,
   waitFor,
   agents,
-  type FilesFrame,
   FILE_CHUNK_BYTES,
   WINDOW,
   sha256Hex,
   assembleDownload,
   drainDownload,
+  connectFilesAgent,
 } from './harness';
 import type {
   FilesAckMessage,
@@ -99,46 +96,8 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
     });
   }, 60_000);
 
-  /** Register + spawn an agent whose files gate is open on `rootDir`. */
-  async function connectFilesAgent(): Promise<{
-    token: string;
-    agentId: string;
-    sessionId: string;
-    frames: FilesFrame[];
-    binaryFrames: Uint8Array[];
-    offerer: PeerConnection;
-    send: (type: string, payload: unknown) => void;
-    sendRawChunk: (
-      type: number,
-      transferId: string,
-      chunkIndex: number,
-      data: Uint8Array,
-    ) => void;
-  }> {
-    const { token, agentId, credential, sessionId } = await seed({
-      capabilities: ['files'],
-    });
-    spawnAgent(agentId, credential, ['--files-root', rootDir]);
-    await waitForAgentOnline(token, agentId);
-    const { offerer, frames, binaryFrames } = await openFilesPeer(
-      new RESTPollingTransport({ baseUrl: BASE_URL, sessionId, token }),
-    );
-    return {
-      token,
-      agentId,
-      sessionId,
-      frames,
-      binaryFrames,
-      offerer,
-      send: (type, payload) =>
-        offerer.dataChannels.sendJson('files', type, payload),
-      sendRawChunk: (type, transferId, chunkIndex, data) =>
-        sendRaw(offerer, packBinary(type, transferId, chunkIndex, data)),
-    };
-  }
-
   it('lists the seeded directory with sizes and types', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+    const { offerer, frames, send } = await connectFilesAgent(rootDir);
     try {
       const request: FilesListRequest = {
         requestId: crypto.randomUUID(),
@@ -170,7 +129,8 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('downloads a 3 MiB file byte-for-byte across the 64-chunk window', async () => {
-    const { offerer, frames, binaryFrames, send } = await connectFilesAgent();
+    const { offerer, frames, binaryFrames, send } =
+      await connectFilesAgent(rootDir);
     try {
       const transferId = crypto.randomUUID();
       send('files-download', {
@@ -220,7 +180,8 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('uploads a 100 KiB file that lands byte-equal with no .part left behind', async () => {
-    const { offerer, frames, send, sendRawChunk } = await connectFilesAgent();
+    const { offerer, frames, send, sendRawChunk } =
+      await connectFilesAgent(rootDir);
     try {
       const transferId = crypto.randomUUID();
       const payload = Buffer.alloc(100 * 1024);
@@ -295,7 +256,8 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('cancel mid-download stops the chunks, logs, and leaves the session usable', async () => {
-    const { offerer, frames, binaryFrames, send } = await connectFilesAgent();
+    const { offerer, frames, binaryFrames, send } =
+      await connectFilesAgent(rootDir);
     try {
       const transferId = crypto.randomUUID();
       send('files-download', {
@@ -377,7 +339,7 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('refuses paths outside the root with PATH_OUTSIDE_ROOT', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+    const { offerer, frames, send } = await connectFilesAgent(rootDir);
     try {
       const cases = [
         { path: '../outside/secret.txt', label: 'a .. escape' },
@@ -443,7 +405,7 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('refuses an upload onto an existing name with FILE_EXISTS and leaves it untouched', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+    const { offerer, frames, send } = await connectFilesAgent(rootDir);
     try {
       const before = readFileSync(join(rootDir, 'notes.txt'));
       const transferId = crypto.randomUUID();
@@ -476,7 +438,7 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('refuses a declared-oversize upload before any chunk with FILE_TOO_LARGE', async () => {
-    const { offerer, frames, send } = await connectFilesAgent();
+    const { offerer, frames, send } = await connectFilesAgent(rootDir);
     try {
       const transferId = crypto.randomUUID();
       send('files-upload-begin', {

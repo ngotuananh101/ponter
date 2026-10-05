@@ -1238,7 +1238,7 @@ export const useTerminalStore = defineStore('terminal', () => {
     const startDownload = (): Promise<void> => {
       // Re-check the tab/connection are still alive.
       const live = tabs.value.find((t) => t.id === tabId);
-      if (!live || live.kind !== 'files') {
+      if (live?.kind !== 'files') {
         transferQueue.cancel(queueId, 'tab closed before download started');
         return Promise.resolve();
       }
@@ -1319,6 +1319,58 @@ export const useTerminalStore = defineStore('terminal', () => {
 
     // Slot is busy — register the pending start for promotion.
     pendingDownloadStarts.set(queueId, startDownload);
+  }
+
+  /**
+   * In-memory blob download fallback for when the Service Worker streaming path
+   * is unavailable or fails. Enforces the 200 MB cap (ADR-38) and settles the
+   * queue item on success or cancellation.
+   */
+  async function fallbackInMemoryDownload(
+    live: TabItem,
+    client: FileClient,
+    name: string,
+    path: string,
+    queueId: string,
+    transferQueue: ReturnType<typeof useTransferQueueStore>,
+  ): Promise<void> {
+    const MAX_BLOB_FALLBACK_BYTES = 200 * 1024 * 1024;
+    const knownEntry = live.fileList?.entries.find((e) => e.path === path);
+    if (knownEntry && knownEntry.size > MAX_BLOB_FALLBACK_BYTES) {
+      live.fileError =
+        'File is too large to download without Service Worker support (over 200 MB)';
+      transferQueue.cancel(queueId, 'file too large for saveBlob fallback');
+      return;
+    }
+    const handle = client.download(path, fileProgressHandler(live));
+    live.fileTransfers = [
+      ...(live.fileTransfers ?? []),
+      {
+        transferId: handle.transferId,
+        direction: handle.direction,
+        bytesTransferred: 0,
+        totalBytes: 0,
+        chunkIndex: -1,
+        handle,
+        name,
+      },
+    ];
+    try {
+      const bytes = (await handle.done) as Uint8Array | void;
+      if (bytes) saveBlob(name, bytes);
+      transferQueue.markCompleted(queueId);
+    } catch (e) {
+      if (isCancelledError(e)) {
+        transferQueue.cancel(queueId);
+      } else {
+        live.fileError = fileErrorText(e);
+        transferQueue.cancel(queueId, fileErrorText(e));
+      }
+    } finally {
+      live.fileTransfers = live.fileTransfers?.filter(
+        (t) => t.transferId !== handle.transferId,
+      );
+    }
   }
 
   /**
@@ -1411,50 +1463,16 @@ export const useTerminalStore = defineStore('terminal', () => {
       }
       swHandle = null;
     } catch {
-      // SW path failed — cancel any transfer started, fall through to fallback.
       swHandle?.cancel();
       swHandle = null;
-      // Respect the 200 MB cap for the in-memory fallback: if the file is
-      // larger and the SW path already failed, surface an error instead of
-      // buffering >200 MB in memory.
-      const MAX_BLOB_FALLBACK_BYTES = 200 * 1024 * 1024;
-      const knownEntry = live.fileList?.entries.find((e) => e.path === path);
-      if (knownEntry && knownEntry.size > MAX_BLOB_FALLBACK_BYTES) {
-        live.fileError =
-          'File is too large to download without Service Worker support (over 200 MB)';
-        transferQueue.cancel(queueId, 'file too large for saveBlob fallback');
-        return;
-      }
-      // Retry with the in-memory fallback.
-      const handle = client.download(path, fileProgressHandler(live));
-      live.fileTransfers = [
-        ...(live.fileTransfers ?? []),
-        {
-          transferId: handle.transferId,
-          direction: handle.direction,
-          bytesTransferred: 0,
-          totalBytes: 0,
-          chunkIndex: -1,
-          handle,
-          name,
-        },
-      ];
-      try {
-        const bytes = (await handle.done) as Uint8Array | void;
-        if (bytes) saveBlob(name, bytes);
-        transferQueue.markCompleted(queueId);
-      } catch (e) {
-        if (isCancelledError(e)) {
-          transferQueue.cancel(queueId);
-        } else {
-          live.fileError = fileErrorText(e);
-          transferQueue.cancel(queueId, fileErrorText(e));
-        }
-      } finally {
-        live.fileTransfers = live.fileTransfers?.filter(
-          (t) => t.transferId !== handle.transferId,
-        );
-      }
+      await fallbackInMemoryDownload(
+        live,
+        client,
+        name,
+        path,
+        queueId,
+        transferQueue,
+      );
     }
   }
 
@@ -1483,7 +1501,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       // Re-check the tab is still open; a queued item whose tab closed must
       // not start against a dead connection.
       const live = tabs.value.find((t) => t.id === tabId);
-      if (!live || live.kind !== 'files') {
+      if (live?.kind !== 'files') {
         transferQueue.cancel(queueId, 'tab closed before upload started');
         return;
       }

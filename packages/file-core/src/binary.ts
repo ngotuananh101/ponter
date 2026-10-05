@@ -9,13 +9,13 @@ const MAX_BINARY_FRAME_LEN = BINARY_HEADER_LEN + FILE_CHUNK_BYTES;
  * separators. Matches ADR-36 (spec §5.1): the wire carries 16 bytes.
  */
 function uuidToBytes(uuid: string): Uint8Array {
-  const hex = uuid.replace(/-/g, '');
+  const hex = uuid.replaceAll('-', '');
   if (hex.length !== 32) {
     throw new Error('invalid uuid');
   }
   const bytes = new Uint8Array(16);
   for (let i = 0; i < 16; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }

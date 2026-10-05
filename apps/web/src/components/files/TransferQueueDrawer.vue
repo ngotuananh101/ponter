@@ -47,6 +47,7 @@ const visible = computed(() => props.transfers);
     :class="['transfer-drawer', open ? 'open' : '']"
     tabindex="-1"
     @click.self="emit('close')"
+    @keydown.escape="emit('close')"
   >
     <header class="transfer-drawer-header">
       <h2>Transfers</h2>

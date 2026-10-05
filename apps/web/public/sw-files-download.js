@@ -15,6 +15,9 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('message', (event) => {
+  if (event.origin !== self.location.origin) {
+    return;
+  }
   const { type, transferId, filename, size } = event.data || {};
   if (type === 'STREAM_INIT' && transferId && event.ports[0]) {
     ports.set(transferId, { port: event.ports[0], filename, size });
@@ -67,6 +70,5 @@ self.addEventListener('fetch', (event) => {
       headers['Content-Length'] = String(size);
     }
     event.respondWith(new Response(stream, { headers }));
-    return;
   }
 });

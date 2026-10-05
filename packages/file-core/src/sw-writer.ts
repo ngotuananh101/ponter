@@ -24,8 +24,8 @@ interface StreamWriterOptions {
 }
 
 export class ServiceWorkerStreamWriter {
-  private port: MessagePort;
-  private meta: StreamWriterMeta;
+  private readonly port: MessagePort;
+  private readonly meta: StreamWriterMeta;
   private released = false;
   private _isClosed = false;
 
@@ -52,9 +52,11 @@ export class ServiceWorkerStreamWriter {
    * Post a CHUNK message through the port. Resolves once the message is
    * queued; rejects if the port was closed (Review Focus #4).
    */
-  async writeChunk(chunk: Uint8Array): Promise<void> {
+  writeChunk(chunk: Uint8Array): Promise<void> {
     if (this._isClosed || this.released) {
-      throw new DOMException('port closed', 'InvalidStateError');
+      return Promise.reject(
+        new DOMException('port closed', 'InvalidStateError'),
+      );
     }
     try {
       this.port.postMessage({
@@ -62,10 +64,13 @@ export class ServiceWorkerStreamWriter {
         transferId: this.meta.transferId,
         chunk,
       });
+      return Promise.resolve();
     } catch {
       this._isClosed = true;
       this.release();
-      throw new DOMException('port closed', 'InvalidStateError');
+      return Promise.reject(
+        new DOMException('port closed', 'InvalidStateError'),
+      );
     }
   }
 
@@ -73,18 +78,23 @@ export class ServiceWorkerStreamWriter {
    * Post an END message and resolve when the port is released. Rejects if the
    * port closed before END could be delivered (Review Focus #4).
    */
-  async end(): Promise<void> {
+  end(): Promise<void> {
     if (this._isClosed || this.released) {
-      throw new DOMException('port closed', 'InvalidStateError');
+      return Promise.reject(
+        new DOMException('port closed', 'InvalidStateError'),
+      );
     }
     try {
       this.port.postMessage({ type: 'END', transferId: this.meta.transferId });
+      this.release();
+      return Promise.resolve();
     } catch {
       this._isClosed = true;
       this.release();
-      throw new DOMException('port closed', 'InvalidStateError');
+      return Promise.reject(
+        new DOMException('port closed', 'InvalidStateError'),
+      );
     }
-    this.release();
   }
 
   /** Abort the transfer: close the port and mark closed. Idempotent. */

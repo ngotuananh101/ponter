@@ -735,14 +735,14 @@ export function packBinary(
   chunkIndex: number,
   data: Uint8Array,
 ): Uint8Array {
-  const hex = transferId.replace(/-/g, '');
+  const hex = transferId.replaceAll('-', '');
   if (hex.length !== 32) {
     throw new Error('invalid uuid');
   }
   const out = new Uint8Array(BINARY_HEADER_LEN + data.byteLength);
   out[0] = type & 0xff;
   for (let i = 0; i < 16; i++) {
-    out[i + 1] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    out[i + 1] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   new DataView(out.buffer, out.byteOffset, out.byteLength).setBigUint64(
     17,
@@ -852,8 +852,45 @@ export function assembleDownload(
 }
 
 /**
+ * Process newly-seen binary frames starting at `cursor`, adding download
+ * chunks that belong to `transferId` into `chunks`.
+ *
+ * Returns the new cursor position so the caller can resume from the next
+ * unseen frame on a subsequent pass.
+ */
+function processDownloadFrames(
+  binaryFrames: Uint8Array[],
+  cursor: number,
+  transferId: string,
+  chunks: Set<number>,
+): number {
+  for (let i = cursor; i < binaryFrames.length; i++) {
+    const frame = binaryFrames[i];
+    if (!frame) continue;
+    const decoded = unpackBinary(frame);
+    if (
+      decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
+      decoded.transferId === transferId
+    ) {
+      chunks.add(decoded.chunkIndex);
+    }
+  }
+  return binaryFrames.length;
+}
+
+/** How many contiguous chunk indices (starting from 0) are present in `chunks`. */
+function calculateContiguousChunks(chunks: Set<number>): number {
+  let contiguous = 0;
+  while (chunks.has(contiguous)) contiguous++;
+  return contiguous;
+}
+
+/**
  * Drive a download to completion by acking contiguous chunk frontiers
  * (ADR-37), waiting until `totalChunks` distinct chunks have been observed.
+ *
+ * Implemented with a recursive poll (S9382) instead of a `while` loop that
+ * awaits inside it.
  */
 export async function drainDownload(
   binaryFrames: Uint8Array[],
@@ -866,26 +903,70 @@ export async function drainDownload(
   const chunks = new Set<number>();
   let cursor = 0;
   let lastAcked = 0;
-  while (chunks.size < totalChunks && Date.now() < deadline) {
-    for (let i = cursor; i < binaryFrames.length; i++) {
-      const frame = binaryFrames[i];
-      if (!frame) continue;
-      const decoded = unpackBinary(frame);
-      if (
-        decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
-        decoded.transferId === transferId
-      ) {
-        chunks.add(decoded.chunkIndex);
-      }
+
+  const poll = async (): Promise<void> => {
+    if (chunks.size >= totalChunks || Date.now() >= deadline) {
+      return;
     }
-    cursor = binaryFrames.length;
-    let contiguous = 0;
-    while (chunks.has(contiguous)) contiguous++;
+    cursor = processDownloadFrames(binaryFrames, cursor, transferId, chunks);
+    const contiguous = calculateContiguousChunks(chunks);
     if (contiguous > lastAcked) {
       lastAcked = contiguous;
       sendAck(contiguous);
     }
-    if (chunks.size < totalChunks) await delay(0);
-  }
+    if (chunks.size < totalChunks) {
+      await delay(0);
+      return poll();
+    }
+  };
+
+  await poll();
   expect(chunks.size).toBe(totalChunks);
+}
+
+/**
+ * Register + spawn an agent whose files gate is open on `rootDir`.
+ *
+ * Shared by files.e2e.test.ts and files-advanced.e2e.test.ts to eliminate the
+ * duplicate local definition those suites previously carried (S9382/S7781
+ * duplication budget — one source of truth for the files test harness).
+ */
+export async function connectFilesAgent(
+  rootDir: string,
+  baseUrl = BASE_URL,
+): Promise<{
+  token: string;
+  agentId: string;
+  sessionId: string;
+  frames: FilesFrame[];
+  binaryFrames: Uint8Array[];
+  offerer: PeerConnection;
+  send: (type: string, payload: unknown) => void;
+  sendRawChunk: (
+    type: number,
+    transferId: string,
+    chunkIndex: number,
+    data: Uint8Array,
+  ) => void;
+}> {
+  const { token, agentId, credential, sessionId } = await seed({
+    capabilities: ['files'],
+  });
+  spawnAgent(agentId, credential, ['--files-root', rootDir]);
+  await waitForAgentOnline(token, agentId);
+  const { offerer, frames, binaryFrames } = await openFilesPeer(
+    new RESTPollingTransport({ baseUrl, sessionId, token }),
+  );
+  return {
+    token,
+    agentId,
+    sessionId,
+    frames,
+    binaryFrames,
+    offerer,
+    send: (type, payload) =>
+      offerer.dataChannels.sendJson('files', type, payload),
+    sendRawChunk: (type, transferId, chunkIndex, data) =>
+      sendRaw(offerer, packBinary(type, transferId, chunkIndex, data)),
+  };
 }

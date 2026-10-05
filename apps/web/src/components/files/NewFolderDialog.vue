@@ -41,6 +41,7 @@ function onKeydown(e: KeyboardEvent): void {
     data-test="new-folder-dialog"
     open
     @click.self="emit('cancel')"
+    @keydown.escape="emit('cancel')"
   >
     <form @submit.prevent="onConfirm">
       <label for="new-folder-input">New folder name</label>
