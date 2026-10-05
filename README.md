@@ -10,13 +10,13 @@
 [![Rust](https://img.shields.io/badge/agent-Rust-DEA584.svg)](https://www.rust-lang.org)
 [![Vue 3](https://img.shields.io/badge/frontend-Vue%203-4FC08D.svg)](https://vuejs.org)
 
-A high-performance, low-latency, zero-trust remote access platform featuring **Multi-Shell Remote Terminal** (< 10ms latency, PTY virtualization), **Remote Desktop**, and **Remote File Manager** with end-to-end encryption (E2EE).
+A high-performance, low-latency, zero-trust remote access platform featuring **Multi-Shell Remote Terminal** (< 10ms latency, PTY virtualization), **Remote Desktop**, and **Remote File Manager** over a DTLS-secured transport (application-layer E2EE planned for Phase 5).
 
 ---
 
 ## 🚀 Key Architectural Highlights
 
-- **Zero-Trust & E2EE**: Secure by default with client-side public-key verification, PBKDF2-HMAC-SHA256 password hashing (with constant-time XOR comparison against timing attacks), and SQLite `revoked_tokens` table for instant token revocation.
+- **Auth hardening**: PBKDF2-HMAC-SHA256 password hashing (constant-time XOR comparison against timing attacks) and a SQLite `revoked_tokens` table for instant token revocation. (Peer identity & application-layer E2EE: Phase 5.)
 - **Self-Hosted Backend**: Unified backend service running on Node.js 24 LTS + Hono, backed by local SQLite (better-sqlite3 + Drizzle ORM) with WAL mode. In-memory WebSocket dispatch for sub-1ms signal forwarding.
 - **Direct P2P WebRTC DataChannels**: Peer-to-peer data transport over DTLS/SCTP via STUN/TURN, delivering sub-10ms interactive shell performance without relay bottleneck.
 - **Multi-Shell Multiplexing**: Multiplexes multiple independent shell instances across a single ordered WebRTC DataChannel (`"terminal"`), preserving binary byte sequences and scrollback history via a headless 64 KiB `RingBuffer`.
@@ -41,7 +41,7 @@ ponter/
 ├── packages/
 │   ├── shared/            # Shared TypeScript types, schemas, and wire protocol definitions
 │   ├── api-client/        # Type-safe HTTP & WebSocket client SDK with token auto-refresh
-│   ├── crypto/            # Client-side cryptographic primitives (Web Crypto, E2EE)
+│   ├── crypto/            # Web Crypto key generation & local key storage (E2EE planned, Phase 5)
 │   ├── terminal-core/     # Headless pure TypeScript terminal manager (RingBuffer, TerminalClient)
 │   ├── webrtc-core/       # WebRTC connection orchestration & DataChannel management
 │   └── ui-components/     # Shared Vue 3 UI component library
