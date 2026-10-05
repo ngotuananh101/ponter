@@ -189,7 +189,7 @@ export class PeerConnection {
       const fingerprint = parseSdpFingerprint(offer.sdp ?? '');
       const sdpSha256Hex = await sha256HexUtf8(offer.sdp ?? '');
       const message = canonicalProofMessage({
-        role: 'offerer',
+        role: this.options.identity.role,
         sessionId: this.options.sessionId,
         sdpSha256Hex,
         fingerprint,

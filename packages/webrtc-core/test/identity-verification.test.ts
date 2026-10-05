@@ -256,4 +256,50 @@ describe('identity verification (WS2 peer identity)', () => {
     );
     await pc.close();
   });
+
+  it('6. offer proof role is sourced from identity.role, not hardcoded', async () => {
+    const peer = new ScriptedPeer();
+    peer.createOffer = async () => ({ type: 'offer', sdp: SDP_A });
+
+    const { transport, sent } = stubTransport();
+
+    const signingKey = generateKeyPairSync('ed25519');
+    // Capture the exact message string passed to sign.
+    const signedMessages: string[] = [];
+    const sign = (msg: string): Promise<string> => {
+      signedMessages.push(msg);
+      return Promise.resolve(signMessage(signingKey.privateKey, msg));
+    };
+
+    const pc = new PeerConnection(peer, transport, {
+      role: 'offerer',
+      channelLabels: ['terminal'],
+      sessionId: SESSION_ID,
+      // Deliberately mismatched: peer role is 'offerer' (required to enter
+      // start()) but identity.role is 'answerer'. The proof must carry the
+      // identity.role value, not the peer role.
+      identity: {
+        role: 'answerer',
+        sign,
+        verifyPeer: async () => true,
+      },
+    });
+
+    await pc.start();
+
+    const offer = sent.find((m) => m.type === 'offer');
+    expect(offer).toBeDefined();
+    const proof = (
+      offer!.data as { proof?: { signature: string; fingerprint: string } }
+    ).proof;
+    expect(proof).toBeDefined();
+
+    // The canonical message has a line `role=<role>`. Assert identity.role was
+    // used, not the hardcoded 'offerer'.
+    expect(signedMessages).toHaveLength(1);
+    expect(signedMessages[0]).toContain('role=answerer');
+    expect(signedMessages[0]).not.toContain('role=offerer');
+
+    await pc.close();
+  });
 });
