@@ -2769,9 +2769,7 @@ mod tests {
                 signature: identity::base64_encode(signature.as_ref()),
                 fingerprint,
             }),
-            user_signing_public_key: Some(identity::base64_encode(
-                &user_key.public_key().as_ref().to_vec(),
-            )),
+            user_signing_public_key: Some(identity::base64_encode(user_key.public_key().as_ref())),
         };
 
         (offer, user_key)

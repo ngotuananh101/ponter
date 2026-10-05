@@ -97,7 +97,7 @@ function runWriteTransaction(
   });
 }
 
-function openDatabase(storeName: string = STORE_NAME): Promise<IDBDatabase> {
+function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -315,7 +315,7 @@ export async function saveSigningKey(
   userId: string,
   key: CryptoKey,
 ): Promise<void> {
-  const db = await openDatabase(SIGNING_STORE);
+  const db = await openDatabase();
   return runWriteTransaction(
     db,
     SIGNING_STORE,
@@ -330,6 +330,6 @@ export async function saveSigningKey(
 export async function loadSigningKey(
   userId: string,
 ): Promise<CryptoKey | null> {
-  const db = await openDatabase(SIGNING_STORE);
+  const db = await openDatabase();
   return readKey(db, SIGNING_STORE, userId, 'Failed to load signing key');
 }
