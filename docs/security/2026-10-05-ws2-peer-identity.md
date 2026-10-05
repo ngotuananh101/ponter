@@ -10,22 +10,31 @@ cryptographic key held by the originating peer.
 This document covers four deliverables, all of which are fail-closed:
 
 1. **Agent identity key (H6/C5/H5).** The Rust agent generates and persists an
-   Ed25519 keypair at a disk path (`--identity-path`, default
-   `$XDG_CONFIG_HOME/ponter/agent-identity.pkcs8`). The public half is uploaded
-   to the server over the credential-authenticated agent socket, with a
-   proof-of-possession signature over a server nonce so a stolen credential
-   cannot enroll a key it does not hold.
+   Ed25519 keypair at a disk path (`--identity-path`; the default resolves
+   `$XDG_CONFIG_HOME/ponter/agent-identity.pkcs8`, falling back to
+   `$HOME/.config/ponter/agent-identity.pkcs8` when `XDG_CONFIG_HOME` is unset,
+   and to `./ponter/agent-identity.pkcs8` when neither is set — `resolve_identity_path`,
+   `apps/agent/src/main.rs:153-168`). The public half is uploaded to the server
+   over the credential-authenticated agent socket, with a proof-of-possession
+   signature over a server nonce so a stolen credential cannot enroll a key it
+   does not hold. The proof-of-possession message is the domain-separated string
+   `ponter-ws2-agent-identity-v1\nnonce=<nonce>` (no trailing newline), signed
+   with the agent's Ed25519 key — server constant `WS2_IDENTITY_PROOF_PREFIX`
+   (`apps/server/src/routes/ws.ts:31`), agent builder `build_agent_identity_frame`
+   (`apps/agent/src/signal.rs:260-266`).
 
 2. **Agent answer proof (C3).** The agent signs its DTLS-fingerprint proof and
    sends it on the answer signal. The browser verifies the signature against the
    agent key learned from `GET /api/agents`, and against the SDP fingerprint,
    **before** calling `setRemoteDescription` — a mismatch aborts the handshake.
 
-3. **User offer proof (M1).** The browser signs its offer SDP fingerprint and
-   session id with the user's Ed25519 key, and includes the raw public key
-   (`userSigningPublicKey`) on the offer. The agent verifies the proof **before**
-   `rtc::answer_offer` — a missing, malformed, or tampered proof aborts the
-   session before any answer SDP is sent and before any PTY is created.
+3. **User offer proof (M1, H3).** The browser signs its offer SDP fingerprint
+   and session id with the user's Ed25519 key, and includes the raw public key
+   (`userSigningPublicKey`) on the offer. On the **terminal** path the agent
+   verifies the proof **before** `rtc::answer_offer` — a missing, malformed, or
+   tampered proof aborts the session before any answer SDP is sent and before
+   any PTY is created. (The gate is terminal-scoped by design; see "Gate scope"
+   below.)
 
 4. **Server relay enforcement.** The signaling server does not verify
    signatures — it is a pure shape-and-relay. For offers, the server overwrites
@@ -65,11 +74,33 @@ The reference implementation lives in two places and must be byte-identical:
 | 6 | Browser: answer fingerprint ≠ SDP fingerprint | Same as above |
 | 7 | Browser: answer signature does not verify | Same as above |
 
-The agent's gate is positioned at `main.rs:verify_offer_identity`, called
-**before** `rtc::answer_offer`. Both PTY spawn sites (the dispatcher task and
-the implicit spawn-on-demand) are downstream of the poll task, which is only
-spawned after the answer is accepted — so gating the answer gates every
-downstream path.
+Rows 1–4 are the agent-side (H3) gate; they apply to the **terminal** path only
+(see "Gate scope" below). Rows 5–7 are the browser-side (C3) answer check, which
+runs for every session type whenever `identity` is present.
+
+The agent's gate is `verify_offer_identity`, called **before** `rtc::answer_offer`.
+Both PTY spawn sites (the dispatcher task and the implicit spawn-on-demand) are
+downstream of the poll task, which is only spawned after the answer is accepted —
+so on the **terminal** path, gating the answer gates every downstream path.
+
+**Gate scope — terminal only.** `verify_offer_identity` has exactly one call site,
+`apps/agent/src/main.rs:956`, inside the `SessionMode::Terminal` arm. The
+`SessionMode::Desktop` (`main.rs:902`) and `SessionMode::Files` (`main.rs:922`)
+arms `return` **before** it and reach `rtc::send_desktop_answer` /
+`rtc::send_approved_answer` without verifying the user's offer proof. This is by
+design: spec §3.2 defines H3 as "verify the client's key/fingerprint **before
+spawning a PTY**", and desktop/files sessions spawn no PTY. The asymmetry is
+deliberate and one-directional:
+
+- **Browser-side (C3) verifies the agent for every session type** — the answer
+  check at `connection.ts:341-353` runs whenever `identity` is present,
+  regardless of mode.
+- **Agent-side (H3) verifies the browser only for terminal** — the PTY path is
+  the one that unblocks input forwarding, so it is the path H3 gates.
+
+Desktop input remains separately held closed by ADR-29 (`--allow-input`, default
+off); file transfer is out of application-layer scope (spec §4.3). Extending
+agent-side offer verification to desktop/files is **out of scope for WS2**.
 
 ## TOFU trust boundary (residual risk)
 
@@ -88,10 +119,10 @@ signaling server that swaps the identity keys themselves. If the server were
 compromised and replaced the user's `signingPublicKey` in the DB with an
 attacker-controlled key, the agent would accept the attacker's proof. This is
 the documented boundary of Phase 5 (spec §8): "H6 is closed with a keypair,
-not a full PKI." WS3 (spec §3.3) may address server-side identity attestation
-in a future phase.
+not a full PKI." No Phase 5 workstream delivers server-side key attestation —
+spec §8 places certificate-based agent provisioning explicitly out of scope.
 
-### Residual downgrade: a hostile server omits the agent key (PB-9/PB-11)
+### Residual downgrade: a hostile server omits the agent key
 
 A signaling server under the trust boundary (TOFU) can also attack **liveness**
 rather than confidentiality. The server may simply **omit** the agent's
@@ -104,22 +135,33 @@ local copy of the key). The effect chain is:
   is "identical to the pre-WS2 behavior."
 - With no `identity`, the caller connects with `identity: undefined`. The
   browser therefore builds no `IdentityProof` and sends no
-  `userSigningPublicKey` on the offer.
-- `apps/agent/src/main.rs:765-796` (`verify_offer_identity`) rejects the offer
-  ("offer carries no identity proof" / "offer carries no user signing key")
-  **before** `rtc::answer_offer` (main.rs:956→958). The answer is never produced,
-  so no answer SDP is sent and no PTY is spawned.
+  `userSigningPublicKey` on the offer, and — because the answer check at
+  `connection.ts:341` is guarded by `if (this.options.identity)` — it also does
+  not verify the agent's answer proof.
 
-This is a **denial of service** (the session cannot open), **not** a
-confidentiality break: the failure mode is fail-closed — it cannot cause an
-unverified session to run. The omission simply falls back to the pre-WS2 path
-that never authenticated the peer. This is accepted at WS2 by design: Phase 5's
-WS2 is a TOFU/bootstrap layer (spec §8). Full PKI / server-side attestation of
-peer keys is explicitly out of scope here; WS3 (spec §3.3) may revisit it.
+**Terminal path (fail-closed).** `apps/agent/src/main.rs:765-796`
+(`verify_offer_identity`) rejects the offer ("offer carries no identity proof" /
+"offer carries no user signing key") **before** `rtc::answer_offer`
+(main.rs:956→958). The answer is never produced, so no answer SDP is sent and no
+PTY is spawned: a **denial of service** (the session cannot open), **not** a
+confidentiality break — it cannot cause an unverified session to run.
+
+**Desktop/files paths (fail-open, by design).** These arms are not H3-gated (see
+"Gate scope" above). Under the same omission attack the session still opens with
+no peer-identity verification on either side. This is the intended WS2 boundary,
+not a regression: H3 is PTY-specific (spec §3.2), desktop input stays closed by
+ADR-29 (`--allow-input` default off), and file transfer is out of
+application-layer scope (spec §4.3). Extending agent-side offer verification to
+these arms is **out of scope for WS2**.
+
+Accepted at WS2 by design: Phase 5's WS2 is a TOFU/bootstrap layer (spec §8).
+Server-side key attestation / full PKI is **not** delivered by any Phase 5
+workstream — spec §8 places certificate-based agent provisioning explicitly out
+of scope.
 
 ## What WS2 does NOT do
 
-- WS2 does **not** encrypt session payloads. That is WS1 (spec §3.1, H1).
+- WS2 does **not** encrypt session payloads. That is WS1 (spec §3.4; C1/C4/H7/H11).
 - WS2 does **not** enforce the `approved` flag on offers. That is WS3
   (spec §3.3, H2).
 - WS2 does **not** implement a certificate chain or revocation list for peer

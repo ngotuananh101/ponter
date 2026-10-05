@@ -61,6 +61,10 @@ describe('no false peer-identity claims in the UI', () => {
 // "is/provide/are Zero-Trust", etc. It fails to match negations because they
 // use verbs like "not", "does NOT", "out of scope" rather than the affirmative
 // verbs we anchor on.
+//
+// The guard also catches the un-abbreviated forms "end-to-end encryption" and
+// "zero trust" (with a space), so a sentence like "WS2 provides end-to-end
+// encryption." or "Ponter is zero trust." trips the anchor too.
 const WS2_DOC = '../../../docs/security/2026-10-05-ws2-peer-identity.md';
 
 describe('no false E2EE/Zero-Trust claims in the WS2 doc', () => {
@@ -70,7 +74,7 @@ describe('no false E2EE/Zero-Trust claims in the WS2 doc', () => {
     // E2EE/Zero-Trust token, where the WS2 doc's negations use "does NOT" /
     // "not" / "out of scope" and so never match this anchor.
     expect(doc).not.toMatch(
-      /(implements|provides|enables|is|are)\s+(end-to-end\s+)?(e2ee|zero-trust)/i,
+      /(implements|provides|enables|is|are)\s+(end-to-end\s+)?(e2ee|zero[-\s]?trust|encryption)/i,
     );
   });
 });
