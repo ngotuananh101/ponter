@@ -62,11 +62,16 @@ export interface PeerConnectionOptions {
    * WS2 peer identity: signs this peer's SDP and verifies the remote proof.
    * Absent → no verification (legacy/loopback path). When present, fail-closed.
    */
-  identity?: {
-    role: 'offerer' | 'answerer';
-    sign: (message: string) => Promise<string>;
-    verifyPeer: (message: string, signatureBase64: string) => Promise<boolean>;
-  };
+  identity?: PeerConnectionIdentity;
+}
+
+export interface PeerConnectionIdentity {
+  role: 'offerer' | 'answerer';
+  /** Base64 Ed25519 public key sent in the offer so the remote peer can verify
+   * this peer's proof. Required for offerers, absent on answerers. */
+  userSigningPublicKey?: string;
+  sign: (message: string) => Promise<string>;
+  verifyPeer: (message: string, signatureBase64: string) => Promise<boolean>;
 }
 
 export interface SignalTransport {

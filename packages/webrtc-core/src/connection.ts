@@ -205,6 +205,7 @@ export class PeerConnection {
       offer,
       capabilities,
       proof,
+      this.options.identity?.userSigningPublicKey,
     );
     await this.transport.send(signal);
   }

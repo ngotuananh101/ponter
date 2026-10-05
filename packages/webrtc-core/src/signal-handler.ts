@@ -33,6 +33,7 @@ export function createOfferSignal(
   desc: RTCSessionDescriptionInit,
   capabilities: string[] = [],
   proof?: IdentityProof,
+  userSigningPublicKey?: string,
 ): SignalMessage {
   return {
     type: 'offer',
@@ -41,6 +42,7 @@ export function createOfferSignal(
       sdp: desc.sdp ?? '',
       capabilities,
       ...(proof ? { proof } : {}),
+      ...(userSigningPublicKey ? { userSigningPublicKey } : {}),
     },
   };
 }
