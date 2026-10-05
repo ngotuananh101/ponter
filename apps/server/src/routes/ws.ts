@@ -22,6 +22,7 @@ import type {
   SignalMessage,
   BrowserMessageInit,
   BrowserSocketMessage,
+  IdentityProof,
 } from '@ponter/shared';
 
 const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
@@ -1050,6 +1051,23 @@ function extractAgentCredential(
   return token;
 }
 
+/**
+ * Shape-only validation for IdentityProof (spec §1): the server is a pure
+ * relay and never verifies the signature. Returns the proof verbatim when well
+ * formed, or `undefined` when absent/malformed (dropped, not rejected).
+ */
+function normalizeProof(proof: unknown): IdentityProof | undefined {
+  if (proof === undefined || proof === null) return undefined;
+  if (typeof proof !== 'object' || Array.isArray(proof)) return undefined;
+  const p = proof as Record<string, unknown>;
+  const signature =
+    typeof p.signature === 'string' && p.signature ? p.signature : null;
+  const fingerprint =
+    typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null;
+  if (!signature || !fingerprint) return undefined;
+  return { signature, fingerprint };
+}
+
 function parseSignalMessage(frame: unknown): SignalMessage | null {
   if (typeof frame !== 'object' || frame === null || Array.isArray(frame))
     return null;
@@ -1063,9 +1081,18 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     const capabilities = Array.isArray(inner.capabilities)
       ? inner.capabilities.filter((c): c is string => typeof c === 'string')
       : [];
+    // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
+    // The browser-to-agent path drops unknown fields elsewhere, so proof must
+    // be carried explicitly here.
+    const proof = normalizeProof(inner.proof);
     return {
       type: 'offer',
-      data: { sessionId: inner.sessionId, sdp: inner.sdp, capabilities },
+      data: {
+        sessionId: inner.sessionId,
+        sdp: inner.sdp,
+        capabilities,
+        ...(proof ? { proof } : {}),
+      },
     } as SignalMessage;
   }
 
@@ -1074,12 +1101,15 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
       return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
+    // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
+    const proof = normalizeProof(inner.proof);
     return {
       type: 'answer',
       data: {
         sessionId: inner.sessionId,
         sdp: inner.sdp,
         approved: inner.approved !== false,
+        ...(proof ? { proof } : {}),
       },
     } as SignalMessage;
   }

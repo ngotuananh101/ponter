@@ -6,10 +6,31 @@ import { AppError } from '../middleware/error.js';
 import { sessions, users } from '../db/schema.js';
 import { recordSignal } from '../utils/signals.js';
 import { pushToAgent } from './ws.js';
-import type { SignalMessage } from '@ponter/shared';
+import type { SignalMessage, IdentityProof } from '@ponter/shared';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
+
+/**
+ * The server is a pure relay for IdentityProof (spec §1): it validates the
+ * SHAPE only — both `signature` and `fingerprint` must be non-empty strings —
+ * and never verifies the signature. A malformed proof is dropped (returns
+ * `undefined`, treated as absent) rather than rejected with a 400, so the
+ * relay stays lenient and the peer is the authority on validity.
+ */
+function normalizeProof(proof: unknown): IdentityProof | undefined {
+  if (proof === undefined || proof === null) return undefined;
+  if (typeof proof !== 'object' || Array.isArray(proof)) return undefined;
+  const p = proof as Record<string, unknown>;
+  const signature =
+    typeof p.signature === 'string' && p.signature ? p.signature : undefined;
+  const fingerprint =
+    typeof p.fingerprint === 'string' && p.fingerprint
+      ? p.fingerprint
+      : undefined;
+  if (!signature || !fingerprint) return undefined;
+  return { signature, fingerprint };
+}
 
 // POST /api/signal/offer
 router.post('/offer', async (c) => {
@@ -18,6 +39,7 @@ router.post('/offer', async (c) => {
     sessionId?: string;
     sdp?: string;
     capabilities?: string[];
+    proof?: IdentityProof;
   } | null;
 
   if (!body?.sessionId || typeof body.sdp !== 'string' || !body.sdp.trim()) {
@@ -43,12 +65,19 @@ router.post('/offer', async (c) => {
     throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
   }
 
+  // The server is a pure relay for IdentityProof (spec §1): it validates the
+  // SHAPE only (both fields are non-empty strings) and never verifies the
+  // signature. A malformed proof is dropped (treated as absent) rather than
+  // rejected, so the relay stays lenient and the peer is the authority.
+  const proof = normalizeProof(body.proof);
+
   const message: SignalMessage = {
     type: 'offer',
     data: {
       sessionId: body.sessionId,
       sdp: body.sdp,
       capabilities: body.capabilities ?? [],
+      ...(proof ? { proof } : {}),
     },
   };
 
@@ -101,6 +130,7 @@ router.post('/answer', async (c) => {
     sessionId?: string;
     sdp?: string;
     approved?: boolean;
+    proof?: IdentityProof;
   } | null;
 
   if (!body?.sessionId || typeof body.sdp !== 'string' || !body.sdp.trim()) {
@@ -126,12 +156,16 @@ router.post('/answer', async (c) => {
     throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
   }
 
+  // Shape-only validation for IdentityProof (see POST /offer comment).
+  const proof = normalizeProof(body.proof);
+
   const message: SignalMessage = {
     type: 'answer',
     data: {
       sessionId: body.sessionId,
       sdp: body.sdp,
       approved: body.approved !== false,
+      ...(proof ? { proof } : {}),
     },
   };
 
