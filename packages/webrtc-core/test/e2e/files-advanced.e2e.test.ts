@@ -299,6 +299,8 @@ describe.skipIf(!isLinux)('files advanced E2E', () => {
         120_000,
       );
 
+      const end = process.hrtime.bigint();
+
       await waitForFilesFrame(
         frames,
         (f) =>
@@ -308,7 +310,6 @@ describe.skipIf(!isLinux)('files advanced E2E', () => {
         'files-download-end',
       );
 
-      const end = process.hrtime.bigint();
       const elapsedNs = Number(end - start);
       const elapsedSec = elapsedNs / 1_000_000_000;
       const mbps = size / (1024 * 1024) / elapsedSec;

@@ -852,8 +852,30 @@ export function assembleDownload(
 }
 
 /**
+ * Decode a dashed RFC 4122 UUID string into 16 raw wire bytes.
+ *
+ * Local mirror of `packages/file-core/src/binary.ts`'s `uuidToBytes`, kept
+ * inside the e2e dir so the suite does not import the browser-oriented codec.
+ */
+function uuidToRawBytes(uuid: string): Uint8Array {
+  const hex = uuid.replaceAll('-', '');
+  if (hex.length !== 32) {
+    throw new Error('invalid uuid');
+  }
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
  * Process newly-seen binary frames starting at `cursor`, adding download
- * chunks that belong to `transferId` into `chunks`.
+ * chunks that belong to `transferId` (as 16 raw bytes) into `chunks`.
+ *
+ * Avoids the full `unpackBinary` decode on every frame: a cheap length guard
+ * and direct byte/index comparison on the 25-byte header suffice to identify
+ * matching download-chunk frames and their chunk index.
  *
  * Returns the new cursor position so the caller can resume from the next
  * unseen frame on a subsequent pass.
@@ -861,19 +883,27 @@ export function assembleDownload(
 function processDownloadFrames(
   binaryFrames: Uint8Array[],
   cursor: number,
-  transferId: string,
+  transferIdBytes: Uint8Array,
   chunks: Set<number>,
 ): number {
   for (let i = cursor; i < binaryFrames.length; i++) {
     const frame = binaryFrames[i];
-    if (!frame) continue;
-    const decoded = unpackBinary(frame);
-    if (
-      decoded.type === BINARY_TYPE_DOWNLOAD_CHUNK &&
-      decoded.transferId === transferId
-    ) {
-      chunks.add(decoded.chunkIndex);
+    if (!frame || frame.byteLength < BINARY_HEADER_LEN) continue;
+    if (frame[0] !== BINARY_TYPE_DOWNLOAD_CHUNK) continue;
+
+    // Compare the 16 transferId bytes at indices 1..16.
+    let match = true;
+    for (let j = 0; j < 16; j++) {
+      if (frame[j + 1] !== transferIdBytes[j]) {
+        match = false;
+        break;
+      }
     }
+    if (!match) continue;
+
+    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    const chunkIndex = Number(view.getBigUint64(17, false));
+    chunks.add(chunkIndex);
   }
   return binaryFrames.length;
 }
@@ -919,6 +949,7 @@ export async function drainDownload(
   timeoutMs = 60_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  const transferIdBytes = uuidToRawBytes(transferId);
   const chunks = new Set<number>();
   let cursor = 0;
   let lastAcked = 0;
@@ -927,7 +958,12 @@ export async function drainDownload(
     if (chunks.size >= totalChunks || Date.now() >= deadline) {
       return;
     }
-    cursor = processDownloadFrames(binaryFrames, cursor, transferId, chunks);
+    cursor = processDownloadFrames(
+      binaryFrames,
+      cursor,
+      transferIdBytes,
+      chunks,
+    );
     const contiguous = calculateContiguousChunks(chunks, lastAcked);
 
     if (contiguous > lastAcked) {
