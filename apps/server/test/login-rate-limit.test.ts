@@ -34,6 +34,9 @@ beforeEach(() => {
 });
 
 describe('login rate limiting', () => {
+  // Must match MAX_KEYS exported from login-rate-limit.ts
+  const TEST_MAX_KEYS = 5000;
+
   it('returns 429 after five failed attempts from one IP', async () => {
     const app = createApp();
     await register(app, 'alice');
@@ -62,4 +65,34 @@ describe('login rate limiting', () => {
     for (let i = 0; i < 4; i++) await login(app, 'carol', 'wrong', '10.0.0.3');
     expect((await login(app, 'carol', 'wrong', '10.0.0.3')).status).toBe(401);
   });
+
+  it('uses the rightmost X-Forwarded-For entry, ignoring a forged prefix', async () => {
+    const app = createApp();
+    await register(app, 'dave');
+    // Each request carries a different forged prefix but the SAME rightmost IP.
+    for (let i = 0; i < 5; i++) {
+      const res = await login(app, 'dave', 'wrong', `forged-${i}, 10.0.0.9`);
+      expect(res.status).toBe(401);
+    }
+    // A different forged prefix but the same rightmost IP must still be 429.
+    const blocked = await login(app, 'dave', 'wrong', 'attacker, 10.0.0.9');
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get('Retry-After')).toBeTruthy();
+  });
+
+  it('fails closed with 429 when the entry table is full and a new key arrives', async () => {
+    const app = createApp();
+    // Fill the Map to its cap with one failure per distinct rightmost IP.
+    // No registration: non-existent user → fast 401 without password verification.
+    for (let i = 0; i < TEST_MAX_KEYS; i++) {
+      const res = await login(app, 'nobody', 'wrong', `ip-${i}`);
+      expect(res.status).toBe(401);
+    }
+    // One more distinct IP: Map is at cap, key is new → fail closed (429).
+    const overflow = await login(app, 'nobody', 'wrong', 'ip-overflow');
+    expect(overflow.status).toBe(429);
+    // An existing key at the cap still works normally (not fail-closed).
+    const existing = await login(app, 'nobody', 'wrong', 'ip-0');
+    expect(existing.status).toBe(401);
+  }, 60_000);
 });

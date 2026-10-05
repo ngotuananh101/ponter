@@ -16,6 +16,19 @@ interface Entry {
 }
 
 /**
+ * Hard cap on the number of distinct (IP, username) keys retained in memory.
+ *
+ * Every deployment must run behind one of the bundled proxies (see below), so
+ * the X-Forwarded-For value the server sees is always set by an operator
+ * controlled component — never trusted from the edge directly. Even so, a
+ * determined attacker can still cause one entry to be allocated per unique
+ * rightmost-IP + username pair. Capping the table at 5000 entries prevents
+ * unbounded memory growth while allowing hundreds of concurrent users to be
+ * rate-limited independently.
+ */
+export const MAX_KEYS = 5000;
+
+/**
  * Per-(IP, username) lockout for the login endpoint.
  *
  * Only 401 responses count as failures and a 200 clears the key, so a
@@ -42,6 +55,33 @@ export function createLoginRateLimiter(
   return async (c, next) => {
     const key = `${clientIp(c)}|${await peekUsername(c)}`;
     const t = now();
+
+    // For a NEW key: sweep expired entries, then enforce the hard cap.
+    // An existing key is unaffected by the cap — it continues to work normally
+    // even when the Map is full, so a legitimate user already tracked cannot be
+    // evicted by a flood of new requests.
+    if (!entries.has(key)) {
+      for (const [k, e] of entries) {
+        if (e.resetAt <= t) entries.delete(k);
+      }
+      if (entries.size >= MAX_KEYS) {
+        // Fail closed: refusing a new key at cap is safer than unbounded
+        // Map growth (DoS amplification) or evicting an arbitrary entry.
+        // The window gives an upper bound on how long until entries expire
+        // and a slot frees up.
+        const retryAfter = Math.ceil(windowMs / 1000);
+        return c.json(
+          {
+            error: 'Too many login attempts. Try again later.',
+            code: 'TOO_MANY_REQUESTS',
+            details: { retryAfter },
+          },
+          429,
+          { 'Retry-After': String(retryAfter) },
+        );
+      }
+    }
+
     const entry = entries.get(key);
 
     if (entry && entry.failures >= maxFailures && t < entry.resetAt) {
@@ -74,15 +114,31 @@ export function createLoginRateLimiter(
   };
 }
 
-/** The client address, honouring the proxy header a deployment terminates on. */
+/**
+ * The client address, honouring the proxy header a deployment terminates on.
+ *
+ * IP TRUST MODEL — every deployment MUST run behind one of the bundled proxies.
+ * The rightmost entry of X-Forwarded-For is the address of the hop that
+ * actually delivered the request to this server: each proxy in the chain
+ * (nginx with `$proxy_add_x_forwarded_for`, Cloudflare Tunnel) APPENDS the peer
+ * it received the connection from, so a client can only PREPEND forged values
+ * on the left which remain inert. Caddy (no `trusted_proxies` in docker/Caddyfile)
+ * sets XFF itself, so leftmost == rightmost.
+ *
+ * DIRECT EXPOSURE IS UNSUPPORTED: with no proxy in front, BOTH X-Forwarded-For
+ * and X-Real-IP are entirely client-controlled; IP keying is unverifiable and
+ * meaningless in that topology. "Supported topologies" means behind the bundled
+ * proxy.
+ */
 function clientIp(c: { req: { header: (name: string) => string | undefined } }): string {
-  // `X-Forwarded-For` is trusted here because the only deployment that sets it
-  // is the bundled reverse proxy, which overwrites it. A deployment exposed
-  // directly to the internet would let a client forge the header and dodge the
-  // limiter; that deployment must set the header at its own edge or remove
-  // this branch.
   const forwarded = c.req.header('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0]!.trim();
+  if (forwarded) {
+    // Split on commas, trim whitespace, and take the LAST non-empty entry.
+    // Every proxy appends the connecting hop's address on the right; the client
+    // can only prepend forged values on the left.
+    const parts = forwarded.split(',').map((s) => s.trim()).filter(Boolean);
+    if (parts.length > 0) return parts[parts.length - 1]!;
+  }
   return c.req.header('x-real-ip') ?? 'unknown';
 }
 
