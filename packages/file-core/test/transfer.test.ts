@@ -23,7 +23,7 @@ function makeSend() {
 describe('chunk arithmetic (spec §2.5)', () => {
   it('pins the constants', () => {
     expect(FILE_CHUNK_BYTES).toBe(32768);
-    expect(DEFAULT_WINDOW_SIZE).toBe(16);
+    expect(DEFAULT_WINDOW_SIZE).toBe(64);
     expect(DEFAULT_IDLE_TIMEOUT_MS).toBe(30_000);
   });
 

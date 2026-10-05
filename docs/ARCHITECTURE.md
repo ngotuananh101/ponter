@@ -1002,7 +1002,7 @@ gantt
 
 ### Phase 4: File Transfer (Tuần 10-11)
 
-> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming, hiệu năng) **chưa bắt đầu**.
+> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming xuống đĩa, hàng đợi truyền, dừng/tiếp tục, giao thức nhị phân lai tốc độ cao >10 MB/s) **hoàn thành** — streaming nhị phân lai (HDR 25 byte, payload 32 KiB), cửa sổ trượt 64 chunk, SW stream xuống đĩa, hàng đợi 1 up + 1 down với pause/resume `.ponter-part`, và phép toán sandbox `mkdir`/`delete`/`rename`.
 
 #### Tuần 10: File Transfer — lát cắt mỏng (đã xong)
 
@@ -1014,7 +1014,14 @@ gantt
 - [x] E2E cross-language (`files.e2e.test.ts`) — list, download byte-equal, upload byte-equal, huỷ giữa chừng, path escape, cổng đóng, ghi đè, upload khai báo quá cỡ
 - [x] Server **không đổi** — không cột, không endpoint, không migration (ADR-35)
 
-> Tuần 11 (file lớn, streaming xuống đĩa, hiệu năng) **chưa bắt đầu** — mục Phase 4 không được đánh dấu hoàn thành.
+#### Tuần 11: File Transfer — hardening, streaming, hàng đợi, pause/resume (đã xong)
+
+- [x] Đa kênh nhị phân lai: text frame = JSON envelope (`files-list`…) + binary frame thô chunk payload, header 25 byte (type 1B + transfer ID 16B + chunk index 8B BE), payload ≤32 KiB — loại bỏ overhead base64 33% (ADR-36)
+- [x] Tốc độ >10 MB/s: cửa sổ trượt 64 chunk (~2 MiB in-flight), ack tích lũy mỗi 16 chunk hoặc 20 ms — đo ~11–14 MB/s loopback (ADR-37)
+- [x] Streaming xuống đĩa qua Service Worker: SW `/sw-files-download.js` bắt `/files-download-stream/:transferId/:filename`, stream `ReadableStream` xuống đích tải xuống của trình duyệt, fallback Blob ≤200 MB khi SW lỗi (ADR-38)
+- [x] Hàng đợi & pause/resume: 1 up + 1 down, `.ponter-part` dành cho upload lưu khi dừng (download read-only không tạo `.part`), resume dựa `fromChunkIndex` + length validation, janitor xóa parts >24 h (86400 s) (ADR-39)
+- [x] Phép toán sandbox: `files-mkdir`/`files-delete`/`files-rename`; root bị từ chối `PERMISSION_DENIED`, delete dir rỗng/phi rỗng cần `recursive`; rename không ghi đè `FILE_EXISTS` (ADR-40)
+
 
 > **Cổng files là trạng thái tạm, không phải bản vá bảo mật.** Peer chưa được định danh (H3); `approved` chưa được enforce (H2); traffic file chỉ được bảo vệ bởi DTLS (H11/M7/M8). Cổng giữ *hệ quả* (file access trên peer chưa xác minh) khỏi mặc định, nhưng các finding còn nguyên — đóng bởi **WS1/WS2/WS3** (Phase 5). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md` và spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
 
@@ -1158,7 +1165,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
 | Terminal Latency | < 10ms | P2P DataChannel |
 | Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
 | Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt |
-| File Transfer | > 10MB/s | Parallel chunks — **phạm vi Tuần 11, CHƯA đo** (Tuần 10 chỉ chạy đơn luồng tuần tự; không ghi số đo throughput nào — đo hiệu năng là phạm vi Tuần 11, không phải tiêu chí nghiệm thu) |
+| File Transfer | > 10MB/s | Giao thức nhị phân lai cửa sổ trượt 64 chunk (ADR-36/37); đo **~11–14 MB/s cách ly trên loopback** (mẫu 11.16 / 14.12 / 11.08 / 14.28 / 14.19 / 13.82 MB/s; 50 MiB / 1600 chunk; `process.hrtime.bigint()` từ `files-download` đến `files-download-end`; agent built debug qua `cargo build`). Đo bởi E2E suite `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts` (test 3, assertion >10 MB/s). Lưu ý: giảm còn ~7–9 MB/s dưới tải đồng thời. |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |
 | Bundle Size | < 5MB | Tree-shaking |

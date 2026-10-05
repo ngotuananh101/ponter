@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
+import { useTransferQueueStore } from '../stores/transfer-queue';
 import type { TerminalSession } from '@ponter/terminal-core';
 import type { RemoteFile } from '@ponter/shared';
 import type { TransferProgress } from '@ponter/file-core';
@@ -100,8 +101,13 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-let downloadDone = deferred<Uint8Array | void>();
-let uploadDone = deferred<Uint8Array | void>();
+/**
+ * Per-call deferreds so multiple in-flight transfers don't share the same
+ * `done` promise. Each call to upload/download gets its own deferred at the
+ * index of the call. The test resolves/rejects the specific index it wants.
+ */
+let downloadDones: Array<ReturnType<typeof deferred<Uint8Array | void>>> = [];
+let uploadDones: Array<ReturnType<typeof deferred<Uint8Array | void>>> = [];
 let downloadProgress: ((p: TransferProgress) => void) | null = null;
 
 const entry = (overrides: Partial<RemoteFile> = {}): RemoteFile => ({
@@ -118,8 +124,8 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     setActivePinia(createPinia());
     peerOptions.length = 0;
     connectionStateChangeHandlers.length = 0;
-    downloadDone = deferred<Uint8Array | void>();
-    uploadDone = deferred<Uint8Array | void>();
+    downloadDones = [];
+    uploadDones = [];
     downloadProgress = null;
     waitForChannelImpl = async () => {};
     filesList.mockReset();
@@ -135,10 +141,12 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     filesDownloadFn.mockImplementation(
       (_path: string, onProgress?: (p: TransferProgress) => void) => {
         downloadProgress = onProgress ?? null;
+        const done = deferred<Uint8Array | void>();
+        downloadDones.push(done);
         return {
-          transferId: 't-dl-1',
+          transferId: `t-dl-${downloadDones.length - 1}`,
           direction: 'download',
-          done: downloadDone.promise,
+          done: done.promise,
           cancel: filesCancel,
         };
       },
@@ -150,10 +158,12 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
         _bytes: Uint8Array,
         _onProgress?: (p: TransferProgress) => void,
       ) => {
+        const done = deferred<Uint8Array | void>();
+        uploadDones.push(done);
         return {
-          transferId: 't-up-1',
+          transferId: `t-up-${uploadDones.length - 1}`,
           direction: 'upload',
-          done: uploadDone.promise,
+          done: done.promise,
           cancel: filesCancel,
         };
       },
@@ -341,7 +351,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     expect(tab?.fileTransfers?.[0]?.name).toBe('notes.txt');
 
     downloadProgress?.({
-      transferId: 't-dl-1',
+      transferId: 't-dl-0',
       direction: 'download',
       bytesTransferred: 3,
       totalBytes: 3,
@@ -350,7 +360,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     await nextTick();
     expect(tab?.fileTransfers?.[0]?.bytesTransferred).toBe(3);
 
-    downloadDone.resolve(bytes);
+    downloadDones[0]!.resolve(bytes);
     await pending;
 
     expect(saveBlob).toHaveBeenCalledWith('notes.txt', bytes);
@@ -364,7 +374,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     const { FilesError } = await import('@ponter/file-core');
     const pending = store.filesDownload(tabId, 'a.bin');
 
-    downloadDone.reject(new FilesError('TRANSFER_TIMEOUT', 'no progress'));
+    downloadDones[0]!.reject(new FilesError('TRANSFER_TIMEOUT', 'no progress'));
     await pending;
 
     expect(store.tabs.find((t) => t.id === tabId)?.fileError).toBe(
@@ -377,10 +387,10 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     const { FilesError } = await import('@ponter/file-core');
     const pending = store.filesDownload(tabId, 'a.bin');
 
-    store.filesCancelTransfer(tabId, 't-dl-1');
+    store.filesCancelTransfer(tabId, 't-dl-0');
     expect(filesCancel).toHaveBeenCalledTimes(1);
 
-    downloadDone.reject(new FilesError('CANCELLED', 'cancelled'));
+    downloadDones[0]!.reject(new FilesError('CANCELLED', 'cancelled'));
     await pending;
 
     expect(store.tabs.find((t) => t.id === tabId)?.fileError).toBeNull();
@@ -391,10 +401,14 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
 
   it('filesUpload reads the picked file and creates an upload handle', async () => {
     const { store, tabId } = await openFilesWithClient();
-    uploadDone.resolve(undefined);
     const file = new File([new Uint8Array([1, 2, 3])], 'up.bin');
 
-    await store.filesUpload(tabId, file);
+    const pending = store.filesUpload(tabId, file);
+    // filesUpload awaits file.arrayBuffer() before calling client.upload(),
+    // so the per-call deferred is registered on the next tick.
+    await nextTick();
+    uploadDones[0]!.resolve(undefined);
+    await pending;
 
     expect(filesUploadFn).toHaveBeenCalledWith(
       '',
@@ -418,7 +432,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     // 'CANCELLED' (Task 3, client.test.ts); the fake honors that contract so
     // this pins that the store routes closeTab through dispose().
     filesDispose.mockImplementationOnce(() => {
-      downloadDone.reject(new FilesError('CANCELLED', 'client disposed'));
+      downloadDones[0]!.reject(new FilesError('CANCELLED', 'client disposed'));
     });
     store.closeTab(tabId);
 
@@ -444,7 +458,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     // the mock stands in for the client and must honor that contract so this pins
     // that discardFilesConnection routes through dispose() on the 'failed' path.
     filesDispose.mockImplementationOnce(() => {
-      downloadDone.reject(new FilesError('CANCELLED', 'client disposed'));
+      downloadDones[0]!.reject(new FilesError('CANCELLED', 'client disposed'));
     });
 
     // Driving the captured onConnectionStateChange handler with 'failed'
@@ -465,12 +479,128 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     const { store, tabId } = await openFilesWithClient();
     const { FilesError } = await import('@ponter/file-core');
     const pending = store.filesDownload(tabId, 'a.bin');
-    downloadDone.reject(new FilesError('NOT_FOUND', 'gone'));
+    downloadDones[0]!.reject(new FilesError('NOT_FOUND', 'gone'));
     await pending;
     expect(store.tabs.find((t) => t.id === tabId)?.fileError).toBeTruthy();
 
     store.clearFileError(tabId);
 
     expect(store.tabs.find((t) => t.id === tabId)?.fileError).toBeNull();
+  });
+
+  describe('files store transfer queue gate (Week 11, spec §7.7 AC#4)', () => {
+    /**
+     * The mock client returns a fixed transferId and the same done promise for
+     * every call. These tests use per-call deferreds (downloadDones/uploadDones)
+     * so that resolving one transfer does not settle another.
+     */
+    it('Gate (upload): 3 concurrent filesUpload calls → client.upload called once, 1 active + 2 queued', async () => {
+      const { store, tabId } = await openFilesWithClient();
+      const q = useTransferQueueStore();
+      const file1 = new File([new Uint8Array([1])], 'a.bin');
+      const file2 = new File([new Uint8Array([2])], 'b.bin');
+      const file3 = new File([new Uint8Array([3])], 'c.bin');
+
+      // Initiate all three uploads (do not settle any).
+      // filesUpload awaits file.arrayBuffer() before calling client.upload(),
+      // so the mock is registered on subsequent ticks.
+      store.filesUpload(tabId, file1);
+      store.filesUpload(tabId, file2);
+      store.filesUpload(tabId, file3);
+      await nextTick();
+
+      // Only the first upload should have reached the client.
+      expect(filesUploadFn).toHaveBeenCalledTimes(1);
+
+      const uploads = q.items.filter((i) => i.direction === 'upload');
+      expect(uploads).toHaveLength(3);
+      const active = uploads.filter((i) => i.status === 'active');
+      const queued = uploads.filter((i) => i.status === 'queued');
+      expect(active).toHaveLength(1);
+      expect(queued).toHaveLength(2);
+      // FIFO order: first enqueued is active.
+      expect(q.activeUploadId).toBe(uploads[0]!.id);
+    });
+
+    it('FIFO promotion (upload): settling transfer 1 promotes the next queued item', async () => {
+      const { store, tabId } = await openFilesWithClient();
+      const q = useTransferQueueStore();
+      const file1 = new File([new Uint8Array([1])], 'a.bin');
+      const file2 = new File([new Uint8Array([2])], 'b.bin');
+
+      store.filesUpload(tabId, file1);
+      store.filesUpload(tabId, file2);
+      await nextTick();
+      expect(filesUploadFn).toHaveBeenCalledTimes(1);
+
+      // Settle transfer 1 (the active one).
+      uploadDones[0]!.resolve(undefined);
+      await nextTick();
+      await nextTick();
+
+      // After settling, the next queued item should have started.
+      expect(filesUploadFn).toHaveBeenCalledTimes(2);
+      const uploads = q.items.filter((i) => i.direction === 'upload');
+      const active = uploads.filter((i) => i.status === 'active');
+      expect(active).toHaveLength(1);
+      // The second upload is now active (FIFO).
+      expect(active[0]).toBe(uploads[1]);
+    });
+
+    it('Gate (download): 2 concurrent filesDownload calls → client.download called once, 1 active + 1 queued', async () => {
+      const { store, tabId } = await openFilesWithClient();
+      const q = useTransferQueueStore();
+
+      store.filesDownload(tabId, 'a.txt');
+      store.filesDownload(tabId, 'b.txt');
+      await nextTick();
+
+      expect(filesDownloadFn).toHaveBeenCalledTimes(1);
+
+      const downloads = q.items.filter((i) => i.direction === 'download');
+      expect(downloads).toHaveLength(2);
+      const active = downloads.filter((i) => i.status === 'active');
+      const queued = downloads.filter((i) => i.status === 'queued');
+      expect(active).toHaveLength(1);
+      expect(queued).toHaveLength(1);
+      expect(q.activeDownloadId).toBe(downloads[0]!.id);
+    });
+
+    it('Settle mapping: completed on success, cancelled on cancel/error, then promote next', async () => {
+      const { store, tabId } = await openFilesWithClient();
+      const q = useTransferQueueStore();
+      const file1 = new File([new Uint8Array([1])], 'a.bin');
+      const file2 = new File([new Uint8Array([2])], 'b.bin');
+
+      // --- Success path ---
+      store.filesUpload(tabId, file1);
+      store.filesUpload(tabId, file2);
+      await nextTick();
+      expect(filesUploadFn).toHaveBeenCalledTimes(1);
+
+      uploadDones[0]!.resolve(undefined);
+      await nextTick();
+      await nextTick(); // allow trackTransfer to settle
+      const item0 = q.items.find((i) => i.name === 'a.bin');
+      expect(item0?.status).toBe('completed');
+
+      // --- Error path ---
+      const { FilesError } = await import('@ponter/file-core');
+      const file3 = new File([new Uint8Array([3])], 'c.bin');
+      store.filesUpload(tabId, file3);
+      await nextTick();
+      // file3 should be queued behind file2
+      const file3Item = q.items.find((i) => i.name === 'c.bin');
+      expect(file3Item?.status).toBe('queued');
+      // Settle file2 with an error.
+      uploadDones[1]!.reject(new FilesError('TRANSFER_BUSY', 'agent busy'));
+      await nextTick();
+      await nextTick();
+      // file2 should be cancelled with error text, and file3 promoted to active.
+      const item1 = q.items.find((i) => i.name === 'b.bin');
+      expect(item1?.status).toBe('cancelled');
+      expect(item1?.error).toBeTruthy();
+      expect(file3Item?.status).toBe('active');
+    });
   });
 });

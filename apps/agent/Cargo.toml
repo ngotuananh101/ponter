@@ -8,6 +8,7 @@ rust-version = "1.85"          # clap 4.6.7's MSRV is the highest in the set (sp
 anyhow = "1.0.104"
 async-trait = "0.1.89"
 base64 = "0.23"
+bytes = "1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 portable-pty = "0.9"
@@ -38,7 +39,6 @@ tracing-log = "0.2"
 # via cc, and cc-rs cannot find a C++ compiler for the musl target
 # (musl-tools ships musl-gcc only — verified by probe).
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-bytes = "1"
 # Input injection (ADR-27 finding: enigo, MIT). Non-musl: the musl artifact is
 # terminal-only and never injects. Enigo is pure Rust (no vendoring, unlike
 # xcap) and in fact builds on musl too — the cfg-gate here is policy, not a
@@ -79,4 +79,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
 
