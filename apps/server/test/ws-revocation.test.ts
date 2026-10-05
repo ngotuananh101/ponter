@@ -108,66 +108,42 @@ describe('revocation closes live sockets via route call sites', () => {
     expect(await closed).toBe(4401);
   });
 
-  it('admin PATCH deactivate closes bob socket with 4401', async () => {
-    const { app, server: s } = createSignalingServer();
-    server = s;
-    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
-    const port = (s.address() as AddressInfo).port;
+  it.each([
+    ['deactivate', { isActive: false }],
+    ['reject', { approvalStatus: 'rejected' }],
+  ])(
+    'admin PATCH %s closes bob socket with 4401',
+    async (_name, body: Record<string, unknown>) => {
+      const { app, server: s } = createSignalingServer();
+      server = s;
+      await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+      const port = (s.address() as AddressInfo).port;
 
-    const alice = await registerAndTicket(app, 'alice');
-    // bob is user #2 → with E2E_AUTO_APPROVE_USERS=true gets approved + token
-    const bob = await registerAndTicket(app, 'bob');
+      const alice = await registerAndTicket(app, 'alice');
+      // bob is user #2 → with E2E_AUTO_APPROVE_USERS=true gets approved + token
+      const bob = await registerAndTicket(app, 'bob');
 
-    const ws = connect(port, bob.ticket);
-    await new Promise<void>((r) => ws.once('open', () => r()));
-    expect(browserConnections.get(bob.userId)?.size).toBe(1);
+      const ws = connect(port, bob.ticket);
+      await new Promise<void>((r) => ws.once('open', () => r()));
+      expect(browserConnections.get(bob.userId)?.size).toBe(1);
 
-    const closed = new Promise<number>((r) =>
-      ws.once('close', (code) => r(code)),
-    );
-    const res = await app.fetch(
-      new Request(`http://localhost/api/admin/users/${bob.userId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${alice.token}`,
-        },
-        body: JSON.stringify({ isActive: false }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(await closed).toBe(4401);
-  });
-
-  it('admin PATCH reject closes bob socket with 4401', async () => {
-    const { app, server: s } = createSignalingServer();
-    server = s;
-    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
-    const port = (s.address() as AddressInfo).port;
-
-    const alice = await registerAndTicket(app, 'alice');
-    const bob = await registerAndTicket(app, 'bob');
-
-    const ws = connect(port, bob.ticket);
-    await new Promise<void>((r) => ws.once('open', () => r()));
-    expect(browserConnections.get(bob.userId)?.size).toBe(1);
-
-    const closed = new Promise<number>((r) =>
-      ws.once('close', (code) => r(code)),
-    );
-    const res = await app.fetch(
-      new Request(`http://localhost/api/admin/users/${bob.userId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${alice.token}`,
-        },
-        body: JSON.stringify({ approvalStatus: 'rejected' }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(await closed).toBe(4401);
-  });
+      const closed = new Promise<number>((r) =>
+        ws.once('close', (code) => r(code)),
+      );
+      const res = await app.fetch(
+        new Request(`http://localhost/api/admin/users/${bob.userId}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${alice.token}`,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(await closed).toBe(4401);
+    },
+  );
 });
 
 describe('revocation blocks WebSocket upgrade (M10)', () => {
