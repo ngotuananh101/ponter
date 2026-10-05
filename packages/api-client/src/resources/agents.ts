@@ -7,7 +7,7 @@ export interface CreateAgentInput {
   platform?: string;
   osVersion?: string;
   agentVersion?: string;
-  publicKey: string;
+  publicKey?: string;
   capabilities?: string[];
 }
 

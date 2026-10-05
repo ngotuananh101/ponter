@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { apiClient } from '@/services/client';
-import { generateUserKeyPair } from '@ponter/crypto';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -78,20 +77,10 @@ async function handleRegister() {
   error.value = null;
 
   try {
-    // Generate an authentic Ed25519/ECDH keypair for the agent registration contract
-    let publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExamplePublicKey';
-    try {
-      const pair = await generateUserKeyPair();
-      publicKey = pair.publicKeySpkiBase64;
-    } catch {
-      // Fallback to default key if crypto subtle unavailable
-    }
-
     const res = await apiClient.agents.create({
       id: trimmedId,
       hostname: hostname.value.trim() || trimmedId,
       platform: platform.value,
-      publicKey,
       capabilities: ['terminal', 'desktop', 'files'],
     });
 
