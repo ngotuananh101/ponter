@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import {
   Card,
   CardHeader,
@@ -11,10 +11,10 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Shield, KeyRound, User, Mail, Lock } from '@lucide/vue';
+import { toast } from 'vue-sonner';
 
-defineProps<{
+const props = defineProps<{
   loading?: boolean;
   errorMessage?: string | null;
 }>();
@@ -30,34 +30,39 @@ const username = ref('');
 const email = ref('');
 const password = ref('');
 const confirmPassword = ref('');
-const validationError = ref<string | null>(null);
+
+watch(
+  () => props.errorMessage,
+  (msg) => {
+    if (msg) toast.error(msg);
+  },
+);
 
 function validateEmail(val: string): boolean {
   return /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(val);
 }
 
 function handleSubmit() {
-  validationError.value = null;
   const trimmedUser = username.value.trim();
   const trimmedEmail = email.value.trim();
 
   if (!trimmedUser || trimmedUser.length < 3) {
-    validationError.value = 'Username must be at least 3 characters';
+    toast.error('Username must be at least 3 characters');
     return;
   }
 
   if (trimmedEmail && !validateEmail(trimmedEmail)) {
-    validationError.value = 'Please enter a valid email address';
+    toast.error('Please enter a valid email address');
     return;
   }
 
   if (password.value.length < 8) {
-    validationError.value = 'Password must be at least 8 characters';
+    toast.error('Password must be at least 8 characters');
     return;
   }
 
   if (password.value !== confirmPassword.value) {
-    validationError.value = 'Passwords do not match';
+    toast.error('Passwords do not match');
     return;
   }
 
@@ -98,16 +103,6 @@ function handleSubmit() {
     </CardHeader>
     <form @submit.prevent="handleSubmit">
       <CardContent class="space-y-4">
-        <Alert
-          v-if="validationError || errorMessage"
-          variant="destructive"
-          class="border-destructive/30 bg-destructive/10"
-        >
-          <AlertDescription class="text-xs font-medium">{{
-            validationError || errorMessage
-          }}</AlertDescription>
-        </Alert>
-
         <div class="space-y-2">
           <Label
             for="reg-username"

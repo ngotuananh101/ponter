@@ -31,6 +31,7 @@ import {
   Pencil,
   Trash2,
 } from '@lucide/vue';
+import { toast } from 'vue-sonner';
 import RegisterAgentDialog from '@/components/agent/RegisterAgentDialog.vue';
 import EditAgentDialog from '@/components/agent/EditAgentDialog.vue';
 import DeleteAgentDialog from '@/components/agent/DeleteAgentDialog.vue';
@@ -107,11 +108,13 @@ function openDelete(agent: Agent) {
 /** Swap the edited agent into the list so the card reflects the new metadata. */
 function handleUpdated(updated: Agent) {
   agents.value = agents.value.map((a) => (a.id === updated.id ? updated : a));
+  toast.success('Agent updated');
 }
 
 /** Drop the deleted agent from the list without a full refetch. */
 function handleDeleted(id: string) {
   agents.value = agents.value.filter((a) => a.id !== id);
+  toast.success('Agent deleted');
 }
 
 onMounted(() => {

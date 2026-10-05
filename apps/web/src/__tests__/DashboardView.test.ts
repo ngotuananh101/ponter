@@ -4,6 +4,16 @@ import { setActivePinia, createPinia } from 'pinia';
 import DashboardView from '@/views/DashboardView.vue';
 import type { Agent } from '@ponter/shared';
 
+vi.mock('vue-sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+import { toast } from 'vue-sonner';
+
 vi.mock('@/services/client', () => ({
   apiClient: {
     // The auth store assigns `onAuthError` onto the http client at setup time.
@@ -109,6 +119,7 @@ describe('DashboardView.vue', () => {
       capabilities: ['terminal', 'desktop'],
     });
     expect(wrapper.text()).toContain('renamed-host');
+    expect(toast.success).toHaveBeenCalledWith('Agent updated');
   });
 
   it('opens the delete dialog for the clicked agent', async () => {
@@ -145,5 +156,18 @@ describe('DashboardView.vue', () => {
     expect(wrapper.find('[data-test="delete-agent-a2"]').exists()).toBe(false);
     // The other agent is untouched.
     expect(wrapper.find('[data-test="delete-agent-a1"]').exists()).toBe(true);
+    expect(toast.success).toHaveBeenCalledWith('Agent deleted');
+  });
+
+  it('renders an error Alert when device/agent load fails', async () => {
+    const { apiClient } = await import('@/services/client');
+    vi.mocked(apiClient.devices.list).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(apiClient.agents.list).mockRejectedValueOnce(new Error('boom'));
+
+    const wrapper = await mountDashboard([]);
+    await flushPromises();
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain('boom');
   });
 });
