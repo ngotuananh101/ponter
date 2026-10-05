@@ -7,6 +7,9 @@ import {
   generateUserKeyPair,
   savePrivateKey,
   deletePrivateKey,
+  generateSigningKeyPair,
+  saveSigningKey,
+  loadSigningKey,
 } from '@ponter/crypto';
 import { isApiError } from '@ponter/api-client';
 
@@ -61,6 +64,11 @@ export const useAuthStore = defineStore('auth', () => {
       const res = await apiClient.auth.login(username, password);
       user.value = res.user;
       status.value = 'authenticated';
+      // Best-effort: load (but don't require) the signing key so identity
+      // verification can proceed if a key is present. Must not break login.
+      try {
+        await loadSigningKey(res.user.id);
+      } catch {}
     } catch (err) {
       status.value = 'error';
       error.value = describeError(err, 'Login failed');
@@ -77,11 +85,13 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null;
     try {
       const keyPair = await generateUserKeyPair();
+      const signPair = await generateSigningKeyPair();
       const res = await apiClient.auth.register({
         username: params.username,
         email: params.email,
         password: params.password,
         publicKey: keyPair.publicKeySpkiBase64,
+        signingPublicKey: signPair.publicKeyRawBase64,
       });
 
       if (res.requiresApproval) {
@@ -93,6 +103,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
 
       await savePrivateKey(res.user.id, keyPair.privateKey);
+      await saveSigningKey(res.user.id, signPair.privateKey);
 
       user.value = res.user;
       requiresApproval.value = false;

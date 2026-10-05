@@ -51,6 +51,7 @@ describe('close() waits for the data channel closing handshake', () => {
     const peer = new ScriptedPeer({ channelFactory: () => channel });
     const { transport } = stubTransport();
     const pc = new PeerConnection(peer, transport, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -76,6 +77,7 @@ describe('close() waits for the data channel closing handshake', () => {
       const peer = new ScriptedPeer({ channelFactory: () => channel });
       const { transport } = stubTransport();
       const pc = new PeerConnection(peer, transport, {
+        sessionId: 'sess_1',
         role: 'offerer',
         channelLabels: ['terminal'],
       });

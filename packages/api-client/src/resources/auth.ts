@@ -6,6 +6,8 @@ export interface RegisterInput {
   email?: string;
   password: string;
   publicKey: string;
+  /** WS2 Ed25519 signing public key (base64 raw), registered for peer identity. */
+  signingPublicKey?: string;
 }
 
 export class AuthResource {

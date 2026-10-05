@@ -8,6 +8,8 @@ export const users = sqliteTable('users', {
   username: text('username').notNull().unique(),
   email: text('email').unique(),
   publicKey: text('public_key').notNull(),
+  /** WS2 Ed25519 signing public key (base64 raw). Nullable for legacy rows. */
+  signingPublicKey: text('signing_public_key'),
   passwordHash: text('password_hash'),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
   role: text('role').notNull().default('user'),
@@ -53,6 +55,7 @@ export const agents = sqliteTable('agents', {
   publicKey: text('public_key').notNull(),
   isOnline: integer('is_online', { mode: 'boolean' }).notNull().default(false),
   lastPingAt: text('last_ping_at'),
+  signingPublicKey: text('signing_public_key'),
   credentialHash: text('credential_hash'),
   capabilities: text('capabilities'),
   createdAt: text('created_at')

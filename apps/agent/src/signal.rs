@@ -31,11 +31,22 @@ pub enum SignalMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct IdentityProof {
+    pub signature: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalOffer {
     pub session_id: String,
     pub sdp: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub proof: Option<IdentityProof>,
+    #[serde(default)]
+    pub user_signing_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -44,6 +55,8 @@ pub struct SignalAnswer {
     pub session_id: String,
     pub sdp: String,
     pub approved: bool,
+    #[serde(default)]
+    pub proof: Option<IdentityProof>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,6 +171,35 @@ enum IceServersFrame {
     IceServers { data: IceServersPayload },
 }
 
+/// The WS2 `identity-challenge` frame the server pushes once per connect (the
+/// nonce challenge). Mirrors `IceServersFrame`'s shape: an outer `tag = "type"`
+/// envelope with a `data` payload, and `Ok(None)` fall-through for any frame
+/// that is not one, so the caller can try the next parser.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct IdentityChallengePayload {
+    nonce: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum IdentityChallengeFrame {
+    IdentityChallenge { data: IdentityChallengePayload },
+}
+
+/// Parse the WS2 `identity-challenge` nonce. Returns `Ok(None)` for any frame
+/// that is not a challenge, so the caller falls through to `parse_ice_servers`
+/// / `parse_inbound`. Size-guarded like the other parsers.
+pub fn parse_identity_challenge(raw: &str) -> Result<Option<String>> {
+    if raw.len() > MAX_INBOUND_FRAME_BYTES {
+        bail!("inbound frame exceeds {MAX_INBOUND_FRAME_BYTES} bytes");
+    }
+    match serde_json::from_str::<IdentityChallengeFrame>(raw) {
+        Ok(IdentityChallengeFrame::IdentityChallenge { data }) => Ok(Some(data.nonce)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Parse the `ice-servers` frame the server pushes when the agent connects.
 ///
 /// Returns `Ok(None)` for any frame that is not an `ice-servers` frame, so the
@@ -191,6 +233,45 @@ enum Envelope<'a> {
     Signal { data: &'a SignalMessage },
 }
 
+/// The WS2 `agent-identity` frame, mirroring `AgentSocketMessage` on the browser
+/// side (`packages/shared/src/types/signaling.ts`): a top-level `type`/`data`
+/// envelope whose payload is the public key, the nonce, and the Ed25519
+/// signature over `ponter-ws2-agent-identity-v1\nnonce=<nonce>`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentIdentityData {
+    public_key: String,
+    nonce: String,
+    signature: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum AgentIdentityEnvelope {
+    AgentIdentity { data: AgentIdentityData },
+}
+
+/// Build the WS2 `agent-identity` proof frame for `identity` over `nonce`.
+///
+/// The signed message is byte-identical to the server's
+/// `WS2_IDENTITY_PROOF_PREFIX + "nonce=" + nonce` (`apps/server/src/routes/ws.ts:31`):
+/// `"ponter-ws2-agent-identity-v1\nnonce=<nonce>"` with no trailing newline.
+pub fn build_agent_identity_frame(
+    identity: &crate::identity::AgentIdentity,
+    nonce: &str,
+) -> String {
+    let msg = format!("ponter-ws2-agent-identity-v1\nnonce={nonce}");
+    let signature = crate::identity::base64_encode(&identity.sign(msg.as_bytes()));
+    let frame = AgentIdentityEnvelope::AgentIdentity {
+        data: AgentIdentityData {
+            public_key: identity.public_key_base64(),
+            nonce: nonce.to_string(),
+            signature,
+        },
+    };
+    serde_json::to_string(&frame).expect("agent-identity frame must serialize")
+}
+
 /// A connected agent socket.
 pub struct SignalClient {
     sink: futures_util::stream::SplitSink<
@@ -209,6 +290,11 @@ pub struct SignalClient {
     /// RTC task. Capacity 1 and it is written exactly once per connection, so
     /// a `try_send` that reports full is a real duplicate frame.
     ice_tx: mpsc::Sender<Vec<IceServerEntry>>,
+    /// The agent's WS2 Ed25519 identity, held for the duration of a socket so
+    /// `run()` can answer each `identity-challenge` the server issues on
+    /// connect. Cloned per attempt: the key is connection-independent and the
+    /// supervisor keeps its own `Arc` in `cfg.identity`.
+    identity: std::sync::Arc<crate::identity::AgentIdentity>,
 }
 
 impl SignalClient {
@@ -223,11 +309,16 @@ impl SignalClient {
     /// the channels are created once in `run_with_reconnect` and only the
     /// socket is rebuilt per attempt. The outbound receiver is likewise owned by
     /// the caller and lent to [`run`].
+    ///
+    /// `identity` is the agent's persistent Ed25519 key; it is held by the
+    /// client so `run()` can answer the WS2 `identity-challenge` the server
+    /// pushes on every connect.
     pub async fn connect(
         url: &str,
         credential: &str,
         inbound_tx: mpsc::Sender<SignalMessage>,
         ice_tx: mpsc::Sender<Vec<IceServerEntry>>,
+        identity: std::sync::Arc<crate::identity::AgentIdentity>,
     ) -> Result<Self> {
         let mut request = url.into_client_request().context("invalid signaling URL")?;
         request.headers_mut().insert(
@@ -247,7 +338,22 @@ impl SignalClient {
             stream,
             inbound_tx,
             ice_tx,
+            identity,
         })
+    }
+
+    /// Send the WS2 `agent-identity` proof frame on the current socket.
+    async fn send_agent_identity(
+        &mut self,
+        identity: &crate::identity::AgentIdentity,
+        nonce: &str,
+    ) -> Result<()> {
+        let frame = build_agent_identity_frame(identity, nonce);
+        self.sink
+            .send(Message::Text(frame.into()))
+            .await
+            .context("agent-identity send failed")?;
+        Ok(())
     }
 
     /// Read + write + ping loop. Returns `Ok(())` on a clean close and `Err` on
@@ -305,40 +411,72 @@ impl SignalClient {
                     let Some(frame) = frame else { return Ok(()) };  // clean close
                     match frame.context("inbound read failed")? {
                         Message::Text(text) => {
-                            // The pushed ICE configuration is not a signal, so
-                            // it is matched first: `parse_inbound` would drop it
-                            // and the agent would build its peer with no TURN.
-                            match parse_ice_servers(&text) {
-                                Ok(Some(entries)) => {
-                                    // A duplicate push is not fatal — the first
-                                    // one already configured the peer.
-                                    if self.ice_tx.try_send(entries).is_err() {
-                                        tracing::debug!("ignoring a duplicate ice-servers frame");
+                            // The WS2 identity challenge is answered before any
+                            // other parser: it is not a signal and not ICE
+                            // configuration, but it must be consumed and
+                            // answered on this socket or the server never
+                            // stores the agent's public key, which makes every
+                            // downstream offer-proof gate fail closed.
+                            match parse_identity_challenge(&text) {
+                                Ok(Some(nonce)) => {
+                                    tracing::debug!("answering WS2 identity challenge");
+                                    // Clone the Arc (cheap) so the mutable send
+                                    // does not overlap with the immutable borrow
+                                    // of `self.identity`.
+                                    let identity = std::sync::Arc::clone(&self.identity);
+                                    if let Err(e) = self.send_agent_identity(&identity, &nonce).await {
+                                        tracing::warn!(error = %e, "failed to answer identity challenge");
                                     }
                                 }
-                                Ok(None) => match parse_inbound(&text) {
-                                    Ok(Some(message)) => {
-                                        // A full inbound queue means the RTC task is
-                                        // wedged; dropping is correct (the Worker's
-                                        // D1 row is the delivery guarantee).
-                                        let _ = self.inbound_tx.try_send(message);
+                                Ok(None) => {
+                                    // Not a challenge. The pushed ICE configuration
+                                    // is not a signal, so it is matched before
+                                    // `parse_inbound`: that function would drop it
+                                    // and the agent would build its peer with no TURN.
+                                    match parse_ice_servers(&text) {
+                                        Ok(Some(entries)) => {
+                                            // A duplicate push is not fatal — the first
+                                            // one already configured the peer.
+                                            if self.ice_tx.try_send(entries).is_err() {
+                                                tracing::debug!("ignoring a duplicate ice-servers frame");
+                                            }
+                                        }
+                                        Ok(None) => match parse_inbound(&text) {
+                                            Ok(Some(message)) => {
+                                                // A full inbound queue means the RTC task is
+                                                // wedged; dropping is correct (the Worker's
+                                                // D1 row is the delivery guarantee).
+                                                let _ = self.inbound_tx.try_send(message);
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                // Never log the body: an SDP is
+                                                // session-identifying.
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    bytes = text.len(),
+                                                    "dropping malformed inbound frame",
+                                                );
+                                            }
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                bytes = text.len(),
+                                                "dropping oversize inbound frame",
+                                            );
+                                        }
                                     }
-                                    Ok(None) => {}
-                                    Err(e) => {
-                                        // Never log the body: an SDP is
-                                        // session-identifying.
-                                        tracing::warn!(
-                                            error = %e,
-                                            bytes = text.len(),
-                                            "dropping malformed inbound frame",
-                                        );
-                                    }
-                                },
+                                }
+                                // A real parse error from the challenge parser
+                                // (only an oversized frame can reach here, since
+                                // any non-challenge JSON is `Ok(None)`) is logged
+                                // and dropped, exactly like the other parsers.
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
                                         bytes = text.len(),
-                                        "dropping oversize inbound frame",
+                                        "dropping malformed identity-challenge frame",
                                     );
                                 }
                             }
@@ -480,6 +618,84 @@ mod tests {
             vec!["stun:stun.l.google.com:19302".to_string()]
         );
         assert!(entries[0].username.is_none());
+    }
+
+    #[test]
+    fn carries_an_identity_proof() {
+        let raw = r#"{"type":"answer","data":{"sessionId":"s1","sdp":"v=0","approved":true,"proof":{"signature":"c2ln","fingerprint":"AB:CD"}}}"#;
+        let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
+        let SignalMessage::Answer(a) = parsed else {
+            panic!("expected answer")
+        };
+        assert_eq!(a.proof.unwrap().fingerprint, "AB:CD");
+    }
+
+    #[test]
+    fn proof_is_optional_for_backward_shapes() {
+        let raw = r#"{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":[]}}"#;
+        let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
+        let SignalMessage::Offer(o) = parsed else {
+            panic!("expected offer")
+        };
+        assert!(o.proof.is_none());
+    }
+
+    #[test]
+    fn offer_with_user_signing_key_round_trips() {
+        let raw = r#"{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"],"proof":{"signature":"c2ln","fingerprint":"AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"},"userSigningPublicKey":"dGVzdA=="}}"#;
+        let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
+        let SignalMessage::Offer(o) = &parsed else {
+            panic!("expected offer")
+        };
+        assert_eq!(o.user_signing_public_key.as_deref(), Some("dGVzdA=="));
+        // Re-serialization must reproduce the camelCase key.
+        let re = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(re["data"]["userSigningPublicKey"], "dGVzdA==");
+        assert!(re["data"].get("user_signing_public_key").is_none());
+    }
+
+    #[test]
+    fn answers_the_identity_challenge_with_a_verifiable_proof() {
+        let dir = std::env::temp_dir().join(format!("ponter-id-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent-identity.pkcs8");
+        let identity = crate::identity::AgentIdentity::load_or_generate(&path).unwrap();
+
+        let nonce =
+            parse_identity_challenge(r#"{"type":"identity-challenge","data":{"nonce":"abc123"}}"#)
+                .unwrap()
+                .expect("challenge must parse");
+        assert_eq!(nonce, "abc123");
+
+        let raw = build_agent_identity_frame(&identity, &nonce);
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["type"], "agent-identity");
+        assert_eq!(v["data"]["nonce"], "abc123");
+        assert_eq!(v["data"]["publicKey"], identity.public_key_base64());
+
+        let sig = crate::identity::base64_decode(v["data"]["signature"].as_str().unwrap()).unwrap();
+        let msg = format!("ponter-ws2-agent-identity-v1\nnonce={nonce}");
+        assert!(crate::identity::verify_proof(
+            &identity.public_key_raw(),
+            msg.as_bytes(),
+            &sig
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_identity_challenge_returns_none_for_non_challenge() {
+        // A non-challenge frame must fall through so the caller can try the other
+        // parsers (parse_ice_servers / parse_inbound).
+        assert!(parse_identity_challenge(r#"{"type":"pong"}"#)
+            .expect("pong parses")
+            .is_none());
+        assert!(
+            parse_identity_challenge(r#"{"type":"signal","data":{"type":"offer"}}"#)
+                .expect("signal parses")
+                .is_none()
+        );
     }
 
     #[test]

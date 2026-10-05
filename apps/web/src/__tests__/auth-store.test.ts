@@ -11,6 +11,9 @@ vi.mock('@ponter/crypto', async (importOriginal) => ({
   generateUserKeyPair: vi.fn(),
   savePrivateKey: vi.fn(),
   deletePrivateKey: vi.fn(),
+  generateSigningKeyPair: vi.fn(),
+  saveSigningKey: vi.fn(),
+  loadSigningKey: vi.fn(),
 }));
 
 describe('Auth Store (Pinia)', () => {
@@ -50,11 +53,17 @@ describe('Auth Store (Pinia)', () => {
   it('3. register calls generateUserKeyPair and passes publicKeySpkiBase64 to the API', async () => {
     const store = useAuthStore();
     const dummyKey = {} as CryptoKey;
+    const signPair = {
+      publicKeyRawBase64: 'signing-pub',
+      privateKey: {} as CryptoKey,
+      publicKey: {} as CryptoKey,
+    };
     vi.mocked(cryptoPkg.generateUserKeyPair).mockResolvedValue({
       publicKeySpkiBase64: 'MFkwEwYHKoZIzj0CAQYIKoZ...',
       privateKey: dummyKey,
       publicKey: dummyKey,
     });
+    vi.mocked(cryptoPkg.generateSigningKeyPair).mockResolvedValue(signPair);
 
     const regSpy = vi.spyOn(apiClient.auth, 'register').mockResolvedValue({
       user: { id: 'u-reg-1', username: 'bob' } as unknown as User,
@@ -63,7 +72,8 @@ describe('Auth Store (Pinia)', () => {
       expiresIn: 900,
     });
 
-    const saveSpy = vi.mocked(cryptoPkg.savePrivateKey).mockResolvedValue();
+    const savePrivSpy = vi.mocked(cryptoPkg.savePrivateKey).mockResolvedValue();
+    const saveSignSpy = vi.mocked(cryptoPkg.saveSigningKey).mockResolvedValue();
 
     await store.register({
       username: 'bob',
@@ -80,6 +90,7 @@ describe('Auth Store (Pinia)', () => {
       'email',
       'password',
       'publicKey',
+      'signingPublicKey',
       'username',
     ]);
     expect(payload).toEqual({
@@ -87,8 +98,10 @@ describe('Auth Store (Pinia)', () => {
       email: undefined,
       password: 'password123',
       publicKey: 'MFkwEwYHKoZIzj0CAQYIKoZ...',
+      signingPublicKey: 'signing-pub',
     });
-    expect(saveSpy).toHaveBeenCalledWith('u-reg-1', dummyKey);
+    expect(savePrivSpy).toHaveBeenCalledWith('u-reg-1', dummyKey);
+    expect(saveSignSpy).toHaveBeenCalledWith('u-reg-1', signPair.privateKey);
     expect(store.user?.id).toBe('u-reg-1');
   });
 

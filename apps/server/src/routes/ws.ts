@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { webcrypto } from 'node:crypto';
 import { Hono } from 'hono';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
@@ -21,9 +22,24 @@ import type {
   SignalMessage,
   BrowserMessageInit,
   BrowserSocketMessage,
+  IdentityProof,
 } from '@ponter/shared';
 
 const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
+
+/** WS2 agent-identity proof-of-possession: `"ponter-ws2-agent-identity-v1\nnonce=<nonce>"`. */
+const WS2_IDENTITY_PROOF_PREFIX = 'ponter-ws2-agent-identity-v1\nnonce=';
+
+/**
+ * Generate a nonce for the WS2 agent-identity proof-of-possession challenge.
+ *
+ * 32 bytes of randomness, hex-encoded. The agent signs the proof message
+ * containing this nonce, so it must not be predictable.
+ */
+function generateNonce(): string {
+  const bytes = webcrypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** Replay page size. Mirrors the REST poll's cap (`signal.ts:210`). */
 const REPLAY_LIMIT = 200;
@@ -33,6 +49,8 @@ export interface AgentConnection {
   userId: string;
   socket: WebSocket;
   send: (data: string) => void;
+  /** WS2: the nonce most recently sent in an `identity-challenge` frame. */
+  identityNonce: string | null;
 }
 
 export const agentConnections = new Map<string, AgentConnection>();
@@ -442,8 +460,28 @@ async function handleBrowserMessage(
       return;
     }
 
+    // Enrich the offer with the server-sourced user signing public key before
+    // forwarding to the agent, mirroring POST /api/signal/offer — the agent
+    // authenticates with its credential and cannot read user rows, so the
+    // session owner's signing public key is delivered with the offer.
+    let pushed = message;
+    if (message.type === 'offer') {
+      const owner = await db
+        .select({ signingPublicKey: users.signingPublicKey })
+        .from(users)
+        .where(eq(users.id, session.userId))
+        .get();
+      pushed = {
+        type: 'offer',
+        data: {
+          ...message.data,
+          userSigningPublicKey: owner?.signingPublicKey ?? null,
+        },
+      };
+    }
+
     // Fire-and-forget to the agent, mirroring the REST routes.
-    pushToAgent(session.agentId, message);
+    pushToAgent(session.agentId, pushed);
 
     // Fan out to this user's other browser sockets subscribed to the session,
     // but never echo back to the sender.
@@ -745,6 +783,7 @@ export function createAgentWebSocketServer(): WebSocketServer {
             socket.send(data);
           }
         },
+        identityNonce: null,
       };
       agentConnections.set(agentId, connection);
 
@@ -757,6 +796,20 @@ export function createAgentWebSocketServer(): WebSocketServer {
         JSON.stringify({
           type: 'ice-servers',
           data: { iceServers: buildIceServers(userId) },
+        }),
+      );
+
+      // WS2: challenge the agent to prove possession of its Ed25519 signing key.
+      // The agent signs the proof message `"<prefix>\nnonce=<nonce>"` with the
+      // private half and echoes the nonce back; the server verifies and stores
+      // the public key on the agent row. Sent after the ICE push so the ordering
+      // on the wire is deterministic (ICE config, then identity challenge).
+      const nonce = generateNonce();
+      connection.identityNonce = nonce;
+      socket.send(
+        JSON.stringify({
+          type: 'identity-challenge',
+          data: { nonce },
         }),
       );
 
@@ -815,6 +868,85 @@ export function createAgentWebSocketServer(): WebSocketServer {
 }
 
 /**
+ * Verify an agent's WS2 identity proof and persist its Ed25519 signing public key.
+ *
+ * On a valid signature: `UPDATE agents SET signing_public_key = ? WHERE id = ?`.
+ * On a bad or missing signature: close the socket with 4401 and do NOT store.
+ *
+ * Fail-closed — any exception or malformed input rejects the proof without
+ * writing the key.
+ */
+async function handleAgentIdentity(
+  data: unknown,
+  connection: AgentConnection,
+  db: Database,
+): Promise<void> {
+  // Validate the frame shape first; a malformed proof must not throw.
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    connection.socket.close(4401, 'Invalid agent-identity frame');
+    return;
+  }
+
+  const { publicKey, nonce, signature } = data as {
+    publicKey?: unknown;
+    nonce?: unknown;
+    signature?: unknown;
+  };
+
+  if (
+    typeof publicKey !== 'string' ||
+    typeof nonce !== 'string' ||
+    typeof signature !== 'string'
+  ) {
+    connection.socket.close(4401, 'Invalid agent-identity fields');
+    return;
+  }
+
+  // The nonce must match the one we sent on connect. A mismatch (replay, stale
+  // frame, or wrong agent) is a 4401.
+  if (connection.identityNonce !== nonce) {
+    connection.socket.close(4401, 'Nonce mismatch');
+    return;
+  }
+
+  const expectedMessage = `${WS2_IDENTITY_PROOF_PREFIX}${nonce}`;
+
+  try {
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      Buffer.from(publicKey, 'base64'),
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+
+    const valid = await webcrypto.subtle.verify(
+      'Ed25519',
+      key,
+      Buffer.from(signature, 'base64'),
+      new TextEncoder().encode(expectedMessage),
+    );
+
+    if (!valid) {
+      connection.socket.close(4401, 'Bad signature');
+      return;
+    }
+
+    await db
+      .update(agents)
+      .set({ signingPublicKey: publicKey })
+      .where(eq(agents.id, connection.agentId));
+
+    // Clear the nonce so a stale replay cannot be re-verified.
+    connection.identityNonce = null;
+  } catch {
+    // Import/verify/crypto failure: fail closed, do not store the key.
+    connection.socket.close(4401, 'Identity proof failed');
+    return;
+  }
+}
+
+/**
  * Handle an inbound frame from an agent socket.
  *
  * Every failure is an error *frame*, never a throw: this runs inside a
@@ -863,6 +995,12 @@ async function handleInboundMessage(
       .set({ isOnline: true, lastPingAt: NOW_SQL })
       .where(eq(agents.id, connection.agentId));
     connection.socket.send(JSON.stringify({ type: 'pong' }));
+    return;
+  }
+
+  // WS2: proof-of-possession of the agent's Ed25519 signing key.
+  if (envelope.type === 'agent-identity') {
+    await handleAgentIdentity(envelope.data, connection, db);
     return;
   }
 
@@ -933,6 +1071,23 @@ function extractAgentCredential(
   return token;
 }
 
+/**
+ * Shape-only validation for IdentityProof (spec §1): the server is a pure
+ * relay and never verifies the signature. Returns the proof verbatim when well
+ * formed, or `undefined` when absent/malformed (dropped, not rejected).
+ */
+function normalizeProof(proof: unknown): IdentityProof | undefined {
+  if (proof === undefined || proof === null) return undefined;
+  if (typeof proof !== 'object' || Array.isArray(proof)) return undefined;
+  const p = proof as Record<string, unknown>;
+  const signature =
+    typeof p.signature === 'string' && p.signature ? p.signature : null;
+  const fingerprint =
+    typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null;
+  if (!signature || !fingerprint) return undefined;
+  return { signature, fingerprint };
+}
+
 function parseSignalMessage(frame: unknown): SignalMessage | null {
   if (typeof frame !== 'object' || frame === null || Array.isArray(frame))
     return null;
@@ -946,9 +1101,18 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     const capabilities = Array.isArray(inner.capabilities)
       ? inner.capabilities.filter((c): c is string => typeof c === 'string')
       : [];
+    // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
+    // The browser-to-agent path drops unknown fields elsewhere, so proof must
+    // be carried explicitly here.
+    const proof = normalizeProof(inner.proof);
     return {
       type: 'offer',
-      data: { sessionId: inner.sessionId, sdp: inner.sdp, capabilities },
+      data: {
+        sessionId: inner.sessionId,
+        sdp: inner.sdp,
+        capabilities,
+        ...(proof ? { proof } : {}),
+      },
     } as SignalMessage;
   }
 
@@ -957,12 +1121,15 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
       return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
+    // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
+    const proof = normalizeProof(inner.proof);
     return {
       type: 'answer',
       data: {
         sessionId: inner.sessionId,
         sdp: inner.sdp,
         approved: inner.approved !== false,
+        ...(proof ? { proof } : {}),
       },
     } as SignalMessage;
   }

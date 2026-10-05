@@ -82,4 +82,34 @@ describe('Signal Handler conversions', () => {
       'Empty ICE candidate',
     );
   });
+
+  it('carries an IdentityProof on an offer signal', () => {
+    const msg = createOfferSignal(
+      's1',
+      { sdp: 'v=0', type: 'offer' } as RTCSessionDescriptionInit,
+      ['terminal'],
+      {
+        signature: 'c2ln',
+        fingerprint: 'AB:CD',
+      },
+    );
+    expect(msg.data).toMatchObject({
+      proof: { signature: 'c2ln', fingerprint: 'AB:CD' },
+    });
+  });
+
+  it('carries an IdentityProof on an answer signal', () => {
+    const msg = createAnswerSignal(
+      's1',
+      { sdp: 'v=0', type: 'answer' } as RTCSessionDescriptionInit,
+      true,
+      {
+        signature: 'c2ln',
+        fingerprint: 'AB:CD',
+      },
+    );
+    expect(msg.data).toMatchObject({
+      proof: { signature: 'c2ln', fingerprint: 'AB:CD' },
+    });
+  });
 });

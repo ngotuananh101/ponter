@@ -74,6 +74,7 @@ export type {
 export type {
   SignalOffer,
   SignalAnswer,
+  IdentityProof,
   IceCandidateSignal,
   SignalMessage,
   AgentErrorCode,
@@ -86,3 +87,11 @@ export type {
 // `parseBrowserMessage` is a function, so it is re-exported by value rather
 // than through the `export type` block above.
 export { parseBrowserMessage } from './signaling.js';
+
+export {
+  PROOF_VERSION,
+  canonicalProofMessage,
+  normalizeFingerprint,
+  parseSdpFingerprint,
+} from './identity-proof.js';
+export type { PeerRole, CanonicalProofInput } from './identity-proof.js';

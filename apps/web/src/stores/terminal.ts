@@ -10,7 +10,15 @@ import {
   createBrowserAdapter,
   RESTPollingTransport,
   WebSocketSignalTransport,
+  type PeerConnectionOptions,
 } from '@ponter/webrtc-core';
+import {
+  loadSigningKey,
+  importSigningPublicKeyRaw,
+  signProof,
+  verifyProof,
+} from '@ponter/crypto';
+import { useAuthStore } from './auth';
 import { DesktopClient, type DesktopStream } from '@ponter/desktop-core';
 import {
   FileClient,
@@ -120,6 +128,36 @@ function runUnsubscribers(unsubscribers: readonly Unsubscribe[]): void {
     } catch {
       // A subscription that refuses to detach is not worth failing the close.
     }
+  }
+}
+
+/**
+ * Resolve the WS2 peer-identity config for connecting to `agentId`.
+ *
+ * Best-effort: any failure (no user, no local signing key, agent has no
+ * `signingPublicKey`, network error) returns `undefined` so the connection
+ * proceeds without peer identity verification — identical to the pre-WS2
+ * behavior. This keeps tests that mock `@/services/client` and environments
+ * without IndexedDB working.
+ */
+async function resolvePeerIdentity(
+  agentId: string,
+): Promise<PeerConnectionOptions['identity'] | undefined> {
+  try {
+    const userId = useAuthStore().user?.id;
+    if (!userId) return undefined;
+    const signingKey = await loadSigningKey(userId);
+    if (!signingKey) return undefined;
+    const agent = await apiClient.agents.get(agentId);
+    if (!agent.signingPublicKey) return undefined;
+    const agentKey = await importSigningPublicKeyRaw(agent.signingPublicKey);
+    return {
+      role: 'offerer',
+      sign: (m) => signProof(signingKey, m),
+      verifyPeer: (m, s) => verifyProof(agentKey, m, s),
+    };
+  } catch {
+    return undefined;
   }
 }
 
@@ -298,9 +336,12 @@ export const useTerminalStore = defineStore('terminal', () => {
 
         const rtcPeer = createBrowserAdapter({ iceServers });
 
+        const identity = await resolvePeerIdentity(agentId);
         peer = new PeerConnection(rtcPeer, transport, {
           role: 'offerer',
           channelLabels: ['terminal'],
+          sessionId: sessionResp.id,
+          identity,
         });
 
         // A terminated session is pushed as an `error` frame, which never
@@ -658,11 +699,14 @@ export const useTerminalStore = defineStore('terminal', () => {
 
       // A control channel carries the source picker, bitrate, and stats. The
       // media path is unchanged; the label rides the existing manager (spec §5.2).
+      const identity = await resolvePeerIdentity(agentId);
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
         channelLabels: ['control'],
         capabilities: ['desktop'],
         media: { video: true },
+        sessionId: sessionResp.id,
+        identity,
       });
 
       const unsubscribers: Unsubscribe[] = [];
@@ -843,10 +887,13 @@ export const useTerminalStore = defineStore('terminal', () => {
       const iceServers = await apiClient.webrtc.getIceServers();
       const rtcPeer = createBrowserAdapter({ iceServers });
 
+      const identity = await resolvePeerIdentity(agentId);
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
         channelLabels: ['files'],
         capabilities: ['files'],
+        sessionId: sessionResp.id,
+        identity,
       });
 
       const unsubscribers: Unsubscribe[] = [];

@@ -19,6 +19,8 @@ import {
   seed,
   spawnAgent,
   waitForAgentOnline,
+  waitForAgentSigningKey,
+  buildPeerIdentity,
   openFilesPeer,
   waitForFilesFrame,
   waitForBinaryFrame,
@@ -381,17 +383,25 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
   }, 90_000);
 
   it('refuses the offer when the gate is closed', async () => {
-    const { token, agentId, credential, sessionId } = await seed({
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['files'],
     });
     // No --files-root: the gate is closed (ADR-32).
     spawnAgent(agentId, credential);
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
     let refused = false;
     try {
       await openFilesPeer(
         new RESTPollingTransport({ baseUrl: BASE_URL, sessionId, token }),
+        sessionId,
+        identity,
       );
     } catch {
       refused = true;

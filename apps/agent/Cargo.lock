@@ -2313,6 +2313,7 @@ dependencies = [
  "openh264",
  "openh264-sys2",
  "portable-pty",
+ "ring",
  "rtc",
  "serde",
  "serde_json",
