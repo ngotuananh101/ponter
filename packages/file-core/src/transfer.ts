@@ -3,8 +3,8 @@ import { FilesError, type FileClientErrorCode } from './errors';
 /** Raw bytes per chunk (spec §2.5): 32 KiB → 43 692 base64 chars < 64 KiB. */
 export const FILE_CHUNK_BYTES = 32768;
 
-/** Sliding-window size in chunks (ADR-34). */
-export const DEFAULT_WINDOW_SIZE = 16;
+/** Sliding-window size in chunks (ADR-37, spec §2.2). */
+export const DEFAULT_WINDOW_SIZE = 64;
 
 /** Idle timeout per transfer (ADR-34). */
 export const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
@@ -113,6 +113,31 @@ export class TransferState {
     }
   }
 
+  /**
+   * Pause the transfer: stop pumping and clear the idle timer so a paused
+   * transfer does NOT hit TRANSFER_TIMEOUT. The client re-arms the timer /
+   * resumes pumping when `resume()` is called.
+   */
+  pause(): void {
+    this.paused = true;
+    this.clearIdleTimer();
+  }
+
+  /**
+   * Resume after pause; re-arm the idle timer and, for uploads only, refill the
+   * window (pump is upload-side; download is receive-side — do NOT call pump
+   * for downloads, see the Task-4 tripwire at spec §5.2.5).
+   */
+  resume(): void {
+    this.paused = false;
+    this.armIdleTimer();
+    if (this.direction === 'upload') {
+      this.pump();
+    }
+  }
+
+  private paused = false;
+
   /** The send side: emit chunks while the window is open. */
   pump(): void {
     if (this.direction !== 'upload') {
@@ -121,6 +146,7 @@ export class TransferState {
       );
     }
     if (this.failure) return;
+    if (this.paused) return;
     while (this.windowOpen && this.sentCount < this.totalChunks) {
       const chunkIndex = this.sentCount;
       this.send({

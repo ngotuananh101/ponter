@@ -26,6 +26,11 @@ export type {
   KeyModifiers,
 } from './desktop.js';
 
+export {
+  BINARY_TYPE_DOWNLOAD_CHUNK,
+  BINARY_TYPE_UPLOAD_CHUNK,
+  BINARY_HEADER_LEN,
+} from './files.js';
 export type {
   TransferDirection,
   FileTransferStatus,
@@ -45,6 +50,17 @@ export type {
   FilesCancelMessage,
   FilesErrorCode,
   FilesErrorMessage,
+  FilesPauseMessage,
+  FilesPauseAckMessage,
+  FilesResumeRequest,
+  FilesResumeAckMessage,
+  FilesMkdirRequest,
+  FilesDeleteRequest,
+  FilesRenameRequest,
+  FilesActionResult,
+  QueueItem,
+  QueueItemStatus,
+  QueueStatus,
 } from './files.js';
 
 export type {

@@ -1,58 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { DataChannelManager } from '@ponter/webrtc-core';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  BINARY_TYPE_DOWNLOAD_CHUNK,
+  BINARY_TYPE_UPLOAD_CHUNK,
+} from '@ponter/shared';
 import { FileClient } from '../src/client';
+import { packBinaryChunk } from '../src/binary';
 import { FilesError } from '../src/errors';
-
-interface FakeFrame {
-  type: string;
-  payload: Record<string, unknown>;
-}
-
-/**
- * A fake DataChannelManager: captures `sendJson` calls and lets the test
- * replay agent frames through the registered `onMessage` handler.
- */
-function makeFakeManager() {
-  const sent: Array<FakeFrame & { label: string }> = [];
-  let handler:
-    | ((msg: {
-        type: string;
-        channel: string;
-        payload: unknown;
-        timestamp: number;
-      }) => void)
-    | null = null;
-  const off = vi.fn();
-  return {
-    sent,
-    off,
-    manager: {
-      sendJson: (
-        label: string,
-        type: string,
-        payload: Record<string, unknown>,
-      ) => {
-        sent.push({ label, type, payload });
-      },
-      onMessage: (
-        label: string,
-        h: (msg: {
-          type: string;
-          channel: string;
-          payload: unknown;
-          timestamp: number;
-        }) => void,
-      ) => {
-        expect(label).toBe('files');
-        handler = h;
-        return off;
-      },
-    } as unknown as DataChannelManager,
-    emit: (type: string, payload: Record<string, unknown>) => {
-      handler?.({ type, channel: 'files', payload, timestamp: Date.now() });
-    },
-  };
-}
+import { makeFakeManager } from './helpers';
 
 describe('FileClient (spec §5.2)', () => {
   let fake: ReturnType<typeof makeFakeManager>;
@@ -120,18 +74,19 @@ describe('FileClient (spec §5.2)', () => {
       totalChunks: 2,
     });
     const first = new Uint8Array(32768).fill(7);
-    fake.emit('files-download-chunk', {
-      transferId,
-      chunkIndex: 0,
-      totalChunks: 2,
-      data: Buffer.from(first).toString('base64'),
-    });
-    fake.emit('files-download-chunk', {
-      transferId,
-      chunkIndex: 1,
-      totalChunks: 2,
-      data: Buffer.from(new Uint8Array([9])).toString('base64'),
-    });
+    // ADR-36 (GAP-B): download chunks arrive as binary frames via the raw
+    // seam — NO base64.
+    fake.emitRaw(
+      packBinaryChunk(BINARY_TYPE_DOWNLOAD_CHUNK, transferId, 0, first),
+    );
+    fake.emitRaw(
+      packBinaryChunk(
+        BINARY_TYPE_DOWNLOAD_CHUNK,
+        transferId,
+        1,
+        new Uint8Array([9]),
+      ),
+    );
     fake.emit('files-download-end', { transferId });
 
     const bytes = (await handle.done) as Uint8Array;
@@ -157,17 +112,27 @@ describe('FileClient (spec §5.2)', () => {
   });
 
   it('upload pumps chunks under the window and resumes on acks', async () => {
-    const bytes = new Uint8Array(17 * 32768);
+    // 70 chunks: with a 64-chunk window, the first pump fills 64; an ack of
+    // 64 opens the window again so chunk 64 arrives, then a final ack of 70
+    // triggers files-upload-end.
+    const chunks = 70;
+    const bytes = new Uint8Array(chunks * 32768);
+    bytes[0] = 1;
+    bytes[bytes.length - 1] = 2;
     const handle = client.upload('dir', 'big.bin', bytes, () => {});
     const transferId = fake.sent.at(-1)?.payload.transferId as string;
 
     fake.emit('files-upload-ack', { transferId, nextChunkIndex: 0 });
-    let chunks = fake.sent.filter((f) => f.type === 'files-upload-chunk');
-    expect(chunks).toHaveLength(16); // window filled
+    let rawChunks = fake.rawSent.filter(
+      (r) => r.bytes[0] === BINARY_TYPE_UPLOAD_CHUNK,
+    );
+    expect(rawChunks).toHaveLength(64); // window filled
 
-    fake.emit('files-upload-ack', { transferId, nextChunkIndex: 16 });
-    chunks = fake.sent.filter((f) => f.type === 'files-upload-chunk');
-    expect(chunks).toHaveLength(17); // resumed
+    fake.emit('files-upload-ack', { transferId, nextChunkIndex: 64 });
+    rawChunks = fake.rawSent.filter(
+      (r) => r.bytes[0] === BINARY_TYPE_UPLOAD_CHUNK,
+    );
+    expect(rawChunks).toHaveLength(70); // resumed
     expect(fake.sent.filter((f) => f.type === 'files-upload-end')).toHaveLength(
       1,
     );
@@ -208,12 +173,16 @@ describe('FileClient (spec §5.2)', () => {
       errors.push({ code, message }),
     );
 
-    fake.emit('files-download-chunk', {
-      transferId: 'nope',
-      chunkIndex: 0,
-      totalChunks: 1,
-      data: '',
-    });
+    // ADR-36 (GAP-B): download chunks arrive as binary frames on the raw
+    // seam; an unknown transferId is silently ignored.
+    fake.emitRaw(
+      packBinaryChunk(
+        BINARY_TYPE_DOWNLOAD_CHUNK,
+        '00000000-0000-0000-0000-000000000000',
+        0,
+        new Uint8Array(4),
+      ),
+    );
     fake.emit('files-error', { code: 'TRANSFER_TIMEOUT', message: 'idle' });
 
     expect(errors).toEqual([{ code: 'TRANSFER_TIMEOUT', message: 'idle' }]);
@@ -226,6 +195,7 @@ describe('FileClient (spec §5.2)', () => {
 
     await expect(handle.done).rejects.toMatchObject({ code: 'CANCELLED' });
     expect(fake.off).toHaveBeenCalled();
+    expect(fake.offRaw).toHaveBeenCalled();
     expect(() => client.list('')).toThrow(FilesError);
   });
 });

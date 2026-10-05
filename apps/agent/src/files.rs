@@ -24,11 +24,18 @@ pub const FILE_MAX_BYTES: u64 = 1 << 30; // 1 GiB
 /// The list cap (spec §2.5): first 4096 entries, sorted, with `truncated`.
 pub const MAX_LIST_ENTRIES: usize = 4096;
 
-/// Sliding-window size in chunks, both directions (ADR-34).
-pub const FILE_WINDOW_CHUNKS: u64 = 16;
+/// Sliding-window size in chunks, both directions (ADR-34, tuned to 64 by Task 3).
+pub const FILE_WINDOW_CHUNKS: u64 = 64;
 
 /// Idle timeout per transfer (ADR-34): 30 s in production.
 pub const FILES_IDLE_TIMEOUT_MS: u64 = 30_000;
+
+// ---- Task 3: ack batching (ADR-37) ----
+
+/// Flush accumulated upload acks every N accepted chunks (whichever comes first).
+pub const ACK_FREQUENCY_CHUNKS: u64 = 16;
+/// Flush accumulated upload acks every 20 ms wall time (whichever comes first).
+pub const ACK_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
 
 /// The idle timeout as a `Duration`. **Shrunk under `cfg(test)`** so unit
 /// tests never sleep 30 s real time (spec §6.4); the wire value stays pinned
@@ -60,6 +67,69 @@ pub const PART_SUFFIX: &str = ".ponter-part";
 /// The sibling temp name for an upload of `name`.
 pub fn part_name(name: &str) -> String {
     format!("{name}{PART_SUFFIX}")
+}
+
+// ---- binary frame codec (ADR-36) ----
+
+/// Binary frame type for a download chunk (Agent -> Browser, ADR-36).
+pub const BINARY_TYPE_DOWNLOAD_CHUNK: u8 = 0x01;
+/// Binary frame type for an upload chunk (Browser -> Agent, ADR-36).
+pub const BINARY_TYPE_UPLOAD_CHUNK: u8 = 0x02;
+/// Total length of a binary chunk frame header: type(1) + transfer_id(16) + chunk_index(8).
+pub const BINARY_HEADER_LEN: usize = 25;
+
+/// A decoded binary chunk frame (ADR-36): raw bytes without base64 inflation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryChunkFrame {
+    pub frame_type: u8,
+    pub transfer_id: [u8; 16],
+    pub chunk_index: u64,
+    pub data: Vec<u8>,
+}
+
+/// Encode a binary chunk frame per ADR-36:
+/// `[1 byte type][16 byte transfer_id][8 byte BE chunk_index][payload]`.
+pub fn encode_files_binary_frame(
+    frame_type: u8,
+    transfer_id: &[u8; 16],
+    chunk_index: u64,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(BINARY_HEADER_LEN + payload.len());
+    out.push(frame_type);
+    out.extend_from_slice(transfer_id);
+    out.extend_from_slice(&chunk_index.to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Decode a binary chunk frame per ADR-36.
+///
+/// Errors: `BadFrame` when the header is truncated or the payload exceeds
+/// `FILE_CHUNK_BYTES` (spec §5.1).
+pub fn decode_files_binary_frame(bytes: &[u8]) -> FilesResult<BinaryChunkFrame> {
+    if bytes.len() < BINARY_HEADER_LEN {
+        return Err(FilesError::new(
+            FilesErrorCode::BadFrame,
+            "binary frame header truncated",
+        ));
+    }
+    if bytes.len() > BINARY_HEADER_LEN + FILE_CHUNK_BYTES as usize {
+        return Err(FilesError::new(
+            FilesErrorCode::BadFrame,
+            "binary frame payload exceeds chunk cap",
+        ));
+    }
+    let frame_type = bytes[0];
+    let transfer_id: [u8; 16] = bytes[1..17].try_into().unwrap();
+    let chunk_index = u64::from_be_bytes(bytes[17..25].try_into().unwrap());
+    let data = bytes[BINARY_HEADER_LEN..].to_vec();
+    Ok(BinaryChunkFrame {
+        frame_type,
+        transfer_id,
+        chunk_index,
+        data,
+    })
 }
 
 /// Format epoch seconds as an RFC 3339 UTC string (`2026-10-04T12:00:00Z`).
@@ -106,6 +176,14 @@ pub enum FilesErrorCode {
     TransferTimeout,
     IoError,
     BadFrame,
+    // Week 11 additions (spec §3.4, packages/shared/src/types/files.ts):
+    ResumeInvalid,
+    DirNotEmpty,
+    PermissionDenied,
+    /// Client-side enqueue-rejection (ADR-39); the agent never produces this
+    /// code itself — it is mirrored from the shared types for completeness.
+    #[allow(dead_code)]
+    QueueFull,
 }
 
 impl FilesErrorCode {
@@ -123,6 +201,10 @@ impl FilesErrorCode {
             Self::TransferTimeout => "TRANSFER_TIMEOUT",
             Self::IoError => "IO_ERROR",
             Self::BadFrame => "BAD_FRAME",
+            Self::ResumeInvalid => "RESUME_INVALID",
+            Self::DirNotEmpty => "DIR_NOT_EMPTY",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::QueueFull => "QUEUE_FULL",
         }
     }
 }
@@ -146,6 +228,12 @@ impl FilesError {
             request_id: None,
             transfer_id: None,
         }
+    }
+
+    /// Accessor for the error code (spec §6.4: tests inspect `err.code()`).
+    #[allow(dead_code)]
+    pub fn code(&self) -> FilesErrorCode {
+        self.code
     }
 
     /// Attach the ids the failure belongs to (builder style).
@@ -253,6 +341,83 @@ pub struct FileChunkMessage {
     pub data: String,
 }
 
+/// Task 3: the direction of a pause/resume (ADR-39). `Download` is defined for
+/// symmetry but upload is the only path the agent currently supports pausing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesDirection {
+    Download,
+    Upload,
+}
+
+impl Serialize for FilesDirection {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(if matches!(self, FilesDirection::Download) {
+            "download"
+        } else {
+            "upload"
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FilesDirection {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.as_str() {
+            "download" => Ok(FilesDirection::Download),
+            "upload" => Ok(FilesDirection::Upload),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown files direction `{other}`; expected `download` or `upload`"
+            ))),
+        }
+    }
+}
+
+/// Task 3: pause an in-flight transfer mid-stream (ADR-39). The `.part` file is
+/// left on disk so a later resume can pick up where it stopped.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesPauseMessage {
+    pub transfer_id: String,
+    pub direction: FilesDirection,
+}
+
+/// Task 3: ask the agent to resume a paused upload from `from_chunk_index`
+/// (ADR-39). The agent validates the `.part` length against
+/// `from_chunk_index * FILE_CHUNK_BYTES` before agreeing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesResumeRequest {
+    pub transfer_id: String,
+    pub path: String,
+    pub direction: FilesDirection,
+    pub from_chunk_index: u64,
+}
+
+/// Task 3: the agent's answer to a pause (ADR-39). `acked_chunk_index` is the
+/// highest contiguous chunk written so far (the resume point);
+/// `bytes_transferred` is `acked_chunk_index * FILE_CHUNK_BYTES`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesPauseAckMessage {
+    pub transfer_id: String,
+    pub acked_chunk_index: u64,
+    pub bytes_transferred: u64,
+}
+
+/// Task 3: the agent's answer to a resume (GAP-G, ADR-39). `approved` is false
+/// when the resume was rejected (wrong `.part` size, not paused, etc.); in that
+/// case `reason` carries a human-readable explanation and the client rejects its
+/// `resumeTransfer` promise with `FilesError('RESUME_INVALID')`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesResumeAckMessage {
+    pub transfer_id: String,
+    pub approved: bool,
+    pub from_chunk_index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FilesUploadBeginRequest {
@@ -329,18 +494,79 @@ pub enum FilesInbound {
     UploadEnd(FilesUploadEndRequest),
     Cancel(FilesCancelMessage),
     DownloadAck(FilesAckMessage),
+    // Week 11 directory operations (ADR-40):
+    Mkdir(FilesMkdirRequest),
+    Delete(FilesDeleteRequest),
+    Rename(FilesRenameRequest),
+    // Task 3: pause/resume control (ADR-36/39).
+    Pause(FilesPauseMessage),
+    Resume(FilesResumeRequest),
 }
 
 /// One outbound frame (agent → browser), framed by [`frame_files`].
+///
+/// `DownloadChunkBinary` carries the raw 25-byte-header + payload of a binary
+/// download chunk frame; [`frame_files`] serializes JSON variants and the caller
+/// sends binary variants as raw bytes over the data channel.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outbound {
     ListResult(FilesListResult),
     DownloadBegin(FilesDownloadBegin),
+    /// Legacy base64 JSON download chunk; retained for wire back-compat even
+    /// though the thin slice pumps downloads as `DownloadChunkBinary` (ADR-36).
+    #[allow(dead_code)]
     DownloadChunk(FileChunkMessage),
-    DownloadEnd(FilesDownloadEnd),
     UploadAck(FilesAckMessage),
     UploadComplete(FilesUploadComplete),
     Error(FilesErrorMessage),
+    // Week 11 directory operations (ADR-40):
+    ActionResult(FilesActionResult),
+    // Task 3: binary download chunk (ADR-36) and pause/resume (ADR-39).
+    DownloadChunkBinary(BinaryChunkFrame),
+    DownloadEnd(FilesDownloadEnd),
+    PauseAck(FilesPauseAckMessage),
+    /// GAP-G: the answer to a resume request (spec §3.3, ADR-39).
+    ResumeAck(FilesResumeAckMessage),
+}
+
+// ---- Week 11 wire types for directory operations (ADR-40) ----
+
+/// `files-mkdir` request (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesMkdirRequest {
+    pub request_id: String,
+    pub dir: String,
+    pub name: String,
+}
+
+/// `files-delete` request (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesDeleteRequest {
+    pub request_id: String,
+    pub path: String,
+    pub recursive: Option<bool>,
+}
+
+/// `files-rename` request (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesRenameRequest {
+    pub request_id: String,
+    pub old_path: String,
+    pub new_path: String,
+}
+
+/// `files-action-result` reply (spec §3.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesActionResult {
+    pub request_id: String,
+    pub action: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Decode an inbound frame; same guard shape as `decode_pty_input`
@@ -388,6 +614,23 @@ pub fn decode_files_frame(raw: &str) -> AnyhowResult<Option<FilesInbound>> {
         "files-download-ack" => FilesInbound::DownloadAck(
             serde_json::from_value(payload).context("payload is not a FilesAckMessage")?,
         ),
+        // Week 11 directory operations (ADR-40):
+        "files-mkdir" => FilesInbound::Mkdir(
+            serde_json::from_value(payload).context("payload is not a FilesMkdirRequest")?,
+        ),
+        "files-delete" => FilesInbound::Delete(
+            serde_json::from_value(payload).context("payload is not a FilesDeleteRequest")?,
+        ),
+        "files-rename" => FilesInbound::Rename(
+            serde_json::from_value(payload).context("payload is not a FilesRenameRequest")?,
+        ),
+        // Task 3: pause/resume (ADR-39).
+        "files-pause" => FilesInbound::Pause(
+            serde_json::from_value(payload).context("payload is not a FilesPauseMessage")?,
+        ),
+        "files-resume" => FilesInbound::Resume(
+            serde_json::from_value(payload).context("payload is not a FilesResumeRequest")?,
+        ),
         _ => return Ok(None),
     };
 
@@ -410,6 +653,10 @@ pub fn extract_ids(raw: &str) -> (Option<String>, Option<String>) {
 ///
 /// `timestamp_ms` is passed in (like `pty::frame_pty_output`) so the framing
 /// stays pure and testable; callers pass `crate::pty::now_ms()`.
+///
+/// Only the JSON-encoded `Outbound` variants reach here; binary chunk frames
+/// (`DownloadChunkBinary`) and pause acks are emitted as raw bytes by the pump
+/// and never call this function.
 pub fn frame_files(outbound: &Outbound, timestamp_ms: i64) -> String {
     let (r#type, payload) = match outbound {
         Outbound::ListResult(p) => ("files-list-result", serde_json::to_value(p)),
@@ -419,6 +666,12 @@ pub fn frame_files(outbound: &Outbound, timestamp_ms: i64) -> String {
         Outbound::UploadAck(p) => ("files-upload-ack", serde_json::to_value(p)),
         Outbound::UploadComplete(p) => ("files-upload-complete", serde_json::to_value(p)),
         Outbound::Error(p) => ("files-error", serde_json::to_value(p)),
+        Outbound::ActionResult(p) => ("files-action-result", serde_json::to_value(p)),
+        Outbound::PauseAck(p) => ("files-pause-ack", serde_json::to_value(p)),
+        Outbound::ResumeAck(p) => ("files-resume-ack", serde_json::to_value(p)),
+        Outbound::DownloadChunkBinary(_) => {
+            panic!("frame_files must not be called on a binary download chunk")
+        }
     };
     let message = crate::pty::DataChannelMessage {
         r#type: r#type.to_string(),
@@ -427,6 +680,23 @@ pub fn frame_files(outbound: &Outbound, timestamp_ms: i64) -> String {
         timestamp: timestamp_ms,
     };
     serde_json::to_string(&message).expect("a frame of plain data cannot fail to serialize")
+}
+
+impl Outbound {
+    /// Render a binary outbound frame into the exact wire bytes (Task 3,
+    /// ADR-36). Only `DownloadChunkBinary` is binary; the other variants are
+    /// JSON-encoded by [`frame_files`] and must not call this.
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {
+            Outbound::DownloadChunkBinary(frame) => encode_files_binary_frame(
+                frame.frame_type,
+                &frame.transfer_id,
+                frame.chunk_index,
+                &frame.data,
+            ),
+            other => panic!("into_bytes called on a non-binary outbound: {other:?}"),
+        }
+    }
 }
 
 // ---- the sandbox (ADR-33) ----
@@ -444,6 +714,12 @@ pub struct FilesRoot {
 }
 
 impl FilesRoot {
+    /// The canonical root directory backing this sandbox (Task 3, ADR-39).
+    /// Used to spawn the periodic `.ponter-part` janitor.
+    pub fn path(&self) -> &Path {
+        &self.canonical
+    }
+
     /// Canonicalize and validate the operator's root. `Err` = the gate is
     /// closed (missing, not a directory, or unreadable).
     pub async fn resolve(raw: &str) -> FilesResult<Self> {
@@ -572,6 +848,192 @@ impl FilesRoot {
 
         Ok((parent, name.to_string()))
     }
+
+    /// Convenience constructor: canonicalize a path and return a `FilesRoot`.
+    ///
+    /// Delegates to [`FilesRoot::resolve`]; the path is converted to a string
+    /// via `to_str()` (rejecting paths that aren't valid UTF-8 on the host).
+    #[allow(dead_code)]
+    pub async fn new(path: impl AsRef<Path>) -> FilesResult<Self> {
+        let path = path.as_ref();
+        let raw = path.to_str().ok_or_else(|| {
+            FilesError::new(
+                FilesErrorCode::InvalidPath,
+                "files root path is not valid UTF-8",
+            )
+        })?;
+        Self::resolve(raw).await
+    }
+
+    /// Create a directory inside the sandbox (ADR-40).
+    ///
+    /// `dir` is the parent wire path (`''` = root), `name` a single component.
+    /// The parent must exist and be a directory; the target must not already
+    /// exist (collision ⇒ `FILE_EXISTS`).
+    pub async fn mkdir(&self, dir: &str, name: &str) -> FilesResult<()> {
+        let (parent, safe_name) = self.resolve_parent_for_create(dir, name).await?;
+        let target = parent.join(&safe_name);
+        if tokio::fs::try_exists(&target)
+            .await
+            .map_err(|error| FilesError::io("probing the mkdir target", error))?
+        {
+            return Err(FilesError::new(
+                FilesErrorCode::FileExists,
+                "directory already exists",
+            ));
+        }
+        tokio::fs::create_dir(&target)
+            .await
+            .map_err(|error| FilesError::io("creating directory", error))?;
+        Ok(())
+    }
+
+    /// Alias for [`FilesRoot::mkdir`] — the dispatch name used by the wire layer.
+    pub async fn handle_mkdir(&self, dir: &str, name: &str) -> FilesResult<()> {
+        self.mkdir(dir, name).await
+    }
+
+    /// Delete a file or directory inside the sandbox (ADR-40).
+    ///
+    /// `recursive == true` removes a non-empty directory tree; `false` rejects
+    /// a non-empty directory with `DIR_NOT_EMPTY`. The sandbox root itself is
+    /// never deleted (`PERMISSION_DENIED`).
+    pub async fn delete(&self, path: &str, recursive: bool) -> FilesResult<()> {
+        // Reject syntactic attempts to delete the root.
+        if path.is_empty() || path == "." {
+            return Err(FilesError::new(
+                FilesErrorCode::PermissionDenied,
+                "cannot delete sandbox root",
+            ));
+        }
+        let canonical = self.resolve_existing(path).await?;
+        // Reject canonical attempts to delete the root.
+        if canonical == self.canonical {
+            return Err(FilesError::new(
+                FilesErrorCode::PermissionDenied,
+                "cannot delete sandbox root",
+            ));
+        }
+        let metadata = tokio::fs::symlink_metadata(&canonical)
+            .await
+            .map_err(|error| FilesError::io("stat delete target", error))?;
+        if metadata.is_dir() {
+            if recursive {
+                tokio::fs::remove_dir_all(&canonical)
+                    .await
+                    .map_err(|error| FilesError::io("removing directory tree", error))?;
+            } else {
+                let mut rd = tokio::fs::read_dir(&canonical)
+                    .await
+                    .map_err(|error| FilesError::io("reading directory for emptiness", error))?;
+                if rd
+                    .next_entry()
+                    .await
+                    .map_err(|error| {
+                        FilesError::io("reading directory entry for emptiness", error)
+                    })?
+                    .is_some()
+                {
+                    return Err(FilesError::new(
+                        FilesErrorCode::DirNotEmpty,
+                        "directory is not empty",
+                    ));
+                }
+                tokio::fs::remove_dir(&canonical)
+                    .await
+                    .map_err(|error| FilesError::io("removing directory", error))?;
+            }
+        } else {
+            tokio::fs::remove_file(&canonical)
+                .await
+                .map_err(|error| FilesError::io("removing file", error))?;
+        }
+        Ok(())
+    }
+
+    /// Alias for [`FilesRoot::delete`] — the dispatch name used by the wire layer.
+    pub async fn handle_delete(&self, path: &str, recursive: bool) -> FilesResult<()> {
+        self.delete(path, recursive).await
+    }
+
+    /// Rename (move) a path within the sandbox (ADR-40).
+    ///
+    /// Both the source and destination must resolve inside the root. The
+    /// destination must not already exist (`FILE_EXISTS`).
+    pub async fn rename(&self, old_path: &str, new_path: &str) -> FilesResult<()> {
+        let canonical_old = self.resolve_existing(old_path).await?;
+        if canonical_old == self.canonical {
+            return Err(FilesError::new(
+                FilesErrorCode::PermissionDenied,
+                "cannot rename sandbox root",
+            ));
+        }
+        let (parent_dir, name) = new_path.rsplit_once('/').unwrap_or(("", new_path));
+        let (canonical_parent, safe_name) =
+            self.resolve_parent_for_create(parent_dir, name).await?;
+        let dest = canonical_parent.join(&safe_name);
+        if tokio::fs::try_exists(&dest)
+            .await
+            .map_err(|error| FilesError::io("probing the rename destination", error))?
+        {
+            return Err(FilesError::new(
+                FilesErrorCode::FileExists,
+                "destination already exists",
+            ));
+        }
+        tokio::fs::rename(&canonical_old, &dest)
+            .await
+            .map_err(|error| FilesError::io("renaming", error))?;
+        Ok(())
+    }
+
+    /// Alias for [`FilesRoot::rename`] — the dispatch name used by the wire layer.
+    pub async fn handle_rename(&self, old_path: &str, new_path: &str) -> FilesResult<()> {
+        self.rename(old_path, new_path).await
+    }
+
+    /// Task 3: validate that a paused upload's `.part` file is exactly
+    /// `fromChunkIndex * FILE_CHUNK_BYTES` bytes (ADR-39). The wire id is a
+    /// filename stem (e.g. `"upload.bin"`); the `.part` sibling is derived via
+    /// [`part_path`]. Used by tests and by `handle_resume`; `#[allow(dead_code)]`
+    /// silences the non-test build where it is only test-reachable.
+    #[allow(dead_code)]
+    pub async fn verify_resume_upload(&self, name: &str, from_chunk_index: u64) -> FilesResult<()> {
+        let part = self.canonical.join(part_name(name));
+        self.verify_resume_upload_inner(&part, from_chunk_index)
+            .await
+    }
+
+    /// Shared resume validation on an absolute `.part` path (used by
+    /// [`FilesRoot::verify_resume_upload`] and `handle_resume`).
+    async fn verify_resume_upload_inner(
+        &self,
+        part: &Path,
+        from_chunk_index: u64,
+    ) -> FilesResult<()> {
+        let meta = tokio::fs::metadata(part)
+            .await
+            .map_err(|error| FilesError::io("stating the .part for resume", error))?;
+        if !meta.is_file() {
+            return Err(FilesError::new(
+                FilesErrorCode::ResumeInvalid,
+                "resume target is not a regular file",
+            ));
+        }
+        let expected = from_chunk_index.saturating_mul(FILE_CHUNK_BYTES);
+        if meta.len() != expected {
+            return Err(FilesError::new(
+                FilesErrorCode::ResumeInvalid,
+                format!(
+                    ".part is {} bytes, resume offset would land at {} bytes (chunk {})",
+                    meta.len(),
+                    expected,
+                    from_chunk_index
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
 
 // ---- the session state machine (spec §6.1) ----
@@ -611,6 +1073,9 @@ pub struct DownloadState {
     /// Contiguous count the browser has acked.
     pub acked: u64,
     pub deadline: tokio::time::Instant,
+    /// `true` once the download has been paused (GAP-F, ADR-39). The slot stays
+    /// occupied; the read cursor is preserved in `sent`.
+    pub paused: bool,
 }
 
 impl DownloadState {
@@ -640,6 +1105,16 @@ pub struct UploadState {
     /// Total bytes written; the end-check compares it with `expected_size`.
     pub written: u64,
     pub deadline: tokio::time::Instant,
+    // ---- Task 3: ack batching (ADR-37) ----
+    /// Highest chunk index acked-and-flushed to the browser so far (cumulative).
+    /// A chunk is acked only when it has been flushed, so `next_chunk -
+    /// pending_acked` chunks are buffered awaiting the next flush.
+    pub last_acked: u64,
+    /// `Some(chunk_index)` when a cumulative ack is due but not yet flushed.
+    pending_ack: Option<u64>,
+    last_ack_time: tokio::time::Instant,
+    /// `true` once the upload has been paused; the `.part` is kept on disk.
+    pub paused: bool,
 }
 
 impl UploadState {
@@ -650,6 +1125,58 @@ impl UploadState {
     /// Remove the `.part` file; safe to call when it is already gone.
     async fn discard(&self) {
         tokio::fs::remove_file(&self.part).await.ok();
+    }
+}
+
+impl UploadState {
+    fn new(
+        transfer_id: String,
+        dest_rel: String,
+        dest: PathBuf,
+        part: PathBuf,
+        file: tokio::fs::File,
+        total_chunks: u64,
+        expected_size: u64,
+    ) -> Self {
+        Self {
+            transfer_id,
+            dest_rel,
+            dest,
+            part,
+            file,
+            total_chunks,
+            expected_size,
+            next_chunk: 0,
+            written: 0,
+            deadline: tokio::time::Instant::now() + FILES_IDLE_TIMEOUT,
+            last_acked: 0,
+            pending_ack: None,
+            last_ack_time: tokio::time::Instant::now(),
+            paused: false,
+        }
+    }
+
+    /// Record an accepted chunk and return whether a flush is due.
+    ///
+    /// A flush is due when 16 chunks have accumulated since the last ack OR 20 ms
+    /// have elapsed since the last flush (ADR-37) — whichever comes first.
+    /// `last_ack_time` is only advanced inside `take_pending_ack` (on a real
+    /// flush), so the 20 ms timer is meaningful for a trickle of chunks.
+    fn note_chunk(&mut self) -> bool {
+        let next = self.next_chunk;
+        self.pending_ack = Some(self.pending_ack.map_or(next, |p| p.max(next)));
+        let since_flush = self.next_chunk.saturating_sub(self.last_acked);
+        since_flush >= ACK_FREQUENCY_CHUNKS || self.last_ack_time.elapsed() >= ACK_FLUSH_INTERVAL
+    }
+
+    /// Take the pending cumulative ack (if any) and advance `last_acked`.
+    fn take_pending_ack(&mut self) -> Option<u64> {
+        let pending = self.pending_ack.take()?;
+        if pending > self.last_acked {
+            self.last_acked = pending;
+        }
+        self.last_ack_time = tokio::time::Instant::now();
+        Some(pending)
     }
 }
 
@@ -681,6 +1208,13 @@ impl FilesSession {
             FilesInbound::UploadEnd(end) => self.handle_upload_end(end).await,
             FilesInbound::DownloadAck(ack) => self.handle_download_ack(ack).await,
             FilesInbound::Cancel(cancel) => self.handle_cancel(cancel).await,
+            // Week 11 directory operations (ADR-40):
+            FilesInbound::Mkdir(request) => self.handle_mkdir(request).await,
+            FilesInbound::Delete(request) => self.handle_delete(request).await,
+            FilesInbound::Rename(request) => self.handle_rename(request).await,
+            // Task 3: pause/resume (ADR-39).
+            FilesInbound::Pause(request) => self.handle_pause(request).await,
+            FilesInbound::Resume(request) => self.handle_resume(request).await,
         }
     }
 
@@ -690,11 +1224,19 @@ impl FilesSession {
     pub async fn check_idle(&mut self) -> Vec<Outbound> {
         let now = tokio::time::Instant::now();
         let mut frames = Vec::new();
-        if self.download.as_ref().is_some_and(|s| s.deadline <= now) {
+        if self
+            .download
+            .as_ref()
+            .is_some_and(|s| s.deadline <= now && !s.paused)
+        {
             let state = self.download.take().expect("checked just above");
             frames.push(Self::timeout_frame("download", &state.transfer_id));
         }
-        if self.upload.as_ref().is_some_and(|s| s.deadline <= now) {
+        if self
+            .upload
+            .as_ref()
+            .is_some_and(|s| s.deadline <= now && !s.paused)
+        {
             let state = self.upload.take().expect("checked just above");
             state.discard().await;
             frames.push(Self::timeout_frame("upload", &state.transfer_id));
@@ -859,6 +1401,7 @@ impl FilesSession {
             sent: 0,
             acked: 0,
             deadline: tokio::time::Instant::now() + FILES_IDLE_TIMEOUT,
+            paused: false,
         };
         let mut frames = vec![Outbound::DownloadBegin(FilesDownloadBegin {
             transfer_id: transfer_id.clone(),
@@ -888,9 +1431,12 @@ impl FilesSession {
     /// Emit window-limited chunks plus the end frame when everything is acked.
     /// Reads happen only as the window opens, so a slow peer never makes the
     /// agent buffer the file (spec §6.1).
+    ///
+    /// Task 3 (ADR-36): chunks are emitted as binary frames
+    /// (`DownloadChunkBinary`), not base64 JSON.
     async fn pump_download(&self, state: &mut DownloadState) -> FilesResult<Vec<Outbound>> {
-        use base64::Engine as _;
         use tokio::io::AsyncReadExt as _;
+        let tid = transfer_id_to_16(&state.transfer_id);
         let mut frames = Vec::new();
         while state.sent < state.total_chunks && state.window_open() {
             let len = expected_chunk_len(state.total_chunks, state.size, state.sent) as usize;
@@ -900,11 +1446,11 @@ impl FilesSession {
                 .read_exact(&mut buffer)
                 .await
                 .map_err(|error| FilesError::io("reading a download chunk", error))?;
-            frames.push(Outbound::DownloadChunk(FileChunkMessage {
-                transfer_id: state.transfer_id.clone(),
+            frames.push(Outbound::DownloadChunkBinary(BinaryChunkFrame {
+                frame_type: BINARY_TYPE_DOWNLOAD_CHUNK,
+                transfer_id: tid,
                 chunk_index: state.sent,
-                total_chunks: state.total_chunks,
-                data: base64::engine::general_purpose::STANDARD.encode(&buffer),
+                data: buffer,
             }));
             state.sent += 1;
         }
@@ -944,6 +1490,14 @@ impl FilesSession {
         if ack.next_chunk_index > state.acked {
             state.acked = ack.next_chunk_index;
             state.touch();
+        }
+        // paused ⇒ absorb acks (acked reflects reality) but do not resume
+        // pumping; `handle_resume` re-pumps. Without this, in-flight acks arriving
+        // after a pause reopen the window and emit chunks the client paused for
+        // (GAP-J).
+        if state.paused {
+            self.download = Some(state);
+            return Vec::new();
         }
         // Duplicate/regressive acks are ignored, not errors (spec §2.4).
         match self.pump_download(&mut state).await {
@@ -1055,18 +1609,15 @@ impl FilesSession {
                 ))
             }
         };
-        let state = UploadState {
-            transfer_id: transfer_id.clone(),
+        let state = UploadState::new(
+            transfer_id.clone(),
             dest_rel,
             dest,
             part,
             file,
-            total_chunks: total_chunks(request.size),
-            expected_size: request.size,
-            next_chunk: 0,
-            written: 0,
-            deadline: tokio::time::Instant::now() + FILES_IDLE_TIMEOUT,
-        };
+            total_chunks(request.size),
+            request.size,
+        );
         self.upload = Some(state);
         // The begin is answered with the first cumulative ack (spec §6.1).
         Ok(vec![Outbound::UploadAck(FilesAckMessage {
@@ -1083,14 +1634,27 @@ impl FilesSession {
             return vec![Self::transfer_unknown(&chunk.transfer_id)];
         }
         let state = self.upload.take().expect("checked above");
-        match accept_chunk(state, chunk).await {
-            Ok(state) => {
-                let ack = Outbound::UploadAck(FilesAckMessage {
-                    transfer_id: state.transfer_id.clone(),
-                    next_chunk_index: state.next_chunk,
-                });
+        // The legacy JSON path ships base64; decode it then share the binary
+        // acceptance path (ADR-37 ack batching applies to both).
+        use base64::Engine as _;
+        let raw = match base64::engine::general_purpose::STANDARD.decode(&chunk.data) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let error =
+                    FilesError::new(FilesErrorCode::BadFrame, "chunk data is not valid base64");
+                state.discard().await;
+                return vec![error.with_ids(None, Some(state.transfer_id)).into_frame()];
+            }
+        };
+        match accept_upload_chunk(state, &raw, chunk.chunk_index, chunk.total_chunks).await {
+            Ok(mut state) => {
+                let flush = state.note_chunk();
                 self.upload = Some(state);
-                vec![ack]
+                if flush {
+                    self.flush_upload_ack().into_iter().collect()
+                } else {
+                    Vec::new()
+                }
             }
             Err((state, error)) => {
                 // The whole transfer fails and cleans up (spec §2.6); the
@@ -1101,6 +1665,59 @@ impl FilesSession {
         }
     }
 
+    /// Task 3: accept a binary upload chunk frame decoded by the dispatch layer
+    /// (ADR-36). Shares the ack-batching path with the legacy JSON frame.
+    ///
+    /// The transfer id on the wire is 16 raw bytes; the session stores it as a
+    /// lowercase hex string, so it is compared via [`hex_encode_id`].
+    pub async fn handle_upload_chunk_binary(&mut self, frame: &BinaryChunkFrame) -> Vec<Outbound> {
+        let Some(state) = &mut self.upload else {
+            return vec![Self::transfer_unknown(&hex_encode_id(&frame.transfer_id))];
+        };
+        if state.transfer_id != hex_encode_id(&frame.transfer_id) {
+            return vec![Self::transfer_unknown(&hex_encode_id(&frame.transfer_id))];
+        }
+        let total_chunks = state.total_chunks;
+        let state = self.upload.take().expect("checked above");
+        match accept_upload_chunk(state, &frame.data, frame.chunk_index, total_chunks).await {
+            Ok(mut state) => {
+                let flush = state.note_chunk();
+                self.upload = Some(state);
+                if flush {
+                    self.flush_upload_ack()
+                } else {
+                    Vec::new()
+                }
+            }
+            Err((state, error)) => {
+                state.discard().await;
+                vec![error.with_ids(None, Some(state.transfer_id)).into_frame()]
+            }
+        }
+    }
+
+    /// Flush a pending cumulative upload ack if one is due (ADR-37).
+    fn flush_upload_ack(&mut self) -> Vec<Outbound> {
+        let Some(state) = &mut self.upload else {
+            return Vec::new();
+        };
+        if let Some(next) = state.take_pending_ack() {
+            vec![Outbound::UploadAck(FilesAckMessage {
+                transfer_id: state.transfer_id.clone(),
+                next_chunk_index: next,
+            })]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Force-flush any buffered upload ack regardless of the 16-chunk/20 ms
+    /// thresholds (ADR-37). The session loop in `main.rs` calls this on every
+    /// tick so a trickle of chunks still surfaces an ack within 20 ms.
+    pub fn flush_upload_acks(&mut self) -> Vec<Outbound> {
+        self.flush_upload_ack()
+    }
+
     async fn handle_upload_end(&mut self, end: FilesUploadEndRequest) -> Vec<Outbound> {
         let Some(state) = &mut self.upload else {
             return vec![Self::transfer_unknown(&end.transfer_id)];
@@ -1109,8 +1726,12 @@ impl FilesSession {
             return vec![Self::transfer_unknown(&end.transfer_id)];
         }
         let state = self.upload.take().expect("checked above");
+        let final_ack = Outbound::UploadAck(FilesAckMessage {
+            transfer_id: state.transfer_id.clone(),
+            next_chunk_index: state.next_chunk,
+        });
         match finalize_upload(state).await {
-            Ok(frame) => vec![frame],
+            Ok(complete) => vec![final_ack, complete],
             Err((transfer_id, error)) => vec![error.with_ids(None, Some(transfer_id)).into_frame()],
         }
     }
@@ -1135,6 +1756,303 @@ impl FilesSession {
         tracing::debug!(?cancel.request_id, ?cancel.transfer_id, "files cancel for nothing in flight");
         Vec::new()
     }
+
+    /// `files-mkdir` — create a directory in the sandbox (ADR-40).
+    async fn handle_mkdir(&mut self, request: FilesMkdirRequest) -> Vec<Outbound> {
+        let result = self.root.handle_mkdir(&request.dir, &request.name).await;
+        let frame = match result {
+            Ok(()) => Outbound::ActionResult(FilesActionResult {
+                request_id: request.request_id,
+                action: "mkdir".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %error, "files mkdir failed");
+                Outbound::ActionResult(FilesActionResult {
+                    request_id: request.request_id,
+                    action: "mkdir".to_string(),
+                    success: false,
+                    error: Some(error.to_string()),
+                })
+            }
+        };
+        vec![frame]
+    }
+
+    /// `files-delete` — delete a file or directory in the sandbox (ADR-40).
+    async fn handle_delete(&mut self, request: FilesDeleteRequest) -> Vec<Outbound> {
+        let recursive = request.recursive.unwrap_or(false);
+        let result = self.root.handle_delete(&request.path, recursive).await;
+        let frame = match result {
+            Ok(()) => Outbound::ActionResult(FilesActionResult {
+                request_id: request.request_id,
+                action: "delete".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %error, "files delete failed");
+                Outbound::ActionResult(FilesActionResult {
+                    request_id: request.request_id,
+                    action: "delete".to_string(),
+                    success: false,
+                    error: Some(error.to_string()),
+                })
+            }
+        };
+        vec![frame]
+    }
+
+    /// `files-rename` — rename a path within the sandbox (ADR-40).
+    async fn handle_rename(&mut self, request: FilesRenameRequest) -> Vec<Outbound> {
+        let result = self
+            .root
+            .handle_rename(&request.old_path, &request.new_path)
+            .await;
+        let frame = match result {
+            Ok(()) => Outbound::ActionResult(FilesActionResult {
+                request_id: request.request_id,
+                action: "rename".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(error) => {
+                tracing::warn!(error = %error, "files rename failed");
+                Outbound::ActionResult(FilesActionResult {
+                    request_id: request.request_id,
+                    action: "rename".to_string(),
+                    success: false,
+                    error: Some(error.to_string()),
+                })
+            }
+        };
+        vec![frame]
+    }
+
+    /// Task 3: handle `files-pause` — flush + fsync the `.part`, leave it on
+    /// disk, and answer with a cumulative ack of the highest contiguous chunk
+    /// (the resume point, ADR-39). The slot stays occupied while paused.
+    async fn handle_pause(&mut self, request: FilesPauseMessage) -> Vec<Outbound> {
+        match request.direction {
+            FilesDirection::Download => {
+                let Some(state) = self.download.as_mut() else {
+                    return vec![Self::transfer_unknown(&request.transfer_id)];
+                };
+                if state.transfer_id != request.transfer_id {
+                    return vec![Self::transfer_unknown(&request.transfer_id)];
+                }
+                if state.paused {
+                    // Idempotent: already paused, re-emit the same ack.
+                    return vec![Outbound::PauseAck(FilesPauseAckMessage {
+                        transfer_id: state.transfer_id.clone(),
+                        acked_chunk_index: state.acked,
+                        bytes_transferred: state.acked * FILE_CHUNK_BYTES,
+                    })];
+                }
+                state.paused = true;
+                // Downloads are read-only: no flush/fsync, no .part to delete.
+                // The slot stays occupied; the read cursor (`sent`) is preserved.
+                vec![Outbound::PauseAck(FilesPauseAckMessage {
+                    transfer_id: state.transfer_id.clone(),
+                    acked_chunk_index: state.acked,
+                    bytes_transferred: state.acked * FILE_CHUNK_BYTES,
+                })]
+            }
+            FilesDirection::Upload => {
+                let Some(state) = self.upload.as_mut() else {
+                    return vec![Self::transfer_unknown(&request.transfer_id)];
+                };
+                if state.transfer_id != request.transfer_id {
+                    return vec![Self::transfer_unknown(&request.transfer_id)];
+                }
+                if state.paused {
+                    // Idempotent: already paused, re-emit the same ack.
+                    return Self::pause_ack_frame(state);
+                }
+                // Flush + fsync so the `.part` is durable before we pause.
+                use tokio::io::AsyncWriteExt as _;
+                if let Err(error) = state.file.flush().await {
+                    state.discard().await;
+                    return vec![FilesError::io("flushing on pause", error)
+                        .with_ids(None, Some(state.transfer_id.clone()))
+                        .into_frame()];
+                }
+                if let Err(error) = state.file.sync_all().await {
+                    state.discard().await;
+                    return vec![FilesError::io("syncing on pause", error)
+                        .with_ids(None, Some(state.transfer_id.clone()))
+                        .into_frame()];
+                }
+                state.paused = true;
+                Self::pause_ack_frame(state)
+            }
+        }
+    }
+
+    /// Build the `files-pause-ack` frame from a paused upload state.
+    fn pause_ack_frame(state: &UploadState) -> Vec<Outbound> {
+        vec![Outbound::PauseAck(FilesPauseAckMessage {
+            transfer_id: state.transfer_id.clone(),
+            acked_chunk_index: state.next_chunk,
+            bytes_transferred: state.next_chunk * FILE_CHUNK_BYTES,
+        })]
+    }
+
+    /// Task 3: handle `files-resume` (GAP-G: emits `files-resume-ack`, not
+    /// `files-pause-ack`). Validates the resume point and re-opens / seeks the
+    /// stream (ADR-39). The resume request uses a string id matched against the
+    /// paused transfer's id.
+    ///
+    /// Outcomes (spec §3.3):
+    /// - success → `ResumeAck { approved: true, from_chunk_index, reason: None }`
+    ///   plus, for downloads, the immediately-pumped chunk frames.
+    /// - `.part`-size mismatch (upload) → `ResumeAck { approved: false, … }`
+    ///   (NOT a raw error frame; the client reads `approved:false`).
+    /// - not-paused / download-not-paused → `ResumeAck { approved: false, … }`.
+    /// - truly unknown id (protocol-level) → `transfer_unknown` error frame.
+    async fn handle_resume(&mut self, request: FilesResumeRequest) -> Vec<Outbound> {
+        let resume_ack = |tid: &str, approved: bool, from: u64, reason: &str| {
+            Outbound::ResumeAck(FilesResumeAckMessage {
+                transfer_id: tid.to_string(),
+                approved,
+                from_chunk_index: from,
+                reason: if reason.is_empty() {
+                    None
+                } else {
+                    Some(reason.to_string())
+                },
+            })
+        };
+
+        match request.direction {
+            FilesDirection::Upload => {
+                let Some(state) = self.upload.as_mut() else {
+                    return vec![Self::transfer_unknown(&request.transfer_id)];
+                };
+                if state.transfer_id != request.transfer_id {
+                    return vec![Self::transfer_unknown(&request.transfer_id)];
+                }
+                if !state.paused {
+                    return vec![resume_ack(
+                        &request.transfer_id,
+                        false,
+                        request.from_chunk_index,
+                        "transfer is not paused",
+                    )];
+                }
+                // Validate the .part size matches the resume point.
+                if let Err(error) = self
+                    .root
+                    .verify_resume_upload_inner(&state.part, request.from_chunk_index)
+                    .await
+                {
+                    return vec![resume_ack(
+                        &request.transfer_id,
+                        false,
+                        request.from_chunk_index,
+                        &error.to_string(),
+                    )];
+                }
+                // Re-open in append mode so the resumed stream continues from the
+                // existing offset.
+                match tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .open(&state.part)
+                    .await
+                {
+                    Ok(file) => {
+                        state.file = file;
+                        state.paused = false;
+                        state.last_ack_time = tokio::time::Instant::now();
+                        // The resume point IS the new contiguous count.
+                        state.next_chunk = request.from_chunk_index;
+                        state.last_acked = request.from_chunk_index;
+                        // Clear any staged-but-unflushed ack so a paused-and-
+                        // resumed upload doesn't carry a stale pending ack
+                        // (symmetric with last_acked/last_ack_time above).
+                        state.pending_ack = None;
+                        vec![resume_ack(
+                            &request.transfer_id,
+                            true,
+                            request.from_chunk_index,
+                            "",
+                        )]
+                    }
+                    Err(error) => {
+                        state.discard().await;
+                        vec![resume_ack(
+                            &request.transfer_id,
+                            false,
+                            request.from_chunk_index,
+                            &format!("reopening the .part for resume: {error}"),
+                        )]
+                    }
+                }
+            }
+            FilesDirection::Download => {
+                // GAP-F: downloads are pausable/resumable (ADR-39). The source
+                // file is read-only; seek the cursor to the resume point.
+                // Validate id + paused state through the mutable borrow.
+                {
+                    let Some(state) = self.download.as_mut() else {
+                        return vec![Self::transfer_unknown(&request.transfer_id)];
+                    };
+                    if state.transfer_id != request.transfer_id {
+                        return vec![Self::transfer_unknown(&request.transfer_id)];
+                    }
+                    if !state.paused {
+                        return vec![resume_ack(
+                            &request.transfer_id,
+                            false,
+                            request.from_chunk_index,
+                            "transfer is not paused",
+                        )];
+                    }
+                }
+                // Take the download out of the slot so we can pass `&mut state`
+                // to `pump_download` (which takes `&self` + `&mut DownloadState`).
+                let mut state = self.download.take().expect("checked above");
+                let tid = state.transfer_id.clone();
+                use tokio::io::AsyncSeekExt as _;
+                let seek_to = request.from_chunk_index * FILE_CHUNK_BYTES;
+                if let Err(error) = state.file.seek(std::io::SeekFrom::Start(seek_to)).await {
+                    // Seek failed: put the state back (still paused) so the slot
+                    // isn't silently lost, and report the rejection.
+                    self.download = Some(state);
+                    return vec![resume_ack(
+                        &request.transfer_id,
+                        false,
+                        request.from_chunk_index,
+                        &format!("seeking to resume offset: {error}"),
+                    )];
+                }
+                state.sent = request.from_chunk_index;
+                state.acked = request.from_chunk_index;
+                state.paused = false;
+                state.touch();
+                // Pump immediately so the browser sees resumed chunks without an
+                // extra ack round-trip, then re-store the (possibly still in-flight)
+                // state.
+                let pumped = self.pump_download(&mut state).await;
+                let mut out = vec![resume_ack(&tid, true, request.from_chunk_index, "")];
+                match pumped {
+                    Ok(frames) => {
+                        out.extend(frames);
+                        // Re-store unless the pump closed the transfer (acked == total).
+                        if state.acked < state.total_chunks {
+                            self.download = Some(state);
+                        }
+                    }
+                    Err(error) => {
+                        out.push(error.with_ids(None, Some(tid)).into_frame());
+                    }
+                }
+                out
+            }
+        }
+    }
 }
 
 /// The `.part` sibling path of a destination (ADR-33: the final name must
@@ -1156,13 +2074,64 @@ fn join_rel(dir_wire: &str, name: &str) -> String {
     }
 }
 
+/// Task 3: recursively remove `.ponter-part` files older than `max_age` (ADR-39,
+/// 24h retention in production). Returns the count removed. Files at or within
+/// `max_age` are left in place so an in-progress or freshly-paused upload is
+/// not clobbered.
+pub async fn clean_stale_part_files(root: &Path, max_age: Duration) -> u32 {
+    let mut removed = 0u32;
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ty = entry.file_type();
+            match ty {
+                Ok(ft) if ft.is_dir() => {
+                    stack.push(path);
+                }
+                Ok(ft)
+                    if ft.is_file()
+                        && path
+                            .extension()
+                            .is_some_and(|ext| ext == PART_SUFFIX_TRIMMED) =>
+                {
+                    let stale = std::fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > max_age);
+                    if stale && std::fs::remove_file(&path).is_ok() {
+                        removed += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    removed
+}
+
+/// The `extension()` of a `.ponter-part` file is `ponter-part` (the part after
+/// the final `.`); the full suffix including the dot is [`PART_SUFFIX`].
+const PART_SUFFIX_TRIMMED: &str = "ponter-part";
+
 /// Validate one chunk against the state; on success append it to `.part`.
 /// `Err` hands the state back so the caller can remove the file (fail-soft
 /// cleanup, spec §2.6).
+///
+/// `raw` is the decoded chunk payload (binary frames carry raw bytes; the
+/// legacy JSON path base64-decodes before calling this). `total_chunks` is the
+/// declared count — checked against the session's derived total (spec §2.4).
 #[allow(clippy::result_large_err)]
-async fn accept_chunk(
+async fn accept_upload_chunk(
     mut state: UploadState,
-    chunk: FileChunkMessage,
+    raw: &[u8],
+    chunk_index: u64,
+    total_chunks: u64,
 ) -> Result<UploadState, (UploadState, FilesError)> {
     use tokio::io::AsyncWriteExt as _;
     let fail = |state: UploadState, message: &str| {
@@ -1170,29 +2139,88 @@ async fn accept_chunk(
     };
     // One source of truth: the totals derived from the declared size, never
     // the frame's claim (spec §2.4).
-    if chunk.total_chunks != state.total_chunks {
+    if total_chunks != state.total_chunks {
         return fail(state, "totalChunks disagrees with the declared size");
     }
-    if chunk.chunk_index != state.next_chunk {
+    if chunk_index != state.next_chunk {
         return fail(state, "chunk out of order");
     }
-    use base64::Engine as _;
-    let bytes = match base64::engine::general_purpose::STANDARD.decode(&chunk.data) {
-        Ok(bytes) => bytes,
-        Err(_) => return fail(state, "chunk data is not valid base64"),
-    };
     let expected =
         expected_chunk_len(state.total_chunks, state.expected_size, state.next_chunk) as usize;
-    if bytes.len() != expected {
+    if raw.len() != expected {
         return fail(state, "chunk length does not match the declared size");
     }
-    if let Err(error) = state.file.write_all(&bytes).await {
+    if let Err(error) = state.file.write_all(raw).await {
         return Err((state, FilesError::io("appending an upload chunk", error)));
     }
     state.next_chunk += 1;
-    state.written += bytes.len() as u64;
+    state.written += raw.len() as u64;
     state.touch();
+    // The caller decides when to flush the staged ack (ADR-37).
     Ok(state)
+}
+
+/// Encode a 16-byte wire transfer id back into the dashed RFC 4122 string form
+/// the client sends (e.g. `"12345678-1234-4234-8234-123456789abc"`) so it can be
+/// compared against `state.transfer_id` (Task 3 / GAP-E fix, ADR-36).
+///
+/// Mirrors the client's `bytesToUuid`: hex-encode the 16 bytes to 32 lowercase
+/// chars, then insert dashes at the 8-4-4-4-12 boundaries.
+fn hex_encode_id(bytes: &[u8; 16]) -> String {
+    let mut hex = String::with_capacity(36);
+    for b in bytes {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    // Re-insert RFC 4122 dashes at the same positions the client uses.
+    let mut out = String::with_capacity(36);
+    out.push_str(&hex[0..8]);
+    out.push('-');
+    out.push_str(&hex[8..12]);
+    out.push('-');
+    out.push_str(&hex[12..16]);
+    out.push('-');
+    out.push_str(&hex[16..20]);
+    out.push('-');
+    out.push_str(&hex[20..32]);
+    out
+}
+
+/// Decode a session transfer-id string into the 16-byte wire form used by
+/// binary chunk frames (ADR-36).
+///
+/// The client mints ids with `crypto.randomUUID()` → a dashed 36-char RFC 4122
+/// UUID; `uuidToBytes` strips the dashes and hex-decodes to 16 raw bytes. We
+/// mirror that here: strip '-', and if the remaining 32 chars are valid hex we
+/// hex-decode them (GAP-E fix). Dashed UUIDs therefore round-trip exactly.
+///
+/// Any other string (e.g. the tests' short ids like `"t-1"`) keeps the existing
+/// deterministic right-padded byte-copy fallback, so non-UUID ids still work
+/// within the agent's own test suite.
+fn transfer_id_to_16(id: &str) -> [u8; 16] {
+    // Strip dashes and try a 32-char hex decode (the real UUID path).
+    let stripped: String = id.chars().filter(|&c| c != '-').collect();
+    if stripped.len() == 32 {
+        let mut bytes = [0u8; 16];
+        let mut ok = true;
+        for (i, chunk) in bytes.iter_mut().enumerate() {
+            match u8::from_str_radix(&stripped[i * 2..i * 2 + 2], 16) {
+                Ok(b) => *chunk = b,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            return bytes;
+        }
+    }
+    // Fallback for non-UUID ids (test short names, etc.): copy raw bytes.
+    let mut out = [0u8; 16];
+    for (i, b) in id.as_bytes().iter().take(16).enumerate() {
+        out[i] = *b;
+    }
+    out
 }
 
 /// Finalize an upload: every chunk arrived ⇒ flush + fsync + no-replace
@@ -1646,15 +2674,19 @@ mod tests {
         })
     }
 
-    /// The decoded bytes of one `files-download-chunk` frame.
+    /// The decoded bytes of one download chunk frame — handles both the legacy
+    /// JSON base64 variant and the Task 3 binary variant.
     fn chunk_bytes(frame: &Outbound) -> Vec<u8> {
-        use base64::Engine as _;
-        let Outbound::DownloadChunk(chunk) = frame else {
-            panic!("not a download chunk: {frame:?}");
-        };
-        base64::engine::general_purpose::STANDARD
-            .decode(&chunk.data)
-            .unwrap()
+        match frame {
+            Outbound::DownloadChunk(chunk) => {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&chunk.data)
+                    .unwrap()
+            }
+            Outbound::DownloadChunkBinary(chunk) => chunk.data.clone(),
+            other => panic!("not a download chunk: {other:?}"),
+        }
     }
 
     /// The wire code of the single error frame in `frames` (panics otherwise).
@@ -1725,7 +2757,8 @@ mod tests {
 
     #[tokio::test]
     async fn download_acks_gate_the_window() {
-        // 20 chunks; after begin only 16 may be in flight; acks open the rest.
+        // 20 chunks; with window 64 (> 20), all chunks are pumped up front and
+        // the end frame only arrives once the browser acks them all.
         let dir = temp_dir_for_test();
         let size = 20 * FILE_CHUNK_BYTES as usize;
         std::fs::write(dir.join("big.bin"), vec![7u8; size]).unwrap();
@@ -1735,18 +2768,18 @@ mod tests {
         assert!(
             matches!(frames.first(), Some(Outbound::DownloadBegin(b)) if b.total_chunks == 20 && b.size == size as u64)
         );
-        assert_eq!(frames.len(), 17, "begin + 16 chunks");
+        // begin + 20 chunks = 21 frames (window 64 admits all 20; end waits on acks)
+        assert_eq!(frames.len(), 21, "begin + 20 chunks");
 
-        // An ack beyond what was sent is BAD_FRAME and kills the transfer
+        // An ack beyond what was sent (21) is BAD_FRAME and kills the transfer
         // (spec §2.4: `nextChunkIndex > sent` is a protocol violation).
-        let frames = session.handle(ack("t-1", 17)).await;
+        let frames = session.handle(ack("t-1", 21)).await;
         assert_eq!(error_code(&frames), "BAD_FRAME");
 
-        // Start over; a cumulative ack opens the window to the end.
+        // Start over; a cumulative ack opens the window to completion.
         let frames = session.handle(download_req("t-2", "big.bin")).await;
-        assert_eq!(frames.len(), 17);
-        let frames = session.handle(ack("t-2", 4)).await;
-        assert_eq!(frames.len(), 4, "sent - acked < 16 admits exactly 4 more");
+        assert_eq!(frames.len(), 21);
+        // Ack everything: the end frame closes the transfer (sent 20, acked 20).
         let frames = session.handle(ack("t-2", 20)).await;
         assert!(matches!(frames.as_slice(), [Outbound::DownloadEnd(e)] if e.transfer_id == "t-2"));
         std::fs::remove_dir_all(&dir).ok();
@@ -1764,7 +2797,10 @@ mod tests {
         let frames = session.handle(download_req("t-1", "a.bin")).await;
         let mut assembled = Vec::new();
         for frame in &frames {
-            if matches!(frame, Outbound::DownloadChunk(_)) {
+            if matches!(
+                frame,
+                Outbound::DownloadChunk(_) | Outbound::DownloadChunkBinary(_)
+            ) {
                 assembled.extend(chunk_bytes(frame));
             }
         }
@@ -1840,10 +2876,13 @@ mod tests {
         );
 
         let frames = session.handle(chunk("t-1", 0, 1, payload)).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 1));
+        assert!(frames.is_empty(), "acks are batched (1 chunk < 16)");
         let frames = session.handle(upload_end("t-1")).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadComplete(c)]
-            if c.transfer_id == "t-1" && c.name == "note.txt" && c.path == "note.txt" && c.size == payload.len() as u64));
+        // upload_end flushes the final cumulative ack, then UploadComplete.
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(a), Outbound::UploadComplete(c)]
+            if a.next_chunk_index == 1 && c.transfer_id == "t-1" && c.name == "note.txt" && c.path == "note.txt" && c.size == payload.len() as u64)
+        );
         assert_eq!(std::fs::read(dir.join("note.txt")).unwrap(), payload);
         assert!(
             !dir.join(part_name("note.txt")).exists(),
@@ -1859,7 +2898,11 @@ mod tests {
         let mut session = session_for(&dir).await;
         session.handle(upload_begin("t-1", "", "zero.bin", 0)).await;
         let frames = session.handle(upload_end("t-1")).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadComplete(c)] if c.size == 0));
+        // upload_end flushes the final cumulative ack, then UploadComplete.
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(a), Outbound::UploadComplete(c)]
+            if a.next_chunk_index == 0 && c.size == 0)
+        );
         assert_eq!(std::fs::read(dir.join("zero.bin")).unwrap(), b"");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1944,8 +2987,10 @@ mod tests {
 
     #[tokio::test]
     async fn upload_ack_stream_is_cumulative() {
-        // Spec §6.1: begin acks 0, every accepted chunk acks its contiguous
-        // count. The browser's upload pump waits on exactly this stream.
+        // Spec §6.1 + ADR-37: begin acks 0; chunk acks are cumulative and
+        // batched (flush every 16 chunks OR 20 ms). With fewer than 16 chunks
+        // and no timer tick in this unit test, per-chunk acks are buffered and
+        // the final ack is emitted at upload-end.
         let dir = temp_dir_for_test();
         let mut session = session_for(&dir).await;
         let full = vec![9u8; FILE_CHUNK_BYTES as usize];
@@ -1956,13 +3001,17 @@ mod tests {
             .await;
         assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 0));
         let frames = session.handle(chunk("t-1", 0, 3, &full)).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 1));
+        assert!(frames.is_empty(), "acks are batched, not flushed per chunk");
         let frames = session.handle(chunk("t-1", 1, 3, &full)).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 2));
+        assert!(frames.is_empty(), "acks are batched");
         let frames = session.handle(chunk("t-1", 2, 3, b"abcde")).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.next_chunk_index == 3));
+        assert!(frames.is_empty(), "acks are batched");
         let frames = session.handle(upload_end("t-1")).await;
-        assert!(matches!(frames.as_slice(), [Outbound::UploadComplete(c)] if c.size == size));
+        // upload_end flushes the final cumulative ack, then UploadComplete.
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(a), Outbound::UploadComplete(c)]
+            if a.next_chunk_index == 3 && c.size == size)
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2252,6 +3301,550 @@ mod tests {
             }
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).ok();
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests_week11 {
+    use super::*;
+
+    /// `upload_begin` / `upload_end` builders (mirror the `tests` module's
+    /// helpers; this module can't reach those, so we carry our own).
+    fn upload_begin(id: &str, dir: &str, name: &str, size: u64) -> FilesInbound {
+        FilesInbound::UploadBegin(FilesUploadBeginRequest {
+            transfer_id: id.to_string(),
+            path: dir.to_string(),
+            name: name.to_string(),
+            size,
+        })
+    }
+    fn upload_end(id: &str) -> FilesInbound {
+        FilesInbound::UploadEnd(FilesUploadEndRequest {
+            transfer_id: id.to_string(),
+        })
+    }
+
+    /// Builders for inbound download/pause/resume frames (mirror the `tests`
+    /// module's helpers; this module can't reach those).
+    fn download_req(id: &str, path: &str) -> FilesInbound {
+        FilesInbound::Download(FilesDownloadRequest {
+            transfer_id: id.to_string(),
+            path: path.to_string(),
+        })
+    }
+    fn ack(id: &str, next: u64) -> FilesInbound {
+        FilesInbound::DownloadAck(FilesAckMessage {
+            transfer_id: id.to_string(),
+            next_chunk_index: next,
+        })
+    }
+    fn pause_req(id: &str, dir: FilesDirection) -> FilesInbound {
+        FilesInbound::Pause(FilesPauseMessage {
+            transfer_id: id.to_string(),
+            direction: dir,
+        })
+    }
+    fn resume_req(id: &str, dir: FilesDirection, from: u64) -> FilesInbound {
+        FilesInbound::Resume(FilesResumeRequest {
+            transfer_id: id.to_string(),
+            path: String::new(),
+            direction: dir,
+            from_chunk_index: from,
+        })
+    }
+    /// Legacy base64 decode upload chunk (used by some upload tests).
+    fn chunk(id: &str, index: u64, total: u64, bytes: &[u8]) -> FilesInbound {
+        use base64::Engine as _;
+        FilesInbound::UploadChunk(FileChunkMessage {
+            transfer_id: id.to_string(),
+            chunk_index: index,
+            total_chunks: total,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+    async fn session_for(dir: &std::path::Path) -> FilesSession {
+        let root = FilesRoot::new(dir).await.unwrap();
+        FilesSession::new(root)
+    }
+
+    /// Unique temp dir under `std::env::temp_dir()` (mirrors the `tests`
+    /// helper; duplicated here because `tempfile` is not a declared dev-dep).
+    fn temp_dir_for_test() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("ponter-files-w11-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_binary_frame_roundtrip() {
+        let transfer_id = [7u8; 16];
+        let chunk_index = 42u64;
+        let payload = b"hello binary world";
+        let encoded = encode_files_binary_frame(
+            BINARY_TYPE_DOWNLOAD_CHUNK,
+            &transfer_id,
+            chunk_index,
+            payload,
+        );
+        assert_eq!(encoded.len(), BINARY_HEADER_LEN + payload.len());
+
+        let decoded = decode_files_binary_frame(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.frame_type, BINARY_TYPE_DOWNLOAD_CHUNK);
+        assert_eq!(decoded.transfer_id, transfer_id);
+        assert_eq!(decoded.chunk_index, chunk_index);
+        assert_eq!(decoded.data, payload);
+    }
+
+    #[test]
+    fn test_binary_frame_truncated_header() {
+        let short_bytes = vec![0x01; 24]; // 1 byte short of 25-byte header
+        let err = decode_files_binary_frame(&short_bytes).unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::BadFrame);
+    }
+
+    #[tokio::test]
+    async fn test_mkdir_delete_rename_sandbox() {
+        // Adapt the brief's `tempfile::tempdir()` to the existing test helper
+        // (`tempfile` is a transitive dep in Cargo.lock but not declared in
+        // Cargo.toml; we cannot add it here).
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+
+        // 1. mkdir
+        root.mkdir("", "test_dir").await.unwrap();
+        let created = temp.join("test_dir");
+        assert!(created.is_dir());
+
+        // 2. rename
+        tokio::fs::write(created.join("sample.txt"), b"data")
+            .await
+            .unwrap();
+        root.rename("test_dir/sample.txt", "test_dir/renamed.txt")
+            .await
+            .unwrap();
+        assert!(created.join("renamed.txt").exists());
+        assert!(!created.join("sample.txt").exists());
+
+        // 3. delete root rejected
+        let del_err = root.delete("", false).await.unwrap_err();
+        assert_eq!(del_err.code(), FilesErrorCode::PermissionDenied);
+
+        // 4. delete non-empty directory without recursive rejected
+        let del_dir_err = root.delete("test_dir", false).await.unwrap_err();
+        assert_eq!(del_dir_err.code(), FilesErrorCode::DirNotEmpty);
+
+        // 5. delete directory with recursive
+        root.delete("test_dir", true).await.unwrap();
+        assert!(!created.exists());
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    // ---- Fix round 1: boundary + rename + error-code mapping tests ----
+
+    #[test]
+    fn test_binary_frame_max_payload_decodes() {
+        // 32793 bytes = 25 header + 32768 payload (the exact boundary).
+        let transfer_id = [9u8; 16];
+        let payload = vec![0xABu8; 32768];
+        let encoded =
+            encode_files_binary_frame(BINARY_TYPE_DOWNLOAD_CHUNK, &transfer_id, 0, &payload);
+        assert_eq!(encoded.len(), 32793);
+
+        let decoded = decode_files_binary_frame(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.frame_type, BINARY_TYPE_DOWNLOAD_CHUNK);
+        assert_eq!(decoded.transfer_id, transfer_id);
+        assert_eq!(decoded.chunk_index, 0);
+        assert_eq!(decoded.data.len(), 32768);
+    }
+
+    #[test]
+    fn test_binary_frame_oversized_payload_rejected() {
+        // 32794 bytes = 25 header + 32769 payload (one byte over the cap).
+        let transfer_id = [9u8; 16];
+        let payload = vec![0xABu8; 32769];
+        let encoded =
+            encode_files_binary_frame(BINARY_TYPE_DOWNLOAD_CHUNK, &transfer_id, 0, &payload);
+        let err = decode_files_binary_frame(&encoded).unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::BadFrame);
+    }
+
+    #[tokio::test]
+    async fn test_rename_root_rejected() {
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+        // old path "" resolves to root -> PermissionDenied.
+        let err = root.rename("", "x.txt").await.unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::PermissionDenied);
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[tokio::test]
+    async fn test_rename_destination_existing_rejected() {
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+
+        // Create source and a pre-existing destination.
+        tokio::fs::write(temp.join("src.txt"), b"source")
+            .await
+            .unwrap();
+        tokio::fs::write(temp.join("dest.txt"), b"dest")
+            .await
+            .unwrap();
+
+        let err = root.rename("src.txt", "dest.txt").await.unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::FileExists);
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn test_error_code_str_mapping() {
+        assert_eq!(FilesErrorCode::ResumeInvalid.as_str(), "RESUME_INVALID");
+        assert_eq!(FilesErrorCode::QueueFull.as_str(), "QUEUE_FULL");
+    }
+
+    // ---- Task 3: pause/resume + 24h part-file janitor (TDD Step 1) ----
+    // Adapted from the task brief: `tempfile`/`filetime` are not declared
+    // dev-deps, so `temp_dir_for_test()` and `std::fs::File::set_times` are used
+    // instead (Rust 1.75+; rust-version here is 1.85). Assertions are preserved
+    // verbatim from the brief.
+
+    #[tokio::test]
+    async fn test_pause_and_resume_alignment_check() {
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+
+        // Create a fake .part file of 65536 bytes (2 chunks of 32 KiB)
+        let part_path = temp.join("upload.bin.ponter-part");
+        std::fs::write(&part_path, vec![0u8; 65536]).unwrap();
+
+        // Resume from chunk 2 should succeed (2 * 32768 = 65536)
+        let ok = root.verify_resume_upload("upload.bin", 2).await;
+        assert!(ok.is_ok());
+
+        // Resume from chunk 3 should fail with RESUME_INVALID (3 * 32768 != 65536)
+        let err = root
+            .verify_resume_upload("upload.bin", 3)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), FilesErrorCode::ResumeInvalid);
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    /// Convert a `SystemTime` into `FileTimes` for `std::fs::File::set_times`
+    /// (stable since Rust 1.75; rust-version here is 1.85) — no `filetime` crate.
+    fn filetime_from_system_time(t: std::time::SystemTime) -> std::fs::FileTimes {
+        std::fs::FileTimes::new().set_modified(t)
+    }
+
+    #[tokio::test]
+    async fn test_janitor_cleans_stale_part_files() {
+        let temp = temp_dir_for_test();
+        let stale_part = temp.join("stale.bin.ponter-part");
+        let fresh_part = temp.join("fresh.bin.ponter-part");
+
+        std::fs::write(&stale_part, b"stale").unwrap();
+        std::fs::write(&fresh_part, b"fresh").unwrap();
+
+        // Set mtime of stale_part to 25 hours ago
+        let twenty_five_hours_ago = std::time::SystemTime::now() - Duration::from_secs(25 * 3600);
+        let stale = std::fs::File::open(&stale_part).unwrap();
+        let times = filetime_from_system_time(twenty_five_hours_ago);
+        stale.set_times(times).unwrap();
+
+        let removed = clean_stale_part_files(&temp, Duration::from_secs(24 * 3600)).await;
+        assert_eq!(removed, 1);
+        assert!(!stale_part.exists());
+        assert!(fresh_part.exists());
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    // ---- GAP-E regression: dashed-UUID wire codec round-trips (ADR-36) ----
+
+    /// A real dashed RFC 4122 UUID, exactly what the client (`crypto.randomUUID()`)
+    /// sends and expects back.
+    const TEST_UUID: &str = "12345678-1234-4234-8234-123456789abc";
+
+    #[test]
+    fn test_transfer_id_codec_roundtrips_dashed_uuid() {
+        // transfer_id_to_16 strips the dashes & hex-decodes; hex_encode_id
+        // re-inserts dashes at the 8-4-4-4-12 boundaries → exact round-trip.
+        let wire = transfer_id_to_16(TEST_UUID);
+        let back = hex_encode_id(&wire);
+        assert_eq!(back, TEST_UUID, "dashed uuid must round-trip");
+    }
+
+    #[test]
+    fn test_transfer_id_to_16_matches_client_uuidtobytes() {
+        // The client's `uuidToBytes` strips '-' then hex-decodes 32 chars → 16
+        // bytes. The agent must produce the identical 16 bytes.
+        let wire = transfer_id_to_16(TEST_UUID);
+        let hex_no_dashes: String = TEST_UUID.chars().filter(|&c| c != '-').collect();
+        let expected: [u8; 16] = {
+            let mut bytes = [0u8; 16];
+            for (i, chunk) in bytes.iter_mut().enumerate() {
+                *chunk = u8::from_str_radix(&hex_no_dashes[i * 2..i * 2 + 2], 16).unwrap();
+            }
+            bytes
+        };
+        assert_eq!(wire, expected, "agent wire bytes must match client");
+    }
+
+    #[tokio::test]
+    async fn test_binary_upload_chunk_with_dashed_uuid_is_accepted() {
+        // Drives `handle_upload_chunk_binary` with a real dashed UUID (via a
+        // packed binary frame) and asserts the chunk is accepted — not
+        // `transfer_unknown` (GAP-E).
+        let temp = temp_dir_for_test();
+        let root = FilesRoot::new(&temp).await.unwrap();
+        let mut session = FilesSession::new(root);
+
+        let size = b"hello binary world".len() as u64;
+        let frames = session
+            .handle(upload_begin(TEST_UUID, "", "up.bin", size))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(a)] if a.transfer_id == TEST_UUID && a.next_chunk_index == 0),
+            "begin must ack 0 for a dashed uuid"
+        );
+
+        // Pack a binary upload chunk exactly like the client does.
+        let payload = b"hello binary world";
+        let encoded = encode_files_binary_frame(
+            BINARY_TYPE_UPLOAD_CHUNK,
+            &transfer_id_to_16(TEST_UUID),
+            0, // chunk_index
+            payload,
+        );
+        let decoded = decode_files_binary_frame(&encoded).unwrap();
+        let frames = session.handle_upload_chunk_binary(&decoded).await;
+        // 1 chunk < 16 ⇒ batched, empty; but NOT transfer_unknown / an error.
+        assert!(
+            frames.is_empty(),
+            "chunk accepted and ack batched: {frames:?}"
+        );
+
+        let frames = session.handle(upload_end(TEST_UUID)).await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::UploadAck(_), Outbound::UploadComplete(c)]
+                if c.transfer_id == TEST_UUID && c.name == "up.bin"),
+            "end flushes the final ack + complete: {frames:?}"
+        );
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    // ---- GAP-G: resume emits files-resume-ack (not files-pause-ack) ----
+
+    #[tokio::test]
+    async fn resume_approved_after_upload_pause() {
+        let dir = temp_dir_for_test();
+        let mut session = session_for(&dir).await;
+        // Begin a 3-chunk upload (size = 2 * CHUNK + 1 so total_chunks >= 2).
+        let size = 2 * FILE_CHUNK_BYTES + 1;
+        session.handle(upload_begin("t-1", "", "u.bin", size)).await;
+        // Send 2 chunks so the upload is mid-flight.
+        session
+            .handle(chunk("t-1", 0, 3, &vec![1u8; FILE_CHUNK_BYTES as usize]))
+            .await;
+        session
+            .handle(chunk("t-1", 1, 3, &vec![2u8; FILE_CHUNK_BYTES as usize]))
+            .await;
+        // Pause → PauseAck with acked_chunk_index == 2.
+        let frames = session
+            .handle(pause_req("t-1", FilesDirection::Upload))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::PauseAck(a)]
+                if a.transfer_id == "t-1" && a.acked_chunk_index == 2),
+            "pause acks the resume point: {frames:?}"
+        );
+        // Resume → ResumeAck { approved: true, from_chunk_index: 2 }, NOT a
+        // PauseAck or error frame.
+        let frames = session
+            .handle(resume_req("t-1", FilesDirection::Upload, 2))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::ResumeAck(a)]
+                if a.transfer_id == "t-1"
+                    && a.approved
+                    && a.from_chunk_index == 2
+                    && a.reason.is_none()),
+            "resume emits files-resume-ack approved=true: {frames:?}"
+        );
+        // Upload the final chunk and end; the file is written.
+        session.handle(chunk("t-1", 2, 3, b"X")).await;
+        let frames = session.handle(upload_end("t-1")).await;
+        assert!(
+            matches!(
+                frames.as_slice(),
+                [Outbound::UploadAck(_), Outbound::UploadComplete(_)]
+            ),
+            "end flushes final ack + complete: {frames:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn resume_rejected_on_part_size_mismatch() {
+        let dir = temp_dir_for_test();
+        let mut session = session_for(&dir).await;
+        let size = 2 * FILE_CHUNK_BYTES; // 2 chunks exactly
+        session.handle(upload_begin("t-1", "", "u.bin", size)).await;
+        session
+            .handle(chunk("t-1", 0, 2, &vec![9u8; FILE_CHUNK_BYTES as usize]))
+            .await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Upload))
+            .await;
+
+        // Resume from chunk 2 claims 2 * 32 KiB of data, but the .part only has
+        // 1 chunk (32 KiB) → verify_resume_upload_inner fails.
+        let frames = session
+            .handle(resume_req("t-1", FilesDirection::Upload, 2))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::ResumeAck(a)]
+                if !a.approved
+                    && a.from_chunk_index == 2
+                    && a.reason.is_some()),
+            "resume rejected on .part mismatch: {frames:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- GAP-J: download pause/resume + idle survival ----
+
+    #[tokio::test]
+    async fn download_pause_ack_reports_acked_chunk_index() {
+        let dir = temp_dir_for_test();
+        // 5 chunks; window 64 admits all up front.
+        let size = 5 * FILE_CHUNK_BYTES as usize;
+        std::fs::write(dir.join("dl.bin"), vec![7u8; size]).unwrap();
+        let mut session = session_for(&dir).await;
+
+        let frames = session.handle(download_req("t-1", "dl.bin")).await;
+        assert_eq!(frames.len(), 6, "begin + 5 chunks");
+
+        // Ack 2. All 5 chunks are already sent (sent == total), so the pump
+        // produces no new frames — acked advances to 2.
+        let frames = session.handle(ack("t-1", 2)).await;
+        assert!(
+            frames.is_empty(),
+            "no new chunks (sent == total): {frames:?}"
+        );
+
+        // Pause → PauseAck with acked_chunk_index == 2.
+        let frames = session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+        assert!(
+            matches!(frames.as_slice(), [Outbound::PauseAck(a)]
+                if a.transfer_id == "t-1" && a.acked_chunk_index == 2),
+            "download pause acks the current acked point: {frames:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn download_resume_seeks_and_pumps_from_resume_point() {
+        let dir = temp_dir_for_test();
+        let size = 5 * FILE_CHUNK_BYTES as usize;
+        let mut content: Vec<u8> = Vec::new();
+        for i in 0..size {
+            content.push((i % 251) as u8);
+        }
+        std::fs::write(dir.join("dl.bin"), &content).unwrap();
+        let mut session = session_for(&dir).await;
+
+        // Begin: all 5 chunks sent (window 64).
+        let frames = session.handle(download_req("t-1", "dl.bin")).await;
+        assert_eq!(frames.len(), 6, "begin + 5 chunks");
+
+        // Ack 2, then pause (GAP-J: acks after pause must NOT re-pump).
+        session.handle(ack("t-1", 2)).await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+
+        // Resume from chunk 3: seek to 3 * 32 KiB, pump from index 3.
+        let frames = session
+            .handle(resume_req("t-1", FilesDirection::Download, 3))
+            .await;
+        // First frame is ResumeAck { approved: true, from_chunk_index: 3 },
+        // followed by the resumed chunk(s) starting at index 3.
+        assert!(
+            matches!(frames.first(), Some(Outbound::ResumeAck(a))
+                if a.transfer_id == "t-1" && a.approved && a.from_chunk_index == 3),
+            "resume acks approved with from_chunk_index == 3: {frames:?}"
+        );
+        let chunk_frames: Vec<&BinaryChunkFrame> = frames
+            .iter()
+            .filter_map(|f| match f {
+                Outbound::DownloadChunkBinary(b) => Some(b),
+                _ => None,
+            })
+            .collect();
+        assert!(!chunk_frames.is_empty(), "resume must pump chunks");
+        assert_eq!(
+            chunk_frames[0].chunk_index, 3,
+            "first resumed chunk starts at index 3"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn paused_download_absorbs_acks_without_repumping() {
+        let dir = temp_dir_for_test();
+        let size = 5 * FILE_CHUNK_BYTES as usize;
+        std::fs::write(dir.join("dl.bin"), vec![7u8; size]).unwrap();
+        let mut session = session_for(&dir).await;
+
+        session.handle(download_req("t-1", "dl.bin")).await;
+        session.handle(ack("t-1", 2)).await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+
+        // Now ack the in-flight chunks (3,4,5 are sent but not yet acked).
+        // The pause must absorb these: NO new DownloadChunkBinary frames.
+        let frames = session.handle(ack("t-1", 5)).await;
+        assert!(
+            frames.is_empty(),
+            "paused download must not pump on ack: {frames:?}"
+        );
+        // The slot is still Some (not reaped).
+        assert!(session.download.is_some(), "slot preserved while paused");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn paused_state_survives_idle_timeout() {
+        let dir = temp_dir_for_test();
+        std::fs::write(dir.join("dl.bin"), vec![7u8; 5 * FILE_CHUNK_BYTES as usize]).unwrap();
+        let mut session = session_for(&dir).await;
+
+        session.handle(download_req("t-1", "dl.bin")).await;
+        session
+            .handle(pause_req("t-1", FilesDirection::Download))
+            .await;
+
+        // Force the deadline into the past; check_idle must NOT reap a paused
+        // transfer (no TRANSFER_TIMEOUT, slot still Some).
+        session.download.as_mut().unwrap().deadline =
+            tokio::time::Instant::now() - Duration::from_secs(1);
+        let idle_frames = session.check_idle().await;
+        assert!(
+            idle_frames.is_empty(),
+            "paused transfer survives idle timeout: {idle_frames:?}"
+        );
+        assert!(session.download.is_some(), "paused download slot survives");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
