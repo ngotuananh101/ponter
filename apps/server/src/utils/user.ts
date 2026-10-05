@@ -13,6 +13,8 @@ export type PublicUser = {
   username: string;
   email: string | null;
   publicKey: string;
+  /** WS2 Ed25519 signing public key (base64 raw), or null for legacy rows. */
+  signingPublicKey: string | null;
   isActive: boolean;
   role: UserRole;
   approvalStatus: ApprovalStatus;
@@ -27,6 +29,7 @@ export function toPublicUser(user: UserSelect): PublicUser {
     username: user.username,
     email: user.email,
     publicKey: user.publicKey,
+    signingPublicKey: user.signingPublicKey ?? null,
     isActive: user.isActive,
     role: user.role as UserRole,
     approvalStatus: user.approvalStatus as ApprovalStatus,

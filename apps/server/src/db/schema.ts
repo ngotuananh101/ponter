@@ -8,6 +8,8 @@ export const users = sqliteTable('users', {
   username: text('username').notNull().unique(),
   email: text('email').unique(),
   publicKey: text('public_key').notNull(),
+  /** WS2 Ed25519 signing public key (base64 raw). Nullable for legacy rows. */
+  signingPublicKey: text('signing_public_key'),
   passwordHash: text('password_hash'),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
   role: text('role').notNull().default('user'),

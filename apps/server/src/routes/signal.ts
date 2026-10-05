@@ -3,7 +3,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import type { AppContext } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
-import { sessions } from '../db/schema.js';
+import { sessions, users } from '../db/schema.js';
 import { recordSignal } from '../utils/signals.js';
 import { pushToAgent } from './ws.js';
 import type { SignalMessage } from '@ponter/shared';
@@ -57,9 +57,30 @@ router.post('/offer', async (c) => {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
 
+  // The stored signal row is left unchanged; only the pushed message is
+  // enriched. The agent authenticates with its credential and cannot read
+  // user rows, so the session owner's signing public key is delivered with
+  // the offer. The value is always server-sourced — a client-supplied
+  // userSigningPublicKey is spread first and then overwritten below.
+  const owner = await db
+    .select({ signingPublicKey: users.signingPublicKey })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .get();
+
+  // Spread first, then set userSigningPublicKey last so the server-sourced
+  // value always wins over anything the client may have sent.
+  const pushed: SignalMessage = {
+    type: 'offer',
+    data: {
+      ...message.data,
+      userSigningPublicKey: owner?.signingPublicKey ?? null,
+    },
+  };
+
   // Fire-and-forget: push the signal to the agent's socket if connected.
   if (session.agentId) {
-    pushToAgent(session.agentId, message);
+    pushToAgent(session.agentId, pushed);
   }
 
   return c.json(

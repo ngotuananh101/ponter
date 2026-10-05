@@ -12,6 +12,12 @@ export interface SignalOffer {
   capabilities: string[];
   /** Signed by the offerer's identity key. Absent only for legacy/loopback tests. */
   proof?: IdentityProof;
+  /**
+   * WS2: the session owner's Ed25519 signing public key (base64 raw).
+   * Server-added on the offer pushed to the agent — never client-trusted; any
+   * client-supplied value is overwritten by the server.
+   */
+  userSigningPublicKey?: string | null;
 }
 
 export interface SignalAnswer {

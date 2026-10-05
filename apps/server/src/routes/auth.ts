@@ -53,6 +53,7 @@ auth.post('/register', async (c) => {
       email?: string;
       password?: string;
       publicKey?: string;
+      signingPublicKey?: string;
     }>()
     .catch(() => null);
 
@@ -69,6 +70,13 @@ auth.post('/register', async (c) => {
   const username = body.username.trim();
   const publicKey = body.publicKey;
   const password = body.password;
+
+  // WS2: optional Ed25519 signing public key. Non-empty when present; absent
+  // (legacy pre-WS2 rows) becomes NULL.
+  const signingPublicKey =
+    typeof body.signingPublicKey === 'string' && body.signingPublicKey.trim()
+      ? body.signingPublicKey
+      : null;
 
   if (username.length < MIN_USERNAME_LENGTH) {
     throw new AppError(
@@ -154,6 +162,7 @@ auth.post('/register', async (c) => {
         username,
         email: body.email ? body.email : null,
         publicKey,
+        signingPublicKey,
         passwordHash,
         isActive: true,
         role,
