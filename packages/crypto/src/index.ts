@@ -11,6 +11,7 @@ export interface UserKeyPair {
 const DB_NAME = 'remote-crypto';
 const DB_VERSION = 1;
 const STORE_NAME = 'keys';
+const SIGNING_STORE = 'signing-keys';
 
 const ECDH_ALGORITHM: EcKeyGenParams = {
   name: 'ECDH',
@@ -69,6 +70,7 @@ function closeQuietly(db: IDBDatabase): void {
  */
 function runWriteTransaction(
   db: IDBDatabase,
+  storeName: string,
   failureMessage: string,
   run: (store: IDBObjectStore) => void,
 ): Promise<void> {
@@ -81,7 +83,7 @@ function runWriteTransaction(
       reject(toError(reason, failureMessage));
     };
 
-    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const tx = db.transaction(storeName, 'readwrite');
     tx.oncomplete = () => {
       if (settled) return;
       settled = true;
@@ -91,11 +93,11 @@ function runWriteTransaction(
     tx.onerror = () => fail(tx.error);
     tx.onabort = () => fail(tx.error);
 
-    run(tx.objectStore(STORE_NAME));
+    run(tx.objectStore(storeName));
   });
 }
 
-function openDatabase(): Promise<IDBDatabase> {
+function openDatabase(storeName: string = STORE_NAME): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -103,10 +105,46 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME);
       }
+      if (!db.objectStoreNames.contains(SIGNING_STORE)) {
+        db.createObjectStore(SIGNING_STORE);
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () =>
       reject(toError(request.error, 'Failed to open the key database'));
+  });
+}
+
+/** Read a CryptoKey from an object store by key, or null if absent. */
+function readKey(
+  db: IDBDatabase,
+  storeName: string,
+  key: string,
+  failureMessage: string,
+): Promise<CryptoKey | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (reason: DOMException | null) => {
+      if (settled) return;
+      settled = true;
+      closeQuietly(db);
+      reject(toError(reason, failureMessage));
+    };
+
+    const tx = db.transaction(storeName, 'readonly');
+    const request = tx.objectStore(storeName).get(key);
+
+    request.onsuccess = () => {
+      if (settled) return;
+      settled = true;
+      closeQuietly(db);
+      const result: unknown = request.result;
+      resolve(result instanceof CryptoKey ? result : null);
+    };
+    request.onerror = () => fail(request.error);
+    // Without this, a transaction aborted before the request settles would
+    // leave the returned promise pending forever.
+    tx.onabort = () => fail(tx.error);
   });
 }
 
@@ -153,7 +191,7 @@ export async function savePrivateKey(
   key: CryptoKey,
 ): Promise<void> {
   const db = await openDatabase();
-  return runWriteTransaction(db, 'Failed to save private key', (store) => {
+  return runWriteTransaction(db, STORE_NAME, 'Failed to save private key', (store) => {
     store.put(key, userId);
   });
 }
@@ -163,36 +201,91 @@ export async function loadPrivateKey(
   userId: string,
 ): Promise<CryptoKey | null> {
   const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (reason: DOMException | null) => {
-      if (settled) return;
-      settled = true;
-      closeQuietly(db);
-      reject(toError(reason, 'Failed to load private key'));
-    };
-
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const request = tx.objectStore(STORE_NAME).get(userId);
-
-    request.onsuccess = () => {
-      if (settled) return;
-      settled = true;
-      closeQuietly(db);
-      const result: unknown = request.result;
-      resolve(result instanceof CryptoKey ? result : null);
-    };
-    request.onerror = () => fail(request.error);
-    // Without this, a transaction aborted before the request settles would
-    // leave the returned promise pending forever.
-    tx.onabort = () => fail(tx.error);
-  });
+  return readKey(db, STORE_NAME, userId, 'Failed to load private key');
 }
 
 /** Remove a user's private key from local storage. */
 export async function deletePrivateKey(userId: string): Promise<void> {
   const db = await openDatabase();
-  return runWriteTransaction(db, 'Failed to delete private key', (store) => {
+  return runWriteTransaction(db, STORE_NAME, 'Failed to delete private key', (store) => {
     store.delete(userId);
   });
+}
+
+/** A freshly generated Ed25519 signing keypair (WS2 peer identity). */
+export interface SigningKeyPair {
+  /** Raw 32-byte public key, base64. The value registered with the backend. */
+  publicKeyRawBase64: string;
+  /** Non-extractable private key. Stored locally; never transmitted. */
+  privateKey: CryptoKey;
+  /** The public half, for local use. */
+  publicKey: CryptoKey;
+}
+
+/** Generate an Ed25519 signing keypair for a peer identity. */
+export async function generateSigningKeyPair(): Promise<SigningKeyPair> {
+  const keyPair = (await crypto.subtle.generateKey('Ed25519', true, [
+    'sign',
+    'verify',
+  ])) as CryptoKeyPair;
+
+  // Re-import the private half as non-extractable so it cannot be exfiltrated
+  // by script after generation (the public half stays extractable to register).
+  const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
+  const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', false, [
+    'sign',
+  ]);
+
+  return {
+    publicKeyRawBase64: await exportSigningPublicKeyRaw(keyPair.publicKey),
+    privateKey,
+    publicKey: keyPair.publicKey,
+  };
+}
+
+/** Export an Ed25519 public key to its raw 32-byte base64 form. */
+export async function exportSigningPublicKeyRaw(key: CryptoKey): Promise<string> {
+  const raw = await crypto.subtle.exportKey('raw', key);
+  return bufferToBase64(raw);
+}
+
+/** Import an Ed25519 public key from raw 32-byte base64. */
+export async function importSigningPublicKeyRaw(base64: string): Promise<CryptoKey> {
+  return await crypto.subtle.importKey('raw', base64ToBuffer(base64), 'Ed25519', true, [
+    'verify',
+  ]);
+}
+
+/** Sign a UTF-8 message; returns a base64 Ed25519 signature. */
+export async function signProof(privateKey: CryptoKey, message: string): Promise<string> {
+  const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(message));
+  return bufferToBase64(sig);
+}
+
+/** Verify a base64 Ed25519 signature over a UTF-8 message. Never throws. */
+export async function verifyProof(
+  publicKey: CryptoKey,
+  message: string,
+  signatureBase64: string,
+): Promise<boolean> {
+  try {
+    const sig = base64ToBuffer(signatureBase64);
+    return await crypto.subtle.verify('Ed25519', publicKey, sig, new TextEncoder().encode(message));
+  } catch {
+    return false;
+  }
+}
+
+/** Persist a user's Ed25519 signing key locally (separate store from ECDH). */
+export async function saveSigningKey(userId: string, key: CryptoKey): Promise<void> {
+  const db = await openDatabase(SIGNING_STORE);
+  return runWriteTransaction(db, SIGNING_STORE, 'Failed to save signing key', (store) => {
+    store.put(key, userId);
+  });
+}
+
+/** Load a user's Ed25519 signing key, or null if none is stored. */
+export async function loadSigningKey(userId: string): Promise<CryptoKey | null> {
+  const db = await openDatabase(SIGNING_STORE);
+  return readKey(db, SIGNING_STORE, userId, 'Failed to load signing key');
 }
