@@ -9,7 +9,7 @@ import { expect } from 'vitest';
 import { PeerConnection } from '../../src/connection';
 import { WeriftAdapter } from '../../src/adapters/werift';
 import { RESTPollingTransport } from '../../src/transport';
-import type { SignalTransport } from '../../src/types';
+import type { PeerConnectionIdentity, SignalTransport } from '../../src/types';
 import { BINARY_HEADER_LEN, BINARY_TYPE_DOWNLOAD_CHUNK } from '@ponter/shared';
 import type {
   DataChannelMessage,
@@ -17,6 +17,12 @@ import type {
   TerminalDataMessage,
   TerminalResizeMessage,
 } from '@ponter/shared';
+import {
+  generateSigningKeyPair,
+  importSigningPublicKeyRaw,
+  signProof,
+  verifyProof,
+} from '@ponter/crypto';
 
 // Wire constants mirrored locally (Tasks 1-4 froze these). FILE_CHUNK_BYTES and
 // WINDOW are NOT re-exported by @ponter/shared (only the binary frame type
@@ -357,6 +363,14 @@ export interface AgentCreated {
   credential: string;
 }
 
+/** The signing keypair registered for the test user (WS2 peer identity). */
+export interface UserSigningKey {
+  /** Raw 32-byte Ed25519 public key, base64. Registered with the server. */
+  publicKeyRawBase64: string;
+  /** Non-extractable private key for signing offer proofs. */
+  privateKey: CryptoKey;
+}
+
 export async function postJson<T>(
   path: string,
   body: unknown,
@@ -384,15 +398,23 @@ export async function seed({
   agentId: string;
   credential: string;
   sessionId: string;
+  userSigning: UserSigningKey;
 }> {
   // `randomUUID` rather than `Math.random`: S2245 flags any use of the
   // non-cryptographic PRNG, and a UUID is just as unique for a test suffix.
   const suffix = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 
+  // WS2: generate a real Ed25519 signing keypair for the user so the offer
+  // carries a verifiable peer identity proof. The public half is registered
+  // alongside the legacy ECDH `publicKey`; the private half stays in-process
+  // for signing offer proofs.
+  const signingPair = await generateSigningKeyPair();
+
   const auth = await postJson<{ token: string }>('/api/auth/register', {
     username: `e2e_${suffix}`,
     password: 'Password123!',
     publicKey: `pk_e2e_${suffix}`,
+    signingPublicKey: signingPair.publicKeyRawBase64,
   });
   if (!auth?.token) {
     throw new Error(
@@ -421,16 +443,28 @@ export async function seed({
     agentId: create.agent.id,
     credential: create.credential,
     sessionId: session.id,
+    userSigning: {
+      publicKeyRawBase64: signingPair.publicKeyRawBase64,
+      privateKey: signingPair.privateKey,
+    },
   };
 }
 
-/** Spawn the real binary and register it for teardown. */
+/**
+ * Spawn the real binary and register it for teardown.
+ *
+ * ALWAYS passes `--identity-path` pointing at a unique temp file so every test
+ * agent gets its own Ed25519 keypair — never the shared host-persistent default
+ * at `~/.config/ponter/agent-identity.pkcs8`. The path is derived from
+ * `currentTempDir` (set by `setupE2E`) so it is cleaned in teardown.
+ */
 export function spawnAgent(
   agentId: string,
   credential: string,
   extraArgs: string[] = [],
   env: NodeJS.ProcessEnv = {},
 ): { child: ChildProcess; output: () => string } {
+  const identityPath = join(currentTempDir, `agent-identity-${agentId}.pkcs8`);
   const spawned = spawnLogged(
     AGENT_BIN,
     [
@@ -442,6 +476,8 @@ export function spawnAgent(
       credential,
       '--stun',
       '',
+      '--identity-path',
+      identityPath,
       ...extraArgs,
     ],
     // The caller's env overrides the fixed default, so a test can raise the
@@ -483,6 +519,89 @@ export async function waitForAgentOnline(
         `--- agent output ---\n${output}`,
     );
   }
+}
+
+/**
+ * The agent's WS2 signing public key, fetched from `GET /api/agents`.
+ *
+ * The server pushes the `identity-challenge` *and* sets `isOnline = true` in the
+ * same connect handler, so `waitForAgentOnline` can observe `isOnline === true`
+ * before the agent's `agent-identity` reply has landed and
+ * `signingPublicKey` is still null. This helper polls until the key is set —
+ * the browser needs it to build the `identity.verifyPeer` closure, and the
+ * offer proof must be verified against the key the server actually holds.
+ */
+export async function waitForAgentSigningKey(
+  token: string,
+  agentId: string,
+  timeoutMs = 20_000,
+): Promise<string> {
+  let lastSeen = 'never fetched';
+  let publicKey: string | null = null;
+  const ok = await pollUntil(
+    async () => {
+      const res = await fetch(`${BASE_URL}/api/agents`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return false;
+      const list = (await res.json()) as Array<{
+        id: string;
+        signingPublicKey: string | null;
+      }>;
+      const found = list.find((a) => a.id === agentId);
+      if (found) {
+        lastSeen = found.signingPublicKey
+          ? 'signingPublicKey set'
+          : 'signingPublicKey null';
+        if (found.signingPublicKey) {
+          publicKey = found.signingPublicKey;
+          return true;
+        }
+      } else {
+        lastSeen = 'agent absent';
+      }
+      return false;
+    },
+    timeoutMs,
+    250,
+  );
+  if (!ok) {
+    const output = agents.map((a) => a.output()).join('\n');
+    throw new Error(
+      `agent ${agentId} never published signingPublicKey (${lastSeen}).\n` +
+        `--- agent output ---\n${output}`,
+    );
+  }
+  return publicKey!;
+}
+
+/**
+ * Build the `PeerConnectionOptions['identity']` object for an offerer.
+ *
+ * `sign` signs a canonical proof message with the user's Ed25519 private key;
+ * `verifyPeer` checks the agent's answer-proof signature against the agent's
+ * public key. Both use the `@ponter/crypto` helpers so the harness exercises
+ * the same signing code the browser uses.
+ */
+export function buildPeerIdentity(
+  userSigningPrivateKey: CryptoKey,
+  userSigningPublicKeyBase64: string,
+  agentSigningPublicKeyBase64: string,
+): PeerConnectionIdentity {
+  return {
+    role: 'offerer',
+    userSigningPublicKey: userSigningPublicKeyBase64,
+    sign: (message: string) => signProof(userSigningPrivateKey, message),
+    verifyPeer: async (
+      message: string,
+      signatureBase64: string,
+    ): Promise<boolean> => {
+      const agentPub = await importSigningPublicKeyRaw(
+        agentSigningPublicKeyBase64,
+      );
+      return verifyProof(agentPub, message, signatureBase64);
+    },
+  };
 }
 
 /** Decode a frame's `payload.data` back to raw bytes. */
@@ -562,15 +681,30 @@ function connectionFailure(err: unknown): string {
 /**
  * Create and start a PeerConnection with the 'terminal' channel,
  * buffering received frames.
+ *
+ * `sessionId` must be the REAL server-assigned session id (not 'test-session')
+ * because `PeerConnection.start()` builds the offer proof's canonical message
+ * from `options.sessionId`, and the agent verifies against the session the
+ * server relayed. `identity` is optional for backward compatibility with tests
+ * that intentionally exercise the no-proof path.
  */
-export async function openTerminalPeer(transport: SignalTransport): Promise<{
+export async function openTerminalPeer(
+  transport: SignalTransport,
+  sessionId: string,
+  identity?: PeerConnectionIdentity,
+): Promise<{
   offerer: PeerConnection;
   frames: Array<DataChannelMessage<TerminalDataMessage>>;
 }> {
   const offerer = new PeerConnection(
     new WeriftAdapter({ iceServers: [] }),
     transport,
-    { sessionId: 'test-session', role: 'offerer', channelLabels: ['terminal'] },
+    {
+      sessionId,
+      role: 'offerer',
+      channelLabels: ['terminal'],
+      ...(identity ? { identity } : {}),
+    },
   );
 
   const frames: Array<DataChannelMessage<TerminalDataMessage>> = [];
@@ -589,17 +723,25 @@ export async function openTerminalPeer(transport: SignalTransport): Promise<{
   }
 }
 
-/** Connect an offerer with REST polling transport and wait for the `terminal` channel. */
+/**
+ * Connect an offerer with REST polling transport and wait for the `terminal`
+ * channel. `identity` is optional: when omitted the offer carries no proof and
+ * the agent must reject it (used by the negative identity test).
+ */
 export async function connectTerminal(
   sessionId: string,
   token: string,
+  identity?: PeerConnectionIdentity,
 ): Promise<{
   offerer: PeerConnection;
   frames: Array<DataChannelMessage<TerminalDataMessage>>;
 }> {
-  return openTerminalPeer(
-    new RESTPollingTransport({ baseUrl: BASE_URL, sessionId, token }),
-  );
+  const transport = new RESTPollingTransport({
+    baseUrl: BASE_URL,
+    sessionId,
+    token,
+  });
+  return openTerminalPeer(transport, sessionId, identity);
 }
 
 /**
@@ -645,7 +787,11 @@ export type FilesFrame = DataChannelMessage<Record<string, unknown>>;
  * only for `string` payloads; binary chunk frames (ADR-36) arrive as
  * `ArrayBuffer` and are collected in `binaryFrames`.
  */
-export async function openFilesPeer(transport: SignalTransport): Promise<{
+export async function openFilesPeer(
+  transport: SignalTransport,
+  sessionId: string,
+  identity?: PeerConnectionIdentity,
+): Promise<{
   offerer: PeerConnection;
   frames: FilesFrame[];
   binaryFrames: Uint8Array[];
@@ -654,10 +800,11 @@ export async function openFilesPeer(transport: SignalTransport): Promise<{
     new WeriftAdapter({ iceServers: [] }),
     transport,
     {
-      sessionId: 'test-session',
+      sessionId,
       role: 'offerer',
       channelLabels: ['files'],
       capabilities: ['files'],
+      ...(identity ? { identity } : {}),
     },
   );
 
@@ -1079,13 +1226,21 @@ export async function connectFilesAgent(
     data: Uint8Array,
   ) => void;
 }> {
-  const { token, agentId, credential, sessionId } = await seed({
+  const { token, agentId, credential, sessionId, userSigning } = await seed({
     capabilities: ['files'],
   });
   spawnAgent(agentId, credential, ['--files-root', rootDir]);
   await waitForAgentOnline(token, agentId);
+  const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+  const identity = buildPeerIdentity(
+    userSigning.privateKey,
+    userSigning.publicKeyRawBase64,
+    agentSigningPublicKey,
+  );
   const { offerer, frames, binaryFrames } = await openFilesPeer(
     new RESTPollingTransport({ baseUrl, sessionId, token }),
+    sessionId,
+    identity,
   );
   return {
     token,

@@ -10,6 +10,7 @@ import type {
 import { PeerConnection } from '../../src/connection';
 import { WeriftAdapter } from '../../src/adapters/werift';
 import { RESTPollingTransport } from '../../src/transport';
+import type { PeerConnectionIdentity } from '../../src/types';
 import {
   isLinux,
   BASE_URL,
@@ -18,6 +19,8 @@ import {
   seed,
   spawnAgent,
   waitForAgentOnline,
+  waitForAgentSigningKey,
+  buildPeerIdentity,
   connectTerminal,
   postJson,
   sendKeystrokes,
@@ -84,6 +87,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
   async function openDesktopPeer(
     sessionId: string,
     token: string,
+    identity?: PeerConnectionIdentity,
     { control = true }: { control?: boolean } = {},
   ): Promise<{
     offerer: PeerConnection;
@@ -107,6 +111,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
         capabilities: ['desktop'],
         media: { video: true },
         sessionId,
+        ...(identity ? { identity } : {}),
       },
     );
 
@@ -155,15 +160,22 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
     controlFrames: Array<DataChannelMessage<unknown>>;
     stats: () => DesktopStats[];
   }> {
-    const { token, agentId, credential, sessionId } = await seed({
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['desktop'],
     });
     spawnAgent(agentId, credential, ['--desktop-source', 'test']);
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
     const { offerer, packets, controlFrames } = await openDesktopPeer(
       sessionId,
       token,
+      identity,
     );
     const stats = (): DesktopStats[] =>
       controlFrames
@@ -195,16 +207,23 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
   };
 
   it('receives a real H.264 track with flowing RTP', async () => {
-    const { token, agentId, credential, sessionId } = await seed({
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['desktop'],
     });
 
     spawnAgent(agentId, credential, ['--desktop-source', 'test']);
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
     const { offerer, tracks, packets } = await openDesktopPeer(
       sessionId,
       token,
+      identity,
     );
 
     try {
@@ -247,14 +266,20 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
   // ICE silence; Week 8's carries a `control` channel, so the signal is now the
   // channel close (the same one the terminal path uses).
   it('ends the agent session on peer close and serves the next offer', async () => {
-    const { token, agentId, credential, sessionId } = await seed({
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['desktop'],
     });
 
     const agent = spawnAgent(agentId, credential, ['--desktop-source', 'test']);
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
-    const first = await openDesktopPeer(sessionId, token);
+    const first = await openDesktopPeer(sessionId, token, identity);
     await waitFor(
       () => first.packets.length > 0,
       'the first RTP packet',
@@ -292,7 +317,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       { agentId },
       token,
     );
-    const second = await openDesktopPeer(session2.id, token);
+    const second = await openDesktopPeer(session2.id, token, identity);
     try {
       await waitFor(
         () => second.packets.length > 0,
@@ -446,12 +471,21 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
   // path. The agent is spawned with the desktop flag present but is offered a
   // terminal session, and the terminal frame contract must be unchanged.
   it('leaves the terminal flow unaffected', async () => {
-    const { token, agentId, credential, sessionId } = await seed(); // default: terminal
-
+    const { token, agentId, credential, sessionId, userSigning } = await seed(); // default: terminal
     spawnAgent(agentId, credential, ['--desktop-source', 'test']);
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       sendKeystrokes(offerer, sessionId, 'echo hello\n');
@@ -467,7 +501,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
   // Review Focus #1, spec §8.3: the default build is INERT. This is the test
   // that protects the shipped behaviour.
   it('receives a desktop-input frame and drops it when the gate is closed', async () => {
-    const { token, agentId, credential, sessionId } = await seed({
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['desktop'],
     });
 
@@ -481,10 +515,17 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       },
     );
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
     const { offerer, packets, controlFrames } = await openDesktopPeer(
       sessionId,
       token,
+      identity,
     );
     try {
       await waitFor(
@@ -521,7 +562,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
   // the real seat. Asserted via `xdotool` (XTest under Xvfb), NEVER via enigo's
   // return value — a Wayland/GNOME no-op returns Ok (ADR-27 finding).
   it('injects a pointer-move when the gate is open under Xvfb', async () => {
-    const { token, agentId, credential, sessionId } = await seed({
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['desktop'],
     });
 
@@ -534,8 +575,18 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
     );
     void agent;
     await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
 
-    const { offerer, controlFrames } = await openDesktopPeer(sessionId, token);
+    const { offerer, controlFrames } = await openDesktopPeer(
+      sessionId,
+      token,
+      identity,
+    );
     try {
       await waitFor(
         () => controlFrames.some((f) => f.type === 'desktop-sources'),
