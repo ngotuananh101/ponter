@@ -1,9 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import RegisterForm from '@/components/auth/RegisterForm.vue';
 
+vi.mock('vue-sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+import { toast } from 'vue-sonner';
+
 describe('RegisterForm.vue', () => {
-  it('19. A mismatched password confirmation shows an error and does not emit', async () => {
+  it('19. A mismatched password confirmation calls toast.error and does not emit', async () => {
     const wrapper = mount(RegisterForm, {
       global: { stubs: { RouterLink: true } },
     });
@@ -12,11 +22,11 @@ describe('RegisterForm.vue', () => {
     await wrapper.find('#reg-confirm-password').setValue('password456');
     await wrapper.find('form').trigger('submit.prevent');
 
-    expect(wrapper.text()).toContain('Passwords do not match');
+    expect(toast.error).toHaveBeenCalledWith('Passwords do not match');
     expect(wrapper.emitted('submit')).toBeUndefined();
   });
 
-  it('20. A password shorter than 8 characters shows an error', async () => {
+  it('20. A password shorter than 8 characters calls toast.error', async () => {
     const wrapper = mount(RegisterForm, {
       global: { stubs: { RouterLink: true } },
     });
@@ -25,11 +35,13 @@ describe('RegisterForm.vue', () => {
     await wrapper.find('#reg-confirm-password').setValue('short');
     await wrapper.find('form').trigger('submit.prevent');
 
-    expect(wrapper.text()).toContain('Password must be at least 8 characters');
+    expect(toast.error).toHaveBeenCalledWith(
+      'Password must be at least 8 characters',
+    );
     expect(wrapper.emitted('submit')).toBeUndefined();
   });
 
-  it('21. A malformed email shows an error', async () => {
+  it('21. A malformed email calls toast.error', async () => {
     const wrapper = mount(RegisterForm, {
       global: { stubs: { RouterLink: true } },
     });
@@ -39,7 +51,9 @@ describe('RegisterForm.vue', () => {
     await wrapper.find('#reg-confirm-password').setValue('password123');
     await wrapper.find('form').trigger('submit.prevent');
 
-    expect(wrapper.text()).toContain('Please enter a valid email address');
+    expect(toast.error).toHaveBeenCalledWith(
+      'Please enter a valid email address',
+    );
     expect(wrapper.emitted('submit')).toBeUndefined();
   });
 

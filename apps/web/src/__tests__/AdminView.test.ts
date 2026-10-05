@@ -7,6 +7,16 @@ import { useAuthStore } from '@/stores/auth';
 import { ApiError } from '@ponter/api-client';
 import type { SystemStats, SystemSettings, User } from '@ponter/shared';
 
+vi.mock('vue-sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+import { toast } from 'vue-sonner';
+
 const STATS: SystemStats = {
   users: { total: 5, approved: 3, pending: 2, rejected: 0, admins: 1 },
   agents: { total: 2, online: 1, byPlatform: { linux: 1 } },
@@ -147,7 +157,7 @@ describe('AdminView', () => {
     await wrapper.find('[data-test="btn-demote-u1"]').trigger('click');
     await flushPromises();
 
-    expect(wrapper.text()).toContain('Cannot demote the last admin');
+    expect(toast.error).toHaveBeenCalledWith('Cannot demote the last admin');
   });
 
   it('retries on fetch failure', async () => {

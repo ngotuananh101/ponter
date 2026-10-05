@@ -1,15 +1,27 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import LoginForm from '@/components/auth/LoginForm.vue';
 
+vi.mock('vue-sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+import { toast } from 'vue-sonner';
+
 describe('LoginForm.vue', () => {
-  it('16. Submitting empty fields shows validation message and emits nothing', async () => {
+  it('16. Submitting empty fields calls toast.error with validation message and emits nothing', async () => {
     const wrapper = mount(LoginForm, {
       global: { stubs: { RouterLink: true } },
     });
     await wrapper.find('form').trigger('submit.prevent');
 
-    expect(wrapper.text()).toContain('Please enter both username and password');
+    expect(toast.error).toHaveBeenCalledWith(
+      'Please enter both username and password',
+    );
     expect(wrapper.emitted('submit')).toBeUndefined();
   });
 
@@ -38,7 +50,7 @@ describe('LoginForm.vue', () => {
     expect(wrapper.text()).toContain('Signing in...');
   });
 
-  it('19. Submitting whitespace-only username shows validation message and emits nothing', async () => {
+  it('19. Submitting whitespace-only username calls toast.error with validation message and emits nothing', async () => {
     const wrapper = mount(LoginForm, {
       global: { stubs: { RouterLink: true } },
     });
@@ -46,7 +58,9 @@ describe('LoginForm.vue', () => {
     await wrapper.find('#password').setValue('password123');
     await wrapper.find('form').trigger('submit.prevent');
 
-    expect(wrapper.text()).toContain('Please enter both username and password');
+    expect(toast.error).toHaveBeenCalledWith(
+      'Please enter both username and password',
+    );
     expect(wrapper.emitted('submit')).toBeUndefined();
   });
 });

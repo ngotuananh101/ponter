@@ -38,6 +38,7 @@ import type {
   UserRole,
 } from '@ponter/shared';
 import { isApiError } from '@ponter/api-client';
+import { toast } from 'vue-sonner';
 
 const authStore = useAuthStore();
 
@@ -58,15 +59,8 @@ const overviewError = ref<string | null>(null);
 const usersError = ref<string | null>(null);
 const settingsError = ref<string | null>(null);
 
-const notice = ref<string | null>(null);
-const noticeType = ref<'success' | 'error'>('success');
-
 const searchQuery = ref('');
 const statusFilter = ref<StatusFilter>('all');
-
-function clearNotice() {
-  notice.value = null;
-}
 
 // Self-protection (spec §4.2): the current admin may not act on their own row.
 const isSelf = (u: User) => u.id === authStore.user?.id;
@@ -138,22 +132,19 @@ async function handleUserAction(
   },
   successMsg: string,
 ) {
-  notice.value = null;
   try {
     await apiClient.admin.updateUser(id, payload);
-    noticeType.value = 'success';
-    notice.value = successMsg;
+    toast.success(successMsg);
     // Re-fetch affected data
     await Promise.all([loadUsers(), loadOverview()]);
   } catch (err) {
-    noticeType.value = 'error';
-    if (isApiError(err)) {
-      notice.value = err.message;
-    } else if (err instanceof Error) {
-      notice.value = err.message;
-    } else {
-      notice.value = 'An unexpected error occurred';
-    }
+    toast.error(
+      isApiError(err)
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : 'An unexpected error occurred',
+    );
   }
 }
 
@@ -189,21 +180,18 @@ function deactivate(id: string) {
 
 async function saveSettings() {
   if (!settings.value) return;
-  notice.value = null;
   try {
     await apiClient.admin.updateSettings(settings.value);
-    noticeType.value = 'success';
-    notice.value = 'Settings saved';
+    toast.success('Settings saved');
     await loadSettings();
   } catch (err) {
-    noticeType.value = 'error';
-    if (isApiError(err)) {
-      notice.value = err.message;
-    } else if (err instanceof Error) {
-      notice.value = err.message;
-    } else {
-      notice.value = 'Failed to save settings';
-    }
+    toast.error(
+      isApiError(err)
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : 'Failed to save settings',
+    );
   }
 }
 
@@ -257,20 +245,6 @@ onMounted(() => {
         </Button>
       </div>
     </div>
-
-    <!-- Notice Alert -->
-    <Alert
-      v-if="notice"
-      :variant="noticeType === 'error' ? 'destructive' : 'default'"
-      class="border-border/30"
-    >
-      <AlertDescription
-        class="text-xs font-medium flex justify-between items-center"
-      >
-        <span>{{ notice }}</span>
-        <Button variant="ghost" size="sm" @click="clearNotice">×</Button>
-      </AlertDescription>
-    </Alert>
 
     <!-- Tab Navigation -->
     <div
