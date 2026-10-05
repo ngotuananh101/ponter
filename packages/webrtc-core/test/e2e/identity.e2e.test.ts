@@ -8,7 +8,7 @@ import {
   spawnAgent,
   waitForAgentOnline,
   waitForAgentSigningKey,
-  buildPeerIdentity,
+  seedSignedTerminal,
   openTerminalPeer,
   sendKeystrokes,
   waitForTerminalOutput,
@@ -42,16 +42,7 @@ describe.skipIf(!isLinux)('cross-language WS2 peer identity', () => {
    * binding did not break the handshake.
    */
   it('completes a signed terminal handshake and echoes', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await openTerminalPeer(
       new RESTPollingTransport({ baseUrl: BASE_URL, sessionId, token }),
@@ -80,16 +71,7 @@ describe.skipIf(!isLinux)('cross-language WS2 peer identity', () => {
    * against the wrong SDP). We assert that no channel opens within a short bound.
    */
   it('refuses a tampering offer whose fingerprint does not match the SDP', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     // A transport wrapper that rewrites the offer SDP fingerprint but leaves
     // the proof (signed over the original fingerprint) unchanged.

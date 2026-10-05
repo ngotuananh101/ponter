@@ -8,11 +8,7 @@ import {
   BASE_URL,
   setupE2E,
   teardownE2E,
-  seed,
-  spawnAgent,
-  waitForAgentOnline,
-  waitForAgentSigningKey,
-  buildPeerIdentity,
+  seedSignedTerminal,
   connectTerminal,
   frameBytes,
   postJson,
@@ -43,17 +39,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   }, 60_000);
 
   it('runs real PTY output over a real DTLS/SCTP connection', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,
@@ -91,16 +77,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // languages — Rust base64, the DTLS/SCTP data channel, the werift adapter,
   // the JS decode — turns it into U+FFFD.
   it('preserves a non-UTF-8 byte (0xFF) end to end', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,
@@ -143,16 +120,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // the cross-language proof that PtyManager's keyed dispatch works over a real
   // DTLS/SCTP transport, not just in the Rust unit test.
   it('multiplexes two terminal sessions over one DataChannel', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,
@@ -255,16 +223,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // Spec §6.3: terminal-resize must change the PTY window size. Verified by
   // running `stty size` in the shell, which prints "rows cols" from the PTY.
   it('applies terminal-resize and verifies via stty size', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,
@@ -299,16 +258,8 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // `closeTab` does — dispose + peer.close) must end the agent's session, and
   // a fresh session for the same agent must then connect.
   it('frees the agent for the next connection after the peer closes', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    const agent = spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, agentId, sessionId, agent, identity } =
+      await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,
@@ -373,16 +324,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // loop, so the browser had nothing to act on and burned its full 20s
   // channel timeout with a message that named neither the refusal nor why.
   it('refuses a second concurrent session with a fast, visible failure', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, agentId, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,

@@ -95,35 +95,46 @@ describe('WS2 signal peer identity proof transport (Task 7)', () => {
     closeDb();
   });
 
-  it('POST offer with valid proof is pollable verbatim', async () => {
-    const offerRes = await app.fetch(
-      new Request('http://localhost/api/signal/offer', {
+  /** POST a signal; returns the raw Response (assert status in the test). */
+  async function postSignal(path: string, body: unknown): Promise<Response> {
+    return app.fetch(
+      new Request(`http://localhost/api/signal/${path}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          sessionId,
-          sdp: 'v=0-o=offer',
-          capabilities: ['terminal', 'files'],
-          proof: VALID_PROOF,
-        }),
+        body: JSON.stringify(body),
       }),
     );
+  }
 
-    expect(offerRes.status).toBe(201);
-
-    const pollRes = await app.fetch(
+  /** Poll the session's signals; asserts 200 and returns the typed body. */
+  async function pollSignals(): Promise<{
+    signals: Array<{ type: string; payload: Record<string, unknown> }>;
+  }> {
+    const res = await app.fetch(
       new Request(`http://localhost/api/signal/poll/${sessionId}`, {
         headers: { Authorization: `Bearer ${token}` },
       }),
     );
-
-    expect(pollRes.status).toBe(200);
-    const pollBody = (await pollRes.json()) as {
+    expect(res.status).toBe(200);
+    return (await res.json()) as {
       signals: Array<{ type: string; payload: Record<string, unknown> }>;
     };
+  }
+
+  it('POST offer with valid proof is pollable verbatim', async () => {
+    const offerRes = await postSignal('offer', {
+      sessionId,
+      sdp: 'v=0-o=offer',
+      capabilities: ['terminal', 'files'],
+      proof: VALID_PROOF,
+    });
+
+    expect(offerRes.status).toBe(201);
+
+    const pollBody = await pollSignals();
     expect(pollBody.signals).toHaveLength(1);
     expect(pollBody.signals[0]?.type).toBe('offer');
 
@@ -134,34 +145,16 @@ describe('WS2 signal peer identity proof transport (Task 7)', () => {
   });
 
   it('POST answer with valid proof is pollable verbatim', async () => {
-    const answerRes = await app.fetch(
-      new Request('http://localhost/api/signal/answer', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          sessionId,
-          sdp: 'v=0-o=answer',
-          approved: true,
-          proof: VALID_PROOF,
-        }),
-      }),
-    );
+    const answerRes = await postSignal('answer', {
+      sessionId,
+      sdp: 'v=0-o=answer',
+      approved: true,
+      proof: VALID_PROOF,
+    });
 
     expect(answerRes.status).toBe(201);
 
-    const pollRes = await app.fetch(
-      new Request(`http://localhost/api/signal/poll/${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    );
-
-    expect(pollRes.status).toBe(200);
-    const pollBody = (await pollRes.json()) as {
-      signals: Array<{ type: string; payload: Record<string, unknown> }>;
-    };
+    const pollBody = await pollSignals();
     expect(pollBody.signals).toHaveLength(1);
     expect(pollBody.signals[0]?.type).toBe('answer');
 
@@ -172,33 +165,15 @@ describe('WS2 signal peer identity proof transport (Task 7)', () => {
   });
 
   it('POST offer WITHOUT proof is backward compatible (no proof in poll)', async () => {
-    const offerRes = await app.fetch(
-      new Request('http://localhost/api/signal/offer', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          sessionId,
-          sdp: 'v=0-o=offer',
-          capabilities: ['terminal'],
-        }),
-      }),
-    );
+    const offerRes = await postSignal('offer', {
+      sessionId,
+      sdp: 'v=0-o=offer',
+      capabilities: ['terminal'],
+    });
 
     expect(offerRes.status).toBe(201);
 
-    const pollRes = await app.fetch(
-      new Request(`http://localhost/api/signal/poll/${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    );
-
-    expect(pollRes.status).toBe(200);
-    const pollBody = (await pollRes.json()) as {
-      signals: Array<{ type: string; payload: Record<string, unknown> }>;
-    };
+    const pollBody = await pollSignals();
     expect(pollBody.signals).toHaveLength(1);
     expect(pollBody.signals[0]?.type).toBe('offer');
     expect(pollBody.signals[0]?.payload.proof).toBeUndefined();
@@ -210,34 +185,16 @@ describe('WS2 signal peer identity proof transport (Task 7)', () => {
       fingerprint: 'AA:BB',
     };
 
-    const offerRes = await app.fetch(
-      new Request('http://localhost/api/signal/offer', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          sessionId,
-          sdp: 'v=0-o=offer',
-          capabilities: ['terminal'],
-          proof: malformedProof,
-        }),
-      }),
-    );
+    const offerRes = await postSignal('offer', {
+      sessionId,
+      sdp: 'v=0-o=offer',
+      capabilities: ['terminal'],
+      proof: malformedProof,
+    });
 
     expect(offerRes.status).toBe(201);
 
-    const pollRes = await app.fetch(
-      new Request(`http://localhost/api/signal/poll/${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    );
-
-    expect(pollRes.status).toBe(200);
-    const pollBody = (await pollRes.json()) as {
-      signals: Array<{ type: string; payload: Record<string, unknown> }>;
-    };
+    const pollBody = await pollSignals();
     expect(pollBody.signals).toHaveLength(1);
     expect(pollBody.signals[0]?.type).toBe('offer');
     // Malformed proof (empty signature) is dropped — treated as absent.
@@ -249,34 +206,16 @@ describe('WS2 signal peer identity proof transport (Task 7)', () => {
       signature: 'aGVsbG8=',
     };
 
-    const offerRes = await app.fetch(
-      new Request('http://localhost/api/signal/offer', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          sessionId,
-          sdp: 'v=0-o=offer',
-          capabilities: [],
-          proof: malformedProof,
-        }),
-      }),
-    );
+    const offerRes = await postSignal('offer', {
+      sessionId,
+      sdp: 'v=0-o=offer',
+      capabilities: [],
+      proof: malformedProof,
+    });
 
     expect(offerRes.status).toBe(201);
 
-    const pollRes = await app.fetch(
-      new Request(`http://localhost/api/signal/poll/${sessionId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    );
-
-    expect(pollRes.status).toBe(200);
-    const pollBody = (await pollRes.json()) as {
-      signals: Array<{ type: string; payload: Record<string, unknown> }>;
-    };
+    const pollBody = await pollSignals();
     expect(pollBody.signals[0]?.payload.proof).toBeUndefined();
   });
 });

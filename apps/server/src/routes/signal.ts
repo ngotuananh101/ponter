@@ -12,6 +12,29 @@ const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
 
 /**
+ * Load a session owned by `userId`, or throw the standard 404/409. The server
+ * is a pure relay: it enforces ownership and an active status, nothing else.
+ */
+async function loadActiveSession(
+  db: AppContext['Variables']['db'],
+  sessionId: string,
+  userId: string,
+) {
+  const session = await db
+    .select()
+    .from(sessions)
+    .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
+    .get();
+  if (!session) {
+    throw new AppError('Session not found', 404, 'NOT_FOUND');
+  }
+  if (session.status !== 'pending' && session.status !== 'active') {
+    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
+  }
+  return session;
+}
+
+/**
  * The server is a pure relay for IdentityProof (spec §1): it validates the
  * SHAPE only — both `signature` and `fingerprint` must be non-empty strings —
  * and never verifies the signature. A malformed proof is dropped (returns
@@ -51,19 +74,7 @@ router.post('/offer', async (c) => {
   }
 
   const db = c.get('db');
-  const session = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.id, body.sessionId), eq(sessions.userId, user.id)))
-    .get();
-
-  if (!session) {
-    throw new AppError('Session not found', 404, 'NOT_FOUND');
-  }
-
-  if (session.status !== 'pending' && session.status !== 'active') {
-    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
-  }
+  const session = await loadActiveSession(db, body.sessionId, user.id);
 
   // The server is a pure relay for IdentityProof (spec §1): it validates the
   // SHAPE only (both fields are non-empty strings) and never verifies the
@@ -142,19 +153,7 @@ router.post('/answer', async (c) => {
   }
 
   const db = c.get('db');
-  const session = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.id, body.sessionId), eq(sessions.userId, user.id)))
-    .get();
-
-  if (!session) {
-    throw new AppError('Session not found', 404, 'NOT_FOUND');
-  }
-
-  if (session.status !== 'pending' && session.status !== 'active') {
-    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
-  }
+  const session = await loadActiveSession(db, body.sessionId, user.id);
 
   // Shape-only validation for IdentityProof (see POST /offer comment).
   const proof = normalizeProof(body.proof);
@@ -212,19 +211,7 @@ router.post('/ice-candidate', async (c) => {
   }
 
   const db = c.get('db');
-  const session = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.id, body.sessionId), eq(sessions.userId, user.id)))
-    .get();
-
-  if (!session) {
-    throw new AppError('Session not found', 404, 'NOT_FOUND');
-  }
-
-  if (session.status !== 'pending' && session.status !== 'active') {
-    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
-  }
+  const session = await loadActiveSession(db, body.sessionId, user.id);
 
   const message: SignalMessage = {
     type: 'ice-candidate',

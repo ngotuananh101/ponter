@@ -16,11 +16,7 @@ import {
   startServerProcess,
   stopServerProcess,
   waitForPortFree,
-  seed,
-  spawnAgent,
-  waitForAgentOnline,
-  waitForAgentSigningKey,
-  buildPeerIdentity,
+  seedSignedTerminal,
   openTerminalPeer,
   sendKeystrokes,
   waitForTerminalOutput,
@@ -129,16 +125,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // the upgrade, the subscribe/replay handshake and the live push work against
   // the real server process.
   it('runs real PTY output with signaling over the browser WebSocket', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
     const { offerer, frames } = await connectTerminal(
       sessionId,
@@ -182,16 +169,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // The Rust agent's own reconnect loop (200ms->2s backoff) is exercised while
   // the server is down.
   it('reconnects its signaling socket and delivers signals after a server restart', async () => {
-    const { token, agentId, credential, sessionId, userSigning } = await seed();
-
-    const agent = spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-    const identity = buildPeerIdentity(
-      userSigning.privateKey,
-      userSigning.publicKeyRawBase64,
-      agentSigningPublicKey,
-    );
+    const { token, sessionId, agent, identity } = await seedSignedTerminal();
 
     // A generous ladder: the server is down for the whole
     // kill -> port-free -> tsx start -> /health cycle, which is several seconds
@@ -288,11 +266,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // is the end-to-end proof that the transport's error frame arrives without a
   // poll: the REST transport would only discover it on the next poll tick.
   it('receives SESSION_TERMINATED on the socket when the session is deleted', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-    await waitForAgentSigningKey(token, agentId);
+    const { token, sessionId } = await seedSignedTerminal();
 
     const transport = wsTransport(sessionId, token);
     const errors: string[] = [];

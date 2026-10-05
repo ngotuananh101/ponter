@@ -1202,6 +1202,48 @@ export async function drainDownload(
 }
 
 /**
+ * Seed a user/agent/session, spawn the agent, wait for it to come online and
+ * publish its signing key, and build the offerer identity — the block every
+ * signed-terminal e2e test opens with.
+ */
+export async function seedSignedTerminal(
+  opts: {
+    capabilities?: string[];
+    extraArgs?: string[];
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<{
+  token: string;
+  agentId: string;
+  credential: string;
+  sessionId: string;
+  userSigning: UserSigningKey;
+  agent: { child: ChildProcess; output: () => string };
+  identity: PeerConnectionIdentity;
+}> {
+  const seeded = await seed(
+    opts.capabilities ? { capabilities: opts.capabilities } : undefined,
+  );
+  const agent = spawnAgent(
+    seeded.agentId,
+    seeded.credential,
+    opts.extraArgs ?? [],
+    opts.env ?? {},
+  );
+  await waitForAgentOnline(seeded.token, seeded.agentId);
+  const agentSigningPublicKey = await waitForAgentSigningKey(
+    seeded.token,
+    seeded.agentId,
+  );
+  const identity = buildPeerIdentity(
+    seeded.userSigning.privateKey,
+    seeded.userSigning.publicKeyRawBase64,
+    agentSigningPublicKey,
+  );
+  return { ...seeded, agent, identity };
+}
+
+/**
  * Register + spawn an agent whose files gate is open on `rootDir`.
  *
  * Shared by files.e2e.test.ts and files-advanced.e2e.test.ts to eliminate the
@@ -1226,17 +1268,10 @@ export async function connectFilesAgent(
     data: Uint8Array,
   ) => void;
 }> {
-  const { token, agentId, credential, sessionId, userSigning } = await seed({
+  const { token, agentId, sessionId, identity } = await seedSignedTerminal({
     capabilities: ['files'],
+    extraArgs: ['--files-root', rootDir],
   });
-  spawnAgent(agentId, credential, ['--files-root', rootDir]);
-  await waitForAgentOnline(token, agentId);
-  const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
-  const identity = buildPeerIdentity(
-    userSigning.privateKey,
-    userSigning.publicKeyRawBase64,
-    agentSigningPublicKey,
-  );
   const { offerer, frames, binaryFrames } = await openFilesPeer(
     new RESTPollingTransport({ baseUrl, sessionId, token }),
     sessionId,

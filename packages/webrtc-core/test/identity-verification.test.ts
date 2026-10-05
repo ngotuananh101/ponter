@@ -76,6 +76,49 @@ describe('identity verification (WS2 peer identity)', () => {
   // A second keypair for case 5 (different key rejected).
   const impostorKey = generateKeyPairSync('ed25519');
 
+  // Cases 2–5 share this setup: a ScriptedPeer offering SDP_A, a stub
+  // transport, and an identity whose verifyPeer checks the agent's key.
+  function answererCase(): {
+    peer: ScriptedPeer;
+    deliver: ReturnType<typeof stubTransport>['deliver'];
+    pc: PeerConnection;
+  } {
+    const peer = new ScriptedPeer();
+    peer.createOffer = async () => ({ type: 'offer', sdp: SDP_A });
+    const { transport, deliver } = stubTransport();
+    const verifyPeer = async (msg: string, sigB64: string): Promise<boolean> =>
+      verifyMessage(agentKey.publicKey, msg, sigB64);
+    const pc = new PeerConnection(peer, transport, {
+      role: 'offerer',
+      channelLabels: ['terminal'],
+      sessionId: SESSION_ID,
+      identity: { role: 'offerer', sign: async () => '', verifyPeer },
+    });
+    return { peer, deliver, pc };
+  }
+
+  /** Build the agent's answer proof over `sdp` with the given private key. */
+  function answerProof(privateKey: KeyObject, sdp: string) {
+    const msg = answerProofMessage(SESSION_ID, sdp);
+    return {
+      signature: signMessage(privateKey, msg),
+      fingerprint: FP_A.toUpperCase(),
+    };
+  }
+
+  /** The shared refusal assertion for cases 3–5. */
+  async function expectAnswerRefused(
+    peer: ScriptedPeer,
+    pc: PeerConnection,
+  ): Promise<void> {
+    expect(peer.setRemoteCalls.filter((d) => d.type === 'answer')).toHaveLength(
+      0,
+    );
+    await expect(pc.waitForChannel('terminal', 500)).rejects.toThrow(
+      /peer-identity verification/,
+    );
+  }
+
   it('1. offerer with a valid identity signs its offer with a proof', async () => {
     const peer = new ScriptedPeer();
     // Override createOffer to return a real SDP with a fingerprint.
@@ -126,24 +169,10 @@ describe('identity verification (WS2 peer identity)', () => {
   });
 
   it('2. correct answer proof is accepted and setRemoteDescription runs', async () => {
-    const peer = new ScriptedPeer();
-    peer.createOffer = async () => ({ type: 'offer', sdp: SDP_A });
-    const { transport, deliver } = stubTransport();
+    const { peer, deliver, pc } = answererCase();
 
-    const verifyPeer = async (msg: string, sigB64: string): Promise<boolean> =>
-      verifyMessage(agentKey.publicKey, msg, sigB64);
-
-    const pc = new PeerConnection(peer, transport, {
-      role: 'offerer',
-      channelLabels: ['terminal'],
-      sessionId: SESSION_ID,
-      identity: { role: 'offerer', sign: async () => '', verifyPeer },
-    });
-
-    /** Agent signs the answer proof with its private key. */
-    const msg = answerProofMessage(SESSION_ID, SDP_A);
-    const sig = signMessage(agentKey.privateKey, msg);
-    const proof = { signature: sig, fingerprint: FP_A.toUpperCase() };
+    // Agent signs the answer proof with its private key.
+    const proof = answerProof(agentKey.privateKey, SDP_A);
 
     deliver({
       type: 'answer',
@@ -154,28 +183,15 @@ describe('identity verification (WS2 peer identity)', () => {
     expect(peer.setRemoteCalls.filter((d) => d.type === 'answer')).toHaveLength(
       1,
     );
+
     await pc.close();
   });
 
   it('3. tampered SDP in answer proof is rejected before setRemoteDescription', async () => {
-    const peer = new ScriptedPeer();
-    peer.createOffer = async () => ({ type: 'offer', sdp: SDP_A });
-    const { transport, deliver } = stubTransport();
-
-    const verifyPeer = async (msg: string, sigB64: string): Promise<boolean> =>
-      verifyMessage(agentKey.publicKey, msg, sigB64);
-
-    const pc = new PeerConnection(peer, transport, {
-      role: 'offerer',
-      channelLabels: ['terminal'],
-      sessionId: SESSION_ID,
-      identity: { role: 'offerer', sign: async () => '', verifyPeer },
-    });
+    const { peer, deliver, pc } = answererCase();
 
     // Proof signed over SDP_A, but deliver SDP_B (different fingerprint).
-    const msg = answerProofMessage(SESSION_ID, SDP_A);
-    const sig = signMessage(agentKey.privateKey, msg);
-    const proof = { signature: sig, fingerprint: FP_A.toUpperCase() };
+    const proof = answerProof(agentKey.privateKey, SDP_A);
 
     deliver({
       type: 'answer',
@@ -183,29 +199,12 @@ describe('identity verification (WS2 peer identity)', () => {
     });
     await sleep(20);
 
-    expect(peer.setRemoteCalls.filter((d) => d.type === 'answer')).toHaveLength(
-      0,
-    );
-    await expect(pc.waitForChannel('terminal', 500)).rejects.toThrow(
-      /peer-identity verification/,
-    );
+    await expectAnswerRefused(peer, pc);
     await pc.close();
   });
 
   it('4. answer with no proof is rejected (fail-closed)', async () => {
-    const peer = new ScriptedPeer();
-    peer.createOffer = async () => ({ type: 'offer', sdp: SDP_A });
-    const { transport, deliver } = stubTransport();
-
-    const verifyPeer = async (msg: string, sigB64: string): Promise<boolean> =>
-      verifyMessage(agentKey.publicKey, msg, sigB64);
-
-    const pc = new PeerConnection(peer, transport, {
-      role: 'offerer',
-      channelLabels: ['terminal'],
-      sessionId: SESSION_ID,
-      identity: { role: 'offerer', sign: async () => '', verifyPeer },
-    });
+    const { peer, deliver, pc } = answererCase();
 
     deliver({
       type: 'answer',
@@ -213,34 +212,15 @@ describe('identity verification (WS2 peer identity)', () => {
     });
     await sleep(20);
 
-    expect(peer.setRemoteCalls.filter((d) => d.type === 'answer')).toHaveLength(
-      0,
-    );
-    await expect(pc.waitForChannel('terminal', 500)).rejects.toThrow(
-      /peer-identity verification/,
-    );
+    await expectAnswerRefused(peer, pc);
     await pc.close();
   });
 
   it('5. answer signed by a different key is rejected', async () => {
-    const peer = new ScriptedPeer();
-    peer.createOffer = async () => ({ type: 'offer', sdp: SDP_A });
-    const { transport, deliver } = stubTransport();
-
-    const verifyPeer = async (msg: string, sigB64: string): Promise<boolean> =>
-      verifyMessage(agentKey.publicKey, msg, sigB64);
-
-    const pc = new PeerConnection(peer, transport, {
-      role: 'offerer',
-      channelLabels: ['terminal'],
-      sessionId: SESSION_ID,
-      identity: { role: 'offerer', sign: async () => '', verifyPeer },
-    });
+    const { peer, deliver, pc } = answererCase();
 
     // Sign with the impostor key instead of the agent key.
-    const msg = answerProofMessage(SESSION_ID, SDP_A);
-    const sig = signMessage(impostorKey.privateKey, msg);
-    const proof = { signature: sig, fingerprint: FP_A.toUpperCase() };
+    const proof = answerProof(impostorKey.privateKey, SDP_A);
 
     deliver({
       type: 'answer',
@@ -248,12 +228,7 @@ describe('identity verification (WS2 peer identity)', () => {
     });
     await sleep(20);
 
-    expect(peer.setRemoteCalls.filter((d) => d.type === 'answer')).toHaveLength(
-      0,
-    );
-    await expect(pc.waitForChannel('terminal', 500)).rejects.toThrow(
-      /peer-identity verification/,
-    );
+    await expectAnswerRefused(peer, pc);
     await pc.close();
   });
 
