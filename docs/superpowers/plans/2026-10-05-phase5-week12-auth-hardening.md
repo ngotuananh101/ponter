@@ -1343,10 +1343,10 @@ git commit -m "fix(server): enforce revocation on WS upgrade and live sockets (M
 ### Task 6: Remove the false E2EE/Zero-Trust UI labels (§4.1, gate G2)
 
 **Files:**
-- Modify: `apps/web/src/components/layout/AppHeader.vue:132`
+- Modify: `apps/web/src/components/layout/AppHeader.vue:132` and `:181`
 - Modify: `apps/web/src/components/auth/RegisterForm.vue:87`
 - Modify: `apps/web/src/components/auth/LoginForm.vue:55`
-- Modify: `apps/web/src/views/DashboardView.vue:269`
+- Modify: `apps/web/src/views/DashboardView.vue:269` and `:566`
 - Test: `apps/web/src/__tests__/e2ee-claims.test.ts`
 
 **Interfaces:**
@@ -1366,7 +1366,8 @@ const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), 'utf8');
 
 // Exit gate G2: no UI text may assert E2EE or Zero-Trust that the code does
-// not implement. These four labels did, before Phase 5 lands the feature.
+// not implement. These labels did, before Phase 5 lands the feature. The
+// match is case-insensitive so a badge reading `ZERO-TRUST` is caught too.
 const FILES = [
   'components/layout/AppHeader.vue',
   'components/auth/RegisterForm.vue',
@@ -1378,8 +1379,8 @@ describe('no false E2EE claims in the UI', () => {
   for (const file of FILES) {
     it(`${file} does not claim E2EE or Zero-Trust`, () => {
       const source = read(file);
-      expect(source).not.toMatch(/E2EE/);
-      expect(source).not.toMatch(/Zero-Trust/);
+      expect(source).not.toMatch(/e2ee/i);
+      expect(source).not.toMatch(/zero-trust/i);
     });
   }
 });
@@ -1390,12 +1391,19 @@ describe('no false E2EE claims in the UI', () => {
 Run: `pnpm --filter @ponter/web test -- e2ee-claims`
 Expected: FAIL on all four files.
 
-- [ ] **Step 3: Replace the four labels**
+- [ ] **Step 3: Replace the false labels**
 
 In `apps/web/src/components/layout/AppHeader.vue` line 132, replace `<span>E2EE Ready</span>` with:
 
 ```html
           <span>DTLS Secured</span>
+```
+
+In `apps/web/src/components/layout/AppHeader.vue` line 181, replace the `ZERO-TRUST` badge
+label (the dropdown "Security Tier" value) with:
+
+```html
+                  TOKEN AUTH
 ```
 
 In `apps/web/src/components/auth/RegisterForm.vue` line 87, replace `<span>E2EE Keygen</span>` with:
@@ -1414,6 +1422,13 @@ In `apps/web/src/views/DashboardView.vue` line 269, replace `<span>Zero-Trust E2
 
 ```html
               <span>DTLS-Secured Transport</span>
+```
+
+In `apps/web/src/views/DashboardView.vue` line 566, reword the comment so it does not itself
+assert Zero-Trust:
+
+```html
+        <!-- DTLS-Secured Transport Insight Card -->
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
