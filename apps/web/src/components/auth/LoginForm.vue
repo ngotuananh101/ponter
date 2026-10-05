@@ -52,7 +52,7 @@ function handleSubmit() {
           class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary text-muted-foreground text-xs font-mono"
         >
           <ShieldCheck class="w-3.5 h-3.5 text-emerald-500" />
-          <span>Zero-Trust Auth</span>
+          <span>Token Auth</span>
         </div>
       </div>
       <div>

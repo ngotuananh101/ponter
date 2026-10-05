@@ -84,7 +84,7 @@ function handleSubmit() {
           class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary text-muted-foreground text-xs font-mono"
         >
           <Shield class="w-3.5 h-3.5 text-primary" />
-          <span>E2EE Keygen</span>
+          <span>Password-Derived Keys</span>
         </div>
       </div>
       <div>

@@ -129,7 +129,7 @@ async function handleLogout() {
           <span
             class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"
           ></span>
-          <span>E2EE Ready</span>
+          <span>DTLS Secured</span>
         </div>
 
         <ThemeToggle />
@@ -178,7 +178,7 @@ async function handleLogout() {
                   variant="secondary"
                   class="font-mono text-[10px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-none"
                 >
-                  ZERO-TRUST
+                  TOKEN AUTH
                 </Badge>
               </div>
               <DropdownMenuSeparator />

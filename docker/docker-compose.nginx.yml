@@ -26,7 +26,7 @@ services:
       - DATABASE_PATH=/app/data/remote.db
       - JWT_SECRET=${JWT_SECRET}
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET}
-      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - CORS_ORIGIN=${CORS_ORIGIN:?CORS_ORIGIN must be set to an explicit allowlist}
       - TURN_SECRET=${TURN_SECRET}
       # TURN_URL/STUN_URL are overridable from .env (e.g. a raw IP when DNS is
       # not resolvable from every client network); they fall back to the domain.
