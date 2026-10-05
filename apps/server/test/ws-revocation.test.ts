@@ -157,3 +157,70 @@ describe('revocation closes live sockets via route call sites', () => {
     expect(await closed).toBe(4401);
   });
 });
+
+describe('revocation blocks WebSocket upgrade (M10)', () => {
+  it('rejects upgrade with 401 when user deactivated after minting ticket', async () => {
+    const { app, server: s } = createSignalingServer();
+    server = s;
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+    const port = (s.address() as AddressInfo).port;
+
+    // alice is first user → approved admin
+    const alice = await registerAndTicket(app, 'alice');
+    // bob is second user → approved via E2E_AUTO_APPROVE_USERS=true, gets a ticket
+    const bob = await registerAndTicket(app, 'bob');
+
+    // Deactivate bob via the real admin route before he ever connects.
+    const deactivateRes = await app.fetch(
+      new Request(`http://localhost/api/admin/users/${bob.userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${alice.token}`,
+        },
+        body: JSON.stringify({ isActive: false }),
+      }),
+    );
+    expect(deactivateRes.status).toBe(200);
+
+    // Now attempt the upgrade with bob's (still unconsumed) ticket.
+    const ws = connect(port, bob.ticket);
+
+    let opened = false;
+    let rejected = false;
+    let statusCode: number | undefined;
+
+    ws.on('open', () => {
+      opened = true;
+    });
+    ws.on('unexpected-response', (_req, res) => {
+      rejected = true;
+      statusCode = res.statusCode;
+      ws.close();
+    });
+    ws.on('error', () => {
+      rejected = true;
+    });
+
+    // Race 'open' vs 'error'/'unexpected-response' with a short timeout.
+    const outcome = await Promise.race([
+      new Promise<'opened'>((r) => ws.once('open', () => r('opened'))),
+      new Promise<'rejected' | 'timeout'>((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), 1000);
+        ws.on('unexpected-response', () => {
+          clearTimeout(timer);
+          resolve('rejected');
+        });
+        ws.on('error', () => {
+          clearTimeout(timer);
+          resolve('rejected');
+        });
+      }),
+    ]);
+
+    expect(opened).toBe(false);
+    expect(outcome).toBe('rejected');
+    expect(rejected).toBe(true);
+    expect(statusCode).toBe(401);
+  });
+});
