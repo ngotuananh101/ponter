@@ -23,7 +23,11 @@ async function registerAndTicket(
     new Request('http://localhost/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password: 'Password123!', publicKey: 'pk' }),
+      body: JSON.stringify({
+        username,
+        password: 'Password123!',
+        publicKey: 'pk',
+      }),
     }),
   );
   const { token, user } = (await reg.json()) as {
@@ -70,7 +74,9 @@ describe('revocation closes live sockets', () => {
     await new Promise<void>((r) => ws.once('open', () => r()));
     expect(browserConnections.get(userId)?.size).toBe(1);
 
-    const closed = new Promise<number>((r) => ws.once('close', (code) => r(code)));
+    const closed = new Promise<number>((r) =>
+      ws.once('close', (code) => r(code)),
+    );
     closeUserSockets(userId, 4401, 'revoked');
     expect(await closed).toBe(4401);
   });
@@ -89,7 +95,9 @@ describe('revocation closes live sockets via route call sites', () => {
     expect(browserConnections.get(userId)?.size).toBe(1);
 
     // POST /api/auth/logout with alice's access token
-    const closed = new Promise<number>((r) => ws.once('close', (code) => r(code)));
+    const closed = new Promise<number>((r) =>
+      ws.once('close', (code) => r(code)),
+    );
     const logoutRes = await app.fetch(
       new Request('http://localhost/api/auth/logout', {
         method: 'POST',
@@ -114,7 +122,9 @@ describe('revocation closes live sockets via route call sites', () => {
     await new Promise<void>((r) => ws.once('open', () => r()));
     expect(browserConnections.get(bob.userId)?.size).toBe(1);
 
-    const closed = new Promise<number>((r) => ws.once('close', (code) => r(code)));
+    const closed = new Promise<number>((r) =>
+      ws.once('close', (code) => r(code)),
+    );
     const res = await app.fetch(
       new Request(`http://localhost/api/admin/users/${bob.userId}`, {
         method: 'PATCH',
@@ -142,7 +152,9 @@ describe('revocation closes live sockets via route call sites', () => {
     await new Promise<void>((r) => ws.once('open', () => r()));
     expect(browserConnections.get(bob.userId)?.size).toBe(1);
 
-    const closed = new Promise<number>((r) => ws.once('close', (code) => r(code)));
+    const closed = new Promise<number>((r) =>
+      ws.once('close', (code) => r(code)),
+    );
     const res = await app.fetch(
       new Request(`http://localhost/api/admin/users/${bob.userId}`, {
         method: 'PATCH',

@@ -59,7 +59,9 @@ describe('login rate limiting', () => {
     const app = createApp();
     await register(app, 'carol');
     for (let i = 0; i < 4; i++) await login(app, 'carol', 'wrong', '10.0.0.3');
-    expect((await login(app, 'carol', 'Password123!', '10.0.0.3')).status).toBe(200);
+    expect((await login(app, 'carol', 'Password123!', '10.0.0.3')).status).toBe(
+      200,
+    );
     for (let i = 0; i < 4; i++) await login(app, 'carol', 'wrong', '10.0.0.3');
     expect((await login(app, 'carol', 'wrong', '10.0.0.3')).status).toBe(401);
   });
@@ -105,7 +107,9 @@ describe('login rate limiting', () => {
     // Concurrent burst of NEW keys from one IP (distinct usernames => distinct keys).
     const N = 200;
     const results = await Promise.all(
-      Array.from({ length: N }, (_, i) => login(app, `burst-${i}`, 'wrong', '10.0.0.99')),
+      Array.from({ length: N }, (_, i) =>
+        login(app, `burst-${i}`, 'wrong', '10.0.0.99'),
+      ),
     );
     const admitted = results.filter((r) => r.status === 401).length;
     const rejected = results.filter((r) => r.status === 429).length;

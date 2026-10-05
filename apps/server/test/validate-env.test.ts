@@ -17,9 +17,9 @@ describe('validateEnv', () => {
   });
 
   it('throws when JWT_SECRET is missing', () => {
-    expect(() =>
-      validateEnv({ REFRESH_TOKEN_SECRET: REFRESH }),
-    ).toThrow(/JWT_SECRET/);
+    expect(() => validateEnv({ REFRESH_TOKEN_SECRET: REFRESH })).toThrow(
+      /JWT_SECRET/,
+    );
   });
 
   it('throws when a secret is shorter than the minimum', () => {

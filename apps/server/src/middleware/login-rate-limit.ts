@@ -153,13 +153,18 @@ export function createLoginRateLimiter(
  * meaningless in that topology. "Supported topologies" means behind the bundled
  * proxy.
  */
-function clientIp(c: { req: { header: (name: string) => string | undefined } }): string {
+function clientIp(c: {
+  req: { header: (name: string) => string | undefined };
+}): string {
   const forwarded = c.req.header('x-forwarded-for');
   if (forwarded) {
     // Split on commas, trim whitespace, and take the LAST non-empty entry.
     // Every proxy appends the connecting hop's address on the right; the client
     // can only prepend forged values on the left.
-    const parts = forwarded.split(',').map((s) => s.trim()).filter(Boolean);
+    const parts = forwarded
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (parts.length > 0) return parts[parts.length - 1]!;
   }
   return c.req.header('x-real-ip') ?? 'unknown';
@@ -172,9 +177,7 @@ function clientIp(c: { req: { header: (name: string) => string | undefined } }):
  * once, so this clones the underlying `Request` before parsing. A body that is
  * absent or not JSON yields `''`, which still participates in the key.
  */
-async function peekUsername(c: {
-  req: { raw: Request };
-}): Promise<string> {
+async function peekUsername(c: { req: { raw: Request } }): Promise<string> {
   try {
     const body = (await c.req.raw.clone().json()) as { username?: unknown };
     return typeof body?.username === 'string'

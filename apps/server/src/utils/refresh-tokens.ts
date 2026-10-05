@@ -39,7 +39,11 @@ export async function storeRefreshToken(
 }
 
 export async function findRefreshToken(db: Database, jti: string) {
-  return db.select().from(refreshTokens).where(eq(refreshTokens.jti, jti)).get();
+  return db
+    .select()
+    .from(refreshTokens)
+    .where(eq(refreshTokens.jti, jti))
+    .get();
 }
 
 /**
@@ -75,6 +79,9 @@ export async function claimRefreshToken(
  * family is revoked, no token in it resolves to a row, so `findRefreshToken`
  * returns nothing and every one of them is rejected as invalid.
  */
-export async function revokeFamily(db: Database, familyId: string): Promise<void> {
+export async function revokeFamily(
+  db: Database,
+  familyId: string,
+): Promise<void> {
   await db.delete(refreshTokens).where(eq(refreshTokens.familyId, familyId));
 }

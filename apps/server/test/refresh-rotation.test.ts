@@ -11,18 +11,28 @@ async function register(app: ReturnType<typeof createApp>, username: string) {
   const res = await app.request('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password: 'Password123!', publicKey: 'pk' }),
+    body: JSON.stringify({
+      username,
+      password: 'Password123!',
+      publicKey: 'pk',
+    }),
   });
   return (await res.json()) as { token: string; refreshToken: string };
 }
 
-async function refresh(app: ReturnType<typeof createApp>, refreshToken: string) {
+async function refresh(
+  app: ReturnType<typeof createApp>,
+  refreshToken: string,
+) {
   const res = await app.request('/api/auth/refresh', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
   });
-  return { status: res.status, body: (await res.json()) as Record<string, string> };
+  return {
+    status: res.status,
+    body: (await res.json()) as Record<string, string>,
+  };
 }
 
 beforeEach(() => {
@@ -73,15 +83,25 @@ describe('refresh token rotation', () => {
     const payloadJson = JSON.parse(
       atob(refreshToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')),
     ) as { jti: string; fam: string; exp: number; sub: string };
-    const first = await claimRefreshToken(db, payloadJson.jti, {
-      token: 'replacement-1',
-      expiresAt: payloadJson.exp,
-    }, Date.now());
+    const first = await claimRefreshToken(
+      db,
+      payloadJson.jti,
+      {
+        token: 'replacement-1',
+        expiresAt: payloadJson.exp,
+      },
+      Date.now(),
+    );
     expect(first).toBe(true);
-    const second = await claimRefreshToken(db, payloadJson.jti, {
-      token: 'replacement-2',
-      expiresAt: payloadJson.exp,
-    }, Date.now());
+    const second = await claimRefreshToken(
+      db,
+      payloadJson.jti,
+      {
+        token: 'replacement-2',
+        expiresAt: payloadJson.exp,
+      },
+      Date.now(),
+    );
     expect(second).toBe(false);
   });
 });
