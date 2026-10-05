@@ -45,6 +45,8 @@ pub struct SignalOffer {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub proof: Option<IdentityProof>,
+    #[serde(default)]
+    pub user_signing_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -497,7 +499,9 @@ mod tests {
     fn carries_an_identity_proof() {
         let raw = r#"{"type":"answer","data":{"sessionId":"s1","sdp":"v=0","approved":true,"proof":{"signature":"c2ln","fingerprint":"AB:CD"}}}"#;
         let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
-        let SignalMessage::Answer(a) = parsed else { panic!("expected answer") };
+        let SignalMessage::Answer(a) = parsed else {
+            panic!("expected answer")
+        };
         assert_eq!(a.proof.unwrap().fingerprint, "AB:CD");
     }
 
@@ -505,8 +509,24 @@ mod tests {
     fn proof_is_optional_for_backward_shapes() {
         let raw = r#"{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":[]}}"#;
         let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
-        let SignalMessage::Offer(o) = parsed else { panic!("expected offer") };
+        let SignalMessage::Offer(o) = parsed else {
+            panic!("expected offer")
+        };
         assert!(o.proof.is_none());
+    }
+
+    #[test]
+    fn offer_with_user_signing_key_round_trips() {
+        let raw = r#"{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"],"proof":{"signature":"c2ln","fingerprint":"AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"},"userSigningPublicKey":"dGVzdA=="}}"#;
+        let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
+        let SignalMessage::Offer(o) = &parsed else {
+            panic!("expected offer")
+        };
+        assert_eq!(o.user_signing_public_key.as_deref(), Some("dGVzdA=="));
+        // Re-serialization must reproduce the camelCase key.
+        let re = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(re["data"]["userSigningPublicKey"], "dGVzdA==");
+        assert!(re["data"].get("user_signing_public_key").is_none());
     }
 
     #[test]

@@ -50,6 +50,7 @@ use webrtc::media_stream::Track;
 #[cfg(not(target_env = "musl"))]
 use webrtc::rtp_transceiver::RtpSender;
 
+use crate::identity;
 use crate::signal::{IceCandidateSignal, IceServerEntry, SignalAnswer, SignalMessage, SignalOffer};
 
 /// The one channel label this agent accepts. ADR-09: exact label, nothing else.
@@ -239,8 +240,9 @@ pub async fn send_approved_answer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
+    identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_answer(peer, offer, true, outbound).await
+    send_answer(peer, offer, true, outbound, identity).await
 }
 
 /// Answer a desktop offer with `approved: true` and the SDP just built.
@@ -253,8 +255,9 @@ pub async fn send_desktop_answer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
+    identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_approved_answer(peer, offer, outbound).await
+    send_approved_answer(peer, offer, outbound, identity).await
 }
 
 /// Picks the payload type the desktop stream must be stamped with.
@@ -739,9 +742,10 @@ pub async fn answer_offer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
+    identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
     let approved = offer.capabilities.iter().any(|c| c == TERMINAL_LABEL);
-    send_answer(peer, offer, approved, outbound).await
+    send_answer(peer, offer, approved, outbound, identity).await
 }
 
 /// Decline an offer while another session is live (ADR-14).
@@ -753,8 +757,9 @@ pub async fn refuse_offer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     outbound: &mpsc::Sender<SignalMessage>,
+    identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_answer(peer, offer, false, outbound).await
+    send_answer(peer, offer, false, outbound, identity).await
 }
 
 /// Set the remote description, produce an answer, send it with `approved`.
@@ -768,6 +773,7 @@ async fn send_answer(
     offer: &SignalOffer,
     approved: bool,
     outbound: &mpsc::Sender<SignalMessage>,
+    identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
     peer.set_remote_description(RTCSessionDescription::offer(offer.sdp.clone())?)
         .await
@@ -778,17 +784,41 @@ async fn send_answer(
         .await
         .context("set_local_description")?;
 
+    let proof = build_answer_proof(identity, &offer.session_id, &answer.sdp)?;
+
     outbound
         .send(SignalMessage::Answer(SignalAnswer {
             session_id: offer.session_id.clone(),
             sdp: answer.sdp,
             approved,
-            proof: None,
+            proof: Some(proof),
         }))
         .await
         .context("send answer")?;
 
     Ok(())
+}
+
+/// Build the agent's identity proof for an answer SDP.
+///
+/// Factored out of `send_answer` so the proof-construction logic is unit-testable
+/// without a `PeerConnection`: the test mirrors what the Task 9 spec requires of an
+/// answer proof — the fingerprint equals the SDP fingerprint, the signature
+/// verifies against the agent's own public key, and the canonical message binds
+/// `role="answerer"` + the session id + the SDP hash.
+pub(crate) fn build_answer_proof(
+    identity: &crate::identity::AgentIdentity,
+    session_id: &str,
+    answer_sdp: &str,
+) -> Result<crate::signal::IdentityProof> {
+    let fingerprint = identity::parse_sdp_fingerprint(answer_sdp)?;
+    let sdp_hash = identity::sha256_hex(answer_sdp.as_bytes());
+    let message =
+        identity::canonical_proof_message("answerer", session_id, &sdp_hash, &fingerprint);
+    Ok(crate::signal::IdentityProof {
+        signature: identity::base64_encode(&identity.sign(message.as_bytes())),
+        fingerprint,
+    })
 }
 
 /// Apply one inbound candidate, buffering it if the remote description is not
@@ -1104,5 +1134,36 @@ mod tests {
         let (_estimator, handle) = abr::estimator();
         let published = f64::from_bits(handle.load(std::sync::atomic::Ordering::Relaxed));
         assert_eq!(published, ABR_INITIAL_BPS);
+    }
+
+    #[test]
+    fn answer_proof_round_trips_against_the_agent_key() {
+        // `build_answer_proof` must produce a proof whose fingerprint equals the
+        // SDP fingerprint, whose signature verifies against the agent's own
+        // public key, and whose canonical message binds role="answerer", the
+        // session id, and the SDP hash.
+        let fingerprint_hex = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89";
+        let sdp = format!("v=0\r\na=fingerprint:sha-256 {}\r\n", fingerprint_hex);
+
+        let dir = std::env::temp_dir().join(format!("ponter-rtc-proof-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let identity = crate::identity::AgentIdentity::load_or_generate(&dir).unwrap();
+
+        let proof = build_answer_proof(&identity, "sess-1", &sdp).unwrap();
+        assert_eq!(proof.fingerprint, fingerprint_hex);
+
+        let sig = crate::identity::base64_decode(&proof.signature).unwrap();
+        let message = crate::identity::canonical_proof_message(
+            "answerer",
+            "sess-1",
+            &crate::identity::sha256_hex(sdp.as_bytes()),
+            fingerprint_hex,
+        );
+        assert!(
+            crate::identity::verify_proof(&identity.public_key_raw(), message.as_bytes(), &sig),
+            "the answer proof signature must verify against the agent's public key",
+        );
+
+        let _ = std::fs::remove_file(&dir);
     }
 }

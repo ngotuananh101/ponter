@@ -79,7 +79,12 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Byte-identical to `canonicalProofMessage` in
 /// `packages/shared/src/types/identity-proof.ts`. Any divergence is a defect.
 #[allow(dead_code)]
-pub fn canonical_proof_message(role: &str, session_id: &str, sdp_sha256_hex: &str, fingerprint: &str) -> String {
+pub fn canonical_proof_message(
+    role: &str,
+    session_id: &str,
+    sdp_sha256_hex: &str,
+    fingerprint: &str,
+) -> String {
     format!(
         "{PROOF_VERSION}\nrole={role}\nsessionId={session_id}\nsdpSha256={sdp_sha256_hex}\nfingerprint={fingerprint}"
     )
@@ -121,12 +126,34 @@ pub fn parse_sdp_fingerprint(sdp: &str) -> Result<String> {
 }
 
 #[allow(dead_code)]
-fn normalize_fingerprint(value: &str) -> Result<String> {
+pub fn normalize_fingerprint(value: &str) -> Result<String> {
     let parts: Vec<&str> = value.split(':').collect();
-    if parts.len() != 32 || parts.iter().any(|p| p.len() != 2 || !p.chars().all(|c| c.is_ascii_hexdigit())) {
+    if parts.len() != 32
+        || parts
+            .iter()
+            .any(|p| p.len() != 2 || !p.chars().all(|c| c.is_ascii_hexdigit()))
+    {
         bail!("malformed DTLS fingerprint: {value}");
     }
     Ok(value.to_ascii_uppercase())
+}
+
+/// Base64-encode `bytes` using the standard alphabet (the agent's proof
+/// signatures are embedded in JSON and must match the browser's
+/// `btoa`-compatible encoding).
+#[allow(dead_code)]
+pub fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Base64-decode `s` against the standard alphabet.
+#[allow(dead_code)]
+pub fn base64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .with_context(|| format!("base64 decode of {s:?} failed"))
 }
 
 #[cfg(test)]

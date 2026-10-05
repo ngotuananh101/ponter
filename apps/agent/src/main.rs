@@ -161,7 +161,9 @@ fn resolve_identity_path(cli: &Cli) -> std::path::PathBuf {
         .filter(|s| !s.trim().is_empty())
         .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))
         .unwrap_or_else(|| ".".to_string());
-    std::path::PathBuf::from(base).join("ponter").join("agent-identity.pkcs8")
+    std::path::PathBuf::from(base)
+        .join("ponter")
+        .join("agent-identity.pkcs8")
 }
 
 /// `--shell` -> `AGENT_SHELL` -> platform default.
@@ -496,7 +498,12 @@ struct SessionConfig {
 /// The backoff resets on a successful connect rather than on a successful
 /// session, because the failure being backed off from is the handshake itself —
 /// a server that is down would otherwise be hammered at the maximum rate.
-async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str, identity: std::sync::Arc<identity::AgentIdentity>) -> Result<()> {
+async fn run_with_reconnect(
+    cli: &Cli,
+    credential: &str,
+    shell: &str,
+    identity: std::sync::Arc<identity::AgentIdentity>,
+) -> Result<()> {
     // Connection-independent channels, created ONCE and owned for the whole
     // process: the supervisor owns the receiver ends, and every reconnect only
     // rebuilds the socket and re-attaches its senders. This is what lets a
@@ -734,6 +741,57 @@ async fn supervise_sessions(
     }
 }
 
+/// The H3 security gate: verify the user's proof on the offer BEFORE the session
+/// proceeds to PTY spawn.
+///
+/// Called once in `run_one_session`, after the data channel opens and before the
+/// poll task is spawned. Because both PTY spawn sites (the dispatcher task at the
+/// top of `run_one_session`, and the implicit spawn-on-demand inside it) are only
+/// reachable through frames delivered by `poll_task`, gating `poll_task` gates
+/// both: a tampered/unsigned offer never feeds a `terminal-create` frame to the
+/// dispatcher, so no PTY is ever created.
+///
+/// Requirements (Task 9 brief):
+/// 1. the offer must carry an `IdentityProof`;
+/// 2. the offer must carry a `userSigningPublicKey` (base64 Ed25519 public key);
+/// 3. the proof's fingerprint must equal `parse_sdp_fingerprint(&offer.sdp)`;
+/// 4. the signature must verify against that public key over the canonical
+///    `role="offerer"` message.
+pub fn verify_offer_identity(
+    offer: &signal::SignalOffer,
+    _identity: &identity::AgentIdentity,
+) -> Result<()> {
+    let proof = offer
+        .proof
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("offer carries no identity proof"))?;
+    let user_pk = offer
+        .user_signing_public_key
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("offer carries no user signing key"))?;
+    let pk = identity::base64_decode(user_pk)?;
+
+    let fingerprint = identity::parse_sdp_fingerprint(&offer.sdp)?;
+    if identity::normalize_fingerprint(&proof.fingerprint)? != fingerprint {
+        bail!("offer fingerprint does not match the SDP");
+    }
+
+    let message = identity::canonical_proof_message(
+        "offerer",
+        &offer.session_id,
+        &identity::sha256_hex(offer.sdp.as_bytes()),
+        &fingerprint,
+    );
+    if !identity::verify_proof(
+        &pk,
+        message.as_bytes(),
+        &identity::base64_decode(&proof.signature)?,
+    ) {
+        bail!("offer identity signature is invalid");
+    }
+    Ok(())
+}
+
 /// One session: answer, wait for the `terminal` channel, spawn the PTY, pump.
 ///
 /// Borrows `inbound` for the session's whole lifetime, so every candidate the
@@ -825,7 +883,7 @@ async fn run_one_session(
     };
     if mode == SessionMode::Files && files_root.is_none() {
         tracing::warn!(session_id = %offer.session_id, "refused: files root not configured or unusable");
-        rtc::refuse_offer(&peer, offer, outbound).await?;
+        rtc::refuse_offer(&peer, offer, outbound, &cfg.identity).await?;
         let _ = peer.close().await;
         return Ok(());
     }
@@ -874,14 +932,14 @@ async fn run_one_session(
         }
         SessionMode::None => {
             tracing::warn!(session_id = %offer.session_id, "refused: no recognised capability");
-            rtc::refuse_offer(&peer, offer, outbound).await?;
+            rtc::refuse_offer(&peer, offer, outbound, &cfg.identity).await?;
             let _ = peer.close().await;
             return Ok(());
         }
         SessionMode::Terminal => {}
     }
 
-    rtc::answer_offer(&peer, offer, outbound).await?;
+    rtc::answer_offer(&peer, offer, outbound, &cfg.identity).await?;
 
     // Apply whatever the browser trickled while the answer was being built.
     // `answer_offer` returns as soon as the answer is on the wire, and the
@@ -1103,6 +1161,15 @@ async fn run_one_session(
         .context("the terminal channel vanished after opening")?
         .clone();
 
+    // H3 security gate (Task 9): verify the user's identity proof on the offer
+    // before any PTY can be spawned. Both PTY spawn sites live in the dispatcher
+    // task below (line ~912), which is only fed by the poll task spawned just
+    // after this check. By gating the poll task we gate both: a tampered/missing
+    // proof here means `poll_task` is never spawned, the dispatcher never
+    // receives a `terminal-create` frame, and no PTY is ever created. Fail-closed:
+    // on error we bail out of the session entirely.
+    verify_offer_identity(offer, &cfg.identity)?;
+
     // Watch the channel for its lifetime. In 0.21 there is no `on_message` /
     // `on_close` registration: the driver delivers events through `poll()`
     // (capacity 256, retained under back-pressure, so a message that arrived
@@ -1226,7 +1293,7 @@ async fn run_files_session(
     // The gate already approved this offer; the answer carries `approved:
     // true` and the SDP. Files never reaches `answer_offer` (its terminal-
     // only approval at rtc.rs:722 is not consulted).
-    rtc::send_approved_answer(peer, offer, outbound).await?;
+    rtc::send_approved_answer(peer, offer, outbound, &cfg.identity).await?;
     rtc::flush_pending_candidates(peer, pending).await?;
 
     // Wait for the channel to open, draining candidates the whole time —
@@ -1522,7 +1589,7 @@ async fn run_desktop_session(
         Ok(id) => id,
         Err(e) => {
             tracing::warn!(error = ?e, "desktop default source unavailable; refusing the offer");
-            rtc::refuse_offer(peer, offer, outbound).await?;
+            rtc::refuse_offer(peer, offer, outbound, &cfg.identity).await?;
             let _ = peer.close().await;
             return Ok(());
         }
@@ -1535,14 +1602,14 @@ async fn run_desktop_session(
                 // show only the outermost context ("opening the video recorder")
                 // and hide the platform error underneath it.
                 tracing::warn!(error = ?e, "desktop capture unavailable; refusing the offer");
-                rtc::refuse_offer(peer, offer, outbound).await?;
+                rtc::refuse_offer(peer, offer, outbound, &cfg.identity).await?;
                 let _ = peer.close().await;
                 return Ok(());
             }
         };
 
     let media = rtc::attach_desktop_track(peer).await?;
-    rtc::send_desktop_answer(peer, offer, outbound).await?;
+    rtc::send_desktop_answer(peer, offer, outbound, &cfg.identity).await?;
     rtc::flush_pending_candidates(peer, pending).await?;
 
     // Wait for the connection, draining candidates the whole time. Until the
@@ -1927,7 +1994,7 @@ async fn run_desktop_session(
         session_id = %offer.session_id,
         "desktop streaming is unavailable on this build (musl); refusing",
     );
-    rtc::refuse_offer(peer, offer, outbound).await?;
+    rtc::refuse_offer(peer, offer, outbound, &_cfg.identity).await?;
     let _ = peer.close().await;
     Ok(())
 }
@@ -2027,7 +2094,7 @@ async fn refuse_second_offer(
         false,
     )
     .await?;
-    rtc::refuse_offer(&peer, offer, outbound).await?;
+    rtc::refuse_offer(&peer, offer, outbound, &cfg.identity).await?;
     let _ = peer.close().await;
     Ok(())
 }
@@ -2257,6 +2324,7 @@ impl PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::signature::KeyPair;
 
     /// The TDD anchor for Task 3 (spec Step 1).
     #[tokio::test]
@@ -2542,6 +2610,7 @@ mod tests {
             sdp: "v=0".to_string(),
             capabilities: vec![crate::rtc::TERMINAL_LABEL.to_string()],
             proof: None,
+            user_signing_public_key: None,
         });
 
         // The offer arrives on the first socket...
@@ -2663,5 +2732,150 @@ mod tests {
         );
 
         std::env::remove_var("AGENT_ALLOW_INPUT");
+    }
+
+    // ------------------------------------------------------------------
+    // Task 9: verify_offer_identity (H3 gate)
+    // ------------------------------------------------------------------
+
+    /// Build a well-formed, correctly-signed offer for the given agent identity,
+    /// using a *user* keypair separate from the agent's own key.
+    fn make_valid_offer(
+        session_id: &str,
+        _agent_identity: &identity::AgentIdentity,
+    ) -> (signal::SignalOffer, ring::signature::Ed25519KeyPair) {
+        // Generate a user keypair (the "offerer" who signs the proof).
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let user_key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+        let sdp = "v=0\r\na=fingerprint:sha-256 AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89\r\n";
+        let fingerprint = identity::parse_sdp_fingerprint(sdp).unwrap();
+        let sdp_hash = identity::sha256_hex(sdp.as_bytes());
+        let message =
+            identity::canonical_proof_message("offerer", session_id, &sdp_hash, &fingerprint);
+        let signature = user_key.sign(message.as_bytes());
+
+        let offer = signal::SignalOffer {
+            session_id: session_id.to_string(),
+            sdp: sdp.to_string(),
+            capabilities: vec![],
+            proof: Some(signal::IdentityProof {
+                signature: identity::base64_encode(signature.as_ref()),
+                fingerprint,
+            }),
+            user_signing_public_key: Some(identity::base64_encode(
+                &user_key.public_key().as_ref().to_vec(),
+            )),
+        };
+
+        (offer, user_key)
+    }
+
+    #[test]
+    fn verify_offer_identity_accepts_a_correctly_signed_offer() {
+        let dir = std::env::temp_dir().join(format!("ponter-verify-ok-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let agent = identity::AgentIdentity::load_or_generate(&dir).unwrap();
+
+        let (offer, _user_key) = make_valid_offer("sess-ok", &agent);
+        let result = verify_offer_identity(&offer, &agent);
+        assert!(
+            result.is_ok(),
+            "a correctly signed offer must be accepted: {result:?}"
+        );
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn verify_offer_identity_rejects_a_tampered_sdp() {
+        let dir = std::env::temp_dir().join(format!("ponter-verify-tamper-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let agent = identity::AgentIdentity::load_or_generate(&dir).unwrap();
+
+        let (mut offer, _user_key) = make_valid_offer("sess-tamper", &agent);
+        // Tamper the SDP: change the fingerprint after the proof was signed.
+        offer.sdp = "v=0\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\n".to_string();
+
+        let result = verify_offer_identity(&offer, &agent);
+        assert!(
+            result.is_err(),
+            "a tampered SDP must be rejected (fail-closed)"
+        );
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn verify_offer_identity_rejects_a_missing_proof() {
+        let dir =
+            std::env::temp_dir().join(format!("ponter-verify-noproof-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let agent = identity::AgentIdentity::load_or_generate(&dir).unwrap();
+
+        let (mut offer, _user_key) = make_valid_offer("sess-noproof", &agent);
+        offer.proof = None;
+
+        let result = verify_offer_identity(&offer, &agent);
+        assert!(
+            result.is_err(),
+            "a missing proof must be rejected (fail-closed)"
+        );
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn verify_offer_identity_rejects_a_missing_user_signing_key() {
+        let dir =
+            std::env::temp_dir().join(format!("ponter-verify-nouserpk-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let agent = identity::AgentIdentity::load_or_generate(&dir).unwrap();
+
+        let (mut offer, _user_key) = make_valid_offer("sess-nouserpk", &agent);
+        offer.user_signing_public_key = None;
+
+        let result = verify_offer_identity(&offer, &agent);
+        assert!(
+            result.is_err(),
+            "a missing user signing key must be rejected (fail-closed)"
+        );
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn verify_offer_identity_rejects_a_proof_signed_by_a_different_key() {
+        let dir =
+            std::env::temp_dir().join(format!("ponter-verify-wrongkey-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let agent = identity::AgentIdentity::load_or_generate(&dir).unwrap();
+
+        // Sign with a different user keypair (a second user, not the one in the proof).
+        let rng = ring::rand::SystemRandom::new();
+        let other_pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let other_key = ring::signature::Ed25519KeyPair::from_pkcs8(other_pkcs8.as_ref()).unwrap();
+
+        let (mut offer, _user_key) = make_valid_offer("sess-wrongkey", &agent);
+        // Replace the proof's signature with one from a different key, but keep
+        // the original `userSigningPublicKey` — this simulates a key mismatch.
+        let sdp = &offer.sdp;
+        let fingerprint = identity::parse_sdp_fingerprint(sdp).unwrap();
+        let sdp_hash = identity::sha256_hex(sdp.as_bytes());
+        let message =
+            identity::canonical_proof_message("offerer", "sess-wrongkey", &sdp_hash, &fingerprint);
+        let other_sig = other_key.sign(message.as_bytes());
+        offer.proof.as_mut().unwrap().signature = identity::base64_encode(other_sig.as_ref());
+        // The signing key in the proof still says the original user, so the
+        // signature will not verify against it.
+
+        let result = verify_offer_identity(&offer, &agent);
+        assert!(
+            result.is_err(),
+            "a proof signed by a different key must be rejected (fail-closed)"
+        );
+
+        let _ = std::fs::remove_file(&dir);
     }
 }
