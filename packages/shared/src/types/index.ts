@@ -74,6 +74,7 @@ export type {
 export type {
   SignalOffer,
   SignalAnswer,
+  IdentityProof,
   IceCandidateSignal,
   SignalMessage,
   AgentErrorCode,

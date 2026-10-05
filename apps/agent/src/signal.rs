@@ -31,11 +31,20 @@ pub enum SignalMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct IdentityProof {
+    pub signature: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalOffer {
     pub session_id: String,
     pub sdp: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub proof: Option<IdentityProof>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -44,6 +53,8 @@ pub struct SignalAnswer {
     pub session_id: String,
     pub sdp: String,
     pub approved: bool,
+    #[serde(default)]
+    pub proof: Option<IdentityProof>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -480,6 +491,22 @@ mod tests {
             vec!["stun:stun.l.google.com:19302".to_string()]
         );
         assert!(entries[0].username.is_none());
+    }
+
+    #[test]
+    fn carries_an_identity_proof() {
+        let raw = r#"{"type":"answer","data":{"sessionId":"s1","sdp":"v=0","approved":true,"proof":{"signature":"c2ln","fingerprint":"AB:CD"}}}"#;
+        let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
+        let SignalMessage::Answer(a) = parsed else { panic!("expected answer") };
+        assert_eq!(a.proof.unwrap().fingerprint, "AB:CD");
+    }
+
+    #[test]
+    fn proof_is_optional_for_backward_shapes() {
+        let raw = r#"{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":[]}}"#;
+        let parsed: SignalMessage = serde_json::from_str(raw).unwrap();
+        let SignalMessage::Offer(o) = parsed else { panic!("expected offer") };
+        assert!(o.proof.is_none());
     }
 
     #[test]

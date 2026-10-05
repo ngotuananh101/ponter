@@ -783,6 +783,7 @@ async fn send_answer(
             session_id: offer.session_id.clone(),
             sdp: answer.sdp,
             approved,
+            proof: None,
         }))
         .await
         .context("send answer")?;

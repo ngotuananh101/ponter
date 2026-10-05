@@ -2541,6 +2541,7 @@ mod tests {
             session_id: "sess-live".to_string(),
             sdp: "v=0".to_string(),
             capabilities: vec![crate::rtc::TERMINAL_LABEL.to_string()],
+            proof: None,
         });
 
         // The offer arrives on the first socket...

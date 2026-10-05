@@ -1,5 +1,9 @@
 import type { SignalTransport } from './types';
-import type { BrowserErrorCode, SignalMessage } from '@ponter/shared';
+import type {
+  BrowserErrorCode,
+  IdentityProof,
+  SignalMessage,
+} from '@ponter/shared';
 
 export interface RESTPollingTransportOptions {
   baseUrl: string;
@@ -266,6 +270,7 @@ export class RESTPollingTransport implements SignalTransport {
             sessionId: (payload.sessionId as string) ?? this.sessionId,
             sdp: (payload.sdp as string) ?? '',
             capabilities: (payload.capabilities as string[]) ?? [],
+            proof: (payload.proof as IdentityProof | undefined) ?? undefined,
           },
         };
       case 'answer':
@@ -275,6 +280,7 @@ export class RESTPollingTransport implements SignalTransport {
             sessionId: (payload.sessionId as string) ?? this.sessionId,
             sdp: (payload.sdp as string) ?? '',
             approved: Boolean(payload.approved),
+            proof: (payload.proof as IdentityProof | undefined) ?? undefined,
           },
         };
       case 'ice-candidate':

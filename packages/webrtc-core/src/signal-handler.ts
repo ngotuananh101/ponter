@@ -1,4 +1,4 @@
-import type { SignalMessage } from '@ponter/shared';
+import type { IdentityProof, SignalMessage } from '@ponter/shared';
 
 export function toSessionDescriptionInit(
   offerOrAnswer: { sdp: string },
@@ -32,6 +32,7 @@ export function createOfferSignal(
   sessionId: string,
   desc: RTCSessionDescriptionInit,
   capabilities: string[] = [],
+  proof?: IdentityProof,
 ): SignalMessage {
   return {
     type: 'offer',
@@ -39,6 +40,7 @@ export function createOfferSignal(
       sessionId,
       sdp: desc.sdp ?? '',
       capabilities,
+      ...(proof ? { proof } : {}),
     },
   };
 }
@@ -47,6 +49,7 @@ export function createAnswerSignal(
   sessionId: string,
   desc: RTCSessionDescriptionInit,
   approved = true,
+  proof?: IdentityProof,
 ): SignalMessage {
   return {
     type: 'answer',
@@ -54,6 +57,7 @@ export function createAnswerSignal(
       sessionId,
       sdp: desc.sdp ?? '',
       approved,
+      ...(proof ? { proof } : {}),
     },
   };
 }
