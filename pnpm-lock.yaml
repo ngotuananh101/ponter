@@ -445,6 +445,9 @@ importers:
         specifier: workspace:*
         version: link:../shared
     devDependencies:
+      '@ponter/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@types/node':
         specifier: 24.19.0
         version: 24.19.0
