@@ -191,9 +191,14 @@ export async function savePrivateKey(
   key: CryptoKey,
 ): Promise<void> {
   const db = await openDatabase();
-  return runWriteTransaction(db, STORE_NAME, 'Failed to save private key', (store) => {
-    store.put(key, userId);
-  });
+  return runWriteTransaction(
+    db,
+    STORE_NAME,
+    'Failed to save private key',
+    (store) => {
+      store.put(key, userId);
+    },
+  );
 }
 
 /** Load a user's private key, or null if none is stored. */
@@ -207,9 +212,14 @@ export async function loadPrivateKey(
 /** Remove a user's private key from local storage. */
 export async function deletePrivateKey(userId: string): Promise<void> {
   const db = await openDatabase();
-  return runWriteTransaction(db, STORE_NAME, 'Failed to delete private key', (store) => {
-    store.delete(userId);
-  });
+  return runWriteTransaction(
+    db,
+    STORE_NAME,
+    'Failed to delete private key',
+    (store) => {
+      store.delete(userId);
+    },
+  );
 }
 
 /** A freshly generated Ed25519 signing keypair (WS2 peer identity). */
@@ -232,9 +242,13 @@ export async function generateSigningKeyPair(): Promise<SigningKeyPair> {
   // Re-import the private half as non-extractable so it cannot be exfiltrated
   // by script after generation (the public half stays extractable to register).
   const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
-  const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, 'Ed25519', false, [
-    'sign',
-  ]);
+  const privateKey = await crypto.subtle.importKey(
+    'pkcs8',
+    pkcs8,
+    'Ed25519',
+    false,
+    ['sign'],
+  );
 
   return {
     publicKeyRawBase64: await exportSigningPublicKeyRaw(keyPair.publicKey),
@@ -244,21 +258,36 @@ export async function generateSigningKeyPair(): Promise<SigningKeyPair> {
 }
 
 /** Export an Ed25519 public key to its raw 32-byte base64 form. */
-export async function exportSigningPublicKeyRaw(key: CryptoKey): Promise<string> {
+export async function exportSigningPublicKeyRaw(
+  key: CryptoKey,
+): Promise<string> {
   const raw = await crypto.subtle.exportKey('raw', key);
   return bufferToBase64(raw);
 }
 
 /** Import an Ed25519 public key from raw 32-byte base64. */
-export async function importSigningPublicKeyRaw(base64: string): Promise<CryptoKey> {
-  return await crypto.subtle.importKey('raw', base64ToBuffer(base64), 'Ed25519', true, [
-    'verify',
-  ]);
+export async function importSigningPublicKeyRaw(
+  base64: string,
+): Promise<CryptoKey> {
+  return await crypto.subtle.importKey(
+    'raw',
+    base64ToBuffer(base64),
+    'Ed25519',
+    true,
+    ['verify'],
+  );
 }
 
 /** Sign a UTF-8 message; returns a base64 Ed25519 signature. */
-export async function signProof(privateKey: CryptoKey, message: string): Promise<string> {
-  const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(message));
+export async function signProof(
+  privateKey: CryptoKey,
+  message: string,
+): Promise<string> {
+  const sig = await crypto.subtle.sign(
+    'Ed25519',
+    privateKey,
+    new TextEncoder().encode(message),
+  );
   return bufferToBase64(sig);
 }
 
@@ -270,22 +299,37 @@ export async function verifyProof(
 ): Promise<boolean> {
   try {
     const sig = base64ToBuffer(signatureBase64);
-    return await crypto.subtle.verify('Ed25519', publicKey, sig, new TextEncoder().encode(message));
+    return await crypto.subtle.verify(
+      'Ed25519',
+      publicKey,
+      sig,
+      new TextEncoder().encode(message),
+    );
   } catch {
     return false;
   }
 }
 
 /** Persist a user's Ed25519 signing key locally (separate store from ECDH). */
-export async function saveSigningKey(userId: string, key: CryptoKey): Promise<void> {
+export async function saveSigningKey(
+  userId: string,
+  key: CryptoKey,
+): Promise<void> {
   const db = await openDatabase(SIGNING_STORE);
-  return runWriteTransaction(db, SIGNING_STORE, 'Failed to save signing key', (store) => {
-    store.put(key, userId);
-  });
+  return runWriteTransaction(
+    db,
+    SIGNING_STORE,
+    'Failed to save signing key',
+    (store) => {
+      store.put(key, userId);
+    },
+  );
 }
 
 /** Load a user's Ed25519 signing key, or null if none is stored. */
-export async function loadSigningKey(userId: string): Promise<CryptoKey | null> {
+export async function loadSigningKey(
+  userId: string,
+): Promise<CryptoKey | null> {
   const db = await openDatabase(SIGNING_STORE);
   return readKey(db, SIGNING_STORE, userId, 'Failed to load signing key');
 }
