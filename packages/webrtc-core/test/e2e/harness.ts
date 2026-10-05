@@ -920,26 +920,40 @@ function calculateContiguousChunks(chunks: Set<number>, startFrom = 0): number {
   return contiguous;
 }
 
-/** Yield to the event loop via `setImmediate` instead of `setTimeout(0)`.
- * Node clamps `setTimeout(0)` to a 1ms minimum, which on 1600 chunks wastes
- * ~1.6s on a 2-vCPU CI runner. `setImmediate` fires on the check phase with
- * no artificial floor, eliminating the drain. */
-function yieldImmediate(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setImmediate(resolve);
+/**
+ * Create a deferred promise with externally controlled resolve/reject functions.
+ *
+ * Returns a tuple of `[promise, resolve, reject]` so the resolve and reject
+ * callbacks can be captured before the promise is awaited, avoiding the
+ * "used before being assigned" TS2454 error that arises from assigning closures
+ * inside a `new Promise((res, rej) => ...)` executor.
+ */
+function createDeferred<T>(): [
+  Promise<T>,
+  (value: T | PromiseLike<T>) => void,
+  (reason?: unknown) => void,
+] {
+  let resolveFn!: (value: T | PromiseLike<T>) => void;
+  let rejectFn!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolveFn = res;
+    rejectFn = rej;
   });
+  return [promise, resolveFn, rejectFn];
 }
 
 /**
  * Drive a download to completion by acking contiguous chunk frontiers
  * (ADR-37), waiting until `totalChunks` distinct chunks have been observed.
  *
- * ACKs are emitted immediately whenever the contiguous frontier advances
- * (i.e. `contiguous > lastAcked`), keeping the agent's 64-chunk sliding window
- * continuously full without stalling the Rust agent's send loop.
+ * Instead of polling `binaryFrames` on a timer, this hooks the offerer's
+ * `binaryFrames.push` seam so `processFrames()` runs synchronously the moment a
+ * new binary chunk frame arrives. That keeps the agent's 64-chunk sliding
+ * window continuously full without stalling the Rust agent's send loop.
  *
- * Implemented with a recursive poll (S9382) instead of a `while` loop that
- * awaits inside it.
+ * A `setTimeout` rejects the promise if `timeoutMs` elapses before `totalChunks`
+ * distinct chunks are observed, and `cleanup` restores the original `push` on
+ * resolution, rejection, or unexpected error.
  */
 export async function drainDownload(
   binaryFrames: Uint8Array[],
@@ -948,36 +962,65 @@ export async function drainDownload(
   sendAck: (nextChunkIndex: number) => void,
   timeoutMs = 60_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
   const transferIdBytes = uuidToRawBytes(transferId);
   const chunks = new Set<number>();
   let cursor = 0;
   let lastAcked = 0;
+  let settle = false;
 
-  const poll = async (): Promise<void> => {
-    if (chunks.size >= totalChunks || Date.now() >= deadline) {
-      return;
-    }
-    cursor = processDownloadFrames(
-      binaryFrames,
-      cursor,
-      transferIdBytes,
-      chunks,
-    );
-    const contiguous = calculateContiguousChunks(chunks, lastAcked);
+  const origPush = binaryFrames.push;
 
-    if (contiguous > lastAcked) {
-      lastAcked = contiguous;
-      sendAck(contiguous);
-    }
+  const [promise, resolveFn, rejectFn] = createDeferred<void>();
 
+  const timer = setTimeout(() => {
+    cleanup();
     if (chunks.size < totalChunks) {
-      await yieldImmediate();
-      return poll();
+      rejectFn(new Error(`drainDownload timed out after ${timeoutMs}ms`));
+    }
+  }, timeoutMs);
+
+  const cleanup = () => {
+    if (settle) return;
+    settle = true;
+    binaryFrames.push = origPush;
+    clearTimeout(timer);
+  };
+
+  const processFrames = () => {
+    try {
+      cursor = processDownloadFrames(
+        binaryFrames,
+        cursor,
+        transferIdBytes,
+        chunks,
+      );
+      const contiguous = calculateContiguousChunks(chunks, lastAcked);
+
+      if (contiguous > lastAcked) {
+        lastAcked = contiguous;
+        sendAck(contiguous);
+      }
+
+      if (chunks.size >= totalChunks) {
+        cleanup();
+        resolveFn();
+      }
+    } catch (err) {
+      cleanup();
+      rejectFn(err);
     }
   };
 
-  await poll();
+  // Hook `binaryFrames.push` to process frames synchronously as they arrive.
+  binaryFrames.push = function (...items: Uint8Array[]): number {
+    origPush.apply(binaryFrames, items);
+    processFrames();
+    return binaryFrames.length;
+  };
+
+  // Process any frames that were already buffered before the hook was installed.
+  processFrames();
+  await promise;
   expect(chunks.size).toBe(totalChunks);
 }
 
