@@ -15,6 +15,7 @@ mod desktop;
 // (ADR-15), so nothing here is reachable on musl. `--allow-input` still exists
 // on every target (spec §6.4) — it lives in `Cli`, not in this module.
 mod files;
+mod identity;
 #[cfg(not(target_env = "musl"))]
 mod input;
 mod logging;
@@ -73,6 +74,10 @@ struct Cli {
     /// ps (ADR-13).
     #[arg(long, env = "AGENT_CREDENTIAL")]
     credential: Option<String>,
+
+    /// Path to the persisted Ed25519 identity (PKCS#8). Generated on first run.
+    #[arg(long, env = "AGENT_IDENTITY_PATH")]
+    identity_path: Option<String>,
 
     /// STUN server; an empty string disables ICE servers entirely (loopback).
     #[arg(
@@ -143,6 +148,20 @@ fn resolve_credential(cli: &Cli) -> Result<String> {
              (the value is issued once by POST /api/agents and cannot be recovered)"
         ),
     }
+}
+
+fn resolve_identity_path(cli: &Cli) -> std::path::PathBuf {
+    if let Some(p) = &cli.identity_path {
+        if !p.trim().is_empty() {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))
+        .unwrap_or_else(|| ".".to_string());
+    std::path::PathBuf::from(base).join("ponter").join("agent-identity.pkcs8")
 }
 
 /// `--shell` -> `AGENT_SHELL` -> platform default.
@@ -299,10 +318,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let credential = resolve_credential(&cli)?;
     let shell = resolve_shell(&cli)?;
+    let identity = identity::AgentIdentity::load_or_generate(&resolve_identity_path(&cli))?;
+    tracing::info!(public_key = %identity.public_key_base64(), "agent identity loaded");
 
     tracing::info!(server = %cli.server, shell = %shell, "starting ponter-agent");
 
-    run_with_reconnect(&cli, &credential, &shell).await
+    run_with_reconnect(&cli, &credential, &shell, std::sync::Arc::new(identity)).await
 }
 
 /// Which frames a desktop session streams (ADR-17).
@@ -449,6 +470,10 @@ struct SessionConfig {
     allow_input: bool,
     /// The files sandbox root as configured (ADR-32). `None` closes the gate.
     files_root: Option<String>,
+    /// The agent's persistent Ed25519 peer identity, used to sign WS2 proofs
+    /// that bind the offer SPD/ex to this agent (full wiring in Task 9).
+    #[allow(dead_code)]
+    identity: std::sync::Arc<identity::AgentIdentity>,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -471,7 +496,7 @@ struct SessionConfig {
 /// The backoff resets on a successful connect rather than on a successful
 /// session, because the failure being backed off from is the handshake itself —
 /// a server that is down would otherwise be hammered at the maximum rate.
-async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<()> {
+async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str, identity: std::sync::Arc<identity::AgentIdentity>) -> Result<()> {
     // Connection-independent channels, created ONCE and owned for the whole
     // process: the supervisor owns the receiver ends, and every reconnect only
     // rebuilds the socket and re-attaches its senders. This is what lets a
@@ -504,6 +529,7 @@ async fn run_with_reconnect(cli: &Cli, credential: &str, shell: &str) -> Result<
         desktop_select_timeout: Duration::from_millis(cli.desktop_select_timeout_ms),
         allow_input: cli.allow_input,
         files_root: cli.files_root.clone(),
+        identity,
     };
 
     let mut delay = signal::BACKOFF_INITIAL;

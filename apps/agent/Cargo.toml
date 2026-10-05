@@ -12,6 +12,7 @@ bytes = "1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 portable-pty = "0.9"
+ring = "0.17.14"
 # `rtc` is a direct dependency because webrtc 0.21 does not re-export the parts
 # of it the agent needs: `rtc::ice::mdns::MulticastDnsMode` for the setting
 # engine, and `rtc::peer_connection::...` types in tests. Version-pinned to the
