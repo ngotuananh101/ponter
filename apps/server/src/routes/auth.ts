@@ -16,6 +16,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { verifyTokenForUser } from '../utils/auth.js';
 import { toPublicUser } from '../utils/user.js';
 import { getJwtSecret, getRefreshSecret } from '../utils/env.js';
+import { closeUserSockets } from './ws.js';
 import {
   storeRefreshToken,
   findRefreshToken,
@@ -487,6 +488,9 @@ auth.post('/logout', authMiddleware, async (c) => {
       // Ignore invalid refresh token during logout
     }
   }
+
+  // A revoked access token must not leave a live socket behind.
+  closeUserSockets(tokenPayload.sub, 4401, 'Logged out');
 
   return c.json({ success: true });
 });
