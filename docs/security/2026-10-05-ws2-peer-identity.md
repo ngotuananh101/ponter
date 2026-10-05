@@ -7,7 +7,7 @@ cryptographic key held by the originating peer.
 
 ## Deliverables
 
-This document covers four deliverables, all of which are fail-closed:
+This document covers four deliverables. Each fails closed when its gate applies:
 
 1. **Agent identity key (H6/C5/H5).** The Rust agent generates and persists an
    Ed25519 keypair at a disk path (`--identity-path`; the default resolves
