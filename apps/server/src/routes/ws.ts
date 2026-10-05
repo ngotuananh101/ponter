@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { webcrypto } from 'node:crypto';
 import { Hono } from 'hono';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
@@ -25,6 +26,20 @@ import type {
 
 const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
 
+/** WS2 agent-identity proof-of-possession: `"ponter-ws2-agent-identity-v1\nnonce=<nonce>"`. */
+const WS2_IDENTITY_PROOF_PREFIX = 'ponter-ws2-agent-identity-v1\nnonce=';
+
+/**
+ * Generate a nonce for the WS2 agent-identity proof-of-possession challenge.
+ *
+ * 32 bytes of randomness, hex-encoded. The agent signs the proof message
+ * containing this nonce, so it must not be predictable.
+ */
+function generateNonce(): string {
+  const bytes = webcrypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** Replay page size. Mirrors the REST poll's cap (`signal.ts:210`). */
 const REPLAY_LIMIT = 200;
 
@@ -33,6 +48,8 @@ export interface AgentConnection {
   userId: string;
   socket: WebSocket;
   send: (data: string) => void;
+  /** WS2: the nonce most recently sent in an `identity-challenge` frame. */
+  identityNonce: string | null;
 }
 
 export const agentConnections = new Map<string, AgentConnection>();
@@ -745,6 +762,7 @@ export function createAgentWebSocketServer(): WebSocketServer {
             socket.send(data);
           }
         },
+        identityNonce: null,
       };
       agentConnections.set(agentId, connection);
 
@@ -757,6 +775,20 @@ export function createAgentWebSocketServer(): WebSocketServer {
         JSON.stringify({
           type: 'ice-servers',
           data: { iceServers: buildIceServers(userId) },
+        }),
+      );
+
+      // WS2: challenge the agent to prove possession of its Ed25519 signing key.
+      // The agent signs the proof message `"<prefix>\nnonce=<nonce>"` with the
+      // private half and echoes the nonce back; the server verifies and stores
+      // the public key on the agent row. Sent after the ICE push so the ordering
+      // on the wire is deterministic (ICE config, then identity challenge).
+      const nonce = generateNonce();
+      connection.identityNonce = nonce;
+      socket.send(
+        JSON.stringify({
+          type: 'identity-challenge',
+          data: { nonce },
         }),
       );
 
@@ -815,6 +847,85 @@ export function createAgentWebSocketServer(): WebSocketServer {
 }
 
 /**
+ * Verify an agent's WS2 identity proof and persist its Ed25519 signing public key.
+ *
+ * On a valid signature: `UPDATE agents SET signing_public_key = ? WHERE id = ?`.
+ * On a bad or missing signature: close the socket with 4401 and do NOT store.
+ *
+ * Fail-closed — any exception or malformed input rejects the proof without
+ * writing the key.
+ */
+async function handleAgentIdentity(
+  data: unknown,
+  connection: AgentConnection,
+  db: Database,
+): Promise<void> {
+  // Validate the frame shape first; a malformed proof must not throw.
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    connection.socket.close(4401, 'Invalid agent-identity frame');
+    return;
+  }
+
+  const { publicKey, nonce, signature } = data as {
+    publicKey?: unknown;
+    nonce?: unknown;
+    signature?: unknown;
+  };
+
+  if (
+    typeof publicKey !== 'string' ||
+    typeof nonce !== 'string' ||
+    typeof signature !== 'string'
+  ) {
+    connection.socket.close(4401, 'Invalid agent-identity fields');
+    return;
+  }
+
+  // The nonce must match the one we sent on connect. A mismatch (replay, stale
+  // frame, or wrong agent) is a 4401.
+  if (connection.identityNonce !== nonce) {
+    connection.socket.close(4401, 'Nonce mismatch');
+    return;
+  }
+
+  const expectedMessage = `${WS2_IDENTITY_PROOF_PREFIX}${nonce}`;
+
+  try {
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      Buffer.from(publicKey, 'base64'),
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+
+    const valid = await webcrypto.subtle.verify(
+      'Ed25519',
+      key,
+      Buffer.from(signature, 'base64'),
+      new TextEncoder().encode(expectedMessage),
+    );
+
+    if (!valid) {
+      connection.socket.close(4401, 'Bad signature');
+      return;
+    }
+
+    await db
+      .update(agents)
+      .set({ signingPublicKey: publicKey })
+      .where(eq(agents.id, connection.agentId));
+
+    // Clear the nonce so a stale replay cannot be re-verified.
+    connection.identityNonce = null;
+  } catch {
+    // Import/verify/crypto failure: fail closed, do not store the key.
+    connection.socket.close(4401, 'Identity proof failed');
+    return;
+  }
+}
+
+/**
  * Handle an inbound frame from an agent socket.
  *
  * Every failure is an error *frame*, never a throw: this runs inside a
@@ -863,6 +974,12 @@ async function handleInboundMessage(
       .set({ isOnline: true, lastPingAt: NOW_SQL })
       .where(eq(agents.id, connection.agentId));
     connection.socket.send(JSON.stringify({ type: 'pong' }));
+    return;
+  }
+
+  // WS2: proof-of-possession of the agent's Ed25519 signing key.
+  if (envelope.type === 'agent-identity') {
+    await handleAgentIdentity(envelope.data, connection, db);
     return;
   }
 

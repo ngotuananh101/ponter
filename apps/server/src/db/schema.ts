@@ -55,6 +55,7 @@ export const agents = sqliteTable('agents', {
   publicKey: text('public_key').notNull(),
   isOnline: integer('is_online', { mode: 'boolean' }).notNull().default(false),
   lastPingAt: text('last_ping_at'),
+  signingPublicKey: text('signing_public_key'),
   credentialHash: text('credential_hash'),
   capabilities: text('capabilities'),
   createdAt: text('created_at')

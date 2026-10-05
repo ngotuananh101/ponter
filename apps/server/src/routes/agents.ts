@@ -38,19 +38,23 @@ router.post('/', async (c) => {
       platform?: string;
       osVersion?: string;
       agentVersion?: string | null;
+      /** Optional; defaults to '' so a dialog can omit a fabricated key. */
       publicKey?: string;
       capabilities?: string[] | null;
     }>()
     .catch(() => null);
 
-  if (!body?.id || !body?.publicKey) {
-    throw new AppError(
-      'id and publicKey are required',
-      400,
-      'VALIDATION_ERROR',
-    );
+  // `publicKey` is the ECDH key from the legacy `public_key_base64` handshake.
+  // For WS2 the agent supplies no fabricated key on registration — it registers
+  // its REAL Ed25519 signing public key at first WS connect. To keep backward
+  // compatibility with any client that stops sending a fabricated key, the
+  // field is optional and defaults to '' here; it is overwritten at first
+  // connect via the proof-of-possession exchange.
+  if (!body?.id) {
+    throw new AppError('id is required', 400, 'VALIDATION_ERROR');
   }
 
+  const publicKey = body.publicKey ?? '';
   const db = c.get('db');
 
   // `agents.id` is the caller-supplied primary key (no `$defaultFn`), so a
@@ -90,7 +94,7 @@ router.post('/', async (c) => {
       platform: body.platform ?? null,
       osVersion: body.osVersion ?? null,
       agentVersion: body.agentVersion ?? null,
-      publicKey: body.publicKey,
+      publicKey,
       isOnline: false,
       credentialHash: await sha256Hex(credential),
       capabilities: body.capabilities

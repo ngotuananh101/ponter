@@ -63,6 +63,11 @@ export type AgentSocketMessage =
   | { type: 'ping' }
   | { type: 'pong' }
   | { type: 'signal'; data: SignalMessage }
+  | { type: 'identity-challenge'; data: { nonce: string } }
+  | {
+      type: 'agent-identity';
+      data: { publicKey: string; nonce: string; signature: string };
+    }
   | { type: 'error'; code: AgentErrorCode };
 
 /**
