@@ -33,6 +33,20 @@ export function validateEnv(env: EnvLike = process.env): void {
         'both defeats access/refresh token separation',
     );
   }
+
+  // The Origin header is the CSWSH defence for the browser WebSocket upgrade
+  // (`routes/ws.ts`). A wildcard turns that defence off, and an unset variable
+  // used to mean the same thing silently. In production both are refused here,
+  // at boot, so a deploy cannot ship with cross-site sockets open.
+  if (env.NODE_ENV === 'production') {
+    const cors = env.CORS_ORIGIN?.trim();
+    if (!cors || cors === '*') {
+      throw new Error(
+        'CORS_ORIGIN must be an explicit allowlist in production; a wildcard ' +
+          'or an unset value is refused',
+      );
+    }
+  }
 }
 
 function requireSecret(name: string, value: string | undefined): void {
