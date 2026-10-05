@@ -1464,7 +1464,7 @@ pnpm typecheck && pnpm lint && pnpm test
 
 Expected: all green. Then confirm the exit-gate items this plan owns:
 
-- **G2 (partial):** `grep -rn "E2EE\|Zero-Trust" apps/web/src` returns nothing.
+- **G2 (partial):** `grep -rn "E2EE\|Zero-Trust" --include="*.vue" apps/web/src` returns nothing (the guard test `e2ee-claims.test.ts` necessarily names the keywords it forbids).
 - **M9:** starting the server without `JWT_SECRET` exits non-zero with a message naming the variable.
 - **H8/M12:** starting with `NODE_ENV=production CORS_ORIGIN=*` exits non-zero.
 - **H9:** six wrong-password logins from one IP return `429` on the sixth.
