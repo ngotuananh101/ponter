@@ -878,16 +878,56 @@ function processDownloadFrames(
   return binaryFrames.length;
 }
 
-/** How many contiguous chunk indices (starting from 0) are present in `chunks`. */
-function calculateContiguousChunks(chunks: Set<number>): number {
-  let contiguous = 0;
+/**
+ * Count contiguous chunk indices present in `chunks`, starting the scan from
+ * `startFrom` (typically the last acked frontier). Starting mid-scan avoids
+ * re-scanning already-acked chunks — up to ~1.28M `Set.has` lookups on the
+ * 50 MiB / 1600-chunk case when the old version restarted from 0 every poll.
+ */
+function calculateContiguousChunks(chunks: Set<number>, startFrom = 0): number {
+  let contiguous = startFrom;
   while (chunks.has(contiguous)) contiguous++;
   return contiguous;
 }
 
 /**
+ * Decide whether the current contiguous frontier warrants an ACK.
+ *
+ * Encapsulates the three ACK triggers (ADR-37):
+ * - completion: frontier reached totalChunks and not yet acked
+ * - batch: frontier advanced by >= 16 since the last ACK
+ * - idle gate: frontier advanced and has been stable for >= 20ms
+ */
+function shouldEmitAck(
+  contiguous: number,
+  lastAcked: number,
+  totalChunks: number,
+  lastAckTime: number,
+  now: number,
+): boolean {
+  if (contiguous === totalChunks) return lastAcked < contiguous;
+  if (contiguous - lastAcked >= 16) return true;
+  return contiguous > lastAcked && now - lastAckTime >= 20;
+}
+
+/** Yield to the event loop via `setImmediate` instead of `setTimeout(0)`.
+ * Node clamps `setTimeout(0)` to a 1ms minimum, which on 1600 chunks wastes
+ * ~1.6s on a 2-vCPU CI runner. `setImmediate` fires on the check phase with
+ * no artificial floor, eliminating the drain. */
+function yieldImmediate(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+/**
  * Drive a download to completion by acking contiguous chunk frontiers
  * (ADR-37), waiting until `totalChunks` distinct chunks have been observed.
+ *
+ * ACKs are cumulative: an ack is emitted when the contiguous frontier advances
+ * by >= 16 chunks, on completion (frontier reaches totalChunks), or when the
+ * frontier is idle for >= 20ms — so at most ~100 ACKs traverse the data channel
+ * for a 1600-chunk transfer instead of 1600 individual JSON envelopes.
  *
  * Implemented with a recursive poll (S9382) instead of a `while` loop that
  * awaits inside it.
@@ -903,19 +943,24 @@ export async function drainDownload(
   const chunks = new Set<number>();
   let cursor = 0;
   let lastAcked = 0;
+  let lastAckTime = Date.now();
 
   const poll = async (): Promise<void> => {
     if (chunks.size >= totalChunks || Date.now() >= deadline) {
       return;
     }
     cursor = processDownloadFrames(binaryFrames, cursor, transferId, chunks);
-    const contiguous = calculateContiguousChunks(chunks);
-    if (contiguous > lastAcked) {
+    const contiguous = calculateContiguousChunks(chunks, lastAcked);
+
+    const now = Date.now();
+    if (shouldEmitAck(contiguous, lastAcked, totalChunks, lastAckTime, now)) {
       lastAcked = contiguous;
+      lastAckTime = now;
       sendAck(contiguous);
     }
+
     if (chunks.size < totalChunks) {
-      await delay(0);
+      await yieldImmediate();
       return poll();
     }
   };

@@ -264,7 +264,6 @@ describe.skipIf(!isLinux)('files advanced E2E', () => {
       writeFileSync(join(rootDir, name), payload);
 
       const transferId = crypto.randomUUID();
-      const start = process.hrtime.bigint();
 
       send('files-download', {
         transferId,
@@ -282,6 +281,11 @@ describe.skipIf(!isLinux)('files advanced E2E', () => {
         )
       ).payload as unknown as FilesDownloadBegin;
       const totalChunks = begin.totalChunks;
+
+      // Measure only the streaming duration (chunk pump), not the metadata
+      // handshake (files-download -> files-download-begin) which adds latency
+      // unrelated to steady-state throughput.
+      const start = process.hrtime.bigint();
 
       await drainDownload(
         binaryFrames,
