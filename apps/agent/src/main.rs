@@ -944,6 +944,17 @@ async fn run_one_session(
         SessionMode::Terminal => {}
     }
 
+    // H3 security gate (Task 9): verify the user's identity proof on the offer
+    // BEFORE the agent sends its answer, so the browser never learns the
+    // session was accepted when the proof was missing or tampered. Both PTY
+    // spawn sites live in the dispatcher task (below), which is only fed by the
+    // poll task spawned after the channel opens; gating the answer itself gates
+    // every downstream path: a tampered/missing proof bails before
+    // `rtc::answer_offer`, the answer SDP is never sent, the browser aborts the
+    // handshake, and no PTY is ever created. Fail-closed: on error we bail out
+    // of the session entirely before sending any SDP.
+    verify_offer_identity(offer, &cfg.identity)?;
+
     rtc::answer_offer(&peer, offer, outbound, &cfg.identity).await?;
 
     // Apply whatever the browser trickled while the answer was being built.
@@ -1165,15 +1176,6 @@ async fn run_one_session(
         .get()
         .context("the terminal channel vanished after opening")?
         .clone();
-
-    // H3 security gate (Task 9): verify the user's identity proof on the offer
-    // before any PTY can be spawned. Both PTY spawn sites live in the dispatcher
-    // task below (line ~912), which is only fed by the poll task spawned just
-    // after this check. By gating the poll task we gate both: a tampered/missing
-    // proof here means `poll_task` is never spawned, the dispatcher never
-    // receives a `terminal-create` frame, and no PTY is ever created. Fail-closed:
-    // on error we bail out of the session entirely.
-    verify_offer_identity(offer, &cfg.identity)?;
 
     // Watch the channel for its lifetime. In 0.21 there is no `on_message` /
     // `on_close` registration: the driver delivers events through `poll()`
