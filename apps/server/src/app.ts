@@ -3,6 +3,7 @@ import type { AppContext } from './types.js';
 import { cors } from 'hono/cors';
 import { errorHandler } from './middleware/error.js';
 import { getDb } from './db/client.js';
+import { createLoginRateLimiter } from './middleware/login-rate-limit.js';
 import { getAllowedOrigins } from './utils/cors.js';
 import auth from './routes/auth.js';
 import admin from './routes/admin.js';
@@ -38,6 +39,10 @@ export function createApp() {
   });
 
   app.get('/health', (c) => c.json({ status: 'ok' }));
+
+  // Scoped to the login path: every other route is authenticated and does not
+  // need a guess-budget. Created per app so tests get independent state.
+  app.use('/api/auth/login', createLoginRateLimiter());
 
   app.route('/api/auth', auth);
   app.route('/api/admin', admin);
