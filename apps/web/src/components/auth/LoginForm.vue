@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import {
   Card,
   CardHeader,
@@ -11,10 +11,10 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ShieldCheck, Lock, User, Terminal } from '@lucide/vue';
+import { toast } from 'vue-sonner';
 
-defineProps<{
+const props = defineProps<{
   loading?: boolean;
   errorMessage?: string | null;
 }>();
@@ -27,10 +27,18 @@ const username = ref('');
 const password = ref('');
 const validationError = ref<string | null>(null);
 
+watch(
+  () => props.errorMessage,
+  (msg) => {
+    if (msg) toast.error(msg);
+  },
+);
+
 function handleSubmit() {
   validationError.value = null;
   if (!username.value.trim() || !password.value) {
     validationError.value = 'Please enter both username and password';
+    toast.error('Please enter both username and password');
     return;
   }
   emit('submit', { username: username.value.trim(), password: password.value });
@@ -64,16 +72,6 @@ function handleSubmit() {
     </CardHeader>
     <form @submit.prevent="handleSubmit">
       <CardContent class="space-y-4">
-        <Alert
-          v-if="validationError || errorMessage"
-          variant="destructive"
-          class="border-destructive/30 bg-destructive/10"
-        >
-          <AlertDescription class="text-xs font-medium">{{
-            validationError || errorMessage
-          }}</AlertDescription>
-        </Alert>
-
         <div class="space-y-2">
           <Label
             for="username"

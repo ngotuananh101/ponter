@@ -6,7 +6,7 @@ import {
   InfoIcon,
   Loader2Icon,
   OctagonXIcon,
-  TriangleWarningIcon,
+  TriangleAlertIcon,
   XIcon,
 } from '@lucide/vue'
 import { reactiveOmit } from '@vueuse/core'
@@ -45,7 +45,7 @@ const delegatedProps = reactiveOmit(props, 'class', 'toastOptions')
       <InfoIcon class="size-4" />
     </template>
     <template #warning-icon>
-      <TriangleWarningIcon class="size-4" />
+      <TriangleAlertIcon class="size-4" />
     </template>
     <template #error-icon>
       <OctagonXIcon class="size-4" />
