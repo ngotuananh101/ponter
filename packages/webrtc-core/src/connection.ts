@@ -6,7 +6,12 @@ import type {
   MediaStreamLike,
   MediaStreamTrackLike,
 } from './types';
-import type { SignalMessage } from '@ponter/shared';
+import {
+  canonicalProofMessage,
+  parseSdpFingerprint,
+  normalizeFingerprint,
+} from '@ponter/shared';
+import type { SignalMessage, IdentityProof } from '@ponter/shared';
 import { DataChannelManager } from './data-channel';
 import { configureReceiveMedia, subscribeRemoteTracks } from './media-channel';
 import {
@@ -16,6 +21,17 @@ import {
   createAnswerSignal,
   createCandidateSignal,
 } from './signal-handler';
+
+/** SHA-256 of a UTF-8 string, returned as lowercase hex. */
+async function sha256HexUtf8(message: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(message),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 /**
  * Hard cap on ICE candidates buffered before the remote description is set.
@@ -99,7 +115,7 @@ export class PeerConnection {
     // 1. Hook peer candidates and send via transport
     this.peer.onIceCandidate((candidate) => {
       if (this.isClosed) return;
-      const msg = createCandidateSignal('', candidate);
+      const msg = createCandidateSignal(this.options.sessionId, candidate);
       // Fire-and-forget: a candidate arriving as the transport closes must not
       // surface as an unhandled rejection, which would terminate a Node host.
       void this.transport.send(msg).catch((error: unknown) => {
@@ -167,7 +183,30 @@ export class PeerConnection {
     await this.peer.setLocalDescription(offer);
     const capabilities =
       this.options.capabilities ?? this.options.channelLabels;
-    const signal = createOfferSignal('', offer, capabilities);
+
+    let proof: IdentityProof | undefined;
+    if (this.options.identity) {
+      const fingerprint = parseSdpFingerprint(offer.sdp ?? '');
+      const sdpSha256Hex = await sha256HexUtf8(offer.sdp ?? '');
+      const message = canonicalProofMessage({
+        role: this.options.identity.role,
+        sessionId: this.options.sessionId,
+        sdpSha256Hex,
+        fingerprint,
+      });
+      proof = {
+        signature: await this.options.identity.sign(message),
+        fingerprint,
+      };
+    }
+
+    const signal = createOfferSignal(
+      this.options.sessionId,
+      offer,
+      capabilities,
+      proof,
+      this.options.identity?.userSigningPublicKey,
+    );
     await this.transport.send(signal);
   }
 
@@ -298,11 +337,58 @@ export class PeerConnection {
         }
 
         const answerDesc = toSessionDescriptionInit(msg.data, 'answer');
+
+        if (this.options.identity) {
+          const ok = await this.verifyRemoteProof(
+            'answerer',
+            msg.data.sessionId,
+            answerDesc.sdp ?? '',
+            msg.data.proof,
+          );
+          if (!ok) {
+            this.refusalReason =
+              'the agent answer failed peer-identity verification';
+            return; // do NOT setRemoteDescription
+          }
+        }
+
         await this.peer.setRemoteDescription(answerDesc);
         this.remoteDescriptionSet = true;
         await this.flushPendingCandidates();
         break;
       }
+    }
+  }
+
+  /**
+   * Verify the remote peer's WS2 identity proof over its SDP.
+   *
+   * Returns `false` when `proof` is absent (fail-closed) or when any check
+   * throws — the caller must treat `false` as "do not apply the description".
+   */
+  private async verifyRemoteProof(
+    role: 'offerer' | 'answerer',
+    sessionId: string,
+    sdp: string,
+    proof?: IdentityProof,
+  ): Promise<boolean> {
+    if (!proof) return false;
+    try {
+      const fingerprint = parseSdpFingerprint(sdp);
+      const sdpSha256Hex = await sha256HexUtf8(sdp);
+      const message = canonicalProofMessage({
+        role,
+        sessionId,
+        sdpSha256Hex,
+        fingerprint,
+      });
+      const sigOk = await this.options.identity!.verifyPeer(
+        message,
+        proof.signature,
+      );
+      return sigOk && normalizeFingerprint(proof.fingerprint) === fingerprint;
+    } catch {
+      return false;
     }
   }
 

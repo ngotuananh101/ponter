@@ -5,6 +5,7 @@ import { agentConnections } from '../src/routes/ws.js';
 import { WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { waitFor } from './helpers.js';
 
 // In-process secrets for tests
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
@@ -26,23 +27,6 @@ type AgentResponse = {
   agent: { id: string; userId: string; publicKey: string };
   credential: string;
 };
-
-function wait(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitFor<T>(
-  fn: () => T | undefined,
-  timeoutMs = 1000,
-): Promise<T> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const result = fn();
-    if (result !== undefined) return result;
-    await wait(10);
-  }
-  throw new Error('Timed out waiting for condition');
-}
 
 async function startOnEphemeral(): Promise<{ port: number; server: Server }> {
   const app = createSignalingServer();

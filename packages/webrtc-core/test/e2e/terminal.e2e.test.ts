@@ -8,9 +8,7 @@ import {
   BASE_URL,
   setupE2E,
   teardownE2E,
-  seed,
-  spawnAgent,
-  waitForAgentOnline,
+  seedSignedTerminal,
   connectTerminal,
   frameBytes,
   postJson,
@@ -41,16 +39,13 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   }, 60_000);
 
   it('runs real PTY output over a real DTLS/SCTP connection', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
-    spawnAgent(agentId, credential);
-
-    // Ordered, not raced (spec §7.3 step 5): the offer must not be posted until
-    // the socket is registered, or the push lands on an empty map and the
-    // agent never sees it.
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       // `sh` echoes the command back and then runs it, so "hello" appears in
@@ -82,12 +77,13 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // languages — Rust base64, the DTLS/SCTP data channel, the werift adapter,
   // the JS decode — turns it into U+FFFD.
   it('preserves a non-UTF-8 byte (0xFF) end to end', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       // `printf '\377'` is the POSIX way to emit the single byte 0xFF with no
@@ -124,12 +120,13 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // the cross-language proof that PtyManager's keyed dispatch works over a real
   // DTLS/SCTP transport, not just in the Rust unit test.
   it('multiplexes two terminal sessions over one DataChannel', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     // Two distinct terminal ids, each with a unique marker so we can verify
     // output isolation rather than mere presence.
@@ -226,12 +223,13 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // Spec §6.3: terminal-resize must change the PTY window size. Verified by
   // running `stty size` in the shell, which prints "rows cols" from the PTY.
   it('applies terminal-resize and verifies via stty size', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       sendTerminalCreate(offerer, sessionId, 80, 24);
@@ -260,12 +258,14 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // `closeTab` does — dispose + peer.close) must end the agent's session, and
   // a fresh session for the same agent must then connect.
   it('frees the agent for the next connection after the peer closes', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, agentId, sessionId, agent, identity } =
+      await seedSignedTerminal();
 
-    const agent = spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     sendKeystrokes(offerer, sessionId, 'echo first-session\n');
     await waitForTerminalOutput(frames, 'first-session');
@@ -307,6 +307,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     const { offerer: offerer2, frames: frames2 } = await connectTerminal(
       session2.id,
       token,
+      identity,
     );
 
     try {
@@ -323,12 +324,13 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // loop, so the browser had nothing to act on and burned its full 20s
   // channel timeout with a message that named neither the refusal nor why.
   it('refuses a second concurrent session with a fast, visible failure', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, agentId, sessionId, identity } = await seedSignedTerminal();
 
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       sendKeystrokes(offerer, sessionId, 'echo holder\n');
@@ -350,7 +352,12 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       const offerer2 = new PeerConnection(
         new WeriftAdapter({ iceServers: [] }),
         transport2,
-        { role: 'offerer', channelLabels: ['terminal'] },
+        {
+          role: 'offerer',
+          channelLabels: ['terminal'],
+          sessionId: session2.id,
+          identity,
+        },
       );
 
       try {

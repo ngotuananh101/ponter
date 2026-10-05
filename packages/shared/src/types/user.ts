@@ -66,6 +66,8 @@ export interface Agent {
   osVersion: string | null;
   agentVersion: string | null;
   publicKey: string;
+  /** WS2 Ed25519 signing public key (base64 raw), or null before first connect. */
+  signingPublicKey: string | null;
   isOnline: boolean;
   lastHeartbeat: string | null;
   capabilities: string[];

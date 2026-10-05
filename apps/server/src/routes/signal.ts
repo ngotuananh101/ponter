@@ -3,13 +3,57 @@ import { eq, and, sql } from 'drizzle-orm';
 import type { AppContext } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
-import { sessions } from '../db/schema.js';
+import { sessions, users } from '../db/schema.js';
 import { recordSignal } from '../utils/signals.js';
 import { pushToAgent } from './ws.js';
-import type { SignalMessage } from '@ponter/shared';
+import type { SignalMessage, IdentityProof } from '@ponter/shared';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
+
+/**
+ * Load a session owned by `userId`, or throw the standard 404/409. The server
+ * is a pure relay: it enforces ownership and an active status, nothing else.
+ */
+async function loadActiveSession(
+  db: AppContext['Variables']['db'],
+  sessionId: string,
+  userId: string,
+) {
+  const session = await db
+    .select()
+    .from(sessions)
+    .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
+    .get();
+  if (!session) {
+    throw new AppError('Session not found', 404, 'NOT_FOUND');
+  }
+  if (session.status !== 'pending' && session.status !== 'active') {
+    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
+  }
+  return session;
+}
+
+/**
+ * The server is a pure relay for IdentityProof (spec §1): it validates the
+ * SHAPE only — both `signature` and `fingerprint` must be non-empty strings —
+ * and never verifies the signature. A malformed proof is dropped (returns
+ * `undefined`, treated as absent) rather than rejected with a 400, so the
+ * relay stays lenient and the peer is the authority on validity.
+ */
+function normalizeProof(proof: unknown): IdentityProof | undefined {
+  if (proof === undefined || proof === null) return undefined;
+  if (typeof proof !== 'object' || Array.isArray(proof)) return undefined;
+  const p = proof as Record<string, unknown>;
+  const signature =
+    typeof p.signature === 'string' && p.signature ? p.signature : undefined;
+  const fingerprint =
+    typeof p.fingerprint === 'string' && p.fingerprint
+      ? p.fingerprint
+      : undefined;
+  if (!signature || !fingerprint) return undefined;
+  return { signature, fingerprint };
+}
 
 // POST /api/signal/offer
 router.post('/offer', async (c) => {
@@ -18,6 +62,7 @@ router.post('/offer', async (c) => {
     sessionId?: string;
     sdp?: string;
     capabilities?: string[];
+    proof?: IdentityProof;
   } | null;
 
   if (!body?.sessionId || typeof body.sdp !== 'string' || !body.sdp.trim()) {
@@ -29,19 +74,13 @@ router.post('/offer', async (c) => {
   }
 
   const db = c.get('db');
-  const session = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.id, body.sessionId), eq(sessions.userId, user.id)))
-    .get();
+  const session = await loadActiveSession(db, body.sessionId, user.id);
 
-  if (!session) {
-    throw new AppError('Session not found', 404, 'NOT_FOUND');
-  }
-
-  if (session.status !== 'pending' && session.status !== 'active') {
-    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
-  }
+  // The server is a pure relay for IdentityProof (spec §1): it validates the
+  // SHAPE only (both fields are non-empty strings) and never verifies the
+  // signature. A malformed proof is dropped (treated as absent) rather than
+  // rejected, so the relay stays lenient and the peer is the authority.
+  const proof = normalizeProof(body.proof);
 
   const message: SignalMessage = {
     type: 'offer',
@@ -49,6 +88,7 @@ router.post('/offer', async (c) => {
       sessionId: body.sessionId,
       sdp: body.sdp,
       capabilities: body.capabilities ?? [],
+      ...(proof ? { proof } : {}),
     },
   };
 
@@ -57,9 +97,30 @@ router.post('/offer', async (c) => {
     throw new AppError('Failed to record signal', 500, 'INTERNAL_SERVER_ERROR');
   }
 
+  // The stored signal row is left unchanged; only the pushed message is
+  // enriched. The agent authenticates with its credential and cannot read
+  // user rows, so the session owner's signing public key is delivered with
+  // the offer. The value is always server-sourced — a client-supplied
+  // userSigningPublicKey is spread first and then overwritten below.
+  const owner = await db
+    .select({ signingPublicKey: users.signingPublicKey })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .get();
+
+  // Spread first, then set userSigningPublicKey last so the server-sourced
+  // value always wins over anything the client may have sent.
+  const pushed: SignalMessage = {
+    type: 'offer',
+    data: {
+      ...message.data,
+      userSigningPublicKey: owner?.signingPublicKey ?? null,
+    },
+  };
+
   // Fire-and-forget: push the signal to the agent's socket if connected.
   if (session.agentId) {
-    pushToAgent(session.agentId, message);
+    pushToAgent(session.agentId, pushed);
   }
 
   return c.json(
@@ -80,6 +141,7 @@ router.post('/answer', async (c) => {
     sessionId?: string;
     sdp?: string;
     approved?: boolean;
+    proof?: IdentityProof;
   } | null;
 
   if (!body?.sessionId || typeof body.sdp !== 'string' || !body.sdp.trim()) {
@@ -91,19 +153,10 @@ router.post('/answer', async (c) => {
   }
 
   const db = c.get('db');
-  const session = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.id, body.sessionId), eq(sessions.userId, user.id)))
-    .get();
+  const session = await loadActiveSession(db, body.sessionId, user.id);
 
-  if (!session) {
-    throw new AppError('Session not found', 404, 'NOT_FOUND');
-  }
-
-  if (session.status !== 'pending' && session.status !== 'active') {
-    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
-  }
+  // Shape-only validation for IdentityProof (see POST /offer comment).
+  const proof = normalizeProof(body.proof);
 
   const message: SignalMessage = {
     type: 'answer',
@@ -111,6 +164,7 @@ router.post('/answer', async (c) => {
       sessionId: body.sessionId,
       sdp: body.sdp,
       approved: body.approved !== false,
+      ...(proof ? { proof } : {}),
     },
   };
 
@@ -157,19 +211,7 @@ router.post('/ice-candidate', async (c) => {
   }
 
   const db = c.get('db');
-  const session = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.id, body.sessionId), eq(sessions.userId, user.id)))
-    .get();
-
-  if (!session) {
-    throw new AppError('Session not found', 404, 'NOT_FOUND');
-  }
-
-  if (session.status !== 'pending' && session.status !== 'active') {
-    throw new AppError('Session is not active', 409, 'SESSION_NOT_ACTIVE');
-  }
+  const session = await loadActiveSession(db, body.sessionId, user.id);
 
   const message: SignalMessage = {
     type: 'ice-candidate',

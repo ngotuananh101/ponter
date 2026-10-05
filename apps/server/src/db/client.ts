@@ -16,6 +16,7 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
       username TEXT NOT NULL UNIQUE,
       email TEXT UNIQUE,
       public_key TEXT NOT NULL,
+      signing_public_key TEXT,
       password_hash TEXT,
       is_active INTEGER NOT NULL DEFAULT 1,
       role TEXT NOT NULL DEFAULT 'user',
@@ -46,6 +47,7 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
       os_version TEXT,
       agent_version TEXT,
       public_key TEXT NOT NULL,
+      signing_public_key TEXT,
       is_online INTEGER NOT NULL DEFAULT 0,
       last_ping_at TEXT,
       credential_hash TEXT UNIQUE,
@@ -120,6 +122,18 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
   try {
     sqlite.exec(`
       ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'pending';
+    `);
+  } catch {}
+  // WS2: nullable signing public key for Ed25519 peer identity.
+  try {
+    sqlite.exec(`
+      ALTER TABLE users ADD COLUMN signing_public_key TEXT;
+    `);
+  } catch {}
+  // WS2: nullable signing public key for agent peer identity.
+  try {
+    sqlite.exec(`
+      ALTER TABLE agents ADD COLUMN signing_public_key TEXT;
     `);
   } catch {}
 }

@@ -1,13 +1,31 @@
+/** A peer's signed DTLS-fingerprint proof (WS2). */
+export interface IdentityProof {
+  /** Ed25519 signature (base64) over the canonical proof message. */
+  signature: string;
+  /** SHA-256 DTLS certificate fingerprint, normalized uppercase `XX:XX:…`. */
+  fingerprint: string;
+}
+
 export interface SignalOffer {
   sessionId: string;
   sdp: string;
   capabilities: string[];
+  /** Signed by the offerer's identity key. Absent only for legacy/loopback tests. */
+  proof?: IdentityProof;
+  /**
+   * WS2: the session owner's Ed25519 signing public key (base64 raw).
+   * Server-added on the offer pushed to the agent — never client-trusted; any
+   * client-supplied value is overwritten by the server.
+   */
+  userSigningPublicKey?: string | null;
 }
 
 export interface SignalAnswer {
   sessionId: string;
   sdp: string;
   approved: boolean;
+  /** Signed by the answerer's identity key. */
+  proof?: IdentityProof;
 }
 
 export interface IceCandidateSignal {
@@ -45,6 +63,11 @@ export type AgentSocketMessage =
   | { type: 'ping' }
   | { type: 'pong' }
   | { type: 'signal'; data: SignalMessage }
+  | { type: 'identity-challenge'; data: { nonce: string } }
+  | {
+      type: 'agent-identity';
+      data: { publicKey: string; nonce: string; signature: string };
+    }
   | { type: 'error'; code: AgentErrorCode };
 
 /**

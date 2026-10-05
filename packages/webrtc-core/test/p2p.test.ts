@@ -142,6 +142,14 @@ class OrderRecorder implements RTCPeerConnectionLike {
   }
 }
 
+function makeLoopbackPair() {
+  const bus = new InProcessBus();
+  return {
+    tA: bus.createTransport('A', 'B'),
+    tB: bus.createTransport('B', 'A'),
+  };
+}
+
 describe('Real P2P Handshake (werift)', () => {
   let offererPC: PeerConnection | null = null;
   let answererPC: PeerConnection | null = null;
@@ -158,19 +166,19 @@ describe('Real P2P Handshake (werift)', () => {
   });
 
   it('completes real ICE + DTLS + SCTP handshake on loopback without external STUN', async () => {
-    const bus = new InProcessBus();
-    const tA = bus.createTransport('A', 'B');
-    const tB = bus.createTransport('B', 'A');
+    const { tA, tB } = makeLoopbackPair();
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     const adapterB = new WeriftAdapter({ iceServers: [] });
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal', 'control'],
     });
 
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -218,19 +226,19 @@ describe('Real P2P Handshake (werift)', () => {
   }, 20000);
 
   it('buffers ICE candidates received before remote description is set (F1)', async () => {
-    const bus = new InProcessBus();
-    const tA = bus.createTransport('A', 'B');
-    const tB = bus.createTransport('B', 'A');
+    const { tA, tB } = makeLoopbackPair();
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     const recorder = new OrderRecorder(new WeriftAdapter({ iceServers: [] }));
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
 
     answererPC = new PeerConnection(recorder, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -250,19 +258,19 @@ describe('Real P2P Handshake (werift)', () => {
   }, 20000);
 
   it('creates configured data channels before offer so SCTP is in SDP (F2)', async () => {
-    const bus = new InProcessBus();
-    const tA = bus.createTransport('A', 'B');
-    const tB = bus.createTransport('B', 'A');
+    const { tA, tB } = makeLoopbackPair();
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     const adapterB = new WeriftAdapter({ iceServers: [] });
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['desktop', 'files'],
     });
 
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -277,19 +285,19 @@ describe('Real P2P Handshake (werift)', () => {
   }, 20000);
 
   it('exposes connection state change events', async () => {
-    const bus = new InProcessBus();
-    const tA = bus.createTransport('A', 'B');
-    const tB = bus.createTransport('B', 'A');
+    const { tA, tB } = makeLoopbackPair();
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     const adapterB = new WeriftAdapter({ iceServers: [] });
 
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['control'],
     });
 
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -313,6 +321,7 @@ describe('Real P2P Handshake (werift)', () => {
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     offererPC = new PeerConnection(adapterA, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -331,6 +340,7 @@ describe('Real P2P Handshake (werift)', () => {
 
     const adapterB = new WeriftAdapter({ iceServers: [] });
     answererPC = new PeerConnection(adapterB, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -392,6 +402,7 @@ describe('Real P2P Handshake (werift)', () => {
     };
 
     answererPC = new PeerConnection(recorder, tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });
@@ -415,6 +426,7 @@ describe('Real P2P Handshake (werift)', () => {
     const offererAdapter = new WeriftAdapter({ iceServers: [] });
     const tA = bus.createTransport('A', 'B');
     offererPC = new PeerConnection(offererAdapter, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -452,6 +464,7 @@ describe('Real P2P Handshake (werift)', () => {
 
     const adapterA = new WeriftAdapter({ iceServers: [] });
     offererPC = new PeerConnection(adapterA, capturingTransport, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
       capabilities: ['desktop'],
@@ -467,9 +480,7 @@ describe('Real P2P Handshake (werift)', () => {
   }, 20000);
 
   it('creates no data channels when channelLabels is empty', async () => {
-    const bus = new InProcessBus();
-    const tA = bus.createTransport('A', 'B');
-    const tB = bus.createTransport('B', 'A');
+    const { tA, tB } = makeLoopbackPair();
 
     // The recorder wraps the OFFERER: `addTransceiver` and `createOffer` are both
     // called on the offerer's peer, so wrapping the answerer would record
@@ -477,6 +488,7 @@ describe('Real P2P Handshake (werift)', () => {
     const recorder = new OrderRecorder(new WeriftAdapter({ iceServers: [] }));
 
     offererPC = new PeerConnection(recorder, tA, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: [],
       capabilities: ['desktop'],
@@ -484,6 +496,7 @@ describe('Real P2P Handshake (werift)', () => {
     });
 
     answererPC = new PeerConnection(new WeriftAdapter({ iceServers: [] }), tB, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });

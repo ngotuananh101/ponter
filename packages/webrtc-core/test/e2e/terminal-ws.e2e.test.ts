@@ -6,6 +6,7 @@ import type {
   SignalMessage,
   TerminalDataMessage,
 } from '@ponter/shared';
+import type { PeerConnectionIdentity } from '../../src/types';
 import {
   isLinux,
   PORT,
@@ -15,9 +16,7 @@ import {
   startServerProcess,
   stopServerProcess,
   waitForPortFree,
-  seed,
-  spawnAgent,
-  waitForAgentOnline,
+  seedSignedTerminal,
   openTerminalPeer,
   sendKeystrokes,
   waitForTerminalOutput,
@@ -105,6 +104,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   async function connectTerminal(
     sessionId: string,
     token: string,
+    identity?: PeerConnectionIdentity,
     existing?: WebSocketSignalTransport,
   ): Promise<{
     offerer: PeerConnection;
@@ -112,7 +112,11 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
     transport: WebSocketSignalTransport;
   }> {
     const transport = existing ?? wsTransport(sessionId, token);
-    const { offerer, frames } = await openTerminalPeer(transport);
+    const { offerer, frames } = await openTerminalPeer(
+      transport,
+      sessionId,
+      identity,
+    );
     return { offerer, frames, transport };
   }
 
@@ -121,12 +125,13 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // the upgrade, the subscribe/replay handshake and the live push work against
   // the real server process.
   it('runs real PTY output with signaling over the browser WebSocket', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
+    const { token, sessionId, identity } = await seedSignedTerminal();
 
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
-
-    const { offerer, frames } = await connectTerminal(sessionId, token);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       sendKeystrokes(offerer, sessionId, 'echo hello-ws\n');
@@ -164,10 +169,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // The Rust agent's own reconnect loop (200ms->2s backoff) is exercised while
   // the server is down.
   it('reconnects its signaling socket and delivers signals after a server restart', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
-
-    const agent = spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
+    const { token, sessionId, agent, identity } = await seedSignedTerminal();
 
     // A generous ladder: the server is down for the whole
     // kill -> port-free -> tsx start -> /health cycle, which is several seconds
@@ -236,6 +238,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
       const { offerer, frames } = await connectTerminal(
         sessionId,
         token,
+        identity,
         transport,
       );
       try {
@@ -263,10 +266,7 @@ describe.skipIf(!isLinux)('cross-language terminal E2E', () => {
   // is the end-to-end proof that the transport's error frame arrives without a
   // poll: the REST transport would only discover it on the next poll tick.
   it('receives SESSION_TERMINATED on the socket when the session is deleted', async () => {
-    const { token, agentId, credential, sessionId } = await seed();
-
-    spawnAgent(agentId, credential);
-    await waitForAgentOnline(token, agentId);
+    const { token, sessionId } = await seedSignedTerminal();
 
     const transport = wsTransport(sessionId, token);
     const errors: string[] = [];

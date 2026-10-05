@@ -13,6 +13,7 @@ function createMockAgent(overrides: Partial<Agent> = {}): Agent {
     osVersion: '6.5',
     agentVersion: '0.1.0',
     publicKey: 'mock-public-key',
+    signingPublicKey: null,
     capabilities: ['terminal', 'desktop'],
     isOnline: false,
     lastHeartbeat: null,
@@ -27,14 +28,6 @@ vi.mock('@/services/client', () => ({
       create: vi.fn(),
     },
   },
-}));
-
-vi.mock('@ponter/crypto', () => ({
-  generateUserKeyPair: vi.fn().mockResolvedValue({
-    publicKeySpkiBase64: 'mocked-spki-public-key',
-    privateKey: {} as CryptoKey,
-    publicKey: {} as CryptoKey,
-  }),
 }));
 
 describe('RegisterAgentDialog.vue', () => {
@@ -115,9 +108,14 @@ describe('RegisterAgentDialog.vue', () => {
       id: 'node-alpha-01',
       hostname: 'node-alpha.lan',
       platform: 'windows',
-      publicKey: 'mocked-spki-public-key',
       capabilities: ['terminal', 'desktop', 'files'],
     });
+
+    // Load-bearing guard: the dialog must never fabricate or send a publicKey.
+    // A real Ed25519 key is registered by the agent at first WS connect.
+    expect(apiClient.agents.create).toHaveBeenCalledWith(
+      expect.not.objectContaining({ publicKey: expect.anything() }),
+    );
 
     // Check success step rendered
     expect(wrapper.text()).toContain('Agent Provisioned:');

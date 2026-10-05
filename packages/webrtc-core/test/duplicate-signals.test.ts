@@ -91,6 +91,7 @@ describe('duplicate signals under at-least-once delivery', () => {
       const peer = new ScriptedPeer();
       const { transport, deliver } = stubTransport();
       const pc = new PeerConnection(peer, transport, {
+        sessionId: 'sess_1',
         role: 'offerer',
         channelLabels: ['terminal'],
       });
@@ -120,6 +121,7 @@ describe('duplicate signals under at-least-once delivery', () => {
     const peer = new ScriptedPeer();
     const { transport, sent, deliver } = stubTransport();
     const pc = new PeerConnection(peer, transport, {
+      sessionId: 'sess_1',
       role: 'answerer',
       channelLabels: [],
     });

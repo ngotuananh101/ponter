@@ -45,6 +45,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     osVersion: '6.5',
     agentVersion: '0.1.0',
     publicKey: 'pk-a',
+    signingPublicKey: null,
     isOnline: true,
     lastHeartbeat: null,
     capabilities: ['terminal', 'desktop'],

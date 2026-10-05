@@ -22,6 +22,7 @@ describe('a refused answer (approved: false)', () => {
     const peer = new ScriptedPeer();
     const { transport, deliver } = stubTransport();
     const pc = new PeerConnection(peer, transport, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -46,6 +47,7 @@ describe('a refused answer (approved: false)', () => {
     const peer = new ScriptedPeer();
     const { transport, deliver } = stubTransport();
     const pc = new PeerConnection(peer, transport, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
@@ -69,6 +71,7 @@ describe('a refused answer (approved: false)', () => {
     const peer = new ScriptedPeer();
     const { transport, deliver } = stubTransport();
     const pc = new PeerConnection(peer, transport, {
+      sessionId: 'sess_1',
       role: 'offerer',
       channelLabels: ['terminal'],
     });
