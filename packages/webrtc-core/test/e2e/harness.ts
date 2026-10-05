@@ -955,6 +955,9 @@ function createDeferred<T>(): [
  * distinct chunks are observed, and `cleanup` restores the original `push` on
  * resolution, rejection, or unexpected error.
  */
+/** ACK batch threshold: emit a sendAck every 8 newly-acked chunks. */
+const ACK_BATCH_CHUNKS = 8;
+
 export async function drainDownload(
   binaryFrames: Uint8Array[],
   transferId: string,
@@ -967,6 +970,7 @@ export async function drainDownload(
   let cursor = 0;
   let lastAcked = 0;
   let settle = false;
+  let flushPending = false;
 
   const origPush = binaryFrames.push;
 
@@ -983,6 +987,7 @@ export async function drainDownload(
     if (settle) return;
     settle = true;
     binaryFrames.push = origPush;
+    flushPending = false;
     clearTimeout(timer);
   };
 
@@ -996,9 +1001,29 @@ export async function drainDownload(
       );
       const contiguous = calculateContiguousChunks(chunks, lastAcked);
 
-      if (contiguous > lastAcked) {
+      if (
+        contiguous - lastAcked >= ACK_BATCH_CHUNKS ||
+        contiguous >= totalChunks
+      ) {
         lastAcked = contiguous;
         sendAck(contiguous);
+      } else if (contiguous > lastAcked && !flushPending) {
+        flushPending = true;
+        queueMicrotask(() => {
+          if (settle) return;
+          try {
+            const contiguousNow = calculateContiguousChunks(chunks, lastAcked);
+            if (contiguousNow > lastAcked) {
+              lastAcked = contiguousNow;
+              sendAck(contiguousNow);
+            }
+          } catch (err) {
+            cleanup();
+            rejectFn(err);
+          } finally {
+            flushPending = false;
+          }
+        });
       }
 
       if (chunks.size >= totalChunks) {
