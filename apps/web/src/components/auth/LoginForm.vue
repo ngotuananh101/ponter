@@ -25,7 +25,6 @@ const emit = defineEmits<{
 
 const username = ref('');
 const password = ref('');
-const validationError = ref<string | null>(null);
 
 watch(
   () => props.errorMessage,
@@ -35,9 +34,7 @@ watch(
 );
 
 function handleSubmit() {
-  validationError.value = null;
   if (!username.value.trim() || !password.value) {
-    validationError.value = 'Please enter both username and password';
     toast.error('Please enter both username and password');
     return;
   }

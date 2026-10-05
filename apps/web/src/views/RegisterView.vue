@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import RegisterForm from '@/components/auth/RegisterForm.vue';
 import { toast } from 'vue-sonner';
 
+const router = useRouter();
 const authStore = useAuthStore();
 
 onMounted(() => {
@@ -24,7 +26,7 @@ async function handleRegister(payload: {
       );
       return;
     }
-    // router.push('/dashboard') would happen here on a non-pending registration
+    router.push('/dashboard');
   } catch {
     // Error state is captured in store
   }

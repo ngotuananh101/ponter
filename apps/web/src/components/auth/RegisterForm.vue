@@ -30,7 +30,6 @@ const username = ref('');
 const email = ref('');
 const password = ref('');
 const confirmPassword = ref('');
-const validationError = ref<string | null>(null);
 
 watch(
   () => props.errorMessage,
@@ -44,30 +43,25 @@ function validateEmail(val: string): boolean {
 }
 
 function handleSubmit() {
-  validationError.value = null;
   const trimmedUser = username.value.trim();
   const trimmedEmail = email.value.trim();
 
   if (!trimmedUser || trimmedUser.length < 3) {
-    validationError.value = 'Username must be at least 3 characters';
     toast.error('Username must be at least 3 characters');
     return;
   }
 
   if (trimmedEmail && !validateEmail(trimmedEmail)) {
-    validationError.value = 'Please enter a valid email address';
     toast.error('Please enter a valid email address');
     return;
   }
 
   if (password.value.length < 8) {
-    validationError.value = 'Password must be at least 8 characters';
     toast.error('Password must be at least 8 characters');
     return;
   }
 
   if (password.value !== confirmPassword.value) {
-    validationError.value = 'Passwords do not match';
     toast.error('Passwords do not match');
     return;
   }

@@ -158,4 +158,16 @@ describe('DashboardView.vue', () => {
     expect(wrapper.find('[data-test="delete-agent-a1"]').exists()).toBe(true);
     expect(toast.success).toHaveBeenCalledWith('Agent deleted');
   });
+
+  it('renders an error Alert when device/agent load fails', async () => {
+    const { apiClient } = await import('@/services/client');
+    vi.mocked(apiClient.devices.list).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(apiClient.agents.list).mockRejectedValueOnce(new Error('boom'));
+
+    const wrapper = await mountDashboard([]);
+    await flushPromises();
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain('boom');
+  });
 });
