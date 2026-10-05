@@ -56,8 +56,6 @@ export function createLoginRateLimiter(
     const key = `${clientIp(c)}|${await peekUsername(c)}`;
     const t = now();
 
-    let isNewKey = false;
-
     if (entries.has(key)) {
       const existing = entries.get(key)!;
       // A window that has fully elapsed resets the entry in place: the previous
@@ -101,7 +99,6 @@ export function createLoginRateLimiter(
       // before yielding, check + insert can never be separated by a context
       // switch, and the Map can never grow past MAX_KEYS.
       entries.set(key, { failures: 0, resetAt: t + windowMs });
-      isNewKey = true;
     }
 
     const entry = entries.get(key)!;
@@ -124,19 +121,18 @@ export function createLoginRateLimiter(
     if (c.res.status === 401) {
       // Increment the reserved/in-flight entry in place. We never re-insert a
       // fresh object on a new 401 here (that would reset resetAt and discard
-      // the synchronous reservation's budget accounting); the entry was
-      // either just reserved above or carried over from a prior window reset,
-      // so a plain increment is correct.
+      // the synchronous reservation's budget accounting); the entry was either
+      // just reserved above or carried over from a prior window reset, so a
+      // plain increment is correct.
       entry.failures += 1;
     } else if (c.res.status === 200) {
       // A successful login clears the key: a legitimate user never accumulates
       // budget. The reserved slot (if any) is released.
       entries.delete(key);
     } else {
-      // A non-401/non-200 response (e.g. a pending-approval 403, 5xx, etc.) is
-      // neither a failed password nor a successful login: leave the reserved
-      // entry untouched so neither its budget nor its slot is consumed.
-      void isNewKey;
+      // A non-401/non-200 response (e.g. pending-approval 403) does not
+      // increment budget. A NEW key's reserved slot ages out with its window;
+      // it is not released here.
     }
   };
 }
@@ -187,87 +183,4 @@ async function peekUsername(c: {
   } catch {
     return '';
   }
-}
-
-/**
- * Test-only factory: like `createLoginRateLimiter` but also exposes the limiter's
- * live `entries` map so tests can assert the bounded-invariant directly (e.g.
- * that the table never exceeds `MAX_KEYS` under a concurrent burst of new keys).
- */
-export function createLoginRateLimiterForTest(
-  options: LoginRateLimitOptions = {},
-): {
-  middleware: MiddlewareHandler<AppContext>;
-  entries: Map<string, Entry>;
-} {
-  const maxFailures = options.maxFailures ?? 5;
-  const windowMs = options.windowMs ?? 15 * 60 * 1000;
-  const now = options.now ?? (() => Date.now());
-  const entries = new Map<string, Entry>();
-
-  const middleware: MiddlewareHandler<AppContext> = async (c, next) => {
-    const key = `${clientIp(c)}|${await peekUsername(c)}`;
-    const t = now();
-
-    let isNewKey = false;
-
-    if (entries.has(key)) {
-      const existing = entries.get(key)!;
-      if (existing.resetAt <= t) {
-        existing.failures = 0;
-        existing.resetAt = t + windowMs;
-      }
-    } else {
-      for (const [k, e] of entries) {
-        if (e.resetAt <= t) entries.delete(k);
-      }
-      if (entries.size >= MAX_KEYS) {
-        const retryAfter = Math.ceil(windowMs / 1000);
-        return c.json(
-          {
-            error: 'Too many login attempts. Try again later.',
-            code: 'TOO_MANY_REQUESTS',
-            details: { retryAfter },
-          },
-          429,
-          { 'Retry-After': String(retryAfter) },
-        );
-      }
-      // Reserve synchronously, before any await (see createLoginRateLimiter).
-      entries.set(key, { failures: 0, resetAt: t + windowMs });
-      isNewKey = true;
-    }
-
-    const entry = entries.get(key)!;
-
-    if (entry.failures >= maxFailures && t < entry.resetAt) {
-      const retryAfter = Math.ceil((entry.resetAt - t) / 1000);
-      return c.json(
-        {
-          error: 'Too many login attempts. Try again later.',
-          code: 'TOO_MANY_REQUESTS',
-          details: { retryAfter },
-        },
-        429,
-        { 'Retry-After': String(retryAfter) },
-      );
-    }
-
-    await next();
-
-    if (c.res.status === 401) {
-      // Increment the reserved/in-flight entry in place. We never re-insert a
-      // fresh object on a new 401 here (that would reset resetAt and discard
-      // the synchronous reservation's budget accounting); the entry was
-      // either just reserved above or carried over from a prior window reset,
-      // so a plain increment is correct.
-      entry.failures += 1;
-    } else if (c.res.status === 200) {
-      entries.delete(key);
-    } else {
-      void isNewKey;
-    }
-  };
-
-  return { middleware, entries };
 }
