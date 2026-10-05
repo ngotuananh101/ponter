@@ -24,3 +24,24 @@ describe('no false E2EE claims in the UI', () => {
     });
   }
 });
+
+// Scope guard C: no UI text may assert a peer-identity property the code does
+// not implement. WS2 peer identity is enforced at the agent and signal-layer
+// (Phase 5 Week 13); a marketing label in the UI that outpaces the wire
+// protocol would be a false claim of the same stripe. The match is
+// case-insensitive and covers the common forms ("Peer Identity", "peer
+// identity", "end-to-end identity").
+const WS2_FILES = [
+  'components/layout/AppHeader.vue',
+  'components/auth/RegisterForm.vue',
+  'views/DashboardView.vue',
+];
+
+describe('no false peer-identity claims in the UI', () => {
+  for (const file of WS2_FILES) {
+    it(`${file} does not claim peer identity`, () => {
+      const source = read(file);
+      expect(source).not.toMatch(/peer[\s-]*ident/i);
+    });
+  }
+});
