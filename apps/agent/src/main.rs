@@ -554,8 +554,13 @@ async fn run_with_reconnect(
         // forever, against a peer that accepts the TCP connection but never
         // answers the upgrade). Racing the connect against the signal keeps a
         // listener live for the whole attempt.
-        let connect =
-            SignalClient::connect(&cli.server, credential, inbound_tx.clone(), ice_tx.clone());
+        let connect = SignalClient::connect(
+            &cli.server,
+            credential,
+            inbound_tx.clone(),
+            ice_tx.clone(),
+            cfg.identity.clone(),
+        );
         tokio::pin!(connect);
         let connected = tokio::select! {
             result = &mut connect => result,
