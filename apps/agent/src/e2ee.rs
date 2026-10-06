@@ -353,6 +353,7 @@ mod negotiation_tests {
         AgentIdentity::load_or_generate(&dir.join("id.json")).expect("identity")
     }
 
+    #[allow(dead_code)]
     fn hex_to_vec(hex: &str) -> Vec<u8> {
         (0..hex.len())
             .step_by(2)
