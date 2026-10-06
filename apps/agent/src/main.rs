@@ -9,6 +9,8 @@
 // compiled out entirely, so the musl artifact stays terminal-only.
 #[cfg(not(target_env = "musl"))]
 mod desktop;
+#[allow(dead_code)]
+mod e2ee;
 // `input` is gated with `desktop`, not independently: `to_absolute` takes a
 // `DesktopSourceInfo` (spec §6.2), so the module cannot compile where `desktop`
 // is compiled out. The musl artifact has no desktop session to inject into
