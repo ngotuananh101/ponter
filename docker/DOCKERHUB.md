@@ -96,10 +96,13 @@ See the [Deployment Guide](https://github.com/ngotuananh101/ponter/blob/main/doc
 
 ## Tags
 
-| Tag           | Meaning                                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `latest`      | The most recent image manually published from the `main` branch via the Docker Publish workflow                     |
-| `sha-<short>` | Every publish run, tagged with the 7-character commit SHA (e.g. `sha-553d3cd`) — use it to pin a build or roll back |
+| Tag           | Meaning                                                                                                                                                                 |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `latest`      | The most recent image manually published from the `main` branch via the Docker Publish workflow                                                                         |
+| `sha-<short>` | Every publish run, tagged with the 7-character commit SHA (e.g. `sha-553d3cd`) — use it to pin a build or roll back                                                     |
+| `<tag>`       | An optional custom tag (e.g. `v1.2.3`) attached when the `tag` input is supplied; persists — avoid a `sha-` prefix, which falls inside the retention window (see below) |
+
+Only the three most recent `sha-<short>` tags are retained; each publish without a custom tag prunes older `sha-` tags automatically. Pin a `sha-` tag only within that window, or use a custom tag for a durable name. A custom tag that itself starts with `sha-` is indistinguishable from a build tag and falls inside the retention window — avoid the `sha-` prefix for durable tags.
 
 All tags are multi-arch manifests (`linux/amd64` + `linux/arm64` in one image, built on native runners without QEMU). The compressed image is roughly 280 MB on amd64 and 270 MB on arm64.
 
