@@ -272,6 +272,32 @@ pub fn build_agent_identity_frame(
     serde_json::to_string(&frame).expect("agent-identity frame must serialize")
 }
 
+/// How the signaling socket ended, as far as the reconnect loop cares (M2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunEnd {
+    /// The peer closed with a code that says "do not come back": 4409 (this
+    /// agent was replaced by a newer connection) or 4401 (the credential was
+    /// rejected). Reconnecting would flap against a server that has already
+    /// decided, and in the 4409 case would evict the connection that replaced
+    /// this one.
+    Terminal(u16),
+    /// Anything else — 1000, 1001, no close frame, or a read error: the socket
+    /// died for a reason the next attempt can plausibly fix.
+    Transient,
+}
+
+/// Classify a WebSocket close code for the reconnect loop.
+///
+/// Deliberately a pure function over `Option<u16>`: the close-code policy is
+/// the part that can be unit-tested without a socket, and it is the part that
+/// must not drift.
+pub fn classify_close(code: Option<u16>) -> RunEnd {
+    match code {
+        Some(c @ (4409 | 4401)) => RunEnd::Terminal(c),
+        _ => RunEnd::Transient,
+    }
+}
+
 /// A connected agent socket.
 pub struct SignalClient {
     sink: futures_util::stream::SplitSink<
@@ -356,9 +382,9 @@ impl SignalClient {
         Ok(())
     }
 
-    /// Read + write + ping loop. Returns `Ok(())` on a clean close and `Err` on
-    /// a fatal condition; the supervisor in `main.rs` decides whether that is a
-    /// reconnect or an exit.
+    /// Read + write + ping loop. On a clean close returns `Ok(RunEnd)` — the
+    /// peer's verdict — and `Err` on a fatal condition; the supervisor in
+    /// `main.rs` reconnects only on [`RunEnd::Transient`].
     ///
     /// `outbound_rx` is **borrowed**, not consumed, and belongs to the caller
     /// across reconnects: the session task keeps its `outbound_tx`, and the
@@ -368,7 +394,7 @@ impl SignalClient {
     /// only reader just died. The inbound side needs no such treatment — the
     /// caller owns that receiver, so a fresh socket's `run()` resumes writing
     /// to the same queue.
-    pub async fn run(&mut self, outbound_rx: &mut mpsc::Receiver<SignalMessage>) -> Result<()> {
+    pub async fn run(&mut self, outbound_rx: &mut mpsc::Receiver<SignalMessage>) -> Result<RunEnd> {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         // Skip the immediate first tick: connecting already wrote `is_online`,
         // and a ping at t=0 is noise.
@@ -408,7 +434,7 @@ impl SignalClient {
                         Ok(frame) => frame,
                         Err(_) => bail!("no frame from the server in {IDLE_TIMEOUT:?}"),
                     };
-                    let Some(frame) = frame else { return Ok(()) };  // clean close
+                    let Some(frame) = frame else { return Ok(RunEnd::Transient) };  // stream ended without a close frame
                     match frame.context("inbound read failed")? {
                         Message::Text(text) => {
                             // The WS2 identity challenge is answered before any
@@ -489,7 +515,15 @@ impl SignalClient {
                                 .context("pong failed")?;
                         }
                         Message::Pong(_) => {}
-                        Message::Close(_) => return Ok(()),
+                        Message::Close(frame) => {
+                            // M2: the close code is the server's verdict. 4409
+                            // (replaced) and 4401 (unauthorized) are terminal;
+                            // everything else, including 1001 on a server
+                            // restart, is a transient close the caller
+                            // reconnects from.
+                            let code = frame.map(|f| u16::from(f.code));
+                            return Ok(classify_close(code));
+                        }
                         // `Frame` is feature-gated in tungstenite, so a
                         // catch-all keeps this exhaustive either way.
                         _ => {}
@@ -525,6 +559,28 @@ mod tests {
             value["data"].get("session_id").is_none(),
             "must be camelCase"
         );
+    }
+
+    #[test]
+    fn classify_close_treats_replaced_and_unauthorized_as_terminal() {
+        // 4409: the server replaced this connection with a newer one for the
+        // same agent id. Reconnecting would evict the newcomer, which would
+        // reconnect in turn — a flap between two processes.
+        assert_eq!(classify_close(Some(4409)), RunEnd::Terminal(4409));
+        // 4401: the credential was rejected. Retrying can never succeed.
+        assert_eq!(classify_close(Some(4401)), RunEnd::Terminal(4401));
+    }
+
+    #[test]
+    fn classify_close_treats_everything_else_as_transient() {
+        // 1001 is the server-restart close: terminal-ws.e2e.test.ts kills the
+        // server under a live agent and requires it to reconnect. Treating
+        // 1001 as terminal would strand that agent forever.
+        assert_eq!(classify_close(Some(1001)), RunEnd::Transient);
+        assert_eq!(classify_close(Some(1000)), RunEnd::Transient);
+        assert_eq!(classify_close(Some(1011)), RunEnd::Transient);
+        // No close frame at all (the stream just ended) is transient too.
+        assert_eq!(classify_close(None), RunEnd::Transient);
     }
 
     #[test]

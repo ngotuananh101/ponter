@@ -735,9 +735,12 @@ pub async fn flush_pending_candidates(
 /// empty `sdp` with `400 VALIDATION_ERROR` (spec R19), so the refusal path calls
 /// `create_answer` first and sends the real SDP with `approved: false`. A
 /// refusal is therefore indistinguishable from a success at the transport layer
-/// and visible only in the flag — honest, because the Worker does not act on the
-/// flag today (`routes/signal.ts` stores `approved: body.approved !== false` and
-/// nothing enforces it).
+/// and visible only in the flag — which `routes/signal.ts` stores as
+/// `approved: body.approved !== false`. Since WS3 the flag is enforced: the
+/// `recordSignal` gate (`apps/server/src/utils/signals.ts`) moves a session
+/// `pending -> active` only when `approved !== false` (H2), and the browser
+/// refuses a refusal-answer before `setRemoteDescription`
+/// (`packages/webrtc-core/src/connection.ts`).
 pub async fn answer_offer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
