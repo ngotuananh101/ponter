@@ -9,6 +9,11 @@ import {
   waitForAgentOnline,
   waitFor,
   agentConnectCount,
+  postJson,
+  seedSignedTerminal,
+  connectTerminal,
+  sendKeystrokes,
+  waitForTerminalOutput,
 } from './harness';
 
 /**
@@ -67,4 +72,63 @@ describe.skipIf(!isLinux)('cross-language WS3 session hardening', () => {
     // from the output alone.
     expect(first.output()).toMatch(/not reconnecting/i);
   }, 60_000);
+
+  /**
+   * M3: a candidate addressed to a session this agent is not running must be
+   * dropped by the live session's router, not applied to its peer connection.
+   *
+   * The guard landed in 2de7a23 (before the spec's baseline) but had no test —
+   * this is that test, and Step 3 proves it is load-bearing by mutation.
+   *
+   * The debug log is the observable: the live session logs the drop with both
+   * ids. A candidate is delivered through the REST route for session B while
+   * session A is live; the server pushes it to the same agent socket, the live
+   * session's `route_inbound` sees `candidate.session_id != session_id` and
+   * drops it. Session A must stay healthy across the event.
+   */
+  it('drops a candidate for a foreign session while a session is live (M3)', async () => {
+    const { token, agentId, sessionId, identity, agent } =
+      await seedSignedTerminal({ env: { RUST_LOG: 'debug' } });
+
+    const { offerer, frames } = await connectTerminal(sessionId, token, identity);
+
+    try {
+      sendKeystrokes(offerer, sessionId, 'echo before-foreign-candidate\n');
+      await waitForTerminalOutput(frames, 'before-foreign-candidate');
+
+      // A second session for the same agent: a legitimate row the agent will
+      // never serve (ADR-14), used only as a foreign session id.
+      const foreign = await postJson<{ id: string }>(
+        '/api/sessions',
+        { agentId },
+        token,
+      );
+
+      await postJson<{ id: string }>(
+        '/api/signal/ice-candidate',
+        {
+          sessionId: foreign.id,
+          candidate: 'candidate:1 1 udp 1 127.0.0.1 9 typ host',
+          sdpMid: '0',
+          sdpMLineIndex: 0,
+        },
+        token,
+      );
+
+      await waitFor(
+        () =>
+          agent
+            .output()
+            .includes('dropping a candidate for a session that is not live'),
+        'the live session to log the foreign-candidate drop',
+        10_000,
+      );
+
+      // The live session must be unaffected by the dropped candidate.
+      sendKeystrokes(offerer, sessionId, 'echo after-foreign-candidate\n');
+      await waitForTerminalOutput(frames, 'after-foreign-candidate');
+    } finally {
+      await offerer.close();
+    }
+  }, 90_000);
 });
