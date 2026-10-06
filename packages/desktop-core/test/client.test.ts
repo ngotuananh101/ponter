@@ -675,6 +675,9 @@ describe('DesktopClient input surface (Week 9, spec §5.3)', () => {
   });
 });
 
+/** Module-level so the E2EE activation helper and tests share one type. */
+type SessionKey = Awaited<ReturnType<typeof buildSessionKey>>;
+
 /**
  * Build a real WS1 session key pair for two peers so the test can round-trip:
  * the browser-side `TerminalE2ee`-shaped driver encrypts, and a mirrored key
@@ -698,6 +701,114 @@ async function makePeerKeys(sessionId: string) {
     ),
     sessionId,
   };
+}
+
+/** Poll until negotiateE2ee has emitted the desktop-e2ee-hello frame. */
+async function waitForHelloFrame(): Promise<
+  { terminalId: string; ecdhPublicKey: string; signature: string } | undefined
+> {
+  const start = Date.now();
+  while (
+    !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
+    Date.now() - start < 2000
+  ) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return mockSendJson.mock.calls.find(
+    (c) => c[1] === 'desktop-e2ee-hello',
+  )?.[2] as
+    | { terminalId: string; ecdhPublicKey: string; signature: string }
+    | undefined;
+}
+
+interface ActivateOptions {
+  sessionId: string;
+  /** Override the driver's encrypt (default: browserKey.encrypt). `key` is the
+   *  activated browser session key — use it for the real encryption. */
+  encrypt?: (data: Uint8Array, key: SessionKey) => Promise<Uint8Array>;
+  /** Registered on the client BEFORE start() (failure-isolation test needs this). */
+  onError?: (msg: string) => void;
+}
+
+/**
+ * Drive the full E2EE activation sequence (hello -> ack -> active) through the
+ * real DesktopClient path. The ONLY per-test variation is `sessionId`, the
+ * optional `encrypt` override, and the optional `onError` registration.
+ */
+async function activateDesktopE2ee(opts: ActivateOptions): Promise<{
+  client: DesktopClient;
+  mock: ReturnType<typeof mockPeer>;
+  agentKey: SessionKey; // mirrored key built from the browser's hello
+}> {
+  const browser = await makePeerKeys(opts.sessionId);
+  const agent = await makePeerKeys(opts.sessionId);
+
+  let browserKey: SessionKey | null = null;
+  const browserDriver: DesktopE2eeDriver = {
+    isActive: () => browserKey !== null,
+    buildHello: vi.fn(async (terminalId: string) => ({
+      terminalId,
+      ecdhPublicKey: browser.ecdhPublicKey,
+      signature: browser.signature,
+    })),
+    handleAck: async (_ack: unknown) => {
+      browserKey = await buildSessionKey({
+        myEcdhPrivateKey: browser.ecdhPrivateKey,
+        peerEcdhPublicKeySpkiBase64: agent.ecdhPublicKey,
+        peerBindingSignature: agent.signature,
+        peerSigningPublicKey: agent.peerSigningPublicKey,
+        sessionId: opts.sessionId,
+      });
+    },
+    encrypt: (data) =>
+      opts.encrypt
+        ? opts.encrypt(data, browserKey!)
+        : browserKey!.encrypt(data),
+    decrypt: (data) => browserKey!.decrypt(data),
+  };
+
+  const mock = mockPeer();
+  const client = new DesktopClient(
+    'agent-1',
+    mock.peer,
+    undefined,
+    browserDriver,
+  );
+  if (opts.onError) client.onError(opts.onError);
+  const started = client.start();
+  mock.emitTrack(fakeTrack, fakeStreams);
+  await started;
+  mock.setControlState('open');
+
+  const hello = await waitForHelloFrame();
+  expect(hello).toBeDefined();
+
+  const agentKey = await buildSessionKey({
+    myEcdhPrivateKey: agent.ecdhPrivateKey,
+    peerEcdhPublicKeySpkiBase64: hello!.ecdhPublicKey,
+    peerBindingSignature: hello!.signature,
+    peerSigningPublicKey: browser.peerSigningPublicKey,
+    sessionId: opts.sessionId,
+  });
+
+  mock.emitControl({
+    type: 'desktop-e2ee-ack',
+    channel: 'control',
+    payload: {
+      terminalId: hello!.terminalId,
+      ecdhPublicKey: agent.ecdhPublicKey,
+      signature: agent.signature,
+    },
+    timestamp: 1,
+  });
+
+  const start = Date.now();
+  while (!browserKey && Date.now() - start < 2000) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  expect(browserKey).not.toBeNull();
+
+  return { client, mock, agentKey };
 }
 
 /** A `DesktopE2eeDriver` stub: dormant until `activate()` flips it on. */
@@ -785,13 +896,8 @@ describe('DesktopClient E2EE (Task 6b)', () => {
 
     // The hello fires once the channel resolves inside subscribeControl, via the
     // ordered sendChain — give it a few microtask ticks to flush.
-    const start = Date.now();
-    while (
-      !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
-      Date.now() - start < 2000
-    ) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await waitForHelloFrame();
+
     const hellos = mockSendJson.mock.calls.filter(
       (c) => c[1] === 'desktop-e2ee-hello',
     );
@@ -810,91 +916,10 @@ describe('DesktopClient E2EE (Task 6b)', () => {
   });
 
   it('decrypts ciphertext sent when active: round-trips the DesktopInput JSON', async () => {
-    const browser = await makePeerKeys('sess-1');
-    const agent = await makePeerKeys('sess-1');
-
-    // Real key on the browser side: isActive starts false (hello fires), then
-    // flips true after handleAck derives the shared key.
-    let browserKey: Awaited<ReturnType<typeof buildSessionKey>> | null = null;
-    const browserDriver: DesktopE2eeDriver = {
-      isActive: () => browserKey !== null,
-      buildHello: vi.fn(async (terminalId: string) => ({
-        terminalId,
-        ecdhPublicKey: browser.ecdhPublicKey,
-        signature: browser.signature,
-      })),
-      handleAck: async (_ack: unknown) => {
-        browserKey = await buildSessionKey({
-          myEcdhPrivateKey: browser.ecdhPrivateKey,
-          peerEcdhPublicKeySpkiBase64: agent.ecdhPublicKey,
-          peerBindingSignature: agent.signature,
-          peerSigningPublicKey: agent.peerSigningPublicKey,
-          sessionId: 'sess-1',
-        });
-      },
-      encrypt: (data) => browserKey!.encrypt(data),
-      decrypt: (data) => browserKey!.decrypt(data),
-    };
-
-    // Drive the hello/ack through the REAL client path (emit a desktop-e2ee-ack),
-    // mirroring the terminal-core T5-R1 discipline — not by calling handleAck.
-    const mock = mockPeer();
-    const client = new DesktopClient(
-      'agent-1',
-      mock.peer,
-      undefined,
-      browserDriver,
-    );
-    const started = client.start();
-    mock.emitTrack(fakeTrack, fakeStreams);
-    await started;
-    mock.setControlState('open');
-
-    // Wait for the hello frame to be emitted by negotiateE2ee.
-    const start = Date.now();
-    while (
-      !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
-      Date.now() - start < 2000
-    ) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    const helloFrame = mockSendJson.mock.calls.find(
-      (c) => c[1] === 'desktop-e2ee-hello',
-    );
-    expect(helloFrame).toBeDefined();
-    const hello = helloFrame![2] as {
-      terminalId: string;
-      ecdhPublicKey: string;
-      signature: string;
-    };
-
-    // Build the agent-side mirrored key from the browser's advertised ECDH key.
-    const agentKey = await buildSessionKey({
-      myEcdhPrivateKey: agent.ecdhPrivateKey,
-      peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,
-      peerBindingSignature: hello.signature,
-      peerSigningPublicKey: browser.peerSigningPublicKey,
+    const { client, mock, agentKey } = await activateDesktopE2ee({
       sessionId: 'sess-1',
     });
-
-    // Emit the ack through the control channel so the client's handleAck runs.
-    const ack = {
-      terminalId: hello.terminalId,
-      ecdhPublicKey: agent.ecdhPublicKey,
-      signature: agent.signature,
-    };
-    mock.emitControl({
-      type: 'desktop-e2ee-ack',
-      channel: 'control',
-      payload: ack,
-      timestamp: 1,
-    });
-
-    // Wait for the browser-side key to activate.
-    while (!browserKey && Date.now() - start < 2000) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(browserKey).not.toBeNull();
+    void mock;
 
     // Now sentInputs must be encrypted.
     const event: DesktopInput = {
@@ -936,74 +961,18 @@ describe('DesktopClient E2EE (Task 6b)', () => {
     // T6-C failure isolation: when encrypt() throws on the first call, the
     // .catch on sendChain must (a) forward the error and (b) NOT poison the
     // chain — the second send must still be delivered.
-    const browser = await makePeerKeys('sess-fail');
-    const agent = await makePeerKeys('sess-fail');
-
-    let browserKey: Awaited<ReturnType<typeof buildSessionKey>> | null = null;
-    let encryptCalls = 0;
     const errors: string[] = [];
-    const browserDriver: DesktopE2eeDriver = {
-      isActive: () => browserKey !== null,
-      buildHello: vi.fn(async (terminalId: string) => ({
-        terminalId,
-        ecdhPublicKey: browser.ecdhPublicKey,
-        signature: browser.signature,
-      })),
-      handleAck: async (_ack: unknown) => {
-        browserKey = await buildSessionKey({
-          myEcdhPrivateKey: browser.ecdhPrivateKey,
-          peerEcdhPublicKeySpkiBase64: agent.ecdhPublicKey,
-          peerBindingSignature: agent.signature,
-          peerSigningPublicKey: agent.peerSigningPublicKey,
-          sessionId: 'sess-fail',
-        });
-      },
-      encrypt: vi.fn(async (data: Uint8Array) => {
+    let encryptCalls = 0;
+    const { client, mock } = await activateDesktopE2ee({
+      sessionId: 'sess-fail',
+      onError: (msg) => errors.push(msg),
+      encrypt: async (data, key) => {
         encryptCalls++;
         if (encryptCalls === 1) throw new Error('boom on first encrypt');
-        return browserKey!.encrypt(data);
-      }),
-      decrypt: (data) => browserKey!.decrypt(data),
-    };
-
-    const mock = mockPeer();
-    const client = new DesktopClient(
-      'agent-1',
-      mock.peer,
-      undefined,
-      browserDriver,
-    );
-    client.onError((msg) => errors.push(msg));
-    const started = client.start();
-    mock.emitTrack(fakeTrack, fakeStreams);
-    await started;
-    mock.setControlState('open');
-
-    // Hello + ack to activate.
-    const start = Date.now();
-    while (
-      !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
-      Date.now() - start < 2000
-    ) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    const hello = mockSendJson.mock.calls.find(
-      (c) => c[1] === 'desktop-e2ee-hello',
-    )![2] as { terminalId: string; ecdhPublicKey: string; signature: string };
-    mock.emitControl({
-      type: 'desktop-e2ee-ack',
-      channel: 'control',
-      payload: {
-        terminalId: hello.terminalId,
-        ecdhPublicKey: agent.ecdhPublicKey,
-        signature: agent.signature,
+        return key.encrypt(data);
       },
-      timestamp: 1,
     });
-    while (!browserKey && Date.now() - start < 2000) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(browserKey).not.toBeNull();
+    void mock;
 
     // Two discrete inputs: first encrypt throws, second must still deliver.
     mockSendJson.mockClear();
@@ -1048,81 +1017,17 @@ describe('DesktopClient E2EE (Task 6b)', () => {
   it('preserves send order via the sendChain (T6-C: never reorder)', async () => {
     // T6-C ordering: encrypt() resolves in reverse order (first delayed longer
     // than second), but the frames must still be sent in call order.
-    const browser = await makePeerKeys('sess-order');
-    const agent = await makePeerKeys('sess-order');
-
-    let browserKey: Awaited<ReturnType<typeof buildSessionKey>> | null = null;
     let encryptCalls = 0;
-    const browserDriver: DesktopE2eeDriver = {
-      isActive: () => browserKey !== null,
-      buildHello: vi.fn(async (terminalId: string) => ({
-        terminalId,
-        ecdhPublicKey: browser.ecdhPublicKey,
-        signature: browser.signature,
-      })),
-      handleAck: async (_ack: unknown) => {
-        browserKey = await buildSessionKey({
-          myEcdhPrivateKey: browser.ecdhPrivateKey,
-          peerEcdhPublicKeySpkiBase64: agent.ecdhPublicKey,
-          peerBindingSignature: agent.signature,
-          peerSigningPublicKey: agent.peerSigningPublicKey,
-          sessionId: 'sess-order',
-        });
-      },
-      encrypt: vi.fn(async (data: Uint8Array) => {
+    const { client, mock, agentKey } = await activateDesktopE2ee({
+      sessionId: 'sess-order',
+      encrypt: async (data, key) => {
         encryptCalls++;
-        // First call delayed longer (50ms); second resolves quicker (5ms).
         const delay = encryptCalls === 1 ? 50 : 5;
         await new Promise((r) => setTimeout(r, delay));
-        return browserKey!.encrypt(data);
-      }),
-      decrypt: (data) => browserKey!.decrypt(data),
-    };
-
-    const mock = mockPeer();
-    const client = new DesktopClient(
-      'agent-1',
-      mock.peer,
-      undefined,
-      browserDriver,
-    );
-    const started = client.start();
-    mock.emitTrack(fakeTrack, fakeStreams);
-    await started;
-    mock.setControlState('open');
-
-    // Hello + ack to activate.
-    const start = Date.now();
-    while (
-      !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
-      Date.now() - start < 2000
-    ) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    const hello = mockSendJson.mock.calls.find(
-      (c) => c[1] === 'desktop-e2ee-hello',
-    )![2] as { terminalId: string; ecdhPublicKey: string; signature: string };
-    const agentKey = await buildSessionKey({
-      myEcdhPrivateKey: agent.ecdhPrivateKey,
-      peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,
-      peerBindingSignature: hello.signature,
-      peerSigningPublicKey: browser.peerSigningPublicKey,
-      sessionId: 'sess-order',
-    });
-    mock.emitControl({
-      type: 'desktop-e2ee-ack',
-      channel: 'control',
-      payload: {
-        terminalId: hello.terminalId,
-        ecdhPublicKey: agent.ecdhPublicKey,
-        signature: agent.signature,
+        return key.encrypt(data);
       },
-      timestamp: 1,
     });
-    while (!browserKey && Date.now() - start < 2000) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(browserKey).not.toBeNull();
+    void mock;
 
     // Two distinct inputs back-to-back.
     mockSendJson.mockClear();
