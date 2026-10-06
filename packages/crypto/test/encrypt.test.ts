@@ -13,18 +13,32 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 interface Vectors {
-  hkdfSha256: { ikmHex: string; saltHex: string; infoHex: string; length: number; okmHex: string };
+  hkdfSha256: {
+    ikmHex: string;
+    saltHex: string;
+    infoHex: string;
+    length: number;
+    okmHex: string;
+  };
   aesGcm256: {
-    keyHex: string; ivHex: string; plaintextHex: string;
-    ciphertextHex: string; tagHex: string;
+    keyHex: string;
+    ivHex: string;
+    plaintextHex: string;
+    ciphertextHex: string;
+    tagHex: string;
   };
   ecdhP256: {
-    privateJwk: JsonWebKey; peerPublicRawHex: string; secretHex: string;
+    privateJwk: JsonWebKey;
+    peerPublicRawHex: string;
+    secretHex: string;
   };
 }
 
 const vectors: Vectors = JSON.parse(
-  readFileSync(fileURLToPath(new URL('./vectors/e2ee-vectors.json', import.meta.url)), 'utf8'),
+  readFileSync(
+    fileURLToPath(new URL('./vectors/e2ee-vectors.json', import.meta.url)),
+    'utf8',
+  ),
 );
 
 const hex = (s: string) => Uint8Array.from(Buffer.from(s, 'hex'));
@@ -44,15 +58,23 @@ describe('WS1 EncryptionManager primitives', () => {
 
   it('2. aesGcmEncrypt reproduces the known-answer test (ciphertext||tag)', async () => {
     const key = await importAesGcmKey(hex(vectors.aesGcm256.keyHex));
-    const out = await aesGcmEncrypt(key, hex(vectors.aesGcm256.ivHex), hex(vectors.aesGcm256.plaintextHex));
-    expect(toHex(out)).toBe(vectors.aesGcm256.ciphertextHex + vectors.aesGcm256.tagHex);
+    const out = await aesGcmEncrypt(
+      key,
+      hex(vectors.aesGcm256.ivHex),
+      hex(vectors.aesGcm256.plaintextHex),
+    );
+    expect(toHex(out)).toBe(
+      vectors.aesGcm256.ciphertextHex + vectors.aesGcm256.tagHex,
+    );
   });
 
   it('3. aesGcmDecrypt round-trips and rejects a tampered tag', async () => {
     const key = await importAesGcmKey(hex(vectors.aesGcm256.keyHex));
     const iv = hex(vectors.aesGcm256.ivHex);
     const ct = hex(vectors.aesGcm256.ciphertextHex + vectors.aesGcm256.tagHex);
-    expect(toHex(await aesGcmDecrypt(key, iv, ct))).toBe(vectors.aesGcm256.plaintextHex);
+    expect(toHex(await aesGcmDecrypt(key, iv, ct))).toBe(
+      vectors.aesGcm256.plaintextHex,
+    );
 
     const tampered = ct.slice();
     tampered[tampered.length - 1]! ^= 0x01;
@@ -61,14 +83,22 @@ describe('WS1 EncryptionManager primitives', () => {
 
   it('4. deriveSharedSecret reproduces the fixed ECDH vector', async () => {
     const priv = await crypto.subtle.importKey(
-      'jwk', vectors.ecdhP256.privateJwk,
-      { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'],
+      'jwk',
+      vectors.ecdhP256.privateJwk,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      ['deriveBits'],
     );
     const peer = await crypto.subtle.importKey(
-      'raw', hex(vectors.ecdhP256.peerPublicRawHex),
-      { name: 'ECDH', namedCurve: 'P-256' }, false, [],
+      'raw',
+      hex(vectors.ecdhP256.peerPublicRawHex),
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      [],
     );
-    expect(toHex(await deriveSharedSecret(priv, peer))).toBe(vectors.ecdhP256.secretHex);
+    expect(toHex(await deriveSharedSecret(priv, peer))).toBe(
+      vectors.ecdhP256.secretHex,
+    );
   });
 
   it('5. two peers derive the same secret; a third key does not', async () => {
@@ -87,8 +117,18 @@ describe('WS1 EncryptionManager primitives', () => {
     const bob = await generateUserKeyPair();
     const info = utf8('ponter-ws1-terminal-v1');
     const salt = utf8('session-1');
-    const a = await EncryptionManager.derive(alice.privateKey, bob.publicKey, info, salt);
-    const b = await EncryptionManager.derive(bob.privateKey, alice.publicKey, info, salt);
+    const a = await EncryptionManager.derive(
+      alice.privateKey,
+      bob.publicKey,
+      info,
+      salt,
+    );
+    const b = await EncryptionManager.derive(
+      bob.privateKey,
+      alice.publicKey,
+      info,
+      salt,
+    );
 
     const plaintext = utf8('ls -la\n');
     const framed = await a.encrypt(plaintext);
@@ -104,8 +144,18 @@ describe('WS1 EncryptionManager primitives', () => {
     const alice = await generateUserKeyPair();
     const bob = await generateUserKeyPair();
     const info = utf8('ponter-ws1-terminal-v1');
-    const a1 = await EncryptionManager.derive(alice.privateKey, bob.publicKey, info, utf8('s1'));
-    const a2 = await EncryptionManager.derive(alice.privateKey, bob.publicKey, info, utf8('s2'));
+    const a1 = await EncryptionManager.derive(
+      alice.privateKey,
+      bob.publicKey,
+      info,
+      utf8('s1'),
+    );
+    const a2 = await EncryptionManager.derive(
+      alice.privateKey,
+      bob.publicKey,
+      info,
+      utf8('s2'),
+    );
     const framed = await a1.encrypt(utf8('x'));
     await expect(a2.decrypt(framed)).rejects.toThrow();
   });
@@ -114,7 +164,14 @@ describe('WS1 EncryptionManager primitives', () => {
     const alice = await generateUserKeyPair();
     const bob = await generateUserKeyPair();
     const info = utf8('ponter-ws1-terminal-v1');
-    const a = await EncryptionManager.derive(alice.privateKey, bob.publicKey, info, utf8('s1'));
-    await expect(a.decrypt(new Uint8Array(IV_BYTES))).rejects.toThrow(/too short/);
+    const a = await EncryptionManager.derive(
+      alice.privateKey,
+      bob.publicKey,
+      info,
+      utf8('s1'),
+    );
+    await expect(a.decrypt(new Uint8Array(IV_BYTES))).rejects.toThrow(
+      /too short/,
+    );
   });
 });

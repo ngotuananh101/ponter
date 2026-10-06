@@ -7,6 +7,13 @@
 
 export const IV_BYTES = 12;
 
+/** TS 6 narrows Web Crypto byte inputs to `ArrayBufferView<ArrayBuffer>`; every
+ *  byte here originates from Web Crypto / TextEncoder / base64 decode (all
+ *  `ArrayBuffer`-backed), so narrowing at the call site is sound. */
+function bs(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  return bytes as Uint8Array<ArrayBuffer>;
+}
+
 /** ECDH P-256 shared secret (32 bytes). */
 export async function deriveSharedSecret(
   privateKey: CryptoKey,
@@ -27,11 +34,11 @@ export async function hkdfSha256(
   info: Uint8Array,
   length = 32,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, [
+  const key = await crypto.subtle.importKey('raw', bs(ikm), 'HKDF', false, [
     'deriveBits',
   ]);
   const bits = await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt, info },
+    { name: 'HKDF', hash: 'SHA-256', salt: bs(salt), info: bs(info) },
     key,
     length * 8,
   );
@@ -40,7 +47,7 @@ export async function hkdfSha256(
 
 /** Import a raw 32-byte key as an AES-GCM-256 key. */
 export async function importAesGcmKey(raw: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, [
+  return crypto.subtle.importKey('raw', bs(raw), { name: 'AES-GCM' }, false, [
     'encrypt',
     'decrypt',
   ]);
@@ -53,9 +60,9 @@ export async function aesGcmEncrypt(
   plaintext: Uint8Array,
 ): Promise<Uint8Array> {
   const out = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: bs(iv) },
     key,
-    plaintext,
+    bs(plaintext),
   );
   return new Uint8Array(out);
 }
@@ -67,9 +74,9 @@ export async function aesGcmDecrypt(
   ciphertext: Uint8Array,
 ): Promise<Uint8Array> {
   const out = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: bs(iv) },
     key,
-    ciphertext,
+    bs(ciphertext),
   );
   return new Uint8Array(out);
 }
