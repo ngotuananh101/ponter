@@ -333,3 +333,5 @@ export async function loadSigningKey(
   const db = await openDatabase();
   return readKey(db, SIGNING_STORE, userId, 'Failed to load signing key');
 }
+
+export * from './encrypt';

@@ -1,0 +1,31 @@
+{
+  "_comment": "Shared WS1 E2EE test vectors. Consumed by packages/crypto/test/encrypt.test.ts (TS) and apps/agent's e2ee test (Rust, Week 16). All values verified against Web Crypto.",
+  "hkdfSha256": {
+    "_source": "RFC 5869, Appendix A.1 (Test Case 1), L=42",
+    "ikmHex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    "saltHex": "000102030405060708090a0b0c",
+    "infoHex": "f0f1f2f3f4f5f6f7f8f9",
+    "length": 42,
+    "okmHex": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+  },
+  "aesGcm256": {
+    "_source": "Deterministic known-answer test (AES-256-GCM, 96-bit IV, 128-bit tag). Web Crypto output is ciphertext||tag.",
+    "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "ivHex": "cafebabefacedbaddecaf888",
+    "plaintextHex": "000102030405060708090a0b0c0d0e0f",
+    "ciphertextHex": "8aa2a225ae7f491c4e0257d677108730",
+    "tagHex": "69709ea9cfa207201b9f4f7c2eb4596e"
+  },
+  "ecdhP256": {
+    "_source": "Fixed ECDH P-256 pair; the private key is a JWK, the peer key an uncompressed point, the secret verified identical under Web Crypto and node:crypto.",
+    "privateJwk": {
+      "kty": "EC",
+      "crv": "P-256",
+      "d": "LCtbPUi1_8F8V4m3yIpeSHzAmXQjApKfinaojeHxV10",
+      "x": "xOMx8ZhNbXnDS62yLZtJD5f-rNT8t039islJSYNK5hE",
+      "y": "jOgm6ZSxC0AS13ccMCeL1s4F_ycP-bg4-mdyqal88cs"
+    },
+    "peerPublicRawHex": "040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794",
+    "secretHex": "722fd1ecca863b654cf195806bbfe191ce5caac7420e472303ff9c1131629bb6"
+  }
+}
