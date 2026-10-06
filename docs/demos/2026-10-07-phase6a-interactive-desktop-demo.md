@@ -100,4 +100,4 @@ All four live in `packages/webrtc-core/test/e2e/desktop.e2e.test.ts` (the deskto
 
 - **Phase 6b items** — WebCodecs low-latency pipeline, `playoutDelayHint`/jitter-buffer tuning, client-side cursor prediction, and the hardware codec spike (ADR-25) — are out of scope here; they get a separate 6b spec and measurement.
 - **Windows / macOS / Wayland injection** — the injection tests are Linux/X11-only (`isLinux`; `xdotool` under Xvfb). No other platform is claimed.
-- **Terminal badge** — the "Verified peer" badge is desktop-only (ADR-42 §6.3); the terminal path's identity verification is asserted by the existing `identity.e2e.test.ts` proof-less test, not by a UI badge.
+- **Terminal badge** — the "Verified peer" badge is desktop-only (ADR-42; the terminal-tab badge is listed out of scope in spec §9); the terminal path's identity verification is asserted by the existing `identity.e2e.test.ts` proof-less test, not by a UI badge.
