@@ -2172,6 +2172,7 @@ async fn run_desktop_session(
                                 if let Some(injector) = injector.as_mut() {
                                     input::apply_if_allowed(
                                         allow_input, text, &current_source, injector.as_mut(),
+                                        crate::pty::now_ms(),
                                     );
                                 }
                             } else {
@@ -3300,7 +3301,7 @@ mod tests {
             .expect("event");
         assert!(
             matches!(
-                decoded,
+                decoded.event,
                 crate::input::DesktopInput::PointerMove { x: 0.5, y: 0.25 }
             ),
             "decoded = {decoded:?}"
@@ -3375,7 +3376,7 @@ mod tests {
         };
 
         let mut injector = NoopInjector;
-        let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector);
+        let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector, 0);
         assert!(!applied, "gate closed must drop the frame and return false");
     }
 
