@@ -216,3 +216,130 @@ it('a send-chain failure is reported and does not poison later sends', async () 
   await waitForDataFrames(frames, 1);
   expect(dataFrames(frames)).toHaveLength(1);
 });
+
+describe('WS1 terminal E2EE client receive path', () => {
+  it('decrypts an inbound terminal-data frame when active', async () => {
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const tb = new TerminalE2ee({
+      ...b,
+      peerSigningPublicKey: a.peerSigningPublicKey,
+    });
+    await ta.handleAck(await tb.handleHello(await ta.buildHello('t1')));
+
+    const { manager, emit } = mockChannel();
+    const client = new TerminalClient('agent-1', manager, ta);
+    const session = client.createSession();
+
+    const got: Uint8Array[] = [];
+    session.onData((d) => got.push(d));
+
+    const plaintext = new TextEncoder().encode('hello from peer\n');
+    const framed = await tb.encrypt(plaintext);
+    const b64 = Buffer.from(framed).toString('base64');
+
+    emit({
+      type: 'terminal-data',
+      channel: 'terminal',
+      payload: { terminalId: session.id, data: b64 },
+      timestamp: 1,
+    } as unknown as DataChannelMessage);
+
+    const start = Date.now();
+    while (got.length < 1) {
+      if (Date.now() - start > 2000) {
+        throw new Error(
+          `timed out waiting for received data (got ${got.length}) after 2000ms`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(new TextDecoder().decode(got[0])).toEqual(
+      new TextDecoder().decode(plaintext),
+    );
+  });
+
+  it('reports decrypt failure and never delivers tampered ciphertext', async () => {
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const tb = new TerminalE2ee({
+      ...b,
+      peerSigningPublicKey: a.peerSigningPublicKey,
+    });
+    await ta.handleAck(await tb.handleHello(await ta.buildHello('t1')));
+
+    const { manager, emit } = mockChannel();
+    const client = new TerminalClient('agent-1', manager, ta);
+    const onError = vi.fn();
+    client.onError(onError);
+    const session = client.createSession();
+
+    const got: Uint8Array[] = [];
+    session.onData((d) => got.push(d));
+
+    const plaintext = new TextEncoder().encode('tamper me\n');
+    const framed = await tb.encrypt(plaintext);
+    // Flip the last byte (part of the AES-GCM auth tag) so decrypt fails.
+    const last = framed.length - 1;
+    framed[last] = (framed[last] ?? 0) ^ 0x01;
+    const b64 = Buffer.from(framed).toString('base64');
+
+    emit({
+      type: 'terminal-data',
+      channel: 'terminal',
+      payload: { terminalId: session.id, data: b64 },
+      timestamp: 1,
+    } as unknown as DataChannelMessage);
+
+    const start = Date.now();
+    while (onError.mock.calls.length < 1) {
+      if (Date.now() - start > 2000) {
+        throw new Error(`timed out waiting for decrypt failure after 2000ms`);
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const [msg] = onError.mock.calls[0]!;
+    expect(msg).toContain('decrypt failed');
+
+    // Give the receive chain a moment to settle before asserting no data was
+    // delivered — `got` must stay empty so garbage is never rendered.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(got).toHaveLength(0);
+  });
+});
+
+describe('WS1 terminal E2EE handleAck fail-closed', () => {
+  it('rejects an ack whose signature was not made by the expected peer', async () => {
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const mallory = await makePeer('sess');
+
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const malloryE2ee = new TerminalE2ee({
+      ...mallory,
+      peerSigningPublicKey: a.peerSigningPublicKey,
+    });
+
+    // Mallory builds a hello signed with its own key (not b's). When ta tries
+    // to derive the session key from this ack, the binding signature will not
+    // verify against ta's expected peer signing key (b's), so handleAck must
+    // reject and ta must remain inactive.
+    const malloryAck = await malloryE2ee.buildHello('t1');
+
+    await expect(ta.handleAck(malloryAck)).rejects.toThrow();
+    expect(ta.isActive()).toBe(false);
+  });
+});
