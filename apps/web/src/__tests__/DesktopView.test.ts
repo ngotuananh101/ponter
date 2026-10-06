@@ -322,7 +322,10 @@ describe('DesktopView', () => {
   });
 
   it('renders no input toggle when the agent gate is closed', () => {
-    const wrapper = mountWithChrome({ desktopInputEnabled: false });
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: false,
+      desktopPeerVerified: true,
+    });
     expect(wrapper.find('[data-test="desktop-input-toggle"]').exists()).toBe(
       false,
     );
