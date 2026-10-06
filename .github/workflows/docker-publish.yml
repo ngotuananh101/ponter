@@ -233,6 +233,7 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
+          trap 'echo "::error::image published OK, but the prune step failed — check the DOCKERHUB_TOKEN Delete scope (and DOCKERHUB_USERNAME / DOCKERHUB_TOKEN credentials)"' ERR
 
           image="${IMAGE_NAME}"
           ns="${image%%/*}"
@@ -241,10 +242,10 @@ jobs:
           # A fresh Hub API login: the registry token from docker/login-action
           # is scoped for pushes, not for the Hub API's tag management.
           payload="$(jq -nc --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}')"
-          token="$(curl -fsS -X POST https://hub.docker.com/v2/users/login \
-            -H 'Content-Type: application/json' -d "$payload" | jq -r '.token')"
-          if [[ -z "$token" || "$token" == "null" ]]; then
-            echo "::error::Docker Hub API login failed — check DOCKERHUB_USERNAME / DOCKERHUB_TOKEN"
+          if ! token="$(curl -fsS -X POST https://hub.docker.com/v2/users/login \
+            -H 'Content-Type: application/json' -d "$payload" | jq -r '.token')" \
+            || [[ -z "$token" || "$token" == "null" ]]; then
+            echo "::error::Docker Hub API login failed — image published OK; check DOCKERHUB_USERNAME / DOCKERHUB_TOKEN"
             exit 1
           fi
 
