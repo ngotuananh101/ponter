@@ -998,7 +998,7 @@ gantt
 
 ### Phase 6: Low-latency Interaction (Tuần 17-18)
 
-> **Chưa thiết kế.** Trả nợ các ghi chú "later concern" của Phase 3 (spec Tuần 7 §1.2, Tuần 8 §1.2): pipeline WebCodecs low-latency, tinh chỉnh playoutDelayHint/jitter buffer, cursor prediction phía client, và kết quả spike codec phần cứng (ADR-25). Tối ưu trọn vẹn chỉ khả thi sau khi WS2/WS3 (Phase 5) mở cổng input. Nội dung chi tiết sẽ bổ sung khi có spec riêng.
+> **6a đã hoàn thành (2026-10-07), 6b chưa thiết kế.** Phase 6 tách đôi: **6a Interactivity** đóng carry-forward C1 (ADR-41: `verify_offer_identity` thành cổng admission cho mọi session mode — terminal, desktop, files, unknown), mở cổng input ADR-29 theo mô hình hai cổng (ADR-42: `--allow-input` của operator VÀ peer đã xác minh; UI hiển thị badge "Verified peer" + trạng thái Controlling/View only), thêm rate cap 120 Hz phía agent (ADR-43) và đo baseline latency input cho 6b (ADR-44). **6b Latency** (WebCodecs low-latency, `playoutDelayHint`/jitter buffer, cursor prediction, kết quả spike codec phần cứng ADR-25) sẽ có spec riêng. Chi tiết: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`.
 
 ### Phase 7: Agent Desktop App (Tuần 19-20)
 
