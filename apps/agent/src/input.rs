@@ -110,9 +110,11 @@ pub const INPUT_RATE_CAP_HZ: u32 = 120;
 /// Fixed-window rate limiter for `desktop-input` frames (ADR-43).
 ///
 /// `allow(now_ms)` admits at most `max_per_sec` calls whose `now_ms` falls in
-/// the same one-second window (`now_ms / 1000`); the first call of a new
-/// window resets the count. Deterministic and clock-injectable, so the exact
-/// 120/window math is unit-testable without a display or a real clock.
+/// the same one-second window (`now_ms.div_euclid(1_000)`; euclidean, so the
+/// windows stay contiguous across zero and no window is skipped). The first
+/// call of a new window resets the count. Deterministic and clock-injectable,
+/// so the exact 120/window math is unit-testable without a display or a real
+/// clock.
 pub struct InputRateLimiter {
     max_per_sec: u32,
     window_index: i64,
@@ -757,11 +759,32 @@ mod tests {
     }
 
     #[test]
-    fn rate_limiter_first_call_never_logs_a_spurious_rollover() {
-        // A limiter starting at now=0 must admit on the very first call — the
-        // window-0 initialization must not treat 0 as "rolled over".
+    fn rate_limiter_admits_the_first_call_at_the_zero_window() {
+        // The zero window must not be mistaken for "already rolled over": the
+        // very first call at now_ms=0 is admitted, and with a cap of 1 the
+        // second call in the same window is rejected. (The -1 initializer and a
+        // 0 initializer are behaviorally equivalent here; the sentinel just
+        // makes "no window yet" explicit.)
         let mut limiter = super::InputRateLimiter::new(1);
         assert!(limiter.allow(0));
         assert!(!limiter.allow(0));
+    }
+
+    #[test]
+    fn rate_limiter_counts_drops_within_a_window() {
+        // Spec §6: the limiter must "count drops" — 130 calls in one window
+        // admit exactly the 120 cap and reject the remaining 10.
+        let mut limiter = super::InputRateLimiter::new(120);
+        let mut admitted = 0u32;
+        let mut dropped = 0u32;
+        for _ in 0..130 {
+            if limiter.allow(1_000) {
+                admitted += 1;
+            } else {
+                dropped += 1;
+            }
+        }
+        assert_eq!(admitted, 120);
+        assert_eq!(dropped, 10);
     }
 }
