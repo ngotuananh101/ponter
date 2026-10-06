@@ -6,7 +6,7 @@ import { webcrypto } from 'node:crypto';
 import { WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { wait, waitFor } from './helpers.js';
+import { wait, waitFor, connectAgentCollect } from './helpers.js';
 
 // In-process secrets for tests
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
@@ -53,27 +53,6 @@ async function startOnEphemeral(): Promise<{
 }
 
 const PROOF_PREFIX = 'ponter-ws2-agent-identity-v1\nnonce=';
-
-/**
- * Helper: open the agent WebSocket and return it plus a receiver array that
- * captures every frame pushed by the server.
- */
-async function connectAgent(
-  port: number,
-  credential: string,
-): Promise<{ ws: WebSocket; received: string[] }> {
-  const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
-    headers: { Authorization: `Bearer ${credential}` },
-  });
-
-  const received: string[] = [];
-  ws.on('message', (data: Buffer) => {
-    received.push(data.toString());
-  });
-
-  await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
-  return { ws, received };
-}
 
 describe('WS2 agent peer identity (Task 6)', () => {
   let token: string;
@@ -193,7 +172,7 @@ describe('WS2 agent peer identity (Task 6)', () => {
     const { port } = await startOnEphemeral();
 
     const { keyPair, publicKeyB64 } = await agentKey();
-    const { ws, received } = await connectAgent(port, credential);
+    const { ws, received } = await connectAgentCollect(port, credential);
 
     const challenge = await waitForChallenge(received);
 
@@ -212,7 +191,7 @@ describe('WS2 agent peer identity (Task 6)', () => {
     const { port } = await startOnEphemeral();
 
     const { keyPair, publicKeyB64 } = await agentKey();
-    const { ws, received } = await connectAgent(port, credential);
+    const { ws, received } = await connectAgentCollect(port, credential);
 
     const challenge = await waitForChallenge(received);
 
@@ -250,7 +229,7 @@ describe('WS2 agent peer identity (Task 6)', () => {
 
     // First connection: register the key.
     {
-      const { ws, received } = await connectAgent(port, credential);
+      const { ws, received } = await connectAgentCollect(port, credential);
       const challenge = await waitForChallenge(received);
       await sendIdentity(ws, keyPair, publicKeyB64, challenge.data.nonce);
       await wait(100);
@@ -262,7 +241,7 @@ describe('WS2 agent peer identity (Task 6)', () => {
 
     // Second connection: same key, fresh nonce.
     {
-      const { ws, received } = await connectAgent(port, credential);
+      const { ws, received } = await connectAgentCollect(port, credential);
       const challenge = await waitForChallenge(received);
       await sendIdentity(ws, keyPair, publicKeyB64, challenge.data.nonce);
       await wait(100);

@@ -1088,6 +1088,13 @@ function normalizeProof(proof: unknown): IdentityProof | undefined {
   return { signature, fingerprint };
 }
 
+/** Keep only the string entries of a client-supplied `capabilities` list. */
+function normalizeCapabilities(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((c): c is string => typeof c === 'string')
+    : [];
+}
+
 function parseSignalMessage(frame: unknown): SignalMessage | null {
   if (typeof frame !== 'object' || frame === null || Array.isArray(frame))
     return null;
@@ -1098,9 +1105,6 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
       return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
-    const capabilities = Array.isArray(inner.capabilities)
-      ? inner.capabilities.filter((c): c is string => typeof c === 'string')
-      : [];
     // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
     // The browser-to-agent path drops unknown fields elsewhere, so proof must
     // be carried explicitly here.
@@ -1110,7 +1114,7 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
       data: {
         sessionId: inner.sessionId,
         sdp: inner.sdp,
-        capabilities,
+        capabilities: normalizeCapabilities(inner.capabilities),
         ...(proof ? { proof } : {}),
       },
     } as SignalMessage;
@@ -1121,9 +1125,7 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
       return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
-    const capabilities = Array.isArray(inner.capabilities)
-      ? inner.capabilities.filter((c): c is string => typeof c === 'string')
-      : [];
+    const capabilities = normalizeCapabilities(inner.capabilities);
     // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
     const proof = normalizeProof(inner.proof);
     return {
