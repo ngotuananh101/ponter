@@ -66,14 +66,16 @@ export class TerminalE2ee {
 
   /** Answerer side: verify the hello, derive the key, return our ack. */
   async handleHello(hello: TerminalE2eeHello): Promise<TerminalE2eeAck> {
-    this.manager = await buildSessionKey({
+    const manager = await buildSessionKey({
       myEcdhPrivateKey: this.ctx.ecdhPrivateKey,
       peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,
       peerBindingSignature: hello.signature,
       peerSigningPublicKey: this.ctx.peerSigningPublicKey,
       sessionId: this.ctx.sessionId,
     });
-    return { terminalId: hello.terminalId, ...(await this.binding()) };
+    const ack = { terminalId: hello.terminalId, ...(await this.binding()) };
+    this.manager = manager;
+    return ack;
   }
 
   /** Offerer side: verify the peer's ack and derive the key. */

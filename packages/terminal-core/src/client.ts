@@ -122,14 +122,22 @@ export class TerminalClient {
       this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
       return;
     }
-    this.sendChain = this.sendChain.then(async () => {
-      const framed = await e2ee.encrypt(bytes);
-      const payload: TerminalDataMessage = {
-        terminalId,
-        data: uint8ArrayToBase64(framed),
-      };
-      this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
-    });
+    this.sendChain = this.sendChain
+      .then(async () => {
+        const framed = await e2ee.encrypt(bytes);
+        const payload: TerminalDataMessage = {
+          terminalId,
+          data: uint8ArrayToBase64(framed),
+        };
+        this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
+      })
+      .catch((err: unknown) => {
+        for (const listener of [...this.errorListeners]) {
+          listener(
+            `terminal-data send chain failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      });
   }
 
   private debouncedResize(

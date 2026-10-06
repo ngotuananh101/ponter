@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   generateUserKeyPair,
   generateSigningKeyPair,
@@ -106,6 +106,27 @@ function mockChannel() {
 const dataFrames = (frames: Array<{ type: string; payload: unknown }>) =>
   frames.filter((f) => f.type === 'terminal-data');
 
+// Bounded condition-based drain: poll `dataFrames(frames).length >= n` until
+// the count is reached or `capMs` elapses. Used instead of a single
+// `setTimeout(0)` which does not reliably drain async WebCrypto work under
+// multi-worker CPU contention (confirmed: ~17% suite failures vs 0% in
+// isolation). LOCAL to the test file — no production API change.
+async function waitForDataFrames(
+  frames: Array<{ type: string; payload: unknown }>,
+  n: number,
+  capMs = 2000,
+): Promise<void> {
+  const start = Date.now();
+  while (dataFrames(frames).length < n) {
+    if (Date.now() - start > capMs) {
+      throw new Error(
+        `timed out waiting for ${n} terminal-data frames (got ${dataFrames(frames).length}) after ${capMs}ms`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 it('plaintext parity: no e2ee context sends the exact same frame as today', () => {
   const { manager, frames } = mockChannel();
   const client = new TerminalClient('agent-1', manager);
@@ -140,7 +161,7 @@ it('encrypts when active and preserves submission order', async () => {
   const session = client.createSession();
   session.write('one');
   session.write('two');
-  await new Promise((r) => setTimeout(r, 0)); // let the ordered chain drain
+  await waitForDataFrames(frames, 2); // bounded drain of the ordered sendChain
 
   const decoded = await Promise.all(
     dataFrames(frames).map((f) =>
@@ -155,4 +176,43 @@ it('encrypts when active and preserves submission order', async () => {
     'one',
     'two',
   ]);
+});
+
+it('a send-chain failure is reported and does not poison later sends', async () => {
+  // Stub TerminalE2ee shaped object: isActive() is true, encrypt rejects once
+  // then recovers, decrypt is identity. This exercises the `.catch` on sendChain.
+  let failNext = true;
+  const failingE2ee = {
+    isActive: () => true,
+    encrypt: async (data: Uint8Array) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error('boom');
+      }
+      return data;
+    },
+    decrypt: async (data: Uint8Array) => data,
+  } as unknown as TerminalE2ee;
+
+  const { manager, frames } = mockChannel();
+  const client = new TerminalClient('agent-1', manager, failingE2ee);
+  const onError = vi.fn();
+  client.onError(onError);
+  const session = client.createSession();
+
+  // First write: encrypt rejects.
+  session.write('one');
+  // Give the chain a tick to settle the rejection (no frame is emitted).
+  await new Promise((r) => setTimeout(r, 10));
+
+  expect(onError).toHaveBeenCalledTimes(1);
+  const [msg] = onError.mock.calls[0]!;
+  expect(msg).toContain('send chain failed');
+  // No terminal-data frame should have been emitted for the failed write.
+  expect(dataFrames(frames)).toHaveLength(0);
+
+  // Second write: encrypt now succeeds and MUST still produce a frame.
+  session.write('two');
+  await waitForDataFrames(frames, 1);
+  expect(dataFrames(frames)).toHaveLength(1);
 });
