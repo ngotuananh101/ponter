@@ -152,7 +152,7 @@ The serde tag is `type`, content is `data`, with kebab-case outer type and camel
 ```json
 { "type": "answer", "data": { "sessionId": "s_…", "sdp": "v=0…", "approved": true } }
 ```
-`approved` is the agent's capability gate: `true` when the offer's `capabilities` contained `"terminal"` (`rtc.rs:153`). The server stores it verbatim (`recordSignal` passes `message.data` through); **nothing enforces `approved === false` server-side today** — a refusal is visible only in the flag.
+`approved` is the agent's capability gate: `true` when the offer's `capabilities` contained `"terminal"` (`rtc.rs:153`), and `false` for an ADR-14 refusal. Since Week 14 (WS3) the server enforces it: `recordSignal` only transitions a session `pending → active` when `approved !== false`, and the browser refuses a refusal answer before `setRemoteDescription` (`connection.ts`). The refusal is still recorded and relayed — enforcement gates the transition, not the message.
 
 **ICE candidate** (`IceCandidateSignal`, `signaling.ts:13`):
 ```json
