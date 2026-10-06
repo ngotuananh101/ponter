@@ -645,4 +645,94 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
     const agentLog = agent.output();
     expect(agentLog).toMatch(/identity proof|no identity proof|refused/i);
   }, 90_000);
+
+  // ADR-43 (Phase 6a): a flooding peer is capped at the agent. The exact
+  // 120/window math is pinned in the Rust unit tests; this test proves the cap
+  // is WIRED (drops appear) and the session SURVIVES (a later frame lands).
+  it('caps a flooding peer at 120 Hz and keeps the session alive', async () => {
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    const agent = spawnAgent(
+      agentId,
+      credential,
+      ['--desktop-source', 'test', '--allow-input'],
+      { DISPLAY: process.env.DISPLAY ?? ':99', RUST_LOG: 'debug' },
+    );
+    await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
+
+    const { offerer, controlFrames } = await openDesktopPeer(
+      sessionId,
+      token,
+      identity,
+    );
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      // ADR-42: the live frame carries the verified fact (Task 4's literal).
+      const sourcesFrame = controlFrames.findLast(
+        (f) => f.type === 'desktop-sources',
+      );
+      expect(
+        (sourcesFrame?.payload as { peerVerified?: boolean } | undefined)
+          ?.peerVerified,
+      ).toBe(true);
+      expect(inputEnabled(controlFrames)).toBe(true);
+
+      // Burst: 300 frames, all within one window (well above the 120 cap).
+      for (let i = 0; i < 300; i++) {
+        sendPointerMove(offerer, 0.5, 0.5);
+      }
+
+      // (a) at least one frame was applied and at least one was capped —
+      // which frames landed is timing-dependent, so the assertion is >= 1.
+      await waitFor(
+        () => agent.output().includes('desktop-input applied'),
+        'the agent to apply at least one burst frame',
+        15_000,
+      );
+      await waitFor(
+        () => agent.output().includes('rate cap exceeded'),
+        'the agent to log at least one capped frame',
+        15_000,
+      );
+
+      // (b) the session SURVIVES: a frame in the NEXT window still injects
+      // (the cap is a per-window counter, not a session kill).
+      execFileSync('xdotool', ['mousemove', '0', '0']);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const appliedBefore = agent
+        .output()
+        .split('desktop-input applied').length;
+      sendPointerMove(offerer, 0.25, 0.25);
+      await waitFor(
+        () =>
+          agent.output().split('desktop-input applied').length > appliedBefore,
+        'a post-burst frame to be applied in the next window',
+        15_000,
+      );
+      await waitFor(
+        () => {
+          const out = execFileSync('xdotool', ['getmouselocation']).toString();
+          const x = Number(/x:(\d+)/.exec(out)?.[1]);
+          const y = Number(/y:(\d+)/.exec(out)?.[1]);
+          return Math.abs(x - 320) <= 2 && Math.abs(y - 180) <= 2;
+        },
+        'the post-burst pointer to land near (320, 180)',
+        15_000,
+      );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
 });
