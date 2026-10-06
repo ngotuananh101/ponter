@@ -452,10 +452,7 @@ export const useTerminalStore = defineStore('terminal', () => {
         // T5-C: pass the E2eeContext only when the agent advertised e2ee in its
         // answer AND we were able to build a context. If either is absent, the
         // client is constructed exactly as today (no 3rd arg) — plaintext parity.
-        if (
-          e2eeContext &&
-          peer.getRemoteCapabilities().includes('e2ee')
-        ) {
+        if (e2eeContext && peer.getRemoteCapabilities().includes('e2ee')) {
           const client = new TerminalClient(
             agentId,
             peer.dataChannels,
@@ -773,10 +770,16 @@ export const useTerminalStore = defineStore('terminal', () => {
       // A control channel carries the source picker, bitrate, and stats. The
       // media path is unchanged; the label rides the existing manager (spec §5.2).
       const identity = await resolvePeerIdentity(agentId);
+      // T6: build the WS1 E2EE context for the desktop session. The driver is
+      // passed unconditionally; negotiateE2ee() is dormant until the agent acks,
+      // so a legacy agent (no e2ee in its answer) stays plaintext — backward
+      // compatible, byte-identical to today.
+      const e2eeContext = await buildE2eeContext(agentId, sessionResp.id);
+      const capabilities = e2eeContext ? ['desktop', 'e2ee'] : ['desktop'];
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
         channelLabels: ['control'],
-        capabilities: ['desktop'],
+        capabilities,
         media: { video: true },
         sessionId: sessionResp.id,
         identity,
@@ -819,7 +822,12 @@ export const useTerminalStore = defineStore('terminal', () => {
         }),
       );
 
-      const client = new DesktopClient(agentId, peer);
+      const client = new DesktopClient(
+        agentId,
+        peer,
+        undefined,
+        e2eeContext ? new TerminalE2ee(e2eeContext) : undefined,
+      );
       desktopConnections.set(agentId, {
         peer,
         client,
