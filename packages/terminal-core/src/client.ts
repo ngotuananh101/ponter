@@ -10,6 +10,7 @@ import type {
 import { TerminalSession } from './session';
 import type { TerminalSessionOptions } from './types';
 import type { DataChannelMessage } from '@ponter/shared';
+import type { TerminalE2ee } from './e2ee';
 
 function base64ToUint8Array(base64: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
@@ -42,6 +43,8 @@ export class TerminalClient {
     ReturnType<typeof setTimeout>
   >();
   private readonly errorListeners: Array<(message: string) => void> = [];
+  private sendChain: Promise<void> = Promise.resolve();
+  private receiveChain: Promise<void> = Promise.resolve();
 
   /**
    * Subscribe to terminal failures the agent reports over the data channel.
@@ -59,6 +62,7 @@ export class TerminalClient {
   constructor(
     public readonly agentId: string,
     private readonly dataChannelManager: DataChannelManager,
+    private readonly e2ee?: TerminalE2ee,
   ) {
     this.unsubscribeMessage = this.dataChannelManager.onMessage(
       'terminal',
@@ -108,11 +112,32 @@ export class TerminalClient {
   sendInput(terminalId: string, data: Uint8Array | string): void {
     const bytes =
       typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    const payload: TerminalDataMessage = {
-      terminalId,
-      data: uint8ArrayToBase64(bytes),
-    };
-    this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
+    const e2ee = this.e2ee;
+    if (!e2ee || !e2ee.isActive()) {
+      // Unchanged plaintext path — byte-identical to today.
+      const payload: TerminalDataMessage = {
+        terminalId,
+        data: uint8ArrayToBase64(bytes),
+      };
+      this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
+      return;
+    }
+    this.sendChain = this.sendChain
+      .then(async () => {
+        const framed = await e2ee.encrypt(bytes);
+        const payload: TerminalDataMessage = {
+          terminalId,
+          data: uint8ArrayToBase64(framed),
+        };
+        this.dataChannelManager.sendJson('terminal', 'terminal-data', payload);
+      })
+      .catch((err: unknown) => {
+        for (const listener of [...this.errorListeners]) {
+          listener(
+            `terminal-data send chain failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      });
   }
 
   private debouncedResize(
@@ -191,8 +216,34 @@ export class TerminalClient {
       const payload = msg.payload as TerminalDataMessage;
       const session = this.sessions.get(payload.terminalId);
       if (session) {
-        const bytes = base64ToUint8Array(payload.data);
-        session.receiveOutput(bytes);
+        const e2ee = this.e2ee;
+        if (!e2ee || !e2ee.isActive()) {
+          // Unchanged plaintext path — byte-identical to today.
+          const bytes = base64ToUint8Array(payload.data);
+          session.receiveOutput(bytes);
+          return;
+        }
+        this.receiveChain = this.receiveChain
+          .then(async () => {
+            try {
+              const encrypted = base64ToUint8Array(payload.data);
+              const bytes = await e2ee.decrypt(encrypted);
+              session.receiveOutput(bytes);
+            } catch (err) {
+              for (const listener of [...this.errorListeners]) {
+                listener(
+                  `terminal-data decrypt failed: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            }
+          })
+          .catch((err: unknown) => {
+            for (const listener of [...this.errorListeners]) {
+              listener(
+                `terminal-data receive chain failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          });
       }
     } else if (msg.type === 'terminal-exit') {
       const payload = msg.payload as TerminalExitMessage;

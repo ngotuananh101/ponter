@@ -51,3 +51,19 @@ export interface TerminalErrorMessage {
   code: string;
   message: string;
 }
+
+/** WS1 E2EE negotiation: the offerer proposes a session key binding. */
+export interface TerminalE2eeHello {
+  terminalId: string;
+  /** SPKI base64 ECDH P-256 public key. */
+  ecdhPublicKey: string;
+  /** Ed25519 signature over `canonicalKeyBinding(ecdhPublicKey)`. */
+  signature: string;
+}
+
+/** WS1 E2EE negotiation: the answerer returns its own key binding. */
+export interface TerminalE2eeAck {
+  terminalId: string;
+  ecdhPublicKey: string;
+  signature: string;
+}

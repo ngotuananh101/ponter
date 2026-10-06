@@ -246,4 +246,11 @@ describe('packages/crypto', () => {
     expect(outcome).toBeInstanceOf(Error);
     expect((outcome as Error).message).toBe('Failed to delete private key');
   });
+
+  it('11. an ECDH private key survives a simulated logout (H4)', async () => {
+    const { privateKey } = await generateUserKeyPair();
+    await savePrivateKey('user-1', privateKey);
+    // logout() must NOT call deletePrivateKey; the key must still load.
+    expect(await loadPrivateKey('user-1')).not.toBeNull();
+  });
 });

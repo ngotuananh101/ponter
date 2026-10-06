@@ -125,7 +125,7 @@ describe('Auth Store (Pinia)', () => {
     expect(saveSpy).toHaveBeenCalledWith('user-id-99', mockPrivKey);
   });
 
-  it('5. logout calls API, clears tokens, deletes private key, and resets state', async () => {
+  it('5. logout calls API, clears tokens, and resets state but keeps the private key', async () => {
     const store = useAuthStore();
     store.user = { id: 'user-to-logout', username: 'dave' } as unknown as User;
     store.status = 'authenticated';
@@ -134,13 +134,10 @@ describe('Auth Store (Pinia)', () => {
     const logoutSpy = vi
       .spyOn(apiClient.auth, 'logout')
       .mockResolvedValue({ success: true });
-    const deleteKeySpy = vi
-      .mocked(cryptoPkg.deletePrivateKey)
-      .mockResolvedValue();
 
     await store.logout();
 
-    expect(deleteKeySpy).toHaveBeenCalledWith('user-to-logout');
+    expect(cryptoPkg.deletePrivateKey).not.toHaveBeenCalled();
     expect(logoutSpy).toHaveBeenCalledWith('r');
     expect(store.user).toBeNull();
     expect(store.status).toBe('idle');
