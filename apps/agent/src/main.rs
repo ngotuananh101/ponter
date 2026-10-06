@@ -2075,6 +2075,8 @@ async fn run_desktop_session(
         // The injector is built lazily (first allowed input frame) and reused,
         // so a host with no display fails one frame, not the session (§6.3).
         let mut injector: Option<Box<dyn input::InputInjector>> = None;
+        // ADR-43: per-session fixed-window cap on accepted input frames.
+        let mut input_limiter = input::InputRateLimiter::new(input::INPUT_RATE_CAP_HZ);
         // WS1 E2EE session state (R14): a plain local, no Arc/RwLock — the
         // control loop is the only task touching it.
         let mut e2ee_session: Option<e2ee::E2eeSession> = None;
@@ -2154,6 +2156,13 @@ async fn run_desktop_session(
                                 text
                             };
                             if allow_input {
+                                // ADR-43: cap AFTER decrypt and the Gate-A
+                                // check, BEFORE decode/inject. The drop log
+                                // matches every other drop path.
+                                if !input_limiter.allow(crate::pty::now_ms()) {
+                                    tracing::debug!("dropping desktop-input: rate cap exceeded");
+                                    continue;
+                                }
                                 if injector.is_none() {
                                     match input::platform::PlatformInjector::try_new() {
                                         Ok(i) => injector = Some(Box::new(i)),

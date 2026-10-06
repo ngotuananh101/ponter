@@ -100,6 +100,50 @@ enum DesktopInputWire {
     },
 }
 
+/// ADR-43: agent-side cap on accepted `desktop-input` frames per fixed
+/// one-second window. 120 = 2× the browser's 60 Hz coalescing
+/// (`desktop-core` `inputRateLimitHz`), so a well-behaved client is never
+/// throttled while a flooding peer is capped. A `const`, not a CLI flag
+/// (YAGNI); revisit only if a real workload needs tuning.
+pub const INPUT_RATE_CAP_HZ: u32 = 120;
+
+/// Fixed-window rate limiter for `desktop-input` frames (ADR-43).
+///
+/// `allow(now_ms)` admits at most `max_per_sec` calls whose `now_ms` falls in
+/// the same one-second window (`now_ms / 1000`); the first call of a new
+/// window resets the count. Deterministic and clock-injectable, so the exact
+/// 120/window math is unit-testable without a display or a real clock.
+pub struct InputRateLimiter {
+    max_per_sec: u32,
+    window_index: i64,
+    count: u32,
+}
+
+impl InputRateLimiter {
+    pub fn new(max_per_sec: u32) -> Self {
+        Self {
+            max_per_sec,
+            window_index: -1, // no window yet: the first call always initializes
+            count: 0,
+        }
+    }
+
+    /// Returns `true` iff the frame is admitted. A `false` means the caller
+    /// must drop the frame (the dispatcher logs the drop at `debug`).
+    pub fn allow(&mut self, now_ms: i64) -> bool {
+        let window = now_ms.div_euclid(1_000);
+        if window != self.window_index {
+            self.window_index = window;
+            self.count = 0;
+        }
+        if self.count >= self.max_per_sec {
+            return false;
+        }
+        self.count += 1;
+        true
+    }
+}
+
 fn clamp01(n: f64) -> f64 {
     if n.is_nan() {
         0.0
@@ -691,5 +735,33 @@ mod tests {
             &mut injector,
         );
         assert!(!applied);
+    }
+
+    #[test]
+    fn rate_limiter_admits_exactly_the_cap_in_one_window() {
+        let mut limiter = super::InputRateLimiter::new(120);
+        // A fixed window admits exactly 120 frames, then drops.
+        let admitted = (0..120).filter(|_| limiter.allow(1_000)).count();
+        assert_eq!(admitted, 120);
+        assert!(!limiter.allow(1_000));
+    }
+
+    #[test]
+    fn rate_limiter_rolls_over_on_the_next_window() {
+        let mut limiter = super::InputRateLimiter::new(120);
+        for _ in 0..120 {
+            assert!(limiter.allow(1_000));
+        }
+        assert!(!limiter.allow(1_999)); // still window 0
+        assert!(limiter.allow(2_000)); // window 1
+    }
+
+    #[test]
+    fn rate_limiter_first_call_never_logs_a_spurious_rollover() {
+        // A limiter starting at now=0 must admit on the very first call — the
+        // window-0 initialization must not treat 0 as "rolled over".
+        let mut limiter = super::InputRateLimiter::new(1);
+        assert!(limiter.allow(0));
+        assert!(!limiter.allow(0));
     }
 }
