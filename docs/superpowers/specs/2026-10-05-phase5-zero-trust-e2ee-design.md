@@ -127,11 +127,11 @@ Closes C3, H3, H6, C5, H5, M1. **This is the foundation week.**
 
 Closes H1, H2, M2, M3.
 
-- **`shell` allowlist** (H1). `resolve_shell_value()` (`apps/agent/src/main.rs:164`) currently
-  returns any client-supplied string unmodified — arbitrary binary execution on the agent host.
-  Replace with an allowlist of absolute paths per platform, validated against the filesystem.
-- **Enforce `approved`** in server and client (H2, completeness-critic 5.3). The flag is written
-  but nothing reads it; an unapproved session must not consume SDP.
+- **`shell` allowlist** (H1). `resolve_shell_value()` returned any client-supplied string
+  unmodified — arbitrary binary execution on the agent host. Closed in WS3: a client-supplied
+  shell is now resolved through `ShellPolicy` (absolute path, canonicalized, allowlisted) — see §2.
+- **Enforce `approved`** in server and client (H2, completeness-critic 5.3). The flag was written
+  but never read; an unapproved session must not consume SDP. Closed in WS3 — see §2.
 - **Close-code handling** (M2). The agent must distinguish `4409` (replaced — stop reconnecting)
   and `4401` (unauthorized — stop) from transient closes.
 - **Validate `candidate.session_id`** against the active offer (M3).

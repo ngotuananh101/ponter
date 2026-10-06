@@ -152,7 +152,7 @@ The serde tag is `type`, content is `data`, with kebab-case outer type and camel
 ```json
 { "type": "answer", "data": { "sessionId": "s_…", "sdp": "v=0…", "approved": true } }
 ```
-`approved` is the agent's capability gate: `true` when the offer's `capabilities` contained `"terminal"` (`rtc.rs:153`), and `false` for an ADR-14 refusal. Since Week 14 (WS3) the server enforces it: `recordSignal` only transitions a session `pending → active` when `approved !== false`, and the browser refuses a refusal answer before `setRemoteDescription` (`connection.ts`). The refusal is still recorded and relayed — enforcement gates the transition, not the message.
+`approved` is the agent's capability gate: `true` when the offer's `capabilities` contained `"terminal"` (`rtc.rs:747`), and `false` for an ADR-14 refusal. Since Week 14 (WS3) the server enforces it: `recordSignal` only transitions a session `pending → active` when `approved !== false`, and the browser refuses a refusal answer before `setRemoteDescription` (`connection.ts`). The refusal is still recorded and relayed — enforcement gates the transition, not the message.
 
 **ICE candidate** (`IceCandidateSignal`, `signaling.ts:13`):
 ```json
@@ -229,7 +229,7 @@ The `--stun` CLI flag (`main.rs:56`, default `stun:stun.l.google.com:19302`) is 
 | F2 | Offerer data channel created before offer | Browser | `connection.ts:84` — channel pre-created in constructor, so it is registered before `peer.start()` creates the offer. |
 | F3 | Remote candidate applied before offer | Agent | Same buffer as F1, flushed in `run_one_session` after `answer_offer` (`main.rs:355`). |
 | F4 | Empty ICE server config | Agent | `build_peer` (`rtc.rs:75`) — empty pushed list falls back to `--stun`. Empty `--stun` is the air-gapped path. |
-| F5 | Second concurrent session for one agent | Agent supervisor | `supervise_sessions` (`main.rs:282`) — `active.is_some()` is true, so it builds a throwaway peer, sends `approved: false`, closes, and continues. (ADR-14.) |
+| F5 | Second concurrent session for one agent | Agent supervisor | `supervise_sessions` (`main.rs:695`) — `active.is_some()` is true, so it builds a throwaway peer, sends `approved: false`, closes, and continues. (ADR-14.) |
 | F6 | Agent credential missing or invalid | `handleAgentUpgrade` | `ws.ts:60/78` — no credential (`extractAgentCredential` returns null, `ws.ts:58`) or hash mismatch (`agent` not found, `ws.ts:76`) → raw `HTTP/1.1 401`, `socket.destroy()`, returns `false`. |
 | F7 | Agent WebSocket dies mid-session | Server `socket.on('close')` | `ws.ts:156` registers the handler; stale-guard `current?.socket !== socket` is at `ws.ts:159`, skipping superseded reconnects; otherwise marks `isOnline=false` (`ws.ts:165`) and terminates `pending|active` sessions bound to that agent (`ws.ts:169`). |
 | F8 | Agent process exits abruptly (no close frame) | Browser | Polling continues against a server with no live socket; `pushToAgent` silently no-ops. The session stays `pending` until the user closes the tab or the server's close handler runs in a sibling process. |
