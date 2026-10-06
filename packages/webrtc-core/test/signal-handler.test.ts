@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   toSessionDescriptionInit,
   toIceCandidateInit,
@@ -6,6 +6,7 @@ import {
   createAnswerSignal,
   createCandidateSignal,
 } from '../src/signal-handler';
+import { RESTPollingTransport } from '../src/transport';
 
 describe('Signal Handler conversions', () => {
   it('converts SDP string to RTCSessionDescriptionInit', () => {
@@ -111,5 +112,52 @@ describe('Signal Handler conversions', () => {
     expect(msg.data).toMatchObject({
       proof: { signature: 'c2ln', fingerprint: 'AB:CD' },
     });
+  });
+
+  it('createAnswerSignal includes capabilities only when non-empty', () => {
+    const withCaps = createAnswerSignal(
+      's1',
+      { type: 'answer', sdp: 'v=0' } as never,
+      true,
+      undefined,
+      ['e2ee'],
+    );
+    expect(
+      (withCaps.data as { capabilities?: string[] }).capabilities,
+    ).toEqual(['e2ee']);
+
+    const without = createAnswerSignal(
+      's1',
+      { type: 'answer', sdp: 'v=0' } as never,
+      true,
+    );
+    expect('capabilities' in (without.data as object)).toBe(false);
+  });
+
+  it('the answer parser preserves capabilities', () => {
+    const transport = new RESTPollingTransport({
+      baseUrl: 'http://test',
+      sessionId: 's1',
+      token: 't',
+      fetch: vi.fn() as never,
+    });
+
+    const item = {
+      type: 'answer',
+      payload: {
+        sessionId: 's1',
+        sdp: 'v=0',
+        approved: true,
+        capabilities: ['e2ee'],
+      },
+    };
+
+    const parsed = (
+      transport as unknown as {
+        parseSignalItem(i: unknown): { data: { capabilities?: string[] } };
+      }
+    ).parseSignalItem(item);
+
+    expect(parsed.data.capabilities).toEqual(['e2ee']);
   });
 });

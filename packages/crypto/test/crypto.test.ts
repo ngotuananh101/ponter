@@ -7,6 +7,8 @@ import {
   savePrivateKey,
   loadPrivateKey,
   deletePrivateKey,
+  savePublicKey,
+  loadPublicKey,
 } from '../src/index';
 
 describe('packages/crypto', () => {
@@ -252,5 +254,34 @@ describe('packages/crypto', () => {
     await savePrivateKey('user-1', privateKey);
     // logout() must NOT call deletePrivateKey; the key must still load.
     expect(await loadPrivateKey('user-1')).not.toBeNull();
+  });
+
+  it('savePublicKey/loadPublicKey round-trip', async () => {
+    const kp = await generateUserKeyPair();
+    await savePublicKey('u1', kp.publicKey);
+    const loaded = await loadPublicKey('u1');
+    expect(loaded).not.toBeNull();
+    expect(await exportPublicKeySpki(loaded as CryptoKey)).toBe(
+      kp.publicKeySpkiBase64,
+    );
+  });
+
+  it('savePublicKey stores under a :pub suffix, not the bare userId', async () => {
+    // T5-A: storing the public key under the bare userId would OVERWRITE the
+    // private key in the same store. Assert the private key survives a public
+    // key save under the same userId.
+    const kp = await generateUserKeyPair();
+    const userId = 'user-pub-suffix';
+
+    await savePrivateKey(userId, kp.privateKey);
+    await savePublicKey(userId, kp.publicKey);
+
+    // The private key must still be present and usable.
+    const privLoaded = await loadPrivateKey(userId);
+    expect(privLoaded).not.toBeNull();
+    const pubLoaded = await loadPublicKey(userId);
+    expect(pubLoaded).not.toBeNull();
+    // They must be different keys (private vs public) stored in the same store.
+    expect(privLoaded).not.toBe(pubLoaded);
   });
 });

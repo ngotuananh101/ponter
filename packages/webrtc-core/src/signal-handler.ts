@@ -52,6 +52,7 @@ export function createAnswerSignal(
   desc: RTCSessionDescriptionInit,
   approved = true,
   proof?: IdentityProof,
+  capabilities: string[] = [],
 ): SignalMessage {
   return {
     type: 'answer',
@@ -60,6 +61,7 @@ export function createAnswerSignal(
       sdp: desc.sdp ?? '',
       approved,
       ...(proof ? { proof } : {}),
+      ...(capabilities.length > 0 ? { capabilities } : {}),
     },
   };
 }

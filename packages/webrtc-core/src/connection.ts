@@ -67,6 +67,8 @@ export class PeerConnection {
   private remoteDescriptionSet = false;
   private isClosed = false;
   private readonly pendingCandidates: RTCIceCandidateInit[] = [];
+  /** Capabilities advertised by the remote peer in its last answer/offer. */
+  private remoteCapabilities: string[] = [];
   /**
    * Whether the handshake description has been applied in each direction.
    *
@@ -99,6 +101,14 @@ export class PeerConnection {
    */
   get pendingCandidateCount(): number {
     return this.pendingCandidates.length;
+  }
+
+  /**
+   * Capabilities the remote peer advertised in its answer (WS1 `e2ee`, etc.).
+   * Empty when the remote sent none — the plaintext path then stays byte-identical.
+   */
+  getRemoteCapabilities(): string[] {
+    return this.remoteCapabilities;
   }
 
   private readonly stateListeners: Array<(state: string) => void> = [];
@@ -314,6 +324,8 @@ export class PeerConnection {
           msg.data.sessionId,
           answer,
           true,
+          undefined,
+          msg.data.capabilities ?? [],
         );
         await this.transport.send(answerSignal);
         break;
@@ -323,6 +335,11 @@ export class PeerConnection {
         if (this.options.role !== 'offerer') return;
         if (this.answerApplied) return;
         this.answerApplied = true;
+
+        // Record the remote's advertised capabilities (WS1 `e2ee`, etc.) so
+        // the offerer can gate negotiation on it. Absent → empty, and the
+        // plaintext path stays byte-identical.
+        this.remoteCapabilities = msg.data.capabilities ?? [];
 
         // A refusal is a real answer carrying `approved: false` (ADR-14: one
         // session per agent). It must not be applied: the agent is about to

@@ -222,6 +222,34 @@ export async function deletePrivateKey(userId: string): Promise<void> {
   );
 }
 
+/**
+ * Persist a user's ECDH public key locally under a `:pub` suffix in the same
+ * store as the private key (T5-A). Storing under the bare `userId` would
+ * overwrite the private key — a catastrophic loss of the decryption anchor.
+ */
+export async function savePublicKey(
+  userId: string,
+  key: CryptoKey,
+): Promise<void> {
+  const db = await openDatabase();
+  return runWriteTransaction(
+    db,
+    STORE_NAME,
+    'Failed to save public key',
+    (store) => {
+      store.put(key, `${userId}:pub`);
+    },
+  );
+}
+
+/** Load a user's public key, or null if none is stored. */
+export async function loadPublicKey(
+  userId: string,
+): Promise<CryptoKey | null> {
+  const db = await openDatabase();
+  return readKey(db, STORE_NAME, `${userId}:pub`, 'Failed to load public key');
+}
+
 /** A freshly generated Ed25519 signing keypair (WS2 peer identity). */
 export interface SigningKeyPair {
   /** Raw 32-byte public key, base64. The value registered with the backend. */
