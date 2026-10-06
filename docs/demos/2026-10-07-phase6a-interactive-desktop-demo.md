@@ -49,7 +49,7 @@ Navigate to the local web client (e.g. `http://localhost:3000`), connect, and op
 - The **"Verified peer"** badge renders (`data-test="desktop-peer-verified"`) — proof that the offer carried a valid identity proof and passed the ADR-41 admission gate. A pre-6a agent (which omits the `peerVerified` field) hides the badge and hides the input toggle entirely (no false claim in either direction).
 - The status line reads **"View only"** (`data-test="desktop-input-status"`) — the peer is verified but the local `--allow-input` toggle is off, so injection is still held by Gate A.
 - Click **Input** (the `data-test="desktop-input-toggle"`: it is rendered only when `desktopInputEnabled && desktopPeerVerified`).
-- The status line flips to **"Controlling"** — both gates are now closed-laterally-open, and `desktop-input` frames are admitted (subject to the ADR-43 cap).
+- The status line flips to **"Controlling"** — both gates are now satisfied (Gate A just opened by the operator, Gate B passed at admission), and `desktop-input` frames are admitted (subject to the ADR-43 cap).
 
 ### 3. Run the flood and latency E2E tests
 
