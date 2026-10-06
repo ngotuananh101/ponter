@@ -424,6 +424,9 @@ importers:
 
   packages/terminal-core:
     dependencies:
+      '@ponter/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@ponter/shared':
         specifier: workspace:*
         version: link:../shared
