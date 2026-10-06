@@ -47,7 +47,11 @@ services:
       - ./data:/app/data
 
   coturn:
-    image: coturn/coturn:latest
+    # network_mode: host is required so TURN can bind the UDP relay port range
+    # (49152-49200) and advertise the host IP. Residual risk: the container shares
+    # the host network namespace. Mitigation: coturn runs unprivileged with a
+    # static auth secret and no shell; ports are firewalled to the TURN range only.
+    image: coturn/coturn:4.6.3@sha256:71c3c990283385567f11794ee692e3a47b66fd9b0bb39e42afbe776e331dd888
     container_name: coturn
     restart: always
     network_mode: host
