@@ -24,6 +24,14 @@ import {
   verifyProof,
 } from '@ponter/crypto';
 
+// T7-R1: terminal-core is imported by RELATIVE path, never as a manifest dep.
+// @ponter/terminal-core already depends on @ponter/webrtc-core; adding the
+// reverse edge makes turbo's typecheck graph cyclic and hard-fails. Relative
+// imports are never seen by turbo's manifest-based graph.
+import { TerminalClient } from '../../../terminal-core/src/client';
+import { TerminalE2ee } from '../../../terminal-core/src/e2ee';
+import type { E2eeContext } from '../../../terminal-core/src/e2ee';
+
 // Wire constants mirrored locally (Tasks 1-4 froze these). FILE_CHUNK_BYTES and
 // WINDOW are NOT re-exported by @ponter/shared (only the binary frame type
 // bytes and header length are), so they are defined here verbatim to match the
@@ -745,6 +753,105 @@ export async function connectTerminal(
 }
 
 /**
+ * Options for {@link openE2eeTerminalPeer}.
+ */
+export interface E2eePeerOptions {
+  sessionId: string;
+  token: string;
+  identity: PeerConnectionIdentity;
+  /** The browser-side E2EE context (ECDH + signing keys + session id). */
+  e2eeContext: E2eeContext;
+}
+
+/**
+ * Build an offerer PeerConnection with the `e2ee` capability and wire it to a
+ * real `TerminalClient` + `TerminalE2ee` — the browser side of gate G3.
+ *
+ * Mirrors `connectTerminal` but additionally:
+ * - advertises `capabilities: ['terminal', 'e2ee']` in the offer (so the agent
+ *   answers with `e2ee` and accepts a hello);
+ * - builds `TerminalE2ee` from `e2eeContext`;
+ * - constructs `TerminalClient` with the e2ee driver so `createSession()`
+ *   self-drives the hello on the ordered sendChain (T5-C).
+ *
+ * The caller passes the E2EE context pre-assembled from a `seedSignedTerminal`
+ * result + a fresh ECDH keypair, so this helper has no crypto logic of its own.
+ */
+export async function openE2eeTerminalPeer(opts: E2eePeerOptions): Promise<{
+  connection: PeerConnection;
+  frames: Array<DataChannelMessage<TerminalDataMessage>>;
+  client: TerminalClient;
+  /** The E2EE driver; `isActive()` after the ack lands. */
+  e2ee: TerminalE2ee;
+}> {
+  const transport = new RESTPollingTransport({
+    baseUrl: BASE_URL,
+    sessionId: opts.sessionId,
+    token: opts.token,
+  });
+
+  const e2ee = new TerminalE2ee(opts.e2eeContext);
+  const connection = new PeerConnection(
+    new WeriftAdapter({ iceServers: [] }),
+    transport,
+    {
+      sessionId: opts.sessionId,
+      role: 'offerer',
+      channelLabels: ['terminal'],
+      capabilities: ['terminal', 'e2ee'],
+      identity: opts.identity,
+    },
+  );
+
+  const frames: Array<DataChannelMessage<TerminalDataMessage>> = [];
+  connection.dataChannels.onMessage<TerminalDataMessage>('terminal', (msg) => {
+    frames.push(msg);
+  });
+
+  const client = new TerminalClient(
+    opts.sessionId,
+    connection.dataChannels,
+    e2ee,
+  );
+
+  try {
+    await connection.start();
+    const channel = await connection.waitForChannel('terminal', 20_000);
+    expect(channel.readyState).toBe('open');
+  } catch (err) {
+    throw new Error(connectionFailure(err));
+  }
+
+  return { connection, frames, client, e2ee };
+}
+
+/**
+ * Drive the WS1 E2EE negotiation for an offerer peer and await activation.
+ *
+ * The browser is always the offerer, so negotiation is client-driven:
+ * `client.createSession()` enqueues the `terminal-e2ee-hello` on the sendChain
+ * (T5-C) and the agent replies with a `terminal-e2ee-ack` that installs the
+ * session key. This helper calls `createSession()` and then polls
+ * `e2ee.isActive()` until the ack lands.
+ *
+ * Returns the session so the caller can attach `onData` / call `write` without a
+ * second `createSession()` (which would open a second terminal).
+ */
+export async function negotiateTerminalE2ee(
+  client: TerminalClient,
+  e2ee: TerminalE2ee,
+  timeoutMs = 20_000,
+): Promise<ReturnType<TerminalClient['createSession']>> {
+  const session = client.createSession({ cols: 80, rows: 24 });
+  await waitFor(
+    () => e2ee.isActive(),
+    'terminal-e2ee-ack to install the session key',
+    timeoutMs,
+  );
+  return session;
+}
+
+/**
  * Poll `frames` until their concatenated UTF-8 text contains `expected`,
  * and assert that it appears within `timeoutMs`.
  */
@@ -1220,6 +1327,9 @@ export async function seedSignedTerminal(
   userSigning: UserSigningKey;
   agent: { child: ChildProcess; output: () => string };
   identity: PeerConnectionIdentity;
+  /** The agent's WS2 Ed25519 signing public key (base64 raw), fetched from the
+   * server after the agent came online. Additive — existing callers ignore it. */
+  agentSigningPublicKey: string;
 }> {
   const seeded = await seed(
     opts.capabilities ? { capabilities: opts.capabilities } : undefined,
@@ -1240,7 +1350,7 @@ export async function seedSignedTerminal(
     seeded.userSigning.publicKeyRawBase64,
     agentSigningPublicKey,
   );
-  return { ...seeded, agent, identity };
+  return { ...seeded, agent, identity, agentSigningPublicKey };
 }
 
 /**
