@@ -19,6 +19,14 @@ const desktopClose = vi.fn();
 const desktopSelectSource = vi.fn();
 const desktopSetBitrate = vi.fn();
 const desktopSendInput = vi.fn();
+// T6: capture DesktopClient constructor args so the E2EE test can assert
+// the 4th argument (e2ee driver) is or is not passed.
+const desktopClientCalls: Array<{
+  agentId: string;
+  peer: unknown;
+  options: unknown;
+  e2ee?: unknown;
+}> = [];
 // The handler now receives a DesktopSourcesPayload (spec §5.3, breaking change).
 let desktopSourcesHandler:
   ((payload: { sources: unknown[]; inputEnabled: boolean }) => void) | null =
@@ -30,9 +38,12 @@ const desktopOnStatsOff = vi.fn();
 vi.mock('@ponter/desktop-core', () => ({
   DesktopClient: function (
     this: Record<string, unknown>,
-    _agentId: string,
-    _peer: unknown,
+    agentId: string,
+    peer: unknown,
+    options: unknown,
+    e2ee?: unknown,
   ) {
+    desktopClientCalls.push({ agentId, peer, options, e2ee });
     this.start = desktopStart;
     this.close = desktopClose;
     this.selectSource = desktopSelectSource;
@@ -161,6 +172,7 @@ describe('useTerminalStore', () => {
     peerOptions.length = 0;
     remoteCapabilities = [];
     terminalClientCalls.length = 0;
+    desktopClientCalls.length = 0;
     desktopSourcesHandler = null;
     desktopStatsHandler = null;
     desktopStart.mockReset();
@@ -598,5 +610,56 @@ describe('useTerminalStore E2EE negotiation', () => {
     expect(peerOptions.at(-1)).toMatchObject({
       capabilities: ['terminal'],
     });
+  });
+});
+
+/**
+ * T6: desktop E2EE capability negotiation in the store (mirrors the terminal
+ * E2EE tests above). When the user has ECDH keys, the desktop offer must
+ * include `'e2ee'` and DesktopClient must receive a 4th driver argument.
+ * When a key is missing, the offer is `['desktop']` and the driver is
+ * undefined — backward-compatible plaintext.
+ */
+describe('useTerminalStore desktop E2EE negotiation', () => {
+  beforeEach(() => {
+    vi.mocked(loadPrivateKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(loadPublicKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(loadSigningKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(importSigningPublicKeyRaw).mockResolvedValue({} as CryptoKey);
+  });
+
+  it('offers e2ee capabilities and passes a driver for a desktop tab', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+
+    await store.openDesktopTab('ag-d-e2ee', 'Desktop E2EE Host');
+
+    const lastPeer = peerOptions.at(-1);
+    expect(lastPeer).toMatchObject({
+      capabilities: ['desktop', 'e2ee'],
+    });
+    const lastClient = desktopClientCalls.at(-1);
+    expect(lastClient?.e2ee).toBeDefined();
+  });
+
+  it('falls back to plaintext desktop when the user has no ECDH key', async () => {
+    vi.mocked(loadPrivateKey).mockResolvedValue(null);
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+
+    await store.openDesktopTab('ag-d-no-key', 'Desktop No Key Host');
+
+    const lastPeer = peerOptions.at(-1);
+    expect(lastPeer).toMatchObject({
+      capabilities: ['desktop'],
+    });
+    const lastClient = desktopClientCalls.at(-1);
+    expect(lastClient?.e2ee).toBeUndefined();
   });
 });

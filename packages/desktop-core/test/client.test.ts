@@ -729,11 +729,6 @@ function stubDriver(): DesktopE2eeDriver & {
 }
 
 describe('DesktopClient E2EE (Task 6b)', () => {
-  const sentInputs = (): Array<{ type: string; payload: unknown }> =>
-    mockSendJson.mock.calls
-      .filter((c) => c[1] === 'desktop-input')
-      .map((c) => ({ type: c[1], payload: c[2] }));
-
   it('plaintext parity: no driver sends the exact same frame as today', async () => {
     const { client, setControlState } = await connected();
     setControlState('open');
@@ -745,6 +740,31 @@ describe('DesktopClient E2EE (Task 6b)', () => {
       x: 0.5,
       y: 0.5,
     } as const;
+    client.sendInput(event);
+
+    expect(mockSendJson).toHaveBeenCalledWith(
+      'control',
+      'desktop-input',
+      event,
+    );
+    client.close();
+  });
+
+  it('dormant driver: context buildable but no ack yet stays plaintext (byte-identity)', async () => {
+    // T6-C byte-identity: when the driver exists but isActive() is false
+    // (the agent never acked), desktop-input is sent as the flat event, not
+    // { data: base64(...) }.
+    const driver = stubDriver(); // dormant: isActive() === false
+    const { client, setControlState } = await connected(undefined, driver);
+    setControlState('open');
+
+    const event: DesktopInput = {
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.5,
+      y: 0.5,
+    };
     client.sendInput(event);
 
     expect(mockSendJson).toHaveBeenCalledWith(
@@ -908,6 +928,248 @@ describe('DesktopClient E2EE (Task 6b)', () => {
     const decrypted = await agentKey.decrypt(framed);
     const json = new TextDecoder().decode(decrypted);
     expect(JSON.parse(json)).toEqual(event);
+
+    client.close();
+  });
+
+  it('isolates failures: a throwing encrypt surfaces an error but unblocks later sends', async () => {
+    // T6-C failure isolation: when encrypt() throws on the first call, the
+    // .catch on sendChain must (a) forward the error and (b) NOT poison the
+    // chain — the second send must still be delivered.
+    const browser = await makePeerKeys('sess-fail');
+    const agent = await makePeerKeys('sess-fail');
+
+    let browserKey: Awaited<ReturnType<typeof buildSessionKey>> | null = null;
+    let encryptCalls = 0;
+    const errors: string[] = [];
+    const browserDriver: DesktopE2eeDriver = {
+      isActive: () => browserKey !== null,
+      buildHello: vi.fn(async (terminalId: string) => ({
+        terminalId,
+        ecdhPublicKey: browser.ecdhPublicKey,
+        signature: browser.signature,
+      })),
+      handleAck: async (_ack: unknown) => {
+        browserKey = await buildSessionKey({
+          myEcdhPrivateKey: browser.ecdhPrivateKey,
+          peerEcdhPublicKeySpkiBase64: agent.ecdhPublicKey,
+          peerBindingSignature: agent.signature,
+          peerSigningPublicKey: agent.peerSigningPublicKey,
+          sessionId: 'sess-fail',
+        });
+      },
+      encrypt: vi.fn(async (data: Uint8Array) => {
+        encryptCalls++;
+        if (encryptCalls === 1) throw new Error('boom on first encrypt');
+        return browserKey!.encrypt(data);
+      }),
+      decrypt: (data) => browserKey!.decrypt(data),
+    };
+
+    const mock = mockPeer();
+    const client = new DesktopClient(
+      'agent-1',
+      mock.peer,
+      undefined,
+      browserDriver,
+    );
+    client.onError((msg) => errors.push(msg));
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+    mock.setControlState('open');
+
+    // Hello + ack to activate.
+    const start = Date.now();
+    while (
+      !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
+      Date.now() - start < 2000
+    ) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const hello = mockSendJson.mock
+      .calls.find((c) => c[1] === 'desktop-e2ee-hello')!
+      [2] as { terminalId: string; ecdhPublicKey: string; signature: string };
+    mock.emitControl({
+      type: 'desktop-e2ee-ack',
+      channel: 'control',
+      payload: {
+        terminalId: hello.terminalId,
+        ecdhPublicKey: agent.ecdhPublicKey,
+        signature: agent.signature,
+      },
+      timestamp: 1,
+    });
+    while (!browserKey && Date.now() - start < 2000) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(browserKey).not.toBeNull();
+
+    // Two discrete inputs: first encrypt throws, second must still deliver.
+    mockSendJson.mockClear();
+    const first: DesktopInput = {
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.1,
+      y: 0.1,
+    };
+    const second: DesktopInput = {
+      kind: 'key',
+      code: 'KeyA',
+      pressed: true,
+      modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+    };
+
+    let encryptedCount = 0;
+    mockSendJson.mockImplementation((_label, type, _payload) => {
+      if (type === 'desktop-input') {
+        encryptedCount++;
+      }
+    });
+
+    client.sendInput(first);
+    client.sendInput(second);
+
+    const waitStart = Date.now();
+    while (encryptedCount < 1 && Date.now() - waitStart < 2000) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(encryptedCount).toBe(1);
+
+    // The error listener must have received the first call's failure.
+    const encryptErrors = errors.filter((m) => m.includes('encrypt'));
+    expect(encryptErrors.length).toBeGreaterThanOrEqual(1);
+    expect(encryptErrors[0]).toMatch(/encrypt.*failed/i);
+
+    client.close();
+  });
+
+  it('preserves send order via the sendChain (T6-C: never reorder)', async () => {
+    // T6-C ordering: encrypt() resolves in reverse order (first delayed longer
+    // than second), but the frames must still be sent in call order.
+    const browser = await makePeerKeys('sess-order');
+    const agent = await makePeerKeys('sess-order');
+
+    let browserKey: Awaited<ReturnType<typeof buildSessionKey>> | null = null;
+    let encryptCalls = 0;
+    const browserDriver: DesktopE2eeDriver = {
+      isActive: () => browserKey !== null,
+      buildHello: vi.fn(async (terminalId: string) => ({
+        terminalId,
+        ecdhPublicKey: browser.ecdhPublicKey,
+        signature: browser.signature,
+      })),
+      handleAck: async (_ack: unknown) => {
+        browserKey = await buildSessionKey({
+          myEcdhPrivateKey: browser.ecdhPrivateKey,
+          peerEcdhPublicKeySpkiBase64: agent.ecdhPublicKey,
+          peerBindingSignature: agent.signature,
+          peerSigningPublicKey: agent.peerSigningPublicKey,
+          sessionId: 'sess-order',
+        });
+      },
+      encrypt: vi.fn(async (data: Uint8Array) => {
+        encryptCalls++;
+        // First call delayed longer (50ms); second resolves quicker (5ms).
+        const delay = encryptCalls === 1 ? 50 : 5;
+        await new Promise((r) => setTimeout(r, delay));
+        return browserKey!.encrypt(data);
+      }),
+      decrypt: (data) => browserKey!.decrypt(data),
+    };
+
+    const mock = mockPeer();
+    const client = new DesktopClient(
+      'agent-1',
+      mock.peer,
+      undefined,
+      browserDriver,
+    );
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+    mock.setControlState('open');
+
+    // Hello + ack to activate.
+    const start = Date.now();
+    while (
+      !mockSendJson.mock.calls.some((c) => c[1] === 'desktop-e2ee-hello') &&
+      Date.now() - start < 2000
+    ) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const hello = mockSendJson.mock
+      .calls.find((c) => c[1] === 'desktop-e2ee-hello')!
+      [2] as { terminalId: string; ecdhPublicKey: string; signature: string };
+    const agentKey = await buildSessionKey({
+      myEcdhPrivateKey: agent.ecdhPrivateKey,
+      peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,
+      peerBindingSignature: hello.signature,
+      peerSigningPublicKey: browser.peerSigningPublicKey,
+      sessionId: 'sess-order',
+    });
+    mock.emitControl({
+      type: 'desktop-e2ee-ack',
+      channel: 'control',
+      payload: {
+        terminalId: hello.terminalId,
+        ecdhPublicKey: agent.ecdhPublicKey,
+        signature: agent.signature,
+      },
+      timestamp: 1,
+    });
+    while (!browserKey && Date.now() - start < 2000) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(browserKey).not.toBeNull();
+
+    // Two distinct inputs back-to-back.
+    mockSendJson.mockClear();
+    const first: DesktopInput = {
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.1,
+      y: 0.1,
+    };
+    const second: DesktopInput = {
+      kind: 'pointer-button',
+      button: 'right',
+      pressed: true,
+      x: 0.9,
+      y: 0.9,
+    };
+
+    client.sendInput(first);
+    client.sendInput(second);
+
+    // Collect encrypted frames in send order.
+    const waitStart = Date.now();
+    let inputFrames: Array<[string, string, unknown]> = [];
+    while (inputFrames.length < 2 && Date.now() - waitStart < 2000) {
+      inputFrames = mockSendJson.mock.calls.filter(
+        (c) => c[1] === 'desktop-input',
+      ) as Array<[string, string, unknown]>;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(inputFrames).toHaveLength(2);
+
+    const framed0 = Uint8Array.from(
+      Buffer.from((inputFrames[0]![2] as { data: string }).data, 'base64'),
+    );
+    const framed1 = Uint8Array.from(
+      Buffer.from((inputFrames[1]![2] as { data: string }).data, 'base64'),
+    );
+    const dec0 = JSON.parse(
+      new TextDecoder().decode(await agentKey.decrypt(framed0)),
+    );
+    const dec1 = JSON.parse(
+      new TextDecoder().decode(await agentKey.decrypt(framed1)),
+    );
+    // Frames must arrive in call order despite reverse-delay encrypt resolve.
+    expect(dec0).toEqual(first);
+    expect(dec1).toEqual(second);
 
     client.close();
   });
