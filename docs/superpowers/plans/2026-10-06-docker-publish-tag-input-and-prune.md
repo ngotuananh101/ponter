@@ -72,9 +72,12 @@ assert_eq() { # <name> <expected> <actual>
   fi
 }
 
-select_tags() { # <fixture-file> [extra args...] -> space-joined stdout
+select_tags() { # <fixture-file> [extra args...] -> sorted, space-joined stdout
   local f="$1"; shift
-  bash "$script" "$@" < "$f" 2>/dev/null | paste -sd' ' -
+  # `sort` makes the assertion order-independent: the script prints the prune
+  # set newest-first, but the workflow DELETEs each tag regardless of order, so
+  # the test asserts the SET, not an arbitrary print order.
+  bash "$script" "$@" < "$f" 2>/dev/null | sort | paste -sd' ' -
 }
 
 tmp="$(mktemp -d)"
@@ -102,13 +105,18 @@ JSON
 assert_eq "exactly 3 sha tags -> nothing to prune" "" "$(select_tags "$tmp/three.ndjson")"
 
 # Case 3 — a tie on last_updated breaks by name ascending (deterministic).
+# Four sha tags, keep 3: the newest (10-06) is kept, then the three 10-05 tags
+# tie and are ordered by name ascending (aaaaaaa, bbbbbbb, zzzzzzz), so the
+# LAST keep slot goes to bbbbbbb and zzzzzzz is the single tag pruned. A wrong
+# tie-break direction (descending) would prune aaaaaaa instead — so this
+# expectation discriminates the direction.
 cat > "$tmp/tie.ndjson" <<'JSON'
 {"name":"sha-zzzzzzz","last_updated":"2026-10-05T10:00:00Z"}
 {"name":"sha-aaaaaaa","last_updated":"2026-10-05T10:00:00Z"}
 {"name":"sha-mmmmmmm","last_updated":"2026-10-06T10:00:00Z"}
 {"name":"sha-bbbbbbb","last_updated":"2026-10-05T10:00:00Z"}
 JSON
-assert_eq "tie broken by name ascending" "sha-aaaaaaa sha-bbbbbbb" "$(select_tags "$tmp/tie.ndjson")"
+assert_eq "tie broken by name ascending" "sha-zzzzzzz" "$(select_tags "$tmp/tie.ndjson")"
 
 # Case 4 — non-sha names are never selected; malformed objects do not crash.
 cat > "$tmp/mixed.ndjson" <<'JSON'
