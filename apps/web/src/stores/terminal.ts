@@ -3,7 +3,9 @@ import { ref, computed, watch } from 'vue';
 import {
   TerminalClient,
   TerminalSession,
+  TerminalE2ee,
   type TerminalSession as TerminalSessionType,
+  type E2eeContext,
 } from '@ponter/terminal-core';
 import {
   PeerConnection,
@@ -13,6 +15,8 @@ import {
   type PeerConnectionOptions,
 } from '@ponter/webrtc-core';
 import {
+  loadPrivateKey,
+  loadPublicKey,
   loadSigningKey,
   importSigningPublicKeyRaw,
   signProof,
@@ -158,6 +162,48 @@ async function resolvePeerIdentity(
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Build the WS1 E2EE context for connecting to `agentId`, or null if any
+ * key material is missing.
+ *
+ * Fail-closed (T5-C): a context is only returned when every required key is
+ * present — if the user has no ECDH key, no signing key, or the agent has no
+ * signing public key, E2EE cannot be offered and the store falls through to
+ * the plaintext path.
+ */
+async function buildE2eeContext(
+  agentId: string,
+  sessionId: string,
+): Promise<E2eeContext | null> {
+  try {
+    const userId = useAuthStore().user?.id;
+    if (!userId) return null;
+
+    const ecdhPrivateKey = await loadPrivateKey(userId);
+    if (!ecdhPrivateKey) return null;
+    const ecdhPublicKey = await loadPublicKey(userId);
+    if (!ecdhPublicKey) return null;
+    const signingPrivateKey = await loadSigningKey(userId);
+    if (!signingPrivateKey) return null;
+
+    const agent = await apiClient.agents.get(agentId);
+    if (!agent.signingPublicKey) return null;
+    const peerSigningPublicKey = await importSigningPublicKeyRaw(
+      agent.signingPublicKey,
+    );
+
+    return {
+      ecdhPrivateKey,
+      ecdhPublicKey,
+      signingPrivateKey,
+      peerSigningPublicKey,
+      sessionId,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -337,9 +383,15 @@ export const useTerminalStore = defineStore('terminal', () => {
         const rtcPeer = createBrowserAdapter({ iceServers });
 
         const identity = await resolvePeerIdentity(agentId);
+        // T5-G: propose e2ee in the offer capabiities only when a context can
+        // be built — otherwise the agent never echoes e2ee and the plaintext
+        // path is byte-identical.
+        const e2eeContext = await buildE2eeContext(agentId, sessionResp.id);
+        const capabilities = e2eeContext ? ['terminal', 'e2ee'] : ['terminal'];
         peer = new PeerConnection(rtcPeer, transport, {
           role: 'offerer',
           channelLabels: ['terminal'],
+          capabilities,
           sessionId: sessionResp.id,
           identity,
         });
@@ -396,6 +448,24 @@ export const useTerminalStore = defineStore('terminal', () => {
         );
 
         await peer.waitForChannel('terminal');
+
+        // T5-C: pass the E2eeContext only when the agent advertised e2ee in its
+        // answer AND we were able to build a context. If either is absent, the
+        // client is constructed exactly as today (no 3rd arg) — plaintext parity.
+        if (e2eeContext && peer.getRemoteCapabilities().includes('e2ee')) {
+          const client = new TerminalClient(
+            agentId,
+            peer.dataChannels,
+            new TerminalE2ee(e2eeContext),
+          );
+          connections.set(agentId, {
+            peer,
+            client,
+            sessionId: sessionResp.id,
+            unsubscribers,
+          });
+          return client;
+        }
 
         const client = new TerminalClient(agentId, peer.dataChannels);
         connections.set(agentId, {
@@ -700,10 +770,16 @@ export const useTerminalStore = defineStore('terminal', () => {
       // A control channel carries the source picker, bitrate, and stats. The
       // media path is unchanged; the label rides the existing manager (spec §5.2).
       const identity = await resolvePeerIdentity(agentId);
+      // T6: build the WS1 E2EE context for the desktop session. The driver is
+      // passed unconditionally; negotiateE2ee() is dormant until the agent acks,
+      // so a legacy agent (no e2ee in its answer) stays plaintext — backward
+      // compatible, byte-identical to today.
+      const e2eeContext = await buildE2eeContext(agentId, sessionResp.id);
+      const capabilities = e2eeContext ? ['desktop', 'e2ee'] : ['desktop'];
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
         channelLabels: ['control'],
-        capabilities: ['desktop'],
+        capabilities,
         media: { video: true },
         sessionId: sessionResp.id,
         identity,
@@ -746,7 +822,12 @@ export const useTerminalStore = defineStore('terminal', () => {
         }),
       );
 
-      const client = new DesktopClient(agentId, peer);
+      const client = new DesktopClient(
+        agentId,
+        peer,
+        undefined,
+        e2eeContext ? new TerminalE2ee(e2eeContext) : undefined,
+      );
       desktopConnections.set(agentId, {
         peer,
         client,
