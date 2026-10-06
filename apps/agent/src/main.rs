@@ -599,16 +599,28 @@ async fn run_with_reconnect(
                 let sessions = supervisor.as_mut().expect("supervisor is started above");
 
                 tokio::select! {
-                    // The socket ended. A clean close and a fatal error both
-                    // mean "reconnect"; only the log line differs. Nothing
-                    // here touches the supervisor — it lives in its own task
-                    // across reconnects, so a live PeerConnection keeps being
-                    // serviced while the socket is down. A dead socket simply
-                    // stops delivering candidates until the next one connects;
-                    // the ICE layer already connected is unaffected.
+                    // The socket ended. Whether that means "reconnect" is the
+                    // socket's verdict, not a foregone conclusion (M2): 4409
+                    // (replaced) and 4401 (unauthorized) stop the process;
+                    // every other close — including the 1001 a server restart
+                    // sends — reconnects with backoff. Nothing here touches
+                    // the supervisor on the transient path: it lives in its
+                    // own task across reconnects, so a live PeerConnection
+                    // keeps being serviced while the socket is down.
                     result = client.run(&mut outbound_rx) => {
-                        if let Err(e) = result {
-                            tracing::warn!(error = %e, "signaling socket ended with an error");
+                        match result {
+                            Ok(signal::RunEnd::Terminal(code)) => {
+                                tracing::warn!(
+                                    code,
+                                    "the server closed this connection for good; not reconnecting"
+                                );
+                                supervisor.as_ref().expect("started").abort(); // ADR-12 teardown
+                                return Ok(());
+                            }
+                            Ok(signal::RunEnd::Transient) => {}
+                            Err(e) => {
+                                tracing::warn!(error = %e, "signaling socket ended with an error");
+                            }
                         }
                     }
                     // The supervisor only returns on a fatal internal error.
