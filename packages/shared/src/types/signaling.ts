@@ -221,9 +221,19 @@ function parseAnswer(frame: unknown): SignalMessage | null {
   const sdp = asString(inner.sdp);
   if (!sessionId || !sdp) return null;
 
+  const capabilities = Array.isArray(inner.capabilities)
+    ? (inner.capabilities as unknown[]).filter(
+        (c): c is string => typeof c === 'string',
+      )
+    : [];
   return {
     type: 'answer',
-    data: { sessionId, sdp, approved: inner.approved !== false },
+    data: {
+      sessionId,
+      sdp,
+      approved: inner.approved !== false,
+      ...(capabilities.length > 0 ? { capabilities } : {}),
+    },
   };
 }
 

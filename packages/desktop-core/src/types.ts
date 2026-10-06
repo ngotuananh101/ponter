@@ -1,3 +1,4 @@
+import type { TerminalE2eeAck, TerminalE2eeHello } from '@ponter/shared';
 import type {
   MediaStreamLike,
   MediaStreamTrackLike,
@@ -17,4 +18,17 @@ export interface DesktopClientOptions {
   controlTimeoutMs?: number;
   /** Max `pointer-move` frames per second the client will forward. Default 60. */
   inputRateLimitHz?: number;
+}
+
+/**
+ * The subset of the WS1 E2EE negotiation driver that the desktop client needs.
+ * `TerminalE2ee` (terminal-core) structurally satisfies this — the store passes
+ * the same instance. T6-B: desktop-core does NOT import @ponter/terminal-core.
+ */
+export interface DesktopE2eeDriver {
+  isActive(): boolean;
+  buildHello(terminalId: string): Promise<TerminalE2eeHello>;
+  handleAck(ack: TerminalE2eeAck): Promise<void>;
+  encrypt(data: Uint8Array): Promise<Uint8Array>;
+  decrypt(data: Uint8Array): Promise<Uint8Array>;
 }

@@ -273,7 +273,12 @@ export class RESTPollingTransport implements SignalTransport {
             proof: (payload.proof as IdentityProof | undefined) ?? undefined,
           },
         };
-      case 'answer':
+      case 'answer': {
+        const caps = Array.isArray(payload.capabilities)
+          ? (payload.capabilities as unknown[]).filter(
+              (c): c is string => typeof c === 'string',
+            )
+          : [];
         return {
           type: 'answer',
           data: {
@@ -281,8 +286,10 @@ export class RESTPollingTransport implements SignalTransport {
             sdp: (payload.sdp as string) ?? '',
             approved: Boolean(payload.approved),
             proof: (payload.proof as IdentityProof | undefined) ?? undefined,
+            ...(caps.length > 0 ? { capabilities: caps } : {}),
           },
         };
+      }
       case 'ice-candidate':
         return {
           type: 'ice-candidate',

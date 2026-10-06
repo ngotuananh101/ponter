@@ -15,6 +15,7 @@
     "@ponter/webrtc-core": "workspace:*"
   },
   "devDependencies": {
+    "@ponter/crypto": "workspace:*",
     "@types/node": "24.19.0",
     "typescript": "6.0.3",
     "vitest": "5.0.3"

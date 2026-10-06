@@ -810,67 +810,26 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => 
 
 ### 7.2 E2EE Implementation
 
-> **Trạng thái thực tế (2026-10-07):** browser-side class `EncryptionManager` và lịch khóa (ECDH P-256 → HKDF-SHA256 → AES-GCM-256, khung `[12-byte IV][ct ‖ 16-byte tag]`) đã tồn tại tại `packages/crypto/src/encrypt.ts` (Phase 5, Tuần 15). Bản đẳng bằng Rust (qua `ring`) dùng chung `e2ee-vectors.json` sẽ đến **Tuần 16**. E2EE tầng ứng dụng chỉ **hiệu lực sau khi agent quảng bá `capabilities`** — cho đến lúc đó kênh dữ liệu terminal chạy trên plaintext. Work list đã được audit adversarial xác minh: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md); thiết kế chi tiết `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §3.4/§3.5.
+> **Trạng thái thực tế (2026-10-08):** Lịch khóa E2EE của WS1 — ECDH P-256 → HKDF-SHA256 → AES-GCM-256, khung `[12-byte IV][ct ‖ 16-byte tag]` — đã được triển khai ở cả hai peer: trình duyệt qua `packages/crypto/src/encrypt.ts` (Tuần 15) và agent Rust qua `ring` trong `apps/agent/src/e2ee.rs` (Tuần 16), dùng chung tệp véc-tơ `packages/crypto/test/vectors/e2ee-vectors.json`. Cả hai peer đều chạy lịch khóa đồng nhất; agent quảng bá và tiêu thụ capability `e2ee`, và hiện tại kênh dữ liệu terminal mang dữ liệu bảo mật end-to-end giữa trình duyệt và một agent đang chạy thực sự. Work list đã được audit adversarial xác minh: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md); thiết kế chi tiết `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §3.4/§3.5; ghi chép bảo mật WS1 `docs/security/2026-10-08-ws1-e2ee-rust.md`.
 
 ```typescript
+// packages/crypto/src/session-key.ts
+export async function buildSessionKey(params: BuildSessionKeyParams): Promise<EncryptionManager> {
+  // 1. Verify the peer's Ed25519 signature over canonicalKeyBinding(peerEcdhPublicKey).
+  // 2. Import the peer SPKI key, then derive:
+  return EncryptionManager.derive(
+    params.myEcdhPrivateKey,
+    peerEcdhPublicKey,
+    new TextEncoder().encode(WS1_TERMINAL_INFO),   // info
+    new TextEncoder().encode(params.sessionId),    // salt
+  );
+}
+
 // packages/crypto/src/encrypt.ts
 export class EncryptionManager {
-  private keyPair: CryptoKeyPair;
-  private sharedKey: CryptoKey;
-
-  async initialize(privateKeyJwk: JsonWebKey, peerPublicKeyJwk: JsonWebKey) {
-    const privateKey = await crypto.subtle.importKey(
-      'jwk',
-      privateKeyJwk,
-      { name: 'ECDH', namedCurve: 'P-256' },
-      false,
-      ['deriveKey']
-    );
-
-    const peerPublicKey = await crypto.subtle.importKey(
-      'jwk',
-      peerPublicKeyJwk,
-      { name: 'ECDH', namedCurve: 'P-256' },
-      false,
-      []
-    );
-
-    this.sharedKey = await crypto.subtle.deriveKey(
-      { name: 'ECDH', public: peerPublicKey },
-      privateKey,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
-  }
-
-  async encrypt(data: ArrayBuffer): Promise<ArrayBuffer> {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encrypted = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
-      this.sharedKey,
-      data
-    );
-
-    const result = new ArrayBuffer(12 + encrypted.byteLength);
-    const view = new Uint8Array(result);
-    view.set(iv, 0);
-    view.set(new Uint8Array(encrypted), 12);
-
-    return result;
-  }
-
-  async decrypt(data: ArrayBuffer): Promise<ArrayBuffer> {
-    const view = new Uint8Array(data);
-    const iv = view.slice(0, 12);
-    const encrypted = view.slice(12);
-
-    return await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
-      this.sharedKey,
-      encrypted
-    );
-  }
+  static async derive(privateKey, peerPublicKey, info, salt): Promise<EncryptionManager>;
+  async encrypt(plaintext: Uint8Array): Promise<Uint8Array>;  // [12-byte IV][ct ‖ 16-byte tag]
+  async decrypt(framed: Uint8Array): Promise<Uint8Array>;     // throws on short frame / bad tag
 }
 ```
 

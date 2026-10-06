@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createSignalingServer } from '../src/index.js';
 import { getDb, closeDb } from '../src/db/client.js';
 import { agentConnections } from '../src/routes/ws.js';
-import { WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { waitFor } from './helpers.js';
+import { waitFor, connectAgentCollect } from './helpers.js';
 
 // In-process secrets for tests
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
@@ -100,31 +99,13 @@ describe('Agent ICE servers pushed over WebSocket', () => {
     closeDb();
   });
 
-  /**
-   * Connect an agent and collect every frame the server pushes.
-   * The helper resolves once the socket is open.
-   */
-  async function connectAgentAndCollect(port: number) {
-    const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
-      headers: { Authorization: `Bearer ${credential}` },
-    });
-
-    const received: string[] = [];
-    ws.on('message', (data: Buffer) => {
-      received.push(data.toString());
-    });
-
-    await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
-    return { ws, received };
-  }
-
   it('1. pushes an ice-servers frame on connect when TURN is configured', async () => {
     process.env.TURN_SECRET = TURN_SECRET;
     process.env.TURN_URL = 'turn:turn.example.com:3478';
     process.env.STUN_URL = 'stun:stun.example.com:19302';
 
     const { port } = await startOnEphemeral();
-    const { ws, received } = await connectAgentAndCollect(port);
+    const { ws, received } = await connectAgentCollect(port, credential);
 
     const frame = await waitFor(() =>
       received.find((m) => m.includes('"ice-servers"')),
@@ -146,7 +127,7 @@ describe('Agent ICE servers pushed over WebSocket', () => {
     process.env.STUN_URL = 'stun:stun.example.com:19302';
 
     const { port } = await startOnEphemeral();
-    const { ws, received } = await connectAgentAndCollect(port);
+    const { ws, received } = await connectAgentCollect(port, credential);
 
     const frame = await waitFor(() =>
       received.find((m) => m.includes('"ice-servers"')),
@@ -183,7 +164,7 @@ describe('Agent ICE servers pushed over WebSocket', () => {
     process.env.STUN_URL = '';
 
     const { port } = await startOnEphemeral();
-    const { ws, received } = await connectAgentAndCollect(port);
+    const { ws, received } = await connectAgentCollect(port, credential);
 
     const frame = await waitFor(() =>
       received.find((m) => m.includes('"ice-servers"')),

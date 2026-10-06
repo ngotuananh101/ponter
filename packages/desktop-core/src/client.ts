@@ -2,13 +2,29 @@ import type {
   DesktopInput,
   DesktopSourcesPayload,
   DesktopStats,
+  TerminalE2eeAck,
 } from '@ponter/shared';
 import type { PeerConnection } from '@ponter/webrtc-core';
-import type { DesktopClientOptions, DesktopStream } from './types';
+import type {
+  DesktopClientOptions,
+  DesktopE2eeDriver,
+  DesktopStream,
+} from './types';
 
 const DEFAULT_TRACK_TIMEOUT_MS = 20_000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 5_000;
 const DEFAULT_INPUT_RATE_LIMIT_HZ = 60;
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCodePoint(bytes[i]!);
+  }
+  return btoa(binary);
+}
 
 /**
  * The desktop twin of `TerminalClient`: DOM-free, unit-testable, and the same
@@ -45,12 +61,20 @@ export class DesktopClient {
   private peerStateUnsubscribe: (() => void) | null = null;
   /** Unsubscribes from the control channel's typed messages. Set after start(). */
   private controlUnsubscribe: (() => void) | null = null;
+  /** WS1 E2EE driver; absent → plaintext input path stays byte-identical. */
+  private readonly e2ee: DesktopE2eeDriver | undefined;
+  /** Idempotency guard for the desktop-e2ee-hello (mirrors `negotiatedTerminals`). */
+  private e2eeNegotiated = false;
+  /** Ordered chain for encrypted sends — preserves frame order, isolates failures. */
+  private sendChain: Promise<void> = Promise.resolve();
 
   constructor(
     public readonly agentId: string,
     private readonly peer: PeerConnection,
     options?: DesktopClientOptions,
+    e2ee?: DesktopE2eeDriver,
   ) {
+    this.e2ee = e2ee;
     this.trackTimeoutMs = options?.trackTimeoutMs ?? DEFAULT_TRACK_TIMEOUT_MS;
     this.controlTimeoutMs =
       options?.controlTimeoutMs ?? DEFAULT_CONTROL_TIMEOUT_MS;
@@ -187,11 +211,42 @@ export class DesktopClient {
     // normal teardown from logging a spurious warning.
     void this.peer
       .waitForChannel('control', this.controlTimeoutMs)
+      .then(() => {
+        // T6-A: drive the WS1 hello from the client, once the control channel
+        // is confirmed open — mirroring TerminalClient's createSession hello.
+        if (!this.closed) this.negotiateE2ee();
+      })
       .catch((error: unknown) => {
         if (this.closed) return;
         console.warn(
           `[desktop] control channel did not open: ${String(error)}`,
         );
+      });
+  }
+
+  /**
+   * T6-A: send the `desktop-e2ee-hello` once the control channel is open.
+   *
+   * Idempotent: guarded by `e2eeNegotiated` so a late re-subscribe or a
+   * retried `waitForChannel` cannot emit a duplicate hello (mirrors
+   * `negotiatedTerminals` in TerminalClient). No-op when there is no driver
+   * or when the session key is already active.
+   */
+  private negotiateE2ee(): void {
+    if (!this.e2ee || this.e2eeNegotiated || this.e2ee.isActive()) return;
+    this.e2eeNegotiated = true;
+    const sessionId = this.peer.options.sessionId;
+    this.sendChain = this.sendChain
+      .then(async () => {
+        const hello = await this.e2ee!.buildHello(sessionId);
+        this.peer.dataChannels.sendJson('control', 'desktop-e2ee-hello', hello);
+      })
+      .catch((err: unknown) => {
+        for (const listener of [...this.errorListeners]) {
+          listener(
+            `desktop-e2ee-hello send chain failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       });
   }
 
@@ -223,10 +278,33 @@ export class DesktopClient {
         }
         break;
       }
+      case 'desktop-e2ee-ack': {
+        // T6-A: install the session key derived from the agent's ack so a
+        // subsequent `desktop-input` is encrypted, not plaintext.
+        if (!this.e2ee) break;
+        this.receiveE2eeAck(msg.payload as TerminalE2eeAck).catch(
+          (err: unknown) => {
+            for (const listener of [...this.errorListeners]) {
+              listener(
+                `desktop-e2ee-ack failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          },
+        );
+        break;
+      }
       default:
         // Forward-compatible: an unknown control type is ignored, never an error.
         break;
     }
+  }
+
+  /**
+   * Apply the agent's ack: the driver derives the session key and flips to active.
+   * Fail-closed — a bad ack leaves `isActive()` false and input stays plaintext.
+   */
+  private async receiveE2eeAck(ack: TerminalE2eeAck): Promise<void> {
+    await this.e2ee!.handleAck(ack);
   }
 
   /**
@@ -326,8 +404,33 @@ export class DesktopClient {
   }
 
   private sendControl(type: string, payload: unknown): void {
+    // The readyState guard is always first: a channel that is not `open` cannot
+    // send, encrypted or otherwise. Tests assert this warning path is unchanged.
     if (this.peer.dataChannels.getChannel('control')?.readyState !== 'open') {
       console.warn(`[desktop] control channel not open; dropping ${type}`);
+      return;
+    }
+    // T6-C: only `desktop-input` is encrypted, and only when the session key is
+    // active (i.e. the ack has been processed). Non-input types and the dormant
+    // case (`!isActive()`) stay byte-identical to today.
+    if (this.e2ee && this.e2ee.isActive() && type === 'desktop-input') {
+      const data = payload as DesktopInput;
+      const json = JSON.stringify(data);
+      const plaintext = new TextEncoder().encode(json);
+      this.sendChain = this.sendChain
+        .then(async () => {
+          const framed = await this.e2ee!.encrypt(plaintext);
+          this.peer.dataChannels.sendJson('control', type, {
+            data: uint8ArrayToBase64(framed),
+          });
+        })
+        .catch((err: unknown) => {
+          for (const listener of [...this.errorListeners]) {
+            listener(
+              `desktop-input encrypt send chain failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        });
       return;
     }
     this.peer.dataChannels.sendJson('control', type, payload);
