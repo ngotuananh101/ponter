@@ -335,3 +335,4 @@ export async function loadSigningKey(
 }
 
 export * from './encrypt';
+export * from './session-key';

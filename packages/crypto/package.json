@@ -8,6 +8,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "dependencies": {
+    "@ponter/shared": "workspace:*"
+  },
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
