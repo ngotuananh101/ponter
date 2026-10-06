@@ -225,6 +225,65 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
     });
   });
 
+  /**
+   * Connect an agent socket, send one answer signal, and return the echoed
+   * frame plus what the browser polls back. Shared by the approved and refused
+   * answer tests so the socket lifecycle lives in one place.
+   */
+  async function agentAnswerRoundTrip(
+    port: number,
+    answer: { sdp: string; approved: boolean },
+  ): Promise<{
+    echoed: AgentSocketMessage | undefined;
+    pollBody: {
+      signals: Array<{ type: string; payload: Record<string, unknown> }>;
+    };
+  }> {
+    const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
+      headers: { Authorization: `Bearer ${credential}` },
+    });
+
+    await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
+
+    const received: string[] = [];
+    ws.on('message', (data: Buffer) => {
+      received.push(data.toString());
+    });
+    await wait(50);
+
+    const answerMsg: AgentSocketMessage = {
+      type: 'signal',
+      data: {
+        type: 'answer',
+        data: { sessionId, ...answer },
+      },
+    };
+    ws.send(JSON.stringify(answerMsg));
+
+    const echoed = await waitFor(() => {
+      const echo = received.find((m) => {
+        try {
+          const parsed = JSON.parse(m) as AgentSocketMessage;
+          return parsed.type === 'signal' && parsed.data?.type === 'answer';
+        } catch {
+          return false;
+        }
+      });
+      return echo ? (JSON.parse(echo) as AgentSocketMessage) : undefined;
+    });
+
+    const pollRes = await fetch(
+      `http://localhost:${port}/api/signal/poll/${sessionId}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const pollBody = (await pollRes.json()) as {
+      signals: Array<{ type: string; payload: Record<string, unknown> }>;
+    };
+
+    ws.close();
+    return { echoed, pollBody };
+  }
+
   describe('Signal routing via WebSocket', () => {
     it('browser posts offer and agent instantly receives signal over WS', async () => {
       const { port, server: httpServer } = await startOnEphemeral();
@@ -300,69 +359,40 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
     it('agent answer over WebSocket is recorded and browser can poll it', async () => {
       const { port, server: httpServer } = await startOnEphemeral();
 
-      // Connect agent
-      const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
-        headers: { Authorization: `Bearer ${credential}` },
-      });
-
-      await waitFor(() =>
-        ws.readyState === WebSocket.OPEN ? true : undefined,
-      );
-
-      const received: string[] = [];
-      ws.on('message', (data: Buffer) => {
-        received.push(data.toString());
-      });
-
-      await wait(50);
-
-      // Agent sends answer
-      const answerMsg: AgentSocketMessage = {
-        type: 'signal',
-        data: {
-          type: 'answer',
-          data: {
-            sessionId,
-            sdp: 'v=0-o=answer',
-            approved: true,
-          },
-        },
-      };
-
-      ws.send(JSON.stringify(answerMsg));
-
-      // Wait for the echo back
-      const echoed = await waitFor(() => {
-        const echo = received.find((m) => {
-          try {
-            const parsed = JSON.parse(m) as AgentSocketMessage;
-            return parsed.type === 'signal' && parsed.data?.type === 'answer';
-          } catch {
-            return false;
-          }
-        });
-        return echo ? (JSON.parse(echo) as AgentSocketMessage) : undefined;
+      const { echoed, pollBody } = await agentAnswerRoundTrip(port, {
+        sdp: 'v=0-o=answer',
+        approved: true,
       });
 
       expect(echoed?.type).toBe('signal');
       expect(echoed?.data?.type).toBe('answer');
-
-      // Browser polls for signals via the same app instance
-      const pollRes = await fetch(
-        `http://localhost:${port}/api/signal/poll/${sessionId}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
-
-      expect(pollRes.status).toBe(200);
-      const pollBody = (await pollRes.json()) as {
-        signals: Array<{ type: string }>;
-      };
       expect(pollBody.signals).toHaveLength(1);
       expect(pollBody.signals[0]?.type).toBe('answer');
 
-      ws.close();
+      httpServer.close();
+    }, 10000);
+
+    it('agent refusal over WebSocket is relayed but leaves the session pending', async () => {
+      const { port, server: httpServer } = await startOnEphemeral();
+
+      const { echoed, pollBody } = await agentAnswerRoundTrip(port, {
+        sdp: 'v=0-o=refused',
+        approved: false,
+      });
+
+      // The refusal is recorded and relayed — the browser's fast-fail reads
+      // it (refused-answer.test.ts). What it must NOT do is activate.
+      expect(echoed?.data?.type).toBe('answer');
+      expect(pollBody.signals).toHaveLength(1);
+      expect(pollBody.signals[0]?.payload.approved).toBe(false);
+
+      const sess = await db
+        .select({ status: sessions.status })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .get();
+      expect(sess?.status).toBe('pending');
+
       httpServer.close();
     }, 10000);
   });
@@ -481,6 +511,48 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
         .get();
 
       expect(sess?.status).toBe('active');
+    });
+
+    it('POST /api/signal/answer with approved:false records the refusal but leaves the session pending', async () => {
+      const { app } = createSignalingServer();
+      const res = await app.fetch(
+        new Request('http://localhost/api/signal/answer', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            sessionId,
+            sdp: 'v=0-o=refused',
+            approved: false,
+          }),
+        }),
+      );
+
+      expect(res.status).toBe(201);
+
+      const sess = await db
+        .select({ status: sessions.status })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .get();
+      expect(sess?.status).toBe('pending');
+
+      // Relayed, not swallowed: the browser fast-fails on this row.
+      const poll = await app.fetch(
+        new Request(`http://localhost/api/signal/poll/${sessionId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+      const body = (await poll.json()) as {
+        signals: Array<{ type: string; payload: { approved?: boolean } }>;
+      };
+      expect(
+        body.signals.some(
+          (s) => s.type === 'answer' && s.payload.approved === false,
+        ),
+      ).toBe(true);
     });
 
     it('GET /api/signal/poll/:sessionId returns signals for the session', async () => {

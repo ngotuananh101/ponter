@@ -44,9 +44,15 @@ export async function recordSignal(
   // REST routes and the agent socket must not grow two copies of "insert the
   // signal, then maybe advance the session".
   //
+  // H2: an answer with `approved === false` is a refusal (ADR-14) — a real
+  // message the browser must read, so it is still inserted and relayed above.
+  // What a refusal must not do is activate: the session stays `pending` so a
+  // later, approved offer can still claim it.
+  //
   // The guard is `= 'pending'`, NOT `IN ('pending','active')`. The transition's
-  // guarantee is "when `type === 'answer'` and the session is `pending`".
-  if (message.type === 'answer') {
+  // guarantee is "when `type === 'answer'`, `approved !== false`, and the
+  // session is `pending`".
+  if (message.type === 'answer' && message.data.approved !== false) {
     await db
       .update(sessions)
       .set({ status: 'active', startedAt: NOW_SQL, updatedAt: NOW_SQL })
