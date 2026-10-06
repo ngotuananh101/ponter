@@ -21,6 +21,7 @@ mod input;
 mod logging;
 mod pty;
 mod rtc;
+mod shell_policy;
 mod signal;
 
 use std::collections::HashMap;
@@ -182,6 +183,10 @@ fn resolve_shell(cli: &Cli) -> Result<String> {
 
 /// The value half of [`resolve_shell`], split out so the override precedence is
 /// unit-testable without constructing a `Cli` (and on every platform).
+///
+/// **Only the configured value takes this path.** A client-supplied
+/// `terminal-create.shell` never reaches `CommandBuilder` unvalidated: the
+/// dispatcher resolves it through [`shell_policy::ShellPolicy`] first (H1).
 fn resolve_shell_value(explicit: Option<&str>) -> String {
     if let Some(s) = explicit {
         return s.to_string();
@@ -451,6 +456,10 @@ struct SessionConfig {
     cols: u16,
     rows: u16,
     shell: String,
+    /// H1: the allowlist every client-supplied `terminal-create.shell` must
+    /// canonicalize into. Built once per process from the configured shell
+    /// plus the platform floor and `/etc/shells`.
+    pub shell_policy: std::sync::Arc<shell_policy::ShellPolicy>,
     /// Unused on musl, where the desktop module is compiled out; kept so the
     /// CLI shape is identical on every target.
     #[allow(dead_code)]
@@ -530,6 +539,7 @@ async fn run_with_reconnect(
         cols: cli.cols,
         rows: cli.rows,
         shell: shell.to_string(),
+        shell_policy: std::sync::Arc::new(shell_policy::ShellPolicy::from_config(shell)),
         desktop_source: cli.desktop_source,
         desktop_profile,
         desktop_default_source: cli.desktop_default_source.clone(),
@@ -981,6 +991,7 @@ async fn run_one_session(
     let manager_for_dispatch = manager.clone();
     let frame_tx_for_dispatch = frame_tx.clone();
     let shell_for_dispatch = cfg.shell.clone();
+    let shell_policy_for_dispatch = std::sync::Arc::clone(&cfg.shell_policy);
     let cli_cols = cfg.cols;
     let cli_rows = cfg.rows;
     tokio::spawn(async move {
@@ -1008,7 +1019,36 @@ async fn run_one_session(
                                 continue;
                             }
                         };
-                    let sh = create.shell.unwrap_or_else(|| shell_for_dispatch.clone());
+                    let sh = match create.shell {
+                        // H1: a client-supplied shell is untrusted input; the
+                        // configured shell (no client value) is operator policy.
+                        Some(requested) => {
+                            match shell_policy_for_dispatch.resolve_client_shell(&requested) {
+                                Ok(path) => path.to_string_lossy().into_owned(),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        terminal_id = %create.terminal_id,
+                                        requested = %requested,
+                                        error = %e,
+                                        "refused a client-supplied shell",
+                                    );
+                                    // Reuse the pinned spawn-failure frame: the
+                                    // browser already surfaces its `message`, and a
+                                    // third wire code would change a contract for no
+                                    // reader's benefit.
+                                    let frame = pty::frame_pty_error(
+                                        &create.terminal_id,
+                                        pty::PtyErrorCode::SpawnFailed,
+                                        &format!("shell refused: {e}"),
+                                        pty::now_ms(),
+                                    );
+                                    let _ = frame_tx_for_dispatch.send(frame).await;
+                                    continue;
+                                }
+                            }
+                        }
+                        None => shell_for_dispatch.clone(),
+                    };
                     let spawn = manager_for_dispatch
                         .spawn_session(
                             create.terminal_id.clone(),
