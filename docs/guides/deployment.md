@@ -150,7 +150,7 @@ Ba tag có thể được sinh ra:
 | `<ten-dockerhub-cua-ban>/ponter:sha-<sha>`      | Mỗi lần chạy; **chỉ giữ 3 bản gần nhất**  | Ghim một build cụ thể, hoặc rollback về bản trước.  |
 | `<ten-dockerhub-cua-ban>/ponter:<tag>`          | Khi cung cấp input `tag` (giữ lâu dài)    | Tag có tên người đọc được (vd `v1.2.3`).            |
 
-Chạy từ feature branch chỉ sinh tag `sha-`, nên thử nghiệm không thể làm dịch chuyển image mà production đang dùng. Mỗi lần publish không nhập input `tag` sẽ prune các tag `sha-` cũ, chỉ giữ lại ba bản gần nhất.
+Chạy từ feature branch không bao giờ sinh tag `latest`, nên thử nghiệm không thể làm dịch chuyển image mà production đang dùng. Mỗi lần publish không nhập input `tag` sẽ prune các tag `sha-` cũ, chỉ giữ lại ba bản gần nhất.
 
 **Bước 2 — Pull và restart trên máy deploy:**
 ```bash
