@@ -102,7 +102,11 @@ pub fn frame_pty_error(
 pub enum Outbound {
     /// A pre-serialized JSON frame that is never encrypted (control frames).
     Json(String),
-    /// Terminal output bytes, framed (and encrypted when the session is active).
+    /// WS1: the `terminal-e2ee-ack`. The pump sends it and ONLY THEN arms
+    /// encryption, so every frame enqueued before it is sent in plaintext and
+    /// the ack always precedes the first ciphertext frame (Review Focus #4).
+    E2eeAck(String),
+    /// Terminal output bytes, framed (and encrypted once the pump is armed).
     TerminalData {
         terminal_id: String,
         bytes: Vec<u8>,
@@ -586,6 +590,11 @@ mod tests {
                     Outbound::TerminalData { bytes, .. } => bytes,
                     Outbound::Json(s) => {
                         // A terminal-error or terminal-exit frame: skip for echo.
+                        let _ = s;
+                        continue;
+                    }
+                    Outbound::E2eeAck(s) => {
+                        // An ack frame carries no terminal data: skip for echo.
                         let _ = s;
                         continue;
                     }

@@ -819,6 +819,53 @@ pub fn verify_offer_identity(
     Ok(())
 }
 
+/// Transform one outbound item into the text to send. `armed` flips to true
+/// when the ack marker is drained: activation is a BARRIER — frames drained
+/// before it stay plaintext, so the ack always precedes the first ciphertext.
+/// Returns `None` to drop the frame (fail-closed on an encrypt error).
+fn pump_frame(
+    item: pty::Outbound,
+    armed: &mut bool,
+    session: Option<&crate::e2ee::E2eeSession>,
+) -> Option<String> {
+    match item {
+        pty::Outbound::Json(s) => Some(s),
+        pty::Outbound::E2eeAck(s) => {
+            *armed = true;
+            Some(s)
+        }
+        pty::Outbound::TerminalData {
+            terminal_id,
+            bytes,
+            timestamp_ms,
+        } => {
+            let data = if *armed {
+                match session {
+                    Some(s) => match s.encrypt(&bytes) {
+                        Ok(ct) => ct,
+                        Err(e) => {
+                            tracing::debug!(error = ?e, "terminal-data encrypt failed, dropping frame");
+                            return None;
+                        }
+                    },
+                    // Armed but no session is a bug: fail-closed, never plaintext.
+                    None => {
+                        tracing::debug!("terminal-data armed without a session, dropping frame");
+                        return None;
+                    }
+                }
+            } else {
+                bytes
+            };
+            Some(pty::build_terminal_data_frame(
+                &terminal_id,
+                &data,
+                timestamp_ms,
+            ))
+        }
+    }
+}
+
 /// One session: answer, wait for the `terminal` channel, spawn the PTY, pump.
 ///
 /// Borrows `inbound` for the session's whole lifetime, so every candidate the
@@ -1098,7 +1145,7 @@ async fn run_one_session(
                                         "timestamp": pty::now_ms(),
                                     });
                                     if frame_tx_for_dispatch
-                                        .send(pty::Outbound::Json(ack_json.to_string()))
+                                        .send(pty::Outbound::E2eeAck(ack_json.to_string()))
                                         .await
                                         .is_err()
                                     {
@@ -1379,31 +1426,21 @@ async fn run_one_session(
     // single-threaded) and keeping backpressure on a slow consumer.
     let e2ee_for_pump = Arc::clone(&e2ee_session);
     let mut pump = tokio::spawn(async move {
+        let mut e2ee_armed = false;
         while let Some(item) = frame_rx.recv().await {
-            let text = match item {
-                pty::Outbound::Json(s) => s,
-                pty::Outbound::TerminalData {
-                    terminal_id,
-                    bytes,
-                    timestamp_ms,
-                } => {
-                    // Encrypt when a session is active — fail-closed: drop the
-                    // frame rather than emit plaintext on encrypt failure.
-                    let data = {
-                        let guard = e2ee_for_pump.read().await;
-                        match &*guard {
-                            Some(session) => match session.encrypt(&bytes) {
-                                Ok(ct) => ct,
-                                Err(e) => {
-                                    tracing::debug!(error = ?e, "terminal-data encrypt failed, dropping frame");
-                                    continue;
-                                }
-                            },
-                            None => bytes,
-                        }
-                    };
-                    pty::build_terminal_data_frame(&terminal_id, &data, timestamp_ms)
+            let text = {
+                let needs_session =
+                    e2ee_armed && matches!(&item, pty::Outbound::TerminalData { .. });
+                if needs_session {
+                    let guard = e2ee_for_pump.read().await;
+                    pump_frame(item, &mut e2ee_armed, guard.as_ref())
+                } else {
+                    pump_frame(item, &mut e2ee_armed, None)
                 }
+                // `guard` (when taken) drops here — never held across `send_text`.
+            };
+            let Some(text) = text else {
+                continue; // fail-closed drop
             };
             if let Err(e) = dc.send_text(&text).await {
                 // A closed channel is an ordinary end-of-session condition, not
@@ -3330,5 +3367,85 @@ mod tests {
         let mut injector = NoopInjector;
         let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector);
         assert!(!applied, "gate closed must drop the frame and return false");
+    }
+
+    // ------------------------------------------------------------------
+    // I1: in-band E2EE activation barrier in the pump
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn e2ee_ack_arms_encryption_only_after_the_frames_before_it() {
+        // Build a real E2eeSession exactly as
+        // `decrypt_desktop_input_round_trips_through_e2ee` does.
+        let dir = std::env::temp_dir().join(format!("ponter-i1-barrier-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = crate::identity::AgentIdentity::load_or_generate(&dir.join("id.json"))
+            .expect("identity");
+
+        let browser = crate::e2ee::generate_ephemeral().expect("ephemeral");
+        let browser_pub = browser.compute_public_key().expect("pub").as_ref().to_vec();
+        let browser_spki = crate::e2ee::spki_from_raw_point(&browser_pub);
+
+        let browser_signing =
+            crate::identity::AgentIdentity::load_or_generate(&dir.join("browser.json")).unwrap();
+        let browser_signing_pub = browser_signing.public_key_raw();
+        let sig =
+            browser_signing.sign(crate::e2ee::canonical_key_binding(&browser_spki).as_bytes());
+
+        let hello = crate::e2ee::E2eeHello {
+            terminal_id: String::new(),
+            ecdh_public_key: browser_spki.clone(),
+            signature: crate::identity::base64_encode(&sig),
+        };
+
+        let (session, _ack) =
+            crate::e2ee::E2eeSession::accept_hello(&identity, "sess", &hello, &browser_signing_pub)
+                .expect("accept_hello");
+
+        let mut armed = false;
+
+        // A frame enqueued BEFORE the ack: plaintext, even though a session exists.
+        let f1 = pump_frame(
+            pty::Outbound::TerminalData {
+                terminal_id: "t1".into(),
+                bytes: b"before".to_vec(),
+                timestamp_ms: 1,
+            },
+            &mut armed,
+            Some(&session),
+        )
+        .expect("frame 1 is emitted");
+        let f1v: serde_json::Value = serde_json::from_str(&f1).unwrap();
+        assert_eq!(f1v["payload"]["data"], "YmVmb3Jl"); // base64("before") — plaintext
+
+        // The ack marker: emitted verbatim and arms encryption.
+        let ack = pump_frame(
+            pty::Outbound::E2eeAck("{\"type\":\"terminal-e2ee-ack\"}".into()),
+            &mut armed,
+            Some(&session),
+        )
+        .expect("ack is emitted");
+        assert_eq!(ack, "{\"type\":\"terminal-e2ee-ack\"}");
+
+        // A frame AFTER the ack: ciphertext, decryptable to the original bytes.
+        let f3 = pump_frame(
+            pty::Outbound::TerminalData {
+                terminal_id: "t1".into(),
+                bytes: b"after".to_vec(),
+                timestamp_ms: 3,
+            },
+            &mut armed,
+            Some(&session),
+        )
+        .expect("frame 3 is emitted");
+        let f3v: serde_json::Value = serde_json::from_str(&f3).unwrap();
+        let data_b64 = f3v["payload"]["data"].as_str().unwrap();
+        assert_ne!(data_b64, "YWZ0ZXI="); // base64("after") — NOT plaintext
+        let framed = pty::STANDARD.decode(data_b64).unwrap();
+        assert_eq!(session.decrypt(&framed).unwrap(), b"after");
+
+        let _ = std::fs::remove_file(dir.join("id.json"));
+        let _ = std::fs::remove_file(dir.join("browser.json"));
+        let _ = std::fs::remove_dir(&dir);
     }
 }
