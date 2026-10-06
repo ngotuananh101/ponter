@@ -96,10 +96,13 @@ See the [Deployment Guide](https://github.com/ngotuananh101/ponter/blob/main/doc
 
 ## Tags
 
-| Tag           | Meaning                                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `latest`      | The most recent image manually published from the `main` branch via the Docker Publish workflow                     |
-| `sha-<short>` | Every publish run, tagged with the 7-character commit SHA (e.g. `sha-553d3cd`) — use it to pin a build or roll back |
+| Tag           | Meaning                                                                                                                    |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `latest`      | The most recent image manually published from the `main` branch via the Docker Publish workflow                            |
+| `sha-<short>` | Every publish run, tagged with the 7-character commit SHA (e.g. `sha-553d3cd`) — use it to pin a build or roll back        |
+| `<tag>`       | An optional custom tag (e.g. `v1.2.3`) attached when the `tag` input is supplied; persists independently of `sha-` pruning |
+
+Only the three most recent `sha-<short>` tags are retained; each publish without a custom tag prunes older `sha-` tags automatically. Pin a `sha-` tag only within that window, or use a custom tag for a durable name.
 
 All tags are multi-arch manifests (`linux/amd64` + `linux/arm64` in one image, built on native runners without QEMU). The compressed image is roughly 280 MB on amd64 and 270 MB on arm64.
 
