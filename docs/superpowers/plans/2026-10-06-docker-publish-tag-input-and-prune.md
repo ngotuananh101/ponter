@@ -397,8 +397,8 @@ In the "Tags" section, add the custom-tag row and a prune note:
 
 - [ ] **Step 3: Format-check the docs**
 
-Run (prettier from the shared checkout to avoid a worktree `pnpm install`):
-`node /mnt/Data/Ponta/remote-platform/node_modules/.bin/prettier --check docker/README.md docker/DOCKERHUB.md`
+Run (prettier from the shared checkout to avoid a worktree `pnpm install`). Call the shim **directly** — it is a shell shim, so `node <shim>` fails with a SyntaxError:
+`/mnt/Data/Ponta/remote-platform/node_modules/.bin/prettier --check docker/README.md docker/DOCKERHUB.md`
 Expected: "All matched files use Prettier code style!"
 
 - [ ] **Step 4: Commit**
