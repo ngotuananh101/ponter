@@ -56,6 +56,19 @@ use crate::signal::{IceCandidateSignal, IceServerEntry, SignalAnswer, SignalMess
 /// The one channel label this agent accepts. ADR-09: exact label, nothing else.
 pub const TERMINAL_LABEL: &str = "terminal";
 
+/// The capability token that selects e2ee encryption for the terminal path.
+pub const E2EE_CAPABILITY: &str = "e2ee";
+
+/// Select `e2ee` from the offer's capabilities. The answerer only ever echoes a
+/// capability the offerer proposed, so a legacy offer never yields an e2ee answer.
+pub fn negotiated_capabilities(offer_capabilities: &[String]) -> Vec<String> {
+    if offer_capabilities.iter().any(|c| c == E2EE_CAPABILITY) {
+        vec![E2EE_CAPABILITY.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// The desktop control channel's label (Week 8, spec §2.1). Desktop-only.
 pub const CONTROL_LABEL: &str = "control";
 
@@ -242,14 +255,14 @@ pub async fn send_approved_answer(
     outbound: &mpsc::Sender<SignalMessage>,
     identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_answer(peer, offer, true, outbound, identity).await
+    send_answer(peer, offer, true, Vec::new(), outbound, identity).await
 }
 
 /// Answer a desktop offer with `approved: true` and the SDP just built.
 ///
-/// The track is attached by the caller *before* this runs (ADR-15). Kept as
-/// the desktop-specific name; delegates to [`send_approved_answer`] so the
-/// desktop and files approved paths cannot drift.
+/// The track is attached by the caller *before* this runs (ADR-15). Unlike
+/// [`send_approved_answer`], this echoes the answerer capabilities from the
+/// offer (R13): a desktop session advertises `e2ee` iff the offer proposed it.
 #[cfg(not(target_env = "musl"))]
 pub async fn send_desktop_answer(
     peer: &Arc<dyn PeerConnection>,
@@ -257,7 +270,8 @@ pub async fn send_desktop_answer(
     outbound: &mpsc::Sender<SignalMessage>,
     identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_approved_answer(peer, offer, outbound, identity).await
+    let capabilities = negotiated_capabilities(&offer.capabilities);
+    send_answer(peer, offer, true, capabilities, outbound, identity).await
 }
 
 /// Picks the payload type the desktop stream must be stamped with.
@@ -748,7 +762,8 @@ pub async fn answer_offer(
     identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
     let approved = offer.capabilities.iter().any(|c| c == TERMINAL_LABEL);
-    send_answer(peer, offer, approved, outbound, identity).await
+    let capabilities = negotiated_capabilities(&offer.capabilities);
+    send_answer(peer, offer, approved, capabilities, outbound, identity).await
 }
 
 /// Decline an offer while another session is live (ADR-14).
@@ -762,7 +777,7 @@ pub async fn refuse_offer(
     outbound: &mpsc::Sender<SignalMessage>,
     identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_answer(peer, offer, false, outbound, identity).await
+    send_answer(peer, offer, false, Vec::new(), outbound, identity).await
 }
 
 /// Set the remote description, produce an answer, send it with `approved`.
@@ -775,6 +790,7 @@ async fn send_answer(
     peer: &Arc<dyn PeerConnection>,
     offer: &SignalOffer,
     approved: bool,
+    capabilities: Vec<String>,
     outbound: &mpsc::Sender<SignalMessage>,
     identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
@@ -795,6 +811,7 @@ async fn send_answer(
             sdp: answer.sdp,
             approved,
             proof: Some(proof),
+            capabilities,
         }))
         .await
         .context("send answer")?;
@@ -1137,6 +1154,15 @@ mod tests {
         let (_estimator, handle) = abr::estimator();
         let published = f64::from_bits(handle.load(std::sync::atomic::Ordering::Relaxed));
         assert_eq!(published, ABR_INITIAL_BPS);
+    }
+
+    #[test]
+    fn answer_advertises_e2ee_only_when_offer_proposed_it() {
+        assert_eq!(
+            negotiated_capabilities(&["terminal".to_string(), "e2ee".to_string()]),
+            vec!["e2ee".to_string()]
+        );
+        assert!(negotiated_capabilities(&["terminal".to_string()]).is_empty());
     }
 
     #[test]

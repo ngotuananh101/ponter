@@ -137,6 +137,51 @@ describe('parseBrowserMessage', () => {
     });
   });
 
+  it('round-trips answer capabilities when present and omits when absent', () => {
+    const withCaps = parseBrowserMessage(
+      JSON.stringify({
+        type: 'signal',
+        data: {
+          type: 'answer',
+          data: {
+            sessionId: 'sess_1',
+            sdp: 'v=0',
+            approved: true,
+            capabilities: ['e2ee'],
+          },
+        },
+      }),
+    );
+    expect(withCaps).toEqual({
+      type: 'signal',
+      data: {
+        type: 'answer',
+        data: {
+          sessionId: 'sess_1',
+          sdp: 'v=0',
+          approved: true,
+          capabilities: ['e2ee'],
+        },
+      },
+    });
+
+    // Absent capabilities must not appear on the normalized answer (byte-identical).
+    const withoutCaps = parseBrowserMessage(
+      JSON.stringify({
+        type: 'signal',
+        data: {
+          type: 'answer',
+          data: { sessionId: 'sess_1', sdp: 'v=0', approved: true },
+        },
+      }),
+    ) as {
+      type: string;
+      data: { type: string; data: Record<string, unknown> };
+    } | null;
+    expect(withoutCaps).not.toBeNull();
+    expect('capabilities' in withoutCaps!.data.data).toBe(false);
+  });
+
   it('returns null on malformed JSON', () => {
     expect(parseBrowserMessage('{not json')).toBeNull();
   });

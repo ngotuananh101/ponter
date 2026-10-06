@@ -660,11 +660,16 @@ mod outbound_tests {
 
     #[test]
     fn plaintext_frame_is_byte_identical_to_today() {
+        // The wire shape is the NESTED DataChannelMessage envelope
+        // (`{type, channel, payload:{terminalId,data}, timestamp}`), matching
+        // `frame_pty_output` in pty.rs:104-112. `build_terminal_data_frame` must
+        // reproduce it byte-for-byte so the plaintext path is unchanged.
         let frame = build_terminal_data_frame("t1", b"hello world", 123);
         let v: serde_json::Value = serde_json::from_str(&frame).unwrap();
         assert_eq!(v["type"], "terminal-data");
-        assert_eq!(v["terminalId"], "t1");
-        assert_eq!(v["data"], "aGVsbG8gd29ybGQ=");
+        assert_eq!(v["channel"], "terminal");
+        assert_eq!(v["payload"]["terminalId"], "t1");
+        assert_eq!(v["payload"]["data"], "aGVsbG8gd29ybGQ=");
         assert_eq!(v["timestamp"], 123);
     }
 
@@ -770,24 +775,31 @@ pub enum Outbound {
     TerminalData {
         terminal_id: String,
         bytes: Vec<u8>,
-        timestamp_ms: u64,
+        timestamp_ms: i64,
     },
 }
 
 /// Build the `terminal-data` frame JSON. `data` is the (possibly encrypted)
 /// payload; base64-encoding happens here so both paths share one spelling.
-pub fn build_terminal_data_frame(terminal_id: &str, data: &[u8], timestamp_ms: u64) -> String {
-    let payload = serde_json::json!({
-        "type": "terminal-data",
-        "terminalId": terminal_id,
-        "data": STANDARD.encode(data),
-        "timestamp": timestamp_ms,
-    });
-    payload.to_string()
+///
+/// The wire shape is the NESTED `DataChannelMessage` envelope — reuse the same
+/// struct `frame_pty_output` uses so the plaintext path stays byte-identical:
+/// `{"type":"terminal-data","channel":"terminal","payload":{"terminalId":..,"data":..},"timestamp":..}`.
+pub fn build_terminal_data_frame(terminal_id: &str, data: &[u8], timestamp_ms: i64) -> String {
+    let message = DataChannelMessage {
+        r#type: "terminal-data".to_string(),
+        channel: "terminal".to_string(),
+        payload: TerminalDataMessage {
+            terminal_id: terminal_id.to_string(),
+            data: STANDARD.encode(data),
+        },
+        timestamp: timestamp_ms,
+    };
+    serde_json::to_string(&message).expect("a frame of strings cannot fail to serialize")
 }
 ```
 
-Refactor `frame_pty_output(terminal_id, bytes, timestamp_ms)` to return `build_terminal_data_frame(terminal_id, bytes, timestamp_ms)` (keeping the exact JSON shape so the plaintext path is unchanged). Change `start_reader`'s converter to emit `Outbound::TerminalData { terminal_id, bytes, timestamp_ms }` instead of a JSON string. Any producer that emits a control frame (`terminal-exit`, `terminal-error`, spawn-failed) wraps its JSON in `Outbound::Json(...)`.
+Refactor `frame_pty_output(terminal_id, bytes, timestamp_ms)` to delegate to `build_terminal_data_frame(terminal_id, bytes, timestamp_ms)` (same nested shape → plaintext path unchanged). Change `start_reader`'s converter to emit `Outbound::TerminalData { terminal_id, bytes, timestamp_ms }` instead of a JSON string. Any producer that emits a control frame (`terminal-exit`, `terminal-error`, spawn-failed) wraps its JSON in `Outbound::Json(...)`.
 
 - [ ] **Step 6: Wire negotiation + encryption into the terminal session (`main.rs`)**
 
@@ -802,7 +814,14 @@ while let Some(item) = frame_rx.recv().await {
         Outbound::Json(s) => s,
         Outbound::TerminalData { terminal_id, bytes, timestamp_ms } => {
             let data = match &e2ee_session {
-                Some(session) => session.encrypt(&bytes).map_err(|_| ())?,
+                Some(session) => match session.encrypt(&bytes) {
+                    Ok(ct) => ct,
+                    // Fail-closed: drop the frame rather than emit plaintext.
+                    Err(e) => {
+                        tracing::debug!("terminal-data encrypt failed, dropping frame: {e:?}");
+                        continue;
+                    }
+                },
                 None => bytes,
             };
             pty::build_terminal_data_frame(&terminal_id, &data, timestamp_ms)
@@ -812,36 +831,49 @@ while let Some(item) = frame_rx.recv().await {
 }
 ```
 
-3. In the dispatch loop, handle the two negotiation frames **before** the terminal-data arm:
+3. In the dispatch loop, handle the two negotiation frames **before** the terminal-data arm. Note the wire frame is the nested envelope, so the hello fields live under `payload`:
 
 ```rust
 "terminal-e2ee-hello" => {
     // Only negotiate if the offer proposed e2ee and the peer key is known.
     if negotiated && e2ee_session.is_none() {
-        let hello: E2eeHello = serde_json::from_value(envelope.clone())?;
+        // The frame is `{type, channel, payload:{terminalId,ecdhPublicKey,signature}, timestamp}`.
+        let hello: E2eeHello = match serde_json::from_value(envelope["payload"].clone()) {
+            Ok(h) => h,
+            Err(e) => { tracing::debug!("bad e2ee-hello, staying plaintext: {e:?}"); continue; }
+        };
         match E2eeSession::accept_hello(&cfg.identity, &session_id, &hello, &peer_signing_raw) {
             Ok((session, ack)) => {
                 e2ee_session = Some(session);
+                // The ack is itself a nested DataChannelMessage envelope.
                 let ack_json = serde_json::json!({
                     "type": "terminal-e2ee-ack",
-                    "terminalId": ack.terminal_id,
-                    "ecdhPublicKey": ack.ecdh_public_key,
-                    "signature": ack.signature,
+                    "channel": "terminal",
+                    "payload": {
+                        "terminalId": ack.terminal_id,
+                        "ecdhPublicKey": ack.ecdh_public_key,
+                        "signature": ack.signature,
+                    },
+                    "timestamp": pty::now_ms(),
                 });
                 dispatch_tx.send(Outbound::Json(ack_json.to_string())).await?;
             }
-            Err(_) => { /* fail-closed: stay plaintext, log at debug */ }
+            // Fail-closed: a hello that does not verify leaves the session plaintext.
+            Err(e) => { tracing::debug!("e2ee-hello rejected, staying plaintext: {e:?}"); }
         }
     }
 }
 ```
 
-4. In the `terminal-data` arm (input path), decrypt when a session is active:
+4. In the `terminal-data` arm (input path), decrypt when a session is active — fail-closed (drop, never forward plaintext on a decrypt failure):
 
 ```rust
 let raw = STANDARD_ENGINE.decode(data_b64)?;
 let bytes = match &e2ee_session {
-    Some(session) => session.decrypt(&raw).map_err(|_| ())?,
+    Some(session) => match session.decrypt(&raw) {
+        Ok(pt) => pt,
+        Err(e) => { tracing::debug!("terminal-data decrypt failed, dropping input: {e:?}"); continue; }
+    },
     None => raw,
 };
 manager_for_dispatch.send_input(terminal_id, bytes);
