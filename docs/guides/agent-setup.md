@@ -57,11 +57,14 @@ Options:
       --rows <ROWS>              Số hàng mặc định cho PTY ban đầu [default: 24]
       --files-root <FILES_ROOT>  Thư mục được phục vụ cho các session files. KHÔNG có mặc định:
                                  bỏ trống = cổng files đóng (offer bị từ chối) [env: AGENT_FILES_ROOT]
+      --allow-input              Bật inject chuột/phím từ peer (cổng ADR-29/ADR-42). MẶC ĐỊNH TẮT:
+                                 chỉ khi bật VÀ peer đã xác minh danh tính thì input mới được inject
+                                 [env: AGENT_ALLOW_INPUT]
   -h, --help                     In ra help
   -V, --version                  In ra version
 ```
 
-> **Bảo mật:** `--files-root` mở quyền đọc/ghi file trong đúng thư mục đó cho phiên đã xác thực nhưng **peer chưa được định danh** (H3 — Phase 5). Chỉ trỏ vào thư mục bạn chủ đích chia sẻ; không có mặc định, cổng đóng khi cờ vắng mặt.
+> **Bảo mật:** input injection yêu cầu **hai cổng** (ADR-42): (A) cờ `--allow-input` do operator bật cục bộ — peer từ xa không thể bật; và (B) peer phải vượt qua xác minh danh tính tại admission (ADR-41, Phase 6a). Thiếu một trong hai, mọi frame input bị drop. Agent luôn cho phép chế độ xem-only. Từ Phase 6a, peer của **mọi** session (kể cả files/desktop) đều được xác minh danh tính trước khi agent trả lời offer.
 
 ### 3.1 Vận hành sandbox files (Tuần 11)
 
@@ -134,6 +137,9 @@ CREDENTIAL=ag_0123456789abcdef0123456789abcdef
 STUN=stun:stun.l.google.com:19302
 # Tùy chọn: mở cổng files. Bỏ trống = cổng đóng (mặc định an toàn).
 # AGENT_FILES_ROOT=/srv/ponter-files
+# Tùy chọn: bật inject chuột/phím (mặc định TẮT — cổng A của ADR-42).
+# Chỉ có hiệu lực khi peer đã xác minh danh tính (cổng B).
+# AGENT_ALLOW_INPUT=true
 RUST_LOG=info
 ```
 
