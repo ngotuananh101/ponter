@@ -132,7 +132,12 @@ const terminalClientCalls: Array<{
 }> = [];
 
 vi.mock('@ponter/terminal-core', () => ({
-  TerminalClient: function (this: Record<string, unknown>, agentId: string, dc: unknown, e2ee?: unknown) {
+  TerminalClient: function (
+    this: Record<string, unknown>,
+    agentId: string,
+    dc: unknown,
+    e2ee?: unknown,
+  ) {
     terminalClientCalls.push({ agentId, dataChannels: dc, e2ee });
     this.createSession = vi.fn(() => ({
       id: 'term-test',

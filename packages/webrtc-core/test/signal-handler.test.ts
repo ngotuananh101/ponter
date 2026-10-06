@@ -122,9 +122,9 @@ describe('Signal Handler conversions', () => {
       undefined,
       ['e2ee'],
     );
-    expect(
-      (withCaps.data as { capabilities?: string[] }).capabilities,
-    ).toEqual(['e2ee']);
+    expect((withCaps.data as { capabilities?: string[] }).capabilities).toEqual(
+      ['e2ee'],
+    );
 
     const without = createAnswerSignal(
       's1',

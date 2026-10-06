@@ -2,7 +2,10 @@ import { it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const headers = readFileSync(resolve(__dirname, '../../public/_headers'), 'utf8');
+const headers = readFileSync(
+  resolve(__dirname, '../../public/_headers'),
+  'utf8',
+);
 
 it('sets a strict CSP with no unsafe-inline and a frame-ancestors lockdown', () => {
   expect(headers).toContain('Content-Security-Policy:');

@@ -987,9 +987,9 @@ describe('DesktopClient E2EE (Task 6b)', () => {
     ) {
       await new Promise((r) => setTimeout(r, 5));
     }
-    const hello = mockSendJson.mock
-      .calls.find((c) => c[1] === 'desktop-e2ee-hello')!
-      [2] as { terminalId: string; ecdhPublicKey: string; signature: string };
+    const hello = mockSendJson.mock.calls.find(
+      (c) => c[1] === 'desktop-e2ee-hello',
+    )![2] as { terminalId: string; ecdhPublicKey: string; signature: string };
     mock.emitControl({
       type: 'desktop-e2ee-ack',
       channel: 'control',
@@ -1099,9 +1099,9 @@ describe('DesktopClient E2EE (Task 6b)', () => {
     ) {
       await new Promise((r) => setTimeout(r, 5));
     }
-    const hello = mockSendJson.mock
-      .calls.find((c) => c[1] === 'desktop-e2ee-hello')!
-      [2] as { terminalId: string; ecdhPublicKey: string; signature: string };
+    const hello = mockSendJson.mock.calls.find(
+      (c) => c[1] === 'desktop-e2ee-hello',
+    )![2] as { terminalId: string; ecdhPublicKey: string; signature: string };
     const agentKey = await buildSessionKey({
       myEcdhPrivateKey: agent.ecdhPrivateKey,
       peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,

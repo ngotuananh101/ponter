@@ -92,10 +92,7 @@ import type { DataChannelMessage } from '@ponter/shared';
  * `capMs` elapses. Mirrors the existing `waitForDataFrames` drain but is
  * predicate-based so it works for any invariant (T5-E).
  */
-async function waitFor(
-  predicate: () => boolean,
-  capMs = 2000,
-): Promise<void> {
+async function waitFor(predicate: () => boolean, capMs = 2000): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start > capMs) {
@@ -401,7 +398,8 @@ describe('WS1 terminal E2EE client negotiation (createSession auto-hello)', () =
     client.createSession(); // T5-C: drives hello on the sendChain after terminal-create
 
     await waitForFrameType(frames, 'terminal-e2ee-hello');
-    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!.payload as never;
+    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!
+      .payload as never;
     const ack = await tb.handleHello(hello);
     emit({
       type: 'terminal-e2ee-ack',
@@ -433,7 +431,8 @@ describe('WS1 terminal E2EE client negotiation (createSession auto-hello)', () =
 
     // Step 1: wait for the hello emitted by createSession, then build the ack.
     await waitForFrameType(frames, 'terminal-e2ee-hello');
-    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!.payload as never;
+    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!
+      .payload as never;
     const ack = await tb.handleHello(hello);
 
     // Step 3: emit the ack frame through the REAL client path (not handleAck directly).
@@ -446,7 +445,9 @@ describe('WS1 terminal E2EE client negotiation (createSession auto-hello)', () =
 
     // Step 4: in the same tick (before any await), emit a ciphertext terminal-data
     // frame. The frame must be ordered BEHIND the in-flight ack on receiveChain.
-    const framed = await tb.encrypt(new TextEncoder().encode('decrypted text\n'));
+    const framed = await tb.encrypt(
+      new TextEncoder().encode('decrypted text\n'),
+    );
     emit({
       type: 'terminal-data',
       channel: 'terminal',
@@ -498,7 +499,9 @@ describe('WS1 terminal E2EE client negotiation (createSession auto-hello)', () =
 
     // Each createSession enqueues a hello on the sendChain. Wait until both
     // hello frames have been emitted (they are sequenced, so we poll).
-    await waitFor(() => frames.filter((f) => f.type === 'terminal-e2ee-hello').length >= 2);
+    await waitFor(
+      () => frames.filter((f) => f.type === 'terminal-e2ee-hello').length >= 2,
+    );
 
     const hellos = frames.filter((f) => f.type === 'terminal-e2ee-hello');
     expect(hellos).toHaveLength(2);

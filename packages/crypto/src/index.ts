@@ -243,9 +243,7 @@ export async function savePublicKey(
 }
 
 /** Load a user's public key, or null if none is stored. */
-export async function loadPublicKey(
-  userId: string,
-): Promise<CryptoKey | null> {
+export async function loadPublicKey(userId: string): Promise<CryptoKey | null> {
   const db = await openDatabase();
   return readKey(db, STORE_NAME, `${userId}:pub`, 'Failed to load public key');
 }
