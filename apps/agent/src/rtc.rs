@@ -260,9 +260,9 @@ pub async fn send_approved_answer(
 
 /// Answer a desktop offer with `approved: true` and the SDP just built.
 ///
-/// The track is attached by the caller *before* this runs (ADR-15). Kept as
-/// the desktop-specific name; delegates to [`send_approved_answer`] so the
-/// desktop and files approved paths cannot drift.
+/// The track is attached by the caller *before* this runs (ADR-15). Unlike
+/// [`send_approved_answer`], this echoes the answerer capabilities from the
+/// offer (R13): a desktop session advertises `e2ee` iff the offer proposed it.
 #[cfg(not(target_env = "musl"))]
 pub async fn send_desktop_answer(
     peer: &Arc<dyn PeerConnection>,
@@ -270,7 +270,8 @@ pub async fn send_desktop_answer(
     outbound: &mpsc::Sender<SignalMessage>,
     identity: &crate::identity::AgentIdentity,
 ) -> Result<()> {
-    send_approved_answer(peer, offer, outbound, identity).await
+    let capabilities = negotiated_capabilities(&offer.capabilities);
+    send_answer(peer, offer, true, capabilities, outbound, identity).await
 }
 
 /// Picks the payload type the desktop stream must be stamped with.

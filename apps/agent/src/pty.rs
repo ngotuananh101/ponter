@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use base64::engine::general_purpose::STANDARD;
+pub use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};

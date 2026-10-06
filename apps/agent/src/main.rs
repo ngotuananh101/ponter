@@ -1990,6 +1990,31 @@ async fn run_desktop_session(
     // `SessionConfig` is borrowed — the same reason `session_id` is cloned
     // above. This is the ADR-29 gate's only runtime copy.
     let allow_input = cfg.allow_input;
+
+    // WS1 E2EE: whether the offer proposed `e2ee` (the agent never initiates it).
+    // Captured before the task so the closure can read it without borrowing `offer`.
+    let negotiated = !rtc::negotiated_capabilities(&offer.capabilities).is_empty();
+
+    // The browser's Ed25519 signing public key, decoded once here and captured
+    // into the task for hello verification. `verify_offer_identity` decoded it
+    // locally but did not return the bytes (R9).
+    let peer_signing_raw: [u8; 32] = match &offer.user_signing_public_key {
+        Some(pk) => {
+            let decoded = identity::base64_decode(pk)
+                .map_err(|e| anyhow::anyhow!("cannot decode user signing key: {e}"))?;
+            let mut arr = [0u8; 32];
+            if decoded.len() != 32 {
+                anyhow::bail!("user signing key is not 32 bytes");
+            }
+            arr.copy_from_slice(&decoded);
+            arr
+        }
+        None => [0u8; 32],
+    };
+
+    // The task is `'static`, so clone the Arc identity into it (same reason as
+    // `allow_input` being copied out of `cfg`).
+    let cfg_identity = std::sync::Arc::clone(&cfg.identity);
     let control_task = tokio::spawn(async move {
         // The control channel opens after the answer; wait for it, but never
         // block the stream on it — a viewer that never opens the picker still
@@ -2012,6 +2037,9 @@ async fn run_desktop_session(
         // The injector is built lazily (first allowed input frame) and reused,
         // so a host with no display fails one frame, not the session (§6.3).
         let mut injector: Option<Box<dyn input::InputInjector>> = None;
+        // WS1 E2EE session state (R14): a plain local, no Arc/RwLock — the
+        // control loop is the only task touching it.
+        let mut e2ee_session: Option<e2ee::E2eeSession> = None;
         loop {
             tokio::select! {
                 event = dc.poll() => match event {
@@ -2020,6 +2048,51 @@ async fn run_desktop_session(
                             tracing::debug!("ignoring a non-UTF-8 control frame");
                             continue;
                         };
+                        // WS1 E2EE: only accept a hello when the offer proposed
+                        // `e2ee` and no session is active yet. The agent never
+                        // initiates.
+                        if text.contains("\"desktop-e2ee-hello\"") {
+                            if negotiated && e2ee_session.is_none() {
+                                let envelope: crate::pty::DataChannelMessage<serde_json::Value> =
+                                    match serde_json::from_str(text) {
+                                        Ok(e) => e,
+                                        Err(e) => {
+                                            tracing::debug!(error = %e, "bad desktop-e2ee-hello");
+                                            continue;
+                                        }
+                                    };
+                                let hello: e2ee::E2eeHello = match serde_json::from_value(envelope.payload) {
+                                    Ok(h) => h,
+                                    Err(e) => {
+                                        tracing::debug!(error = %e, "bad desktop-e2ee-hello payload");
+                                        continue;
+                                    }
+                                };
+                                match e2ee::E2eeSession::accept_hello(
+                                    &cfg_identity, &session_id, &hello, &peer_signing_raw,
+                                ) {
+                                    Ok((session, ack)) => {
+                                        let ack_json = serde_json::json!({
+                                            "type": "desktop-e2ee-ack",
+                                            "channel": "control",
+                                            "payload": {
+                                                "terminalId": ack.terminal_id,
+                                                "ecdhPublicKey": ack.ecdh_public_key,
+                                                "signature": ack.signature,
+                                            },
+                                            "timestamp": crate::pty::now_ms(),
+                                        });
+                                        e2ee_session = Some(session);
+                                        if let Err(e) = dc.send_text(&ack_json.to_string()).await {
+                                            tracing::debug!(error = %e, "sending desktop-e2ee-ack failed");
+                                        }
+                                    }
+                                    // Fail-closed: a bad hello leaves the session plaintext.
+                                    Err(e) => tracing::debug!(error = ?e, "desktop-e2ee-hello rejected, staying plaintext"),
+                                }
+                            }
+                            continue;
+                        }
                         // Input rides the same channel (ADR-26). The gate lives
                         // in `allow_input`: closed ⇒ debug-log + drop, open
                         // ⇒ decode + inject, fail-soft either way (§2.3). The
@@ -2027,6 +2100,21 @@ async fn run_desktop_session(
                         // parsing every frame; `apply_if_allowed` is still the
                         // only path that decides, so it cannot bypass the gate.
                         if text.contains("\"desktop-input\"") {
+                            // E2EE: decrypt BEFORE the gate when a session is
+                            // active. Fail-closed: a decrypt error drops the
+                            // frame, never injects anything.
+                            let decrypted;
+                            let text = if let Some(session) = e2ee_session.as_ref() {
+                                match decrypt_desktop_input(session, text) {
+                                    Ok(t) => { decrypted = t; decrypted.as_str() }
+                                    Err(e) => {
+                                        tracing::debug!(error = %e, "dropping desktop-input: decrypt failed");
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                text
+                            };
                             if allow_input {
                                 if injector.is_none() {
                                     match input::platform::PlatformInjector::try_new() {
@@ -2163,6 +2251,37 @@ async fn run_desktop_session(
     }
     let _ = peer.close().await;
     Ok(())
+}
+
+/// Decrypt a `desktop-input` frame whose payload is
+/// `{ "data": base64([12-byte IV][ct || 16-byte tag]) }`.
+/// Returns a plaintext `desktop-input` envelope string that
+/// `input::decode_desktop_input` accepts. The ciphertext decrypts to the JSON
+/// bytes of a `DesktopInputWire`. Fail-closed: any error returns `Err`.
+#[cfg(not(target_env = "musl"))]
+fn decrypt_desktop_input(session: &e2ee::E2eeSession, raw: &str) -> anyhow::Result<String> {
+    let envelope: crate::pty::DataChannelMessage<serde_json::Value> =
+        serde_json::from_str(raw).context("inbound frame is not a DataChannelMessage")?;
+    let data_b64 = envelope
+        .payload
+        .get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("desktop-input payload has no data"))?;
+    let framed = crate::pty::STANDARD
+        .decode(data_b64)
+        .context("payload.data is not valid base64")?;
+    let plaintext = session
+        .decrypt(&framed)
+        .map_err(|e| anyhow::anyhow!("desktop-input decrypt failed: {:?}", e))?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&plaintext).context("decrypted payload is not JSON")?;
+    let rebuilt = serde_json::json!({
+        "type": "desktop-input",
+        "channel": "control",
+        "payload": payload,
+        "timestamp": envelope.timestamp,
+    });
+    Ok(rebuilt.to_string())
 }
 
 /// On musl the desktop module does not exist, so a desktop offer is refused
@@ -3070,5 +3189,146 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // Task 6a: decrypt desktop-input on the WS1 session key
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn decrypt_desktop_input_round_trips_through_e2ee() {
+        // Build an E2eeSession exactly as e2ee.rs's accept_hello_derives_and_round_trips does:
+        // browser ephemeral key + a binding signed by an AgentIdentity.
+        let dir = std::env::temp_dir().join(format!("ponter-desktop-e2ee-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = crate::identity::AgentIdentity::load_or_generate(&dir.join("id.json"))
+            .expect("identity");
+
+        let browser = crate::e2ee::generate_ephemeral().expect("ephemeral");
+        let browser_pub = browser.compute_public_key().expect("pub").as_ref().to_vec();
+        let browser_spki = crate::e2ee::spki_from_raw_point(&browser_pub);
+
+        // The browser's Ed25519 signing key whose raw public key we hand the agent.
+        let browser_signing =
+            crate::identity::AgentIdentity::load_or_generate(&dir.join("browser.json")).unwrap();
+        let browser_signing_pub = browser_signing.public_key_raw();
+        let sig =
+            browser_signing.sign(crate::e2ee::canonical_key_binding(&browser_spki).as_bytes());
+
+        let hello = crate::e2ee::E2eeHello {
+            terminal_id: String::new(),
+            ecdh_public_key: browser_spki.clone(),
+            signature: crate::identity::base64_encode(&sig),
+        };
+
+        let (session, _ack) =
+            crate::e2ee::E2eeSession::accept_hello(&identity, "sess", &hello, &browser_signing_pub)
+                .expect("accept_hello");
+
+        // Build the plaintext payload: a PointerMove DesktopInputWire JSON.
+        let payload_bytes = serde_json::to_vec(&serde_json::json!({
+            "kind": "pointer-move",
+            "x": 0.5,
+            "y": 0.25
+        }))
+        .expect("payload json");
+
+        // Encrypt with the session, then wrap in the wire envelope.
+        let framed = session.encrypt(&payload_bytes).expect("encrypt");
+        let data_b64 = crate::identity::base64_encode(&framed);
+        let wire = serde_json::json!({
+            "type": "desktop-input",
+            "channel": "control",
+            "payload": { "data": data_b64 },
+            "timestamp": 1
+        })
+        .to_string();
+
+        // Decrypt and verify the plaintext envelope round-trips to the original payload.
+        let decrypted = decrypt_desktop_input(&session, &wire).expect("decrypt_desktop_input");
+
+        // `input::decode_desktop_input` must accept the decrypted envelope.
+        let decoded = crate::input::decode_desktop_input(&decrypted)
+            .expect("decode")
+            .expect("event");
+        assert!(
+            matches!(
+                decoded,
+                crate::input::DesktopInput::PointerMove { x: 0.5, y: 0.25 }
+            ),
+            "decoded = {decoded:?}"
+        );
+
+        // The decrypted envelope's payload must equal the original payload bytes.
+        let rebuilt: serde_json::Value = serde_json::from_str(&decrypted).unwrap();
+        assert_eq!(
+            rebuilt["payload"],
+            serde_json::from_slice::<serde_json::Value>(&payload_bytes).unwrap(),
+            "decrypted payload must equal original"
+        );
+
+        let _ = std::fs::remove_file(dir.join("id.json"));
+        let _ = std::fs::remove_file(dir.join("browser.json"));
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// A test double so the gate-closed assertion is self-contained (Round Focus #6:
+    /// the ADR-29 gate must stay closed off any capability).
+    #[derive(Default)]
+    struct NoopInjector;
+    impl crate::input::InputInjector for NoopInjector {
+        fn pointer_move(&mut self, _x: i32, _y: i32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn pointer_button(&mut self, _b: crate::input::Button, _p: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn wheel(&mut self, _dx: i32, _dy: i32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn key(
+            &mut self,
+            _c: &str,
+            _p: bool,
+            _m: &crate::input::KeyModifiers,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn text(&mut self, _t: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn gate_closed_desktop_input_drops_frame() {
+        // Review Focus #6: the ADR-29 gate stays closed off any capability.
+        // `apply_if_allowed(false, ...)` must return false (there is an existing
+        // Week 9 test for this in `input.rs`; this mirrors it on the main.rs
+        // side to anchor Task 6a's decrypt path).
+        let raw = serde_json::json!({
+            "type": "desktop-input",
+            "channel": "control",
+            "payload": { "kind": "pointer-move", "x": 0.5, "y": 0.5 },
+            "timestamp": 0
+        })
+        .to_string();
+
+        let source = crate::desktop::DesktopSourceInfo {
+            id: String::new(),
+            kind: crate::desktop::SourceKind::Monitor,
+            name: String::new(),
+            width: 1920,
+            height: 1080,
+            x: 0,
+            y: 0,
+            scale_factor: 1.0,
+            rotation: 0.0,
+            is_primary: false,
+            default: false,
+        };
+
+        let mut injector = NoopInjector;
+        let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector);
+        assert!(!applied, "gate closed must drop the frame and return false");
     }
 }
