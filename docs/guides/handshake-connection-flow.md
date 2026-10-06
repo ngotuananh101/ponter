@@ -63,7 +63,7 @@ Numbered steps trace the code path for one terminal tab opening against one agen
 11. **Agent sends the answer (with buffering).** The `SignalClient.run()` loop (`signal.rs:271`) reads inbound frames from the socket stream and forwards them to the `supervise_sessions` loop (`main.rs:164`). When the supervisor sees an `Offer`, it calls `run_one_session` (`main.rs:328`):
     - Builds the peer from the pushed ICE servers (`rtc::build_peer`, `rtc.rs:53`).
     - **Registers `forward_candidates` BEFORE answering** (`main.rs:344`) — gathering starts when the local description is set, and the handler must be installed first or host candidates are lost.
-    - Calls `rtc::answer_offer` (`rtc.rs:148`): sets remote description to the offer, creates an answer, sets local description, then sends `SignalMessage::Answer { sessionId, sdp, approved }` where `approved = offer.capabilities contains TERMINAL_LABEL` (`rtc.rs:153`).
+    - Calls `rtc::answer_offer` (`rtc.rs:741`): sets remote description to the offer, creates an answer, sets local description, then sends `SignalMessage::Answer { sessionId, sdp, approved }` where `approved = offer.capabilities contains TERMINAL_LABEL` (`rtc.rs:747`).
     - Calls `rtc::flush_pending_candidates` (`rtc.rs:117`) to apply any candidates buffered during the offer-handling race (`rtc.rs:117` is the definition; `main.rs:355` is the call site).
 
 12. **Agent receives browser candidates (post-answer).** The browser's trickle arrives as `ice-candidate` signals. The supervisor's `apply_if_candidate` (`main.rs:634`) routes them to `rtc::apply_candidate` (`rtc.rs:264`), which buffers them if `remote_description().is_none()` returns true (`rtc.rs:277`) or adds them directly otherwise.
