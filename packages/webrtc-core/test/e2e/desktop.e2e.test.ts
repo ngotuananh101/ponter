@@ -735,4 +735,76 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       await offerer.close();
     }
   }, 120_000);
+
+  // ADR-44 (Phase 6a): the control-path latency baseline Phase 6b needs.
+  // 10 pointer-moves, 100 ms apart, gate open under Xvfb; every `delta_ms`
+  // (agent receive − browser send) must be ≤ 1000 ms — a loose CI guard —
+  // and the summary is logged for the demo doc to record.
+  it('measures the input-latency baseline (ADR-44)', async () => {
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    const agent = spawnAgent(
+      agentId,
+      credential,
+      ['--desktop-source', 'test', '--allow-input'],
+      { DISPLAY: process.env.DISPLAY ?? ':99' }, // default RUST_LOG=info: the log is info
+    );
+    await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
+
+    const { offerer, controlFrames } = await openDesktopPeer(
+      sessionId,
+      token,
+      identity,
+    );
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+
+      for (let i = 0; i < 10; i++) {
+        sendPointerMove(offerer, 0.1 + i * 0.05, 0.5);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // The 10 applied lines must be visible before parsing.
+      await waitFor(
+        () =>
+          (agent.output().match(/desktop-input applied/g)?.length ?? 0) >= 10,
+        '10 applied input frames in the agent log',
+        20_000,
+      );
+
+      // tracing-subscriber::fmt emits ANSI styling by default; strip it so the
+      // field-render boundary (`delta_ms=123`) is matched verbatim.
+      const agentLog = agent.output().replace(/\x1b\[[0-9;]*m/g, '');
+      const deltas = [...agentLog.matchAll(/delta_ms=(\d+)/g)].map((m) =>
+        Number(m[1]),
+      );
+      expect(deltas.length).toBeGreaterThanOrEqual(10);
+      for (const delta of deltas) {
+        expect(delta).toBeLessThanOrEqual(1000);
+      }
+
+      const sorted = [...deltas].sort((a, b) => a - b);
+      const min = sorted[0]!;
+      const median = sorted[Math.floor(sorted.length / 2)]!;
+      const p90 =
+        sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]!;
+      console.log(
+        `[ADR-44 baseline] n=${deltas.length} min=${min}ms median=${median}ms p90=${p90}ms max=${sorted[sorted.length - 1]!}ms`,
+      );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
 });
