@@ -274,14 +274,30 @@ export class TerminalClient {
       const session = this.sessions.get(payload.terminalId);
       if (session) {
         const e2ee = this.e2ee;
-        if (!e2ee || !e2ee.isActive()) {
-          // Unchanged plaintext path — byte-identical to today.
+        // T5-R1 (never-render-ciphertext invariant): when an e2ee context is
+        // present, enqueue the ENTIRE terminal-data handling on receiveChain so
+        // the isActive() decision runs AFTER any already-queued ack callback
+        // (which performs the async key derivation). A ciphertext frame that
+        // arrives while the ack's deriveBits is in flight must NOT take the
+        // plaintext branch and render raw ciphertext.
+        //
+        // When e2ee is ABSENT, keep the synchronous plaintext path exactly as
+        // today — byte-identical parity, no ordering change.
+        if (!e2ee) {
           const bytes = base64ToUint8Array(payload.data);
           session.receiveOutput(bytes);
           return;
         }
         this.receiveChain = this.receiveChain
           .then(async () => {
+            // isActive() is re-evaluated inside the chain so this data frame is
+            // processed strictly after any prior ack callback on receiveChain.
+            if (!e2ee.isActive()) {
+              // Ack has not completed (or failed); treat as plaintext.
+              const bytes = base64ToUint8Array(payload.data);
+              session.receiveOutput(bytes);
+              return;
+            }
             try {
               const encrypted = base64ToUint8Array(payload.data);
               const bytes = await e2ee.decrypt(encrypted);

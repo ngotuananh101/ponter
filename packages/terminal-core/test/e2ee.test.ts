@@ -431,22 +431,34 @@ describe('WS1 terminal E2EE client negotiation (createSession auto-hello)', () =
     const got: Uint8Array[] = [];
     session.onData((d) => got.push(d));
 
-    // Drive hello via createSession, then handle the ack through the real path.
+    // Step 1: wait for the hello emitted by createSession, then build the ack.
     await waitForFrameType(frames, 'terminal-e2ee-hello');
-    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!
-      .payload as never;
-    await ta.handleAck(await tb.handleHello(hello));
+    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!.payload as never;
+    const ack = await tb.handleHello(hello);
 
+    // Step 3: emit the ack frame through the REAL client path (not handleAck directly).
+    emit({
+      type: 'terminal-e2ee-ack',
+      channel: 'terminal',
+      payload: ack,
+      timestamp: 1,
+    } as unknown as DataChannelMessage);
+
+    // Step 4: in the same tick (before any await), emit a ciphertext terminal-data
+    // frame. The frame must be ordered BEHIND the in-flight ack on receiveChain.
     const framed = await tb.encrypt(new TextEncoder().encode('decrypted text\n'));
     emit({
       type: 'terminal-data',
       channel: 'terminal',
-      payload: { terminalId: session.id, data: Buffer.from(framed).toString('base64') },
+      payload: {
+        terminalId: session.id,
+        data: Buffer.from(framed).toString('base64'),
+      },
       timestamp: 1,
-    } as never);
+    } as unknown as DataChannelMessage);
 
+    // Step 5: await delivery; assert plaintext, never raw ciphertext.
     await waitFor(() => got.length === 1);
-    // Delivered bytes are the plaintext — never the raw [IV][ct‖tag] frame.
     expect(new TextDecoder().decode(got[0])).toBe('decrypted text\n');
   });
 
