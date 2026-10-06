@@ -169,7 +169,7 @@ Sent by the answerer in reply to a `terminal-e2ee-hello`. The answerer first ver
 
 **Peer that did not negotiate:** a peer which never sends/receives the hello/ack (or which omits `e2ee` from its `capabilities`) keeps the plaintext path — `encrypt`/`decrypt` are identity functions and `terminal-data` carries bytes unchanged.
 
-**Agent side:** the Rust agent consumes these frames starting **Week 16** (the cross-language E2E gate G3). This week's protocol contract is browser-only; the browser never asserts terminal data is confidential against the current agent.
+**Agent side:** the Rust agent now produces and consumes these frames (shipped Week 16). The agent advertises `e2ee` in its answer, dispatches `"terminal-e2ee-hello"` to `accept_hello` (verifying the browser's Ed25519 binding before deriving), stores the `E2eeSession`, and flips the terminal pump to encrypted on the `E2EEAck` marker — so when the capability is negotiated, terminal data is encrypted on the session key end to end between the browser and a live agent. The cross-language E2E gate G3 (`packages/webrtc-core/test/e2e/terminal-e2ee.e2e.test.ts`) proves the two-way round trip: the Rust agent decrypts a browser-encrypted payload and the browser decrypts the agent's encrypted output. A legacy agent that does not advertise `e2ee` yields a plaintext, byte-identical terminal (offer without the capability, verified via `getRemoteCapabilities()` not containing `e2ee`).
 
 ---
 
