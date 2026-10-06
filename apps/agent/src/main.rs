@@ -1932,8 +1932,11 @@ async fn run_desktop_session(
     for source in &mut sources {
         source.default = source.id == default_id;
     }
+    // ADR-42: `true` is a structural fact, not an assumption — ADR-41 gates
+    // admission on `verify_offer_identity`, so `run_desktop_session` (and thus
+    // this frame) only runs on a session whose peer identity was verified.
     let sources_frame =
-        desktop::frame_desktop_sources(&sources, cfg.allow_input, crate::pty::now_ms());
+        desktop::frame_desktop_sources(&sources, cfg.allow_input, true, crate::pty::now_ms());
 
     // The geometry `to_absolute` (spec §6.2) maps normalized input into. It is
     // the source the session started on, taken from the enumeration so the
