@@ -143,18 +143,19 @@ DOCKERHUB_IMAGE=ngotuananh2101/ponter
 
 **1. Publish the image.** In GitHub, go to Actions → _Docker Publish_ → _Run workflow_. Pick the branch to build from.
 
+Optionally, set the **tag** input to also attach a named tag (e.g. `v1.2.3`) to the published manifest; leaving it empty keeps `latest`/`sha` only.
+
 The workflow builds `linux/amd64` and `linux/arm64` on separate native runners and merges them into one multi-arch manifest, so the same image works on an x86 VPS and an ARM machine (Oracle Cloud, Ampere, Raspberry Pi) without QEMU emulation.
 
 The image is pushed as `<your-dockerhub-username>/ponter` (currently `ngotuananh2101/ponter`). Create that repository on Docker Hub first — pushes to a name that does not exist are rejected rather than auto-created.
 
-Two tags are produced:
+| Tag                                          | When it moves                                  | Use                                                          |
+| -------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| `<your-dockerhub-username>/ponter:latest`    | Only for runs on `main`                        | What the compose files point at.                             |
+| `<your-dockerhub-username>/ponter:sha-<sha>` | Every run; **only the 3 most recent are kept** | Pinning a specific build, or rolling back to an earlier one. |
+| `<your-dockerhub-username>/ponter:<tag>`     | When the `tag` input is supplied (persists)    | A durable, human-readable tag (e.g. `v1.2.3`).               |
 
-| Tag                                          | When it moves           | Use                                                          |
-| -------------------------------------------- | ----------------------- | ------------------------------------------------------------ |
-| `<your-dockerhub-username>/ponter:latest`    | Only for runs on `main` | What the compose files point at.                             |
-| `<your-dockerhub-username>/ponter:sha-<sha>` | Every run               | Pinning a specific build, or rolling back to an earlier one. |
-
-A run from a feature branch publishes only the `sha-` tag, so experimenting cannot move the image production resolves.
+A run from a feature branch never produces `latest`, so experimenting cannot move the image production resolves. Each tag-less publish (no `tag` input) prunes older `sha-` tags, keeping only the three most recent. A custom tag that itself starts with `sha-` is indistinguishable from a build tag and falls inside the retention window — avoid the `sha-` prefix for durable tags.
 
 **2. Pull and restart on the host:**
 
@@ -171,9 +172,9 @@ curl https://<your-domain>/health
 # Expected: {"status":"ok"}
 ```
 
-**Rolling back.** Because `latest` moves, a bad release is undone by pinning the previous `sha-` tag in the compose file and re-running `pull && up -d`.
+**Rolling back.** Because `latest` moves, a bad release is undone by pinning the previous `sha-` tag in the compose file and re-running `pull && up -d`. **Only the three most recent `sha-` tags are retained** — each tag-less publish prunes older ones, so pin a `sha-` tag only within that window, or pass an explicit `tag` input for a durable name.
 
-**Repository secrets.** The workflow needs `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub **access token** from Account Settings → Personal Access Tokens with Read/Write — not the account password). The native ARM runner is only free for public repositories; this one is public, so it costs nothing.
+**Repository secrets.** The workflow needs `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub **access token** from Account Settings → Personal Access Tokens with Read/Write **and Delete** — not the account password). The publish workflow prunes old `sha-` tags through the Docker Hub API, so a token without Delete scope fails the prune step (the image is still published). The native ARM runner is only free for public repositories; this one is public, so it costs nothing.
 
 ## Smoke Test
 
