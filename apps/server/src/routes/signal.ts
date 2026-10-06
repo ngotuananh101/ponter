@@ -142,6 +142,7 @@ router.post('/answer', async (c) => {
     sdp?: string;
     approved?: boolean;
     proof?: IdentityProof;
+    capabilities?: string[];
   } | null;
 
   if (!body?.sessionId || typeof body.sdp !== 'string' || !body.sdp.trim()) {
@@ -158,12 +159,17 @@ router.post('/answer', async (c) => {
   // Shape-only validation for IdentityProof (see POST /offer comment).
   const proof = normalizeProof(body.proof);
 
+  const capabilities = Array.isArray(body.capabilities)
+    ? body.capabilities.filter((c): c is string => typeof c === 'string')
+    : [];
+
   const message: SignalMessage = {
     type: 'answer',
     data: {
       sessionId: body.sessionId,
       sdp: body.sdp,
       approved: body.approved !== false,
+      ...(capabilities.length > 0 ? { capabilities } : {}),
       ...(proof ? { proof } : {}),
     },
   };
