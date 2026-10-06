@@ -7,7 +7,9 @@ use ring::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey};
 use ring::hkdf;
 use ring::rand::{SecureRandom, SystemRandom};
 
-use crate::identity::{base64_decode, base64_encode};
+use serde::{Deserialize, Serialize};
+
+use crate::identity::{self, base64_decode, base64_encode, AgentIdentity};
 
 pub const IV_BYTES: usize = 12;
 pub const TAG_BYTES: usize = 16;
@@ -170,6 +172,73 @@ impl EncryptionManager {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct E2eeHello {
+    pub terminal_id: String,
+    pub ecdh_public_key: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct E2eeAck {
+    pub terminal_id: String,
+    pub ecdh_public_key: String,
+    pub signature: String,
+}
+
+/// Answerer-side negotiation state. Created only after a hello's Ed25519 binding
+/// verified, so a session that exists is always a session that may encrypt.
+pub struct E2eeSession {
+    manager: EncryptionManager,
+}
+
+impl E2eeSession {
+    pub fn accept_hello(
+        identity: &AgentIdentity,
+        session_id: &str,
+        hello: &E2eeHello,
+        peer_signing_public_key_raw: &[u8; 32],
+    ) -> Result<(Self, E2eeAck), E2eeError> {
+        // 1. Verify the peer's binding signature BEFORE deriving anything.
+        let binding = canonical_key_binding(&hello.ecdh_public_key);
+        let signature = base64_decode(&hello.signature).map_err(|_| E2eeError::Encoding)?;
+        if !identity::verify_proof(peer_signing_public_key_raw, binding.as_bytes(), &signature) {
+            return Err(E2eeError::BindingNotVerified);
+        }
+
+        // 2. Generate our ephemeral key and derive the session key.
+        let my_private = generate_ephemeral()?;
+        let my_public_raw = my_private.compute_public_key()?.as_ref().to_vec();
+        let my_spki = spki_from_raw_point(&my_public_raw);
+        let peer_point = raw_point_from_spki_b64(&hello.ecdh_public_key)?;
+        let manager = EncryptionManager::derive(
+            my_private,
+            &peer_point,
+            WS1_TERMINAL_INFO.as_bytes(),
+            session_id.as_bytes(),
+        )?;
+
+        // 3. Build our signed ack (the browser derives the same key from it).
+        let ack_signature = identity.sign(canonical_key_binding(&my_spki).as_bytes());
+        let ack = E2eeAck {
+            terminal_id: hello.terminal_id.clone(),
+            ecdh_public_key: my_spki,
+            signature: base64_encode(&ack_signature),
+        };
+        Ok((Self { manager }, ack))
+    }
+
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, E2eeError> {
+        self.manager.encrypt(plaintext)
+    }
+
+    pub fn decrypt(&self, framed: &[u8]) -> Result<Vec<u8>, E2eeError> {
+        self.manager.decrypt(framed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +341,97 @@ mod tests {
 
         // A frame with no room for a tag is rejected, never panics.
         assert!(mgr.decrypt(&[0u8; IV_BYTES]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod negotiation_tests {
+    use super::*;
+    use crate::identity::{verify_proof, AgentIdentity};
+
+    fn temp_identity(dir: &std::path::Path) -> AgentIdentity {
+        AgentIdentity::load_or_generate(&dir.join("id.json")).expect("identity")
+    }
+
+    fn hex_to_vec(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn vector_peer_signing_key() -> [u8; 32] {
+        // Any fixed 32-byte Ed25519 public key works for the binding test; we
+        // generate one so the test is self-contained.
+        [0x11u8; 32]
+    }
+
+    #[test]
+    fn accept_hello_derives_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!("ponter-e2ee-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = temp_identity(&dir);
+
+        // Simulate the browser: an ephemeral ECDH key + a binding signed by the
+        // browser's Ed25519 key. The agent verifies against that public key.
+        let browser = generate_ephemeral().unwrap();
+        let browser_pub = browser.compute_public_key().unwrap().as_ref().to_vec();
+        let browser_spki = spki_from_raw_point(&browser_pub);
+        // Sign with a throwaway Ed25519 key whose raw public key we hand the agent.
+        let browser_signing = AgentIdentity::load_or_generate(&dir.join("browser.json")).unwrap();
+        let browser_signing_pub = browser_signing.public_key_raw();
+        let sig = browser_signing.sign(canonical_key_binding(&browser_spki).as_bytes());
+
+        let hello = E2eeHello {
+            terminal_id: "t1".into(),
+            ecdh_public_key: browser_spki.clone(),
+            signature: base64_encode(&sig),
+        };
+
+        let (session, ack) =
+            E2eeSession::accept_hello(&identity, "sess", &hello, &browser_signing_pub).unwrap();
+
+        // The agent's ack is a valid binding signed by the agent's identity.
+        let ack_binding = canonical_key_binding(&ack.ecdh_public_key);
+        let ack_sig = base64_decode(&ack.signature).unwrap();
+        assert!(verify_proof(
+            &identity.public_key_raw(),
+            ack_binding.as_bytes(),
+            &ack_sig
+        ));
+
+        // The browser, given the ack, derives the same key: derive here directly.
+        let agent_point = raw_point_from_spki_b64(&ack.ecdh_public_key).unwrap();
+        let browser_shared = derive_shared_secret(browser, &agent_point).unwrap();
+        let browser_key = hkdf_sha256(&browser_shared, b"sess", WS1_TERMINAL_INFO.as_bytes(), 32);
+        let browser_mgr = EncryptionManager::from_key_bytes(&browser_key).unwrap();
+
+        let framed = session.encrypt(b"pty output").unwrap();
+        assert_eq!(browser_mgr.decrypt(&framed).unwrap(), b"pty output");
+        let framed_back = browser_mgr.encrypt(b"keystroke").unwrap();
+        assert_eq!(session.decrypt(&framed_back).unwrap(), b"keystroke");
+    }
+
+    #[test]
+    fn a_mis_signed_hello_is_rejected_and_yields_no_session() {
+        let dir = std::env::temp_dir().join(format!("ponter-e2ee-neg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = temp_identity(&dir);
+
+        let browser = generate_ephemeral().unwrap();
+        let browser_pub = browser.compute_public_key().unwrap().as_ref().to_vec();
+        let browser_spki = spki_from_raw_point(&browser_pub);
+
+        // Signature made by a DIFFERENT key than the expected peer key.
+        let mallory = AgentIdentity::load_or_generate(&dir.join("mallory.json")).unwrap();
+        let sig = mallory.sign(canonical_key_binding(&browser_spki).as_bytes());
+        let hello = E2eeHello {
+            terminal_id: "t1".into(),
+            ecdh_public_key: browser_spki,
+            signature: base64_encode(&sig),
+        };
+
+        let err = E2eeSession::accept_hello(&identity, "sess", &hello, &vector_peer_signing_key());
+        assert!(matches!(err, Err(E2eeError::BindingNotVerified)));
     }
 }

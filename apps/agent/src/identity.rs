@@ -49,7 +49,6 @@ impl AgentIdentity {
         base64::engine::general_purpose::STANDARD.encode(self.public_key_raw())
     }
 
-    #[allow(dead_code)]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.key_pair.sign(message).as_ref().to_vec()
     }
