@@ -9,7 +9,7 @@ import { WebSocket } from 'ws';
 import type { SignalMessage, AgentSocketMessage } from '@ponter/shared';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { wait, waitFor } from './helpers.js';
+import { wait, waitFor, connectAgentCollect } from './helpers.js';
 
 // In-process secrets for tests
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
@@ -239,16 +239,7 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       signals: Array<{ type: string; payload: Record<string, unknown> }>;
     };
   }> {
-    const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
-      headers: { Authorization: `Bearer ${credential}` },
-    });
-
-    await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
-
-    const received: string[] = [];
-    ws.on('message', (data: Buffer) => {
-      received.push(data.toString());
-    });
+    const { ws, received } = await connectAgentCollect(port, credential);
     await wait(50);
 
     const answerMsg: AgentSocketMessage = {
@@ -289,20 +280,7 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       const { port, server: httpServer } = await startOnEphemeral();
 
       // Connect agent
-      const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
-        headers: { Authorization: `Bearer ${credential}` },
-      });
-
-      await waitFor(() =>
-        ws.readyState === WebSocket.OPEN ? true : undefined,
-      );
-
-      // Collect messages received by the agent
-      const received: string[] = [];
-      ws.on('message', (data: Buffer) => {
-        received.push(data.toString());
-      });
-
+      const { ws, received } = await connectAgentCollect(port, credential);
       await wait(50);
 
       // Browser posts offer via the HTTP server (same Hono instance)
@@ -582,16 +560,7 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
       const { port, server: httpServer } = await startOnEphemeral();
 
       // Connect a real agent socket first, mirroring agentAnswerRoundTrip.
-      const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
-        headers: { Authorization: `Bearer ${credential}` },
-      });
-      await waitFor(() =>
-        ws.readyState === WebSocket.OPEN ? true : undefined,
-      );
-      const received: string[] = [];
-      ws.on('message', (data: Buffer) => {
-        received.push(data.toString());
-      });
+      const { ws, received } = await connectAgentCollect(port, credential);
       await wait(50);
 
       const res = await fetch(`http://localhost:${port}/api/signal/answer`, {
