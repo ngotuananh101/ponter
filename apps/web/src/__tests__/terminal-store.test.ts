@@ -5,6 +5,12 @@ import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
 import type { TerminalSession } from '@ponter/terminal-core';
 import type { DesktopStats } from '@ponter/shared';
+import {
+  loadPrivateKey,
+  loadPublicKey,
+  loadSigningKey,
+  importSigningPublicKeyRaw,
+} from '@ponter/crypto';
 
 // The store builds a DesktopClient for every desktop tab. Mock the module so
 // the test drives `start()` deterministically and can assert `close()`.
@@ -13,6 +19,14 @@ const desktopClose = vi.fn();
 const desktopSelectSource = vi.fn();
 const desktopSetBitrate = vi.fn();
 const desktopSendInput = vi.fn();
+// T6: capture DesktopClient constructor args so the E2EE test can assert
+// the 4th argument (e2ee driver) is or is not passed.
+const desktopClientCalls: Array<{
+  agentId: string;
+  peer: unknown;
+  options: unknown;
+  e2ee?: unknown;
+}> = [];
 // The handler now receives a DesktopSourcesPayload (spec §5.3, breaking change).
 let desktopSourcesHandler:
   ((payload: { sources: unknown[]; inputEnabled: boolean }) => void) | null =
@@ -24,9 +38,12 @@ const desktopOnStatsOff = vi.fn();
 vi.mock('@ponter/desktop-core', () => ({
   DesktopClient: function (
     this: Record<string, unknown>,
-    _agentId: string,
-    _peer: unknown,
+    agentId: string,
+    peer: unknown,
+    options: unknown,
+    e2ee?: unknown,
   ) {
+    desktopClientCalls.push({ agentId, peer, options, e2ee });
     this.start = desktopStart;
     this.close = desktopClose;
     this.selectSource = desktopSelectSource;
@@ -53,15 +70,21 @@ vi.mock('@ponter/desktop-core', () => ({
 vi.mock('@/services/client', () => ({
   apiClient: {
     sessions: {
-      create: vi.fn(async () => ({ id: 'sess-desktop' })),
+      create: vi.fn(async () => ({ id: 'sess-terminal' })),
       terminate: vi.fn(async () => ({ success: true })),
     },
     webrtc: { getIceServers: vi.fn(async () => []) },
+    agents: {
+      get: vi.fn(async () => ({ signingPublicKey: 'agent-signing-pubkey' })),
+    },
     http: { baseUrl: 'http://localhost', refreshAccessToken: vi.fn() },
   },
 }));
 
 const peerOptions: Array<Record<string, unknown>> = [];
+// T5-F: remote capabilities the answerer advertised. `[]` by default
+// (plaintext parity); tests set it per-case before opening a terminal tab.
+let remoteCapabilities: string[] = [];
 
 vi.mock('@ponter/webrtc-core', () => ({
   PeerConnection: function (
@@ -77,6 +100,7 @@ vi.mock('@ponter/webrtc-core', () => ({
     this.onConnectionStateChange = vi.fn(() => () => {});
     this.onRemoteTrack = vi.fn(() => () => {});
     this.dataChannels = {};
+    this.getRemoteCapabilities = vi.fn(() => remoteCapabilities);
   },
   createBrowserAdapter: vi.fn(() => ({})),
   RESTPollingTransport: function (this: Record<string, unknown>) {
@@ -93,10 +117,67 @@ vi.mock('@/services/token-storage', () => ({
   },
 }));
 
+vi.mock('../stores/auth', () => ({
+  useAuthStore: () => ({
+    user: { id: 'user-e2ee' },
+  }),
+}));
+
+// T5-F: capture TerminalClient constructor args so the E2EE test can assert
+// the third argument (E2eeContext) is or is not passed.
+const terminalClientCalls: Array<{
+  agentId: string;
+  dataChannels: unknown;
+  e2ee?: unknown;
+}> = [];
+
+vi.mock('@ponter/terminal-core', () => ({
+  TerminalClient: function (
+    this: Record<string, unknown>,
+    agentId: string,
+    dc: unknown,
+    e2ee?: unknown,
+  ) {
+    terminalClientCalls.push({ agentId, dataChannels: dc, e2ee });
+    this.createSession = vi.fn(() => ({
+      id: 'term-test',
+      onData: vi.fn(),
+      onStateChange: vi.fn(),
+      onExit: vi.fn(),
+      write: vi.fn(),
+      close: vi.fn(),
+    }));
+    this.onError = vi.fn();
+    this.dispose = vi.fn();
+  },
+  TerminalE2ee: function (this: Record<string, unknown>) {},
+  TerminalSession: class {},
+  DesktopClient: class {},
+  FileClient: class {},
+}));
+
+vi.mock('@ponter/crypto', () => ({
+  generateUserKeyPair: vi.fn(),
+  savePrivateKey: vi.fn(),
+  savePublicKey: vi.fn(),
+  loadPrivateKey: vi.fn(),
+  loadPublicKey: vi.fn(),
+  loadSigningKey: vi.fn(),
+  importSigningPublicKeyRaw: vi.fn(),
+  importPublicKeySpki: vi.fn(),
+  generateSigningKeyPair: vi.fn(),
+  saveSigningKey: vi.fn(),
+  signProof: vi.fn(),
+  verifyProof: vi.fn(),
+}));
+
 describe('useTerminalStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     peerOptions.length = 0;
+    remoteCapabilities = [];
+    terminalClientCalls.length = 0;
+    desktopClientCalls.length = 0;
     desktopSourcesHandler = null;
     desktopStatsHandler = null;
     desktopStart.mockReset();
@@ -472,5 +553,118 @@ describe('useTerminalStore', () => {
     await nextTick();
 
     expect(pickerId(store, tabId)).toBe('monitor:1');
+  });
+});
+
+/**
+ * T5-F: E2EE capability negotiation end-to-end in the store.
+ *
+ * When the resolved agent advertises `e2ee` and the user has ECDH keys, the
+ * terminal PeerConnection offer must include `e2ee` and TerminalClient must
+ * receive an E2eeContext. When the agent does NOT advertise e2ee (or keys are
+ * missing), TerminalClient is constructed WITHOUT the third argument —
+ * plaintext parity.
+ */
+describe('useTerminalStore E2EE negotiation', () => {
+  beforeEach(() => {
+    vi.mocked(loadPrivateKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(loadPublicKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(loadSigningKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(importSigningPublicKeyRaw).mockResolvedValue({} as CryptoKey);
+  });
+
+  it('offers e2ee capabilities and passes an E2eeContext when the agent advertises e2ee', async () => {
+    remoteCapabilities = ['e2ee'];
+    const store = useTerminalStore();
+
+    await store.openTab('ag-e2ee', 'E2EE Host');
+
+    // The PeerConnection offer must include 'e2ee' alongside 'terminal'.
+    expect(peerOptions.at(-1)).toMatchObject({
+      capabilities: ['terminal', 'e2ee'],
+    });
+
+    // TerminalClient must receive an E2eeContext as the 3rd constructor arg.
+    const lastCall = terminalClientCalls.at(-1);
+    expect(lastCall?.e2ee).toBeDefined();
+  });
+
+  it('falls back to plaintext when the agent does NOT advertise e2ee', async () => {
+    remoteCapabilities = []; // no 'e2ee' in the answer
+    const store = useTerminalStore();
+
+    await store.openTab('ag-plaintext', 'Plaintext Host');
+
+    // The offer still proposes e2ee (the browser can't know the answer yet),
+    // but TerminalClient must NOT receive a 3rd argument.
+    const lastCall = terminalClientCalls.at(-1);
+    expect(lastCall?.e2ee).toBeUndefined();
+  });
+
+  it('falls back to plaintext when the user has no ECDH key', async () => {
+    remoteCapabilities = ['e2ee'];
+    vi.mocked(loadPrivateKey).mockResolvedValue(null);
+    const store = useTerminalStore();
+
+    await store.openTab('ag-no-key', 'No Key Host');
+
+    const lastCall = terminalClientCalls.at(-1);
+    expect(lastCall?.e2ee).toBeUndefined();
+
+    // The offer must NOT propose e2ee when no context can be built.
+    expect(peerOptions.at(-1)).toMatchObject({
+      capabilities: ['terminal'],
+    });
+  });
+});
+
+/**
+ * T6: desktop E2EE capability negotiation in the store (mirrors the terminal
+ * E2EE tests above). When the user has ECDH keys, the desktop offer must
+ * include `'e2ee'` and DesktopClient must receive a 4th driver argument.
+ * When a key is missing, the offer is `['desktop']` and the driver is
+ * undefined — backward-compatible plaintext.
+ */
+describe('useTerminalStore desktop E2EE negotiation', () => {
+  beforeEach(() => {
+    vi.mocked(loadPrivateKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(loadPublicKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(loadSigningKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(importSigningPublicKeyRaw).mockResolvedValue({} as CryptoKey);
+  });
+
+  it('offers e2ee capabilities and passes a driver for a desktop tab', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+
+    await store.openDesktopTab('ag-d-e2ee', 'Desktop E2EE Host');
+
+    const lastPeer = peerOptions.at(-1);
+    expect(lastPeer).toMatchObject({
+      capabilities: ['desktop', 'e2ee'],
+    });
+    const lastClient = desktopClientCalls.at(-1);
+    expect(lastClient?.e2ee).toBeDefined();
+  });
+
+  it('falls back to plaintext desktop when the user has no ECDH key', async () => {
+    vi.mocked(loadPrivateKey).mockResolvedValue(null);
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+
+    await store.openDesktopTab('ag-d-no-key', 'Desktop No Key Host');
+
+    const lastPeer = peerOptions.at(-1);
+    expect(lastPeer).toMatchObject({
+      capabilities: ['desktop'],
+    });
+    const lastClient = desktopClientCalls.at(-1);
+    expect(lastClient?.e2ee).toBeUndefined();
   });
 });

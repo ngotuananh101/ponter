@@ -57,6 +57,10 @@ pub struct SignalAnswer {
     pub approved: bool,
     #[serde(default)]
     pub proof: Option<IdentityProof>,
+    /// WS1: capabilities the answerer selected from the offer (e.g. `"e2ee"`).
+    /// Additive — omitted when empty, so a legacy answer is byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -87,6 +87,43 @@ import { TerminalClient } from '../src/client';
 import type { DataChannelManager } from '@ponter/webrtc-core';
 import type { DataChannelMessage } from '@ponter/shared';
 
+/**
+ * Bounded condition-based wait: poll `predicate` until it returns truthy or
+ * `capMs` elapses. Mirrors the existing `waitForDataFrames` drain but is
+ * predicate-based so it works for any invariant (T5-E).
+ */
+async function waitFor(predicate: () => boolean, capMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > capMs) {
+      throw new Error(
+        `timed out waiting for predicate to be truthy after ${capMs}ms`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/**
+ * Bounded drain for a specific frame type on the captured `frames` array.
+ * Mirrors `waitForDataFrames` (filter to `type` === `expected`) (T5-E).
+ */
+async function waitForFrameType(
+  frames: Array<{ type: string; payload: unknown }>,
+  expected: string,
+  capMs = 2000,
+): Promise<void> {
+  const start = Date.now();
+  while (!frames.some((f) => f.type === expected)) {
+    if (Date.now() - start > capMs) {
+      throw new Error(
+        `timed out waiting for frame type "${expected}" (got ${frames.length} frames) after ${capMs}ms`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 function mockChannel() {
   const frames: Array<{ type: string; payload: unknown }> = [];
   let handler: ((m: DataChannelMessage) => void) | undefined;
@@ -341,5 +378,137 @@ describe('WS1 terminal E2EE handleAck fail-closed', () => {
 
     await expect(ta.handleAck(malloryAck)).rejects.toThrow();
     expect(ta.isActive()).toBe(false);
+  });
+});
+
+describe('WS1 terminal E2EE client negotiation (createSession auto-hello)', () => {
+  it('negotiates when the peer advertises e2ee: createSession sends hello, ack activates', async () => {
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const { manager, frames, emit } = mockChannel();
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const tb = new TerminalE2ee({
+      ...b,
+      peerSigningPublicKey: a.peerSigningPublicKey,
+    });
+    const client = new TerminalClient('agent-1', manager, ta);
+    client.createSession(); // T5-C: drives hello on the sendChain after terminal-create
+
+    await waitForFrameType(frames, 'terminal-e2ee-hello');
+    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!
+      .payload as never;
+    const ack = await tb.handleHello(hello);
+    emit({
+      type: 'terminal-e2ee-ack',
+      channel: 'terminal',
+      payload: ack,
+      timestamp: 1,
+    } as never);
+
+    await waitFor(() => ta.isActive());
+    expect(ta.isActive()).toBe(true);
+  });
+
+  it('never renders ciphertext: a data frame arriving after the ack decrypts, not renders raw', async () => {
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const { manager, frames, emit } = mockChannel();
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const tb = new TerminalE2ee({
+      ...b,
+      peerSigningPublicKey: a.peerSigningPublicKey,
+    });
+    const client = new TerminalClient('agent-1', manager, ta);
+    const session = client.createSession();
+    const got: Uint8Array[] = [];
+    session.onData((d) => got.push(d));
+
+    // Step 1: wait for the hello emitted by createSession, then build the ack.
+    await waitForFrameType(frames, 'terminal-e2ee-hello');
+    const hello = frames.find((f) => f.type === 'terminal-e2ee-hello')!
+      .payload as never;
+    const ack = await tb.handleHello(hello);
+
+    // Step 3: emit the ack frame through the REAL client path (not handleAck directly).
+    emit({
+      type: 'terminal-e2ee-ack',
+      channel: 'terminal',
+      payload: ack,
+      timestamp: 1,
+    } as unknown as DataChannelMessage);
+
+    // Step 4: in the same tick (before any await), emit a ciphertext terminal-data
+    // frame. The frame must be ordered BEHIND the in-flight ack on receiveChain.
+    const framed = await tb.encrypt(
+      new TextEncoder().encode('decrypted text\n'),
+    );
+    emit({
+      type: 'terminal-data',
+      channel: 'terminal',
+      payload: {
+        terminalId: session.id,
+        data: Buffer.from(framed).toString('base64'),
+      },
+      timestamp: 1,
+    } as unknown as DataChannelMessage);
+
+    // Step 5: await delivery; assert plaintext, never raw ciphertext.
+    await waitFor(() => got.length === 1);
+    expect(new TextDecoder().decode(got[0])).toBe('decrypted text\n');
+  });
+
+  it('negotiate() is public and idempotent-safe: does not send a second hello', async () => {
+    // T5-C: negotiate(terminalId) is a public method. Calling it twice for the
+    // same session must not enqueue a second hello on the sendChain.
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const { manager, frames } = mockChannel();
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const client = new TerminalClient('agent-1', manager, ta);
+    const session = client.createSession();
+
+    await waitForFrameType(frames, 'terminal-e2ee-hello');
+    client.negotiate(session.id); // explicit second call — should be a no-op
+
+    const hellos = frames.filter((f) => f.type === 'terminal-e2ee-hello');
+    expect(hellos).toHaveLength(1);
+  });
+
+  it('two createSession calls on the same client negotiate independently', async () => {
+    // Each terminalId gets its own hello — the negotiatedTerminals set is keyed
+    // by terminal ID, not by client.
+    const a = await makePeer('sess');
+    const b = await makePeer('sess');
+    const { manager, frames } = mockChannel();
+    const ta = new TerminalE2ee({
+      ...a,
+      peerSigningPublicKey: b.peerSigningPublicKey,
+    });
+    const client = new TerminalClient('agent-1', manager, ta);
+    const s1 = client.createSession();
+    const s2 = client.createSession();
+
+    // Each createSession enqueues a hello on the sendChain. Wait until both
+    // hello frames have been emitted (they are sequenced, so we poll).
+    await waitFor(
+      () => frames.filter((f) => f.type === 'terminal-e2ee-hello').length >= 2,
+    );
+
+    const hellos = frames.filter((f) => f.type === 'terminal-e2ee-hello');
+    expect(hellos).toHaveLength(2);
+    // Each hello is for a distinct terminal ID.
+    const helloPayload0 = hellos[0]!.payload as { terminalId: string };
+    const helloPayload1 = hellos[1]!.payload as { terminalId: string };
+    expect(helloPayload0.terminalId).toBe(s1.id);
+    expect(helloPayload1.terminalId).toBe(s2.id);
   });
 });

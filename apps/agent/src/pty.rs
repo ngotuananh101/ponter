@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use base64::engine::general_purpose::STANDARD;
+pub use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -96,21 +96,50 @@ pub fn frame_pty_error(
     serde_json::to_string(&message).expect("a frame of strings cannot fail to serialize")
 }
 
-/// Encode raw PTY bytes as a `terminal-data` frame.
+/// A frame the pump will emit. Control frames stay pre-serialized JSON; terminal
+/// output carries raw bytes so the pump can encrypt before framing.
+#[derive(Debug, Clone)]
+pub enum Outbound {
+    /// A pre-serialized JSON frame that is never encrypted (control frames).
+    Json(String),
+    /// WS1: the `terminal-e2ee-ack`. The pump sends it and ONLY THEN arms
+    /// encryption, so every frame enqueued before it is sent in plaintext and
+    /// the ack always precedes the first ciphertext frame (Review Focus #4).
+    E2eeAck(String),
+    /// Terminal output bytes, framed (and encrypted once the pump is armed).
+    TerminalData {
+        terminal_id: String,
+        bytes: Vec<u8>,
+        timestamp_ms: i64,
+    },
+}
+
+/// Build the `terminal-data` frame JSON. `data` is the (possibly encrypted)
+/// payload; base64-encoding happens here so both paths share one spelling.
 ///
-/// `timestamp` is passed in rather than read from the clock here so the framing
-/// function stays pure and testable.
-pub fn frame_pty_output(terminal_id: &str, bytes: &[u8], timestamp_ms: i64) -> String {
+/// The wire shape is the NESTED `DataChannelMessage` envelope — reuse the same
+/// struct `frame_pty_output` uses so the plaintext path stays byte-identical:
+/// `{"type":"terminal-data","channel":"terminal","payload":{"terminalId":..,"data":..},"timestamp":..}`.
+pub fn build_terminal_data_frame(terminal_id: &str, data: &[u8], timestamp_ms: i64) -> String {
     let message = DataChannelMessage {
         r#type: "terminal-data".to_string(),
         channel: "terminal".to_string(),
         payload: TerminalDataMessage {
             terminal_id: terminal_id.to_string(),
-            data: STANDARD.encode(bytes),
+            data: STANDARD.encode(data),
         },
         timestamp: timestamp_ms,
     };
     serde_json::to_string(&message).expect("a frame of strings cannot fail to serialize")
+}
+
+/// Encode raw PTY bytes as a `terminal-data` frame.
+///
+/// `timestamp` is passed in rather than read from the clock here so the framing
+/// function stays pure and testable.
+#[allow(dead_code)]
+pub fn frame_pty_output(terminal_id: &str, bytes: &[u8], timestamp_ms: i64) -> String {
+    build_terminal_data_frame(terminal_id, bytes, timestamp_ms)
 }
 
 /// Decode an inbound `terminal-data` frame.
@@ -355,7 +384,7 @@ impl PtySession {
     /// `blocking_send` blocks the reader thread, the kernel PTY buffer fills,
     /// and the child blocks on write. There is no unbounded queue anywhere in
     /// this path.
-    pub fn start_reader(&self, terminal_id: String) -> Result<mpsc::Receiver<String>> {
+    pub fn start_reader(&self, terminal_id: String) -> Result<mpsc::Receiver<Outbound>> {
         let mut reader = self.master.try_clone_reader().context("try_clone_reader")?;
         let (raw_tx, mut raw_rx) = mpsc::channel::<Vec<u8>>(64);
 
@@ -377,10 +406,14 @@ impl PtySession {
             }
         });
 
-        let (frame_tx, frame_rx) = mpsc::channel::<String>(64);
+        let (frame_tx, frame_rx) = mpsc::channel::<Outbound>(64);
         tokio::spawn(async move {
             while let Some(bytes) = raw_rx.recv().await {
-                let frame = frame_pty_output(&terminal_id, &bytes, now_ms());
+                let frame = Outbound::TerminalData {
+                    terminal_id: terminal_id.clone(),
+                    bytes,
+                    timestamp_ms: now_ms(),
+                };
                 if frame_tx.send(frame).await.is_err() {
                     break; // caller dropped the receiver
                 }
@@ -553,11 +586,22 @@ mod tests {
         let collected = tokio::time::timeout(Duration::from_secs(10), async {
             let mut out: Vec<u8> = Vec::new();
             while let Some(frame) = frames.recv().await {
-                if let Ok(Some(bytes)) = decode_pty_input(&frame) {
-                    out.extend_from_slice(&bytes);
-                    if String::from_utf8_lossy(&out).contains("hello") {
-                        return out;
+                let bytes = match frame {
+                    Outbound::TerminalData { bytes, .. } => bytes,
+                    Outbound::Json(s) => {
+                        // A terminal-error or terminal-exit frame: skip for echo.
+                        let _ = s;
+                        continue;
                     }
+                    Outbound::E2eeAck(s) => {
+                        // An ack frame carries no terminal data: skip for echo.
+                        let _ = s;
+                        continue;
+                    }
+                };
+                out.extend_from_slice(&bytes);
+                if String::from_utf8_lossy(&out).contains("hello") {
+                    return out;
                 }
             }
             out
@@ -604,6 +648,43 @@ mod tests {
         ];
         for (code, wire) in pairs {
             assert_eq!(code.as_str(), wire);
+        }
+    }
+
+    #[test]
+    fn plaintext_frame_is_byte_identical_to_today() {
+        // The wire shape is the NESTED DataChannelMessage envelope
+        // (`{type, channel, payload:{terminalId,data}, timestamp}`), matching
+        // `frame_pty_output` in pty.rs:104-112. `build_terminal_data_frame` must
+        // reproduce it byte-for-byte so the plaintext path is unchanged.
+        let frame = build_terminal_data_frame("t1", b"hello world", 123);
+        let v: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(v["type"], "terminal-data");
+        assert_eq!(v["channel"], "terminal");
+        assert_eq!(v["payload"]["terminalId"], "t1");
+        assert_eq!(v["payload"]["data"], "aGVsbG8gd29ybGQ=");
+        assert_eq!(v["timestamp"], 123);
+    }
+
+    #[test]
+    fn frame_pty_output_delegates_to_build_terminal_data_frame() {
+        // The refactored plaintext path must produce the same JSON as the new
+        // shared builder, so the two entry points cannot drift.
+        let a = frame_pty_output("t1", b"hello world", 123);
+        let b = build_terminal_data_frame("t1", b"hello world", 123);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn outbound_terminal_data_carries_raw_bytes() {
+        let o = Outbound::TerminalData {
+            terminal_id: "t1".into(),
+            bytes: b"x".to_vec(),
+            timestamp_ms: 5,
+        };
+        match o {
+            Outbound::TerminalData { bytes, .. } => assert_eq!(bytes, b"x"),
+            _ => panic!("wrong variant"),
         }
     }
 }

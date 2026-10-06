@@ -94,3 +94,19 @@ describe('no false E2EE claims in the WS1 doc', () => {
     );
   });
 });
+
+// G2 scan extended to the Week 16 WS1 Rust/E2EE security note (Phase B-2). The note
+// documents shipped cross-language E2EE between the browser and the Rust agent, so it
+// must not assert a blanket affirmative claim that outpaces the code — the pattern below
+// anchors on affirmative verbs ("implements/provides/enables/is/are") so the note's
+// negations ("does NOT", "not yet", "not confidential", "fail-closed") never trip it.
+const WS1_RUST_DOC = '../../../docs/security/2026-10-08-ws1-e2ee-rust.md';
+
+describe('no false E2EE claims in the WS1 Rust doc', () => {
+  it('WS1 Rust doc does not make a blanket affirmative E2EE claim', () => {
+    const doc = read(WS1_RUST_DOC);
+    expect(doc).not.toMatch(
+      /(implements|provides|enables|is|are)\s+(end-to-end\s+)?(e2ee|zero[-\s]?trust|encryption)/i,
+    );
+  });
+});

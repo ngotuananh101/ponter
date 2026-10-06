@@ -6,6 +6,7 @@ import { tokenStorage } from '@/services/token-storage';
 import {
   generateUserKeyPair,
   savePrivateKey,
+  savePublicKey,
   generateSigningKeyPair,
   saveSigningKey,
   loadSigningKey,
@@ -102,6 +103,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
 
       await savePrivateKey(res.user.id, keyPair.privateKey);
+      await savePublicKey(res.user.id, keyPair.publicKey);
       await saveSigningKey(res.user.id, signPair.privateKey);
 
       user.value = res.user;

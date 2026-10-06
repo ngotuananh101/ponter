@@ -6,11 +6,13 @@ import type {
   TerminalCloseMessage,
   TerminalExitMessage,
   TerminalErrorMessage,
+  TerminalE2eeAck,
 } from '@ponter/shared';
 import { TerminalSession } from './session';
 import type { TerminalSessionOptions } from './types';
 import type { DataChannelMessage } from '@ponter/shared';
-import type { TerminalE2ee } from './e2ee';
+import { TerminalE2ee } from './e2ee';
+export type { E2eeContext } from './e2ee';
 
 function base64ToUint8Array(base64: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
@@ -45,6 +47,8 @@ export class TerminalClient {
   private readonly errorListeners: Array<(message: string) => void> = [];
   private sendChain: Promise<void> = Promise.resolve();
   private receiveChain: Promise<void> = Promise.resolve();
+  /** Terminal IDs for which a hello has already been enqueued (idempotency). */
+  private readonly negotiatedTerminals = new Set<string>();
 
   /**
    * Subscribe to terminal failures the agent reports over the data channel.
@@ -102,7 +106,60 @@ export class TerminalClient {
       'terminal-create',
       createPayload,
     );
+
+    // T5-C: TerminalClient drives negotiation itself inside createSession().
+    // After terminal-create (plaintext, always), send the e2ee hello on the
+    // same ordered sendChain so it is sequenced after any prior input.
+    if (this.e2ee) {
+      this.negotiate(terminalId);
+    }
+
     return session;
+  }
+
+  /**
+   * Drive WS1 E2EE negotiation for a session.
+   *
+   * Called automatically from `createSession()` when `this.e2ee` is present.
+   * Idempotent-safe: calling it twice for the same `terminalId` enqueues only
+   * one hello. Two layers of guard:
+   * 1. `e2ee.isActive()` — skips when the session key is already installed
+   *    (i.e. the ack has already been processed).
+   * 2. `negotiatedTerminals` set — skips when a hello has already been
+   *    enqueued but not yet acked, covering the in-flight window.
+   *
+   * T5-C: the hello is sent on the same `sendChain` as terminal-data, so
+   * ordering is preserved relative to any prior input on that terminal.
+   */
+  negotiate(terminalId: string): void {
+    const e2ee = this.e2ee;
+    if (!e2ee) return;
+    // Idempotency guard 1: once the session key is active, re-negotiating would
+    // send a redundant hello and could race the ack. The ack handler installs
+    // the key; if it is already active, skip.
+    if (e2ee.isActive()) return;
+    // Idempotency guard 2: track per-terminal whether we have already enqueued a
+    // hello. This covers the window between createSession()'s auto-hello and the
+    // ack arriving — e2ee.isActive() only turns true after the ack, so it alone
+    // cannot prevent a duplicate hello in that window.
+    if (this.negotiatedTerminals.has(terminalId)) return;
+    this.negotiatedTerminals.add(terminalId);
+    this.sendChain = this.sendChain
+      .then(async () => {
+        const hello = await e2ee.buildHello(terminalId);
+        this.dataChannelManager.sendJson(
+          'terminal',
+          'terminal-e2ee-hello',
+          hello,
+        );
+      })
+      .catch((err: unknown) => {
+        for (const listener of [...this.errorListeners]) {
+          listener(
+            `terminal-e2ee-hello send chain failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      });
   }
 
   getSession(terminalId: string): TerminalSession | undefined {
@@ -217,14 +274,30 @@ export class TerminalClient {
       const session = this.sessions.get(payload.terminalId);
       if (session) {
         const e2ee = this.e2ee;
-        if (!e2ee || !e2ee.isActive()) {
-          // Unchanged plaintext path — byte-identical to today.
+        // T5-R1 (never-render-ciphertext invariant): when an e2ee context is
+        // present, enqueue the ENTIRE terminal-data handling on receiveChain so
+        // the isActive() decision runs AFTER any already-queued ack callback
+        // (which performs the async key derivation). A ciphertext frame that
+        // arrives while the ack's deriveBits is in flight must NOT take the
+        // plaintext branch and render raw ciphertext.
+        //
+        // When e2ee is ABSENT, keep the synchronous plaintext path exactly as
+        // today — byte-identical parity, no ordering change.
+        if (!e2ee) {
           const bytes = base64ToUint8Array(payload.data);
           session.receiveOutput(bytes);
           return;
         }
         this.receiveChain = this.receiveChain
           .then(async () => {
+            // isActive() is re-evaluated inside the chain so this data frame is
+            // processed strictly after any prior ack callback on receiveChain.
+            if (!e2ee.isActive()) {
+              // Ack has not completed (or failed); treat as plaintext.
+              const bytes = base64ToUint8Array(payload.data);
+              session.receiveOutput(bytes);
+              return;
+            }
             try {
               const encrypted = base64ToUint8Array(payload.data);
               const bytes = await e2ee.decrypt(encrypted);
@@ -261,6 +334,26 @@ export class TerminalClient {
           listener(payload.message);
         }
       }
+    } else if (TerminalE2ee.isNegotiationFrame(msg.type)) {
+      // T5-C: negotiation frames are processed on the receiveChain so the ack
+      // is installed before any subsequent terminal-data frame is decrypted.
+      const e2ee = this.e2ee;
+      if (!e2ee) return;
+      this.receiveChain = this.receiveChain.then(async () => {
+        if (msg.type === 'terminal-e2ee-ack') {
+          try {
+            await e2ee.handleAck(msg.payload as TerminalE2eeAck);
+          } catch (err) {
+            for (const listener of [...this.errorListeners]) {
+              listener(
+                `terminal-e2ee-ack failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+        }
+        // terminal-e2ee-hello is answerer-side; the browser is always the
+        // offerer here, so it is ignored on this path.
+      });
     }
   }
 }
