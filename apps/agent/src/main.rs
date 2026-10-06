@@ -947,6 +947,18 @@ async fn run_one_session(
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
 
+    // ADR-41 (Phase 6a): identity verification is an ADMISSION gate for every
+    // session mode, not a terminal-only step. It runs here — after the peer is
+    // built, before the files-root probe and before the mode dispatch — so an
+    // unverifiable offer is refused before any resource (filesystem root
+    // resolution, capture pipeline, PTY) is touched. Fail-closed: the `?` bails
+    // out of `run_one_session` with NO answer of any kind — not even
+    // `approved: false` — so a peer without a valid proof learns nothing. The
+    // supervisor logs the error text (main.rs driver loop). Desktop and Files
+    // previously returned at :970/:988 before the old terminal-only call at
+    // :1025 and were therefore never verified (carry-forward C1, WS1 Rust doc).
+    verify_offer_identity(offer, &cfg.identity)?;
+
     // ADR-32: the files gate is evaluated per offer, before the answer. An
     // unset, missing, non-directory, or unreadable root is one refusal —
     // `approved: false` and the peer closed, with a log line the E2E pins.
@@ -1012,17 +1024,6 @@ async fn run_one_session(
         }
         SessionMode::Terminal => {}
     }
-
-    // H3 security gate (Task 9): verify the user's identity proof on the offer
-    // BEFORE the agent sends its answer, so the browser never learns the
-    // session was accepted when the proof was missing or tampered. Both PTY
-    // spawn sites live in the dispatcher task (below), which is only fed by the
-    // poll task spawned after the channel opens; gating the answer itself gates
-    // every downstream path: a tampered/missing proof bails before
-    // `rtc::answer_offer`, the answer SDP is never sent, the browser aborts the
-    // handshake, and no PTY is ever created. Fail-closed: on error we bail out
-    // of the session entirely before sending any SDP.
-    verify_offer_identity(offer, &cfg.identity)?;
 
     rtc::answer_offer(&peer, offer, outbound, &cfg.identity).await?;
 
