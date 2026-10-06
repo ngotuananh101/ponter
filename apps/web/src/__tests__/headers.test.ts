@@ -11,4 +11,11 @@ it('sets a strict CSP with no unsafe-inline and a frame-ancestors lockdown', () 
   expect(headers).not.toContain("'unsafe-eval'");
   expect(headers).toContain('Strict-Transport-Security');
   expect(headers).toContain('X-Content-Type-Options: nosniff');
+
+  const scriptSrc = /script-src ([^;]+)/.exec(headers)?.[1] ?? '';
+  expect(scriptSrc).toContain("'self'");
+  expect(scriptSrc).not.toContain('unsafe-inline');
+  expect(scriptSrc).not.toContain('unsafe-eval');
+  const styleSrc = /style-src ([^;]+)/.exec(headers)?.[1] ?? '';
+  expect(styleSrc).toContain('unsafe-inline'); // Vue/shadcn scoped styles require it
 });
