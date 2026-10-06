@@ -20,8 +20,14 @@ keep=3
 prefix='sha-'
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --keep)   keep="${2:?--keep needs a value}"; shift 2 ;;
-    --prefix) prefix="${2:?--prefix needs a value}"; shift 2 ;;
+    --keep)
+      keep="${2:-}"
+      if [[ -z "$keep" ]]; then echo "prune-tags: --keep needs a value" >&2; exit 2; fi
+      shift 2 ;;
+    --prefix)
+      prefix="${2:-}"
+      if [[ -z "$prefix" ]]; then echo "prune-tags: --prefix needs a value" >&2; exit 2; fi
+      shift 2 ;;
     *) echo "prune-tags: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

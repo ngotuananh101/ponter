@@ -81,6 +81,15 @@ cat > "$tmp/keep1.ndjson" <<'JSON'
 JSON
 assert_eq "--keep 1 prunes the older" "sha-aaaaaaa" "$(select_tags "$tmp/keep1.ndjson" --keep 1)"
 
+# Case 6 — a flag with no value is a bad-argument error: exit 2, not a bash crash (exit 1).
+if bash "$script" --keep </dev/null >/dev/null 2>&1; then code=0; else code=$?; fi
+if [[ "$code" -eq 2 ]]; then
+  printf 'ok   missing --keep value exits 2\n'
+else
+  printf 'FAIL missing --keep value exit=%s (want 2)\n' "$code" >&2
+  fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "FAILED" >&2
   exit 1
