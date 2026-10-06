@@ -14,6 +14,7 @@ import {
   connectTerminal,
   sendKeystrokes,
   waitForTerminalOutput,
+  sendTerminalCreate,
 } from './harness';
 
 /**
@@ -90,7 +91,11 @@ describe.skipIf(!isLinux)('cross-language WS3 session hardening', () => {
     const { token, agentId, sessionId, identity, agent } =
       await seedSignedTerminal({ env: { RUST_LOG: 'debug' } });
 
-    const { offerer, frames } = await connectTerminal(sessionId, token, identity);
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
 
     try {
       sendKeystrokes(offerer, sessionId, 'echo before-foreign-candidate\n');
@@ -127,6 +132,89 @@ describe.skipIf(!isLinux)('cross-language WS3 session hardening', () => {
       // The live session must be unaffected by the dropped candidate.
       sendKeystrokes(offerer, sessionId, 'echo after-foreign-candidate\n');
       await waitForTerminalOutput(frames, 'after-foreign-candidate');
+    } finally {
+      await offerer.close();
+    }
+  }, 90_000);
+
+  /**
+   * H1, the allowed half: an explicitly allowlisted shell still spawns, so the
+   * policy did not break the feature it hardens. `/bin/sh` is in the floor on
+   * every unix host.
+   */
+  it('spawns a terminal for an allowlisted client-supplied shell', async () => {
+    const { token, sessionId, identity } = await seedSignedTerminal();
+
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
+
+    try {
+      const terminalId = `term-allowed-${sessionId}`;
+      sendTerminalCreate(offerer, terminalId, 80, 24, '/bin/sh');
+      await delay(500);
+
+      sendKeystrokes(offerer, terminalId, 'echo allowlist-ok\n');
+      await waitForTerminalOutput(frames, 'allowlist-ok');
+    } finally {
+      await offerer.close();
+    }
+  }, 90_000);
+
+  /**
+   * H1, the refused half: a client-supplied shell outside the allowlist must
+   * be refused with a `terminal-error` frame (code `pty-spawn-failed`, the
+   * pinned contract) and no PTY may ever run for that terminal id.
+   *
+   * `sleep` is chosen because it exists, is executable, and is categorically
+   * not a shell: if the gate ever regresses, the spawned process would run
+   * and the test would catch bytes on the channel.
+   */
+  it('refuses a client-supplied shell outside the allowlist (H1)', async () => {
+    const { token, sessionId, identity, agent } = await seedSignedTerminal();
+
+    const { offerer, frames } = await connectTerminal(
+      sessionId,
+      token,
+      identity,
+    );
+
+    try {
+      const terminalId = `term-refused-${sessionId}`;
+      sendTerminalCreate(offerer, terminalId, 80, 24, '/bin/sleep');
+
+      // The refusal must be visible on the channel, not only in the log.
+      const deadline = Date.now() + 15_000;
+      let refusal: { code?: string; message?: string } | undefined;
+      while (Date.now() < deadline && !refusal) {
+        refusal = frames.find(
+          (f) =>
+            f.type === 'terminal-error' &&
+            (f.payload as { terminalId?: string }).terminalId === terminalId,
+        )?.payload as { code?: string; message?: string } | undefined;
+        if (!refusal) await delay(100);
+      }
+
+      expect(
+        refusal,
+        `no terminal-error frame for ${terminalId}\n--- agent output ---\n${agent.output()}`,
+      ).toBeDefined();
+      expect(refusal?.code).toBe('pty-spawn-failed');
+      expect(refusal?.message).toMatch(/refused/i);
+
+      // No PTY ran: a shell would have produced output; `sleep` produces
+      // nothing, so the strong assertion is the log — no spawn line for this
+      // terminal id — plus no data frames carrying this terminalId (the
+      // refusal frame itself is a `terminal-error`, not data).
+      expect(agent.output()).toMatch(/refused a client-supplied shell/);
+      expect(
+        frames.filter(
+          (f) =>
+            f.type === 'terminal-data' && f.payload.terminalId === terminalId,
+        ),
+      ).toHaveLength(0);
     } finally {
       await offerer.close();
     }
