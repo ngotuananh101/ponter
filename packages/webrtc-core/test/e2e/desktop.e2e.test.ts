@@ -26,7 +26,6 @@ import {
   sendKeystrokes,
   waitFor,
   waitForTerminalOutput,
-  agents,
 } from './harness';
 
 /**
@@ -643,7 +642,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       /refus|declin|timeout/i,
     );
 
-    const agentLog = agents.map((a) => a.output()).join('\n');
+    const agentLog = agent.output();
     expect(agentLog).toMatch(/identity proof|no identity proof|refused/i);
   }, 90_000);
 });
