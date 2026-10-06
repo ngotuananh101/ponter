@@ -1,9 +1,9 @@
 import {
   buildSessionKey,
-  EncryptionManager,
   exportPublicKeySpki,
   signProof,
 } from '@ponter/crypto';
+import type { EncryptionManager } from '@ponter/crypto';
 import {
   canonicalKeyBinding,
   type TerminalE2eeAck,

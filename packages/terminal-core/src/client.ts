@@ -10,7 +10,7 @@ import type {
 import { TerminalSession } from './session';
 import type { TerminalSessionOptions } from './types';
 import type { DataChannelMessage } from '@ponter/shared';
-import { TerminalE2ee } from './e2ee';
+import type { TerminalE2ee } from './e2ee';
 
 function base64ToUint8Array(base64: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
