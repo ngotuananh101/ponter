@@ -414,6 +414,35 @@ describe.skipIf(!isLinux)('cross-language files E2E', () => {
     );
   }, 90_000);
 
+  // ADR-41 (Phase 6a): the Files arm returned at `main.rs:988`, also upstream
+  // of the old terminal-only verify. The root here is VALID (rootDir), so the
+  // only possible refusal cause is the missing identity proof — that is what
+  // isolates the assertion from the ADR-32 files-root gate.
+  it('refuses a proof-less files offer even with a valid root (ADR-41)', async () => {
+    const { token, agentId, credential, sessionId } = await seed({
+      capabilities: ['files'],
+    });
+
+    const agent = spawnAgent(agentId, credential, ['--files-root', rootDir]);
+    await waitForAgentOnline(token, agentId);
+    await waitForAgentSigningKey(token, agentId);
+
+    // No `identity` argument → no proof on the offer.
+    await expect(
+      openFilesPeer(
+        new RESTPollingTransport({ baseUrl: BASE_URL, sessionId, token }),
+        sessionId,
+      ),
+    ).rejects.toThrow(/refus|declin|timeout/i);
+
+    const agentLog = agent.output();
+    expect(agentLog).toMatch(/identity proof|no identity proof|refused/i);
+    // The refusal must NOT be the files-root gate — that would be a false pin.
+    expect(agentLog).not.toContain(
+      'refused: files root not configured or unusable',
+    );
+  }, 90_000);
+
   it('refuses an upload onto an existing name with FILE_EXISTS and leaves it untouched', async () => {
     const { offerer, frames, send } = await connectFilesAgent(rootDir);
     try {

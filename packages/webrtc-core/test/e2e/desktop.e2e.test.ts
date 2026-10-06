@@ -26,6 +26,7 @@ import {
   sendKeystrokes,
   waitFor,
   waitForTerminalOutput,
+  agents,
 } from './harness';
 
 /**
@@ -622,4 +623,27 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       await offerer.close();
     }
   }, 120_000);
+
+  // ADR-41 (Phase 6a): before the hoist, the Desktop arm returned at
+  // `main.rs:970` — upstream of the terminal-only `verify_offer_identity` at
+  // `:1025` — so a proof-less offer opened a desktop session. Now the verify
+  // is an admission gate: the agent bails with NO answer, the channel never
+  // opens, and the agent log names the missing proof.
+  it('refuses a proof-less desktop offer (ADR-41 admission gate)', async () => {
+    const { token, agentId, credential, sessionId } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    const agent = spawnAgent(agentId, credential, ['--desktop-source', 'test']);
+    await waitForAgentOnline(token, agentId);
+    await waitForAgentSigningKey(token, agentId);
+
+    // No `identity` argument → no proof on the offer.
+    await expect(openDesktopPeer(sessionId, token, undefined)).rejects.toThrow(
+      /refus|declin|timeout/i,
+    );
+
+    const agentLog = agents.map((a) => a.output()).join('\n');
+    expect(agentLog).toMatch(/identity proof|no identity proof|refused/i);
+  }, 90_000);
 });
