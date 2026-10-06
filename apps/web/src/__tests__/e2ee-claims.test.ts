@@ -78,3 +78,19 @@ describe('no false E2EE/Zero-Trust claims in the WS2 doc', () => {
     );
   });
 });
+
+// G2 scan extended to the Week 15 WS1 terminal-E2EE security note. WS1 part 1
+// is browser-side only: the agent has no negotiation producer yet, so the doc
+// must not assert live terminal confidentiality. The same affirmative-claim
+// pattern is used so the doc's negations ("does NOT", "not active against the
+// real agent", "out of scope") never trip it.
+const WS1_DOC = '../../../docs/security/2026-10-07-ws1-e2ee.md';
+
+describe('no false E2EE claims in the WS1 doc', () => {
+  it('WS1 part 1 doc does not claim end-to-end E2EE against the live agent', () => {
+    const doc = read(WS1_DOC);
+    expect(doc).not.toMatch(
+      /(implements|provides|enables|is|are)\s+(end-to-end\s+)?(e2ee|zero[-\s]?trust|encryption)/i,
+    );
+  });
+});
