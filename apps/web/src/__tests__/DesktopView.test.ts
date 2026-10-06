@@ -333,7 +333,10 @@ describe('DesktopView', () => {
     const sendInput = vi
       .spyOn(store, 'sendDesktopInput')
       .mockImplementation(() => {});
-    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: true,
+      desktopPeerVerified: true,
+    });
     const toggle = wrapper.find('[data-test="desktop-input-toggle"]');
     expect(toggle.exists()).toBe(true);
 
@@ -355,7 +358,10 @@ describe('DesktopView', () => {
     const sendInput = vi
       .spyOn(store, 'sendDesktopInput')
       .mockImplementation(() => {});
-    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: true,
+      desktopPeerVerified: true,
+    });
     await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
 
     await wrapper.find('video').trigger('pointerdown', {
@@ -388,7 +394,10 @@ describe('DesktopView', () => {
     const sendInput = vi
       .spyOn(store, 'sendDesktopInput')
       .mockImplementation(() => {});
-    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: true,
+      desktopPeerVerified: true,
+    });
     await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
 
     // The agent can close the gate mid-session (a new desktop-sources frame).
@@ -416,6 +425,7 @@ describe('DesktopView', () => {
           desktopSources: twoSources,
           desktopSourceId: 'monitor:1',
           desktopInputEnabled: true,
+          desktopPeerVerified: true,
         }),
       },
       // Attached to the document: `focus()` on a detached element does not
@@ -428,8 +438,58 @@ describe('DesktopView', () => {
     wrapper.unmount();
   });
 
+  it('renders the verified badge only when the peer is verified', () => {
+    const verified = mountWithChrome({ desktopPeerVerified: true });
+    expect(verified.find('[data-test="desktop-peer-verified"]').exists()).toBe(
+      true,
+    );
+    expect(
+      verified.find('[data-test="desktop-peer-verified"]').text(),
+    ).toContain('Verified peer');
+
+    const unverified = mountWithChrome({ desktopPeerVerified: false });
+    expect(
+      unverified.find('[data-test="desktop-peer-verified"]').exists(),
+    ).toBe(false);
+    const missing = mountWithChrome();
+    expect(missing.find('[data-test="desktop-peer-verified"]').exists()).toBe(
+      false,
+    );
+  });
+
+  it('hides the input toggle when the peer is unverified even with the gate open', () => {
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: true,
+      desktopPeerVerified: false,
+    });
+    expect(wrapper.find('[data-test="desktop-input-toggle"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-test="desktop-input-status"]').exists()).toBe(
+      false,
+    );
+  });
+
+  it('reads View only before enabling input and Controlling after', async () => {
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: true,
+      desktopPeerVerified: true,
+    });
+    const status = wrapper.find('[data-test="desktop-input-status"]');
+    expect(status.exists()).toBe(true);
+    expect(status.text()).toBe('View only');
+
+    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+    expect(wrapper.find('[data-test="desktop-input-status"]').text()).toBe(
+      'Controlling',
+    );
+  });
+
   it('still renders the <video> with no controls when input is enabled', () => {
-    const wrapper = mountWithChrome({ desktopInputEnabled: true });
+    const wrapper = mountWithChrome({
+      desktopInputEnabled: true,
+      desktopPeerVerified: true,
+    });
     expect(wrapper.find('video').attributes('controls')).toBeUndefined();
   });
 });
