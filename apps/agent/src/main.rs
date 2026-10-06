@@ -9,7 +9,6 @@
 // compiled out entirely, so the musl artifact stays terminal-only.
 #[cfg(not(target_env = "musl"))]
 mod desktop;
-#[allow(dead_code)]
 mod e2ee;
 // `input` is gated with `desktop`, not independently: `to_absolute` takes a
 // `DesktopSourceInfo` (spec §6.2), so the module cannot compile where `desktop`
@@ -485,7 +484,6 @@ struct SessionConfig {
     files_root: Option<String>,
     /// The agent's persistent Ed25519 peer identity, used to sign WS2 proofs
     /// that bind the offer SPD/ex to this agent (full wiring in Task 9).
-    #[allow(dead_code)]
     identity: std::sync::Arc<identity::AgentIdentity>,
 }
 
@@ -992,10 +990,37 @@ async fn run_one_session(
     // callback is registered.
     let manager = PtyManager::new(10);
 
+    // WS1 E2EE: whether the offer proposed `e2ee` (the agent never initiates it).
+    // Captured before the dispatcher so the closure can read it.
+    let negotiated = !rtc::negotiated_capabilities(&offer.capabilities).is_empty();
+
+    // The browser's Ed25519 signing public key, decoded once here and captured
+    // into the dispatcher for hello verification. `verify_offer_identity` decoded
+    // it locally but did not return the bytes (R9).
+    let peer_signing_raw: [u8; 32] = match &offer.user_signing_public_key {
+        Some(pk) => {
+            let decoded = identity::base64_decode(pk)
+                .map_err(|e| anyhow::anyhow!("cannot decode user signing key: {e}"))?;
+            let mut arr = [0u8; 32];
+            if decoded.len() != 32 {
+                anyhow::bail!("user signing key is not 32 bytes");
+            }
+            arr.copy_from_slice(&decoded);
+            arr
+        }
+        None => [0u8; 32],
+    };
+
+    // WS1 E2EE session state, shared between the dispatcher task (writes the
+    // session on hello, reads to decrypt input) and the pump task (reads to
+    // encrypt output). Both tasks are `'static`, so the state is heap-shared.
+    let e2ee_session: Arc<tokio::sync::RwLock<Option<crate::e2ee::E2eeSession>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+
     // The outbound frame channel sits between PtyManager's pump tasks and the
-    // data-channel send loop. PtyManager writes framed JSON here; the loop
-    // sends each frame over the wire.
-    let (frame_tx, mut frame_rx) = mpsc::channel::<String>(64);
+    // data-channel send loop. PtyManager writes `Outbound` here; the pump
+    // encrypts `TerminalData` and sends each frame over the wire.
+    let (frame_tx, mut frame_rx) = mpsc::channel::<pty::Outbound>(64);
 
     // The inbound dispatch channel sits between the data-channel `on_message`
     // callback and the dispatcher task. The callback must be `Fn + Send + Sync`,
@@ -1008,6 +1033,11 @@ async fn run_one_session(
     let shell_policy_for_dispatch = std::sync::Arc::clone(&cfg.shell_policy);
     let cli_cols = cfg.cols;
     let cli_rows = cfg.rows;
+    let e2ee_for_dispatch = Arc::clone(&e2ee_session);
+    let session_id_for_dispatch = offer.session_id.clone();
+    let negotiated_for_dispatch = negotiated;
+    let peer_signing_for_dispatch = peer_signing_raw;
+    let identity_for_dispatch = Arc::clone(&cfg.identity);
     tokio::spawn(async move {
         while let Some(text) = dispatch_rx.recv().await {
             let envelope: pty::DataChannelMessage<serde_json::Value> =
@@ -1024,6 +1054,65 @@ async fn run_one_session(
             }
 
             match envelope.r#type.as_str() {
+                "terminal-e2ee-hello" => {
+                    // Only negotiate if the offer proposed e2ee and no session
+                    // is already active. Fail-closed: a bad hello leaves the
+                    // session plaintext (no session, no ack).
+                    if negotiated_for_dispatch {
+                        let e2ee_guard = e2ee_for_dispatch.read().await;
+                        let already_active = e2ee_guard.is_some();
+                        drop(e2ee_guard); // never hold a lock across a channel send
+
+                        if !already_active {
+                            // The frame is `{type, channel, payload:{terminalId,ecdhPublicKey,signature}, timestamp}`.
+                            let hello: crate::e2ee::E2eeHello = match serde_json::from_value(
+                                envelope.payload.clone(),
+                            ) {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    tracing::debug!(error = ?e, "bad e2ee-hello, staying plaintext");
+                                    continue;
+                                }
+                            };
+                            let mut identity_guard = e2ee_for_dispatch.write().await;
+                            let result = crate::e2ee::E2eeSession::accept_hello(
+                                &identity_for_dispatch,
+                                &session_id_for_dispatch,
+                                &hello,
+                                &peer_signing_for_dispatch,
+                            );
+                            match result {
+                                Ok((session, ack)) => {
+                                    *identity_guard = Some(session);
+                                    drop(identity_guard); // drop BEFORE sending the ack
+
+                                    // The ack is itself a nested DataChannelMessage envelope.
+                                    let ack_json = serde_json::json!({
+                                        "type": "terminal-e2ee-ack",
+                                        "channel": "terminal",
+                                        "payload": {
+                                            "terminalId": ack.terminal_id,
+                                            "ecdhPublicKey": ack.ecdh_public_key,
+                                            "signature": ack.signature,
+                                        },
+                                        "timestamp": pty::now_ms(),
+                                    });
+                                    if frame_tx_for_dispatch
+                                        .send(pty::Outbound::Json(ack_json.to_string()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        tracing::debug!("frame channel is gone");
+                                    }
+                                }
+                                Err(e) => {
+                                    drop(identity_guard);
+                                    tracing::debug!(error = ?e, "e2ee-hello rejected, staying plaintext");
+                                }
+                            }
+                        }
+                    }
+                }
                 "terminal-create" => {
                     let create: pty::TerminalCreateMessage =
                         match serde_json::from_value(envelope.payload) {
@@ -1056,7 +1145,9 @@ async fn run_one_session(
                                         &format!("shell refused: {e}"),
                                         pty::now_ms(),
                                     );
-                                    let _ = frame_tx_for_dispatch.send(frame).await;
+                                    let _ = frame_tx_for_dispatch
+                                        .send(pty::Outbound::Json(frame))
+                                        .await;
                                     continue;
                                 }
                             }
@@ -1089,7 +1180,7 @@ async fn run_one_session(
                     }
                     // A refused spawn must reach the browser, not just the log.
                     if let Some(frame) = spawn_failure_frame(&create.terminal_id, spawn) {
-                        let _ = frame_tx_for_dispatch.send(frame).await;
+                        let _ = frame_tx_for_dispatch.send(pty::Outbound::Json(frame)).await;
                     }
                 }
                 "terminal-resize" => {
@@ -1130,11 +1221,27 @@ async fn run_one_session(
                         };
 
                     // Decode the base64 data payload.
-                    let bytes = match STANDARD_ENGINE.decode(payload.data.as_bytes()) {
+                    let raw = match STANDARD_ENGINE.decode(payload.data.as_bytes()) {
                         Ok(b) => b,
                         Err(e) => {
                             tracing::debug!(error = %e, "payload.data is not valid base64");
                             continue;
+                        }
+                    };
+
+                    // Decrypt when a session is active — fail-closed: drop on
+                    // error, never forward ciphertext or plaintext-on-decrypt-failure.
+                    let bytes = {
+                        let guard = e2ee_for_dispatch.read().await;
+                        match &*guard {
+                            Some(session) => match session.decrypt(&raw) {
+                                Ok(pt) => pt,
+                                Err(e) => {
+                                    tracing::debug!(error = ?e, "terminal-data decrypt failed, dropping input");
+                                    continue;
+                                }
+                            },
+                            None => raw,
                         }
                     };
 
@@ -1270,9 +1377,35 @@ async fn run_one_session(
     // sends each frame over the data channel. This is the single send point for
     // all sessions, preserving frame ordering per-session (each pump task is
     // single-threaded) and keeping backpressure on a slow consumer.
+    let e2ee_for_pump = Arc::clone(&e2ee_session);
     let mut pump = tokio::spawn(async move {
-        while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = dc.send_text(&frame).await {
+        while let Some(item) = frame_rx.recv().await {
+            let text = match item {
+                pty::Outbound::Json(s) => s,
+                pty::Outbound::TerminalData {
+                    terminal_id,
+                    bytes,
+                    timestamp_ms,
+                } => {
+                    // Encrypt when a session is active — fail-closed: drop the
+                    // frame rather than emit plaintext on encrypt failure.
+                    let data = {
+                        let guard = e2ee_for_pump.read().await;
+                        match &*guard {
+                            Some(session) => match session.encrypt(&bytes) {
+                                Ok(ct) => ct,
+                                Err(e) => {
+                                    tracing::debug!(error = ?e, "terminal-data encrypt failed, dropping frame");
+                                    continue;
+                                }
+                            },
+                            None => bytes,
+                        }
+                    };
+                    pty::build_terminal_data_frame(&terminal_id, &data, timestamp_ms)
+                }
+            };
+            if let Err(e) = dc.send_text(&text).await {
                 // A closed channel is an ordinary end-of-session condition, not
                 // an error worth tearing the process down for.
                 tracing::debug!(error = %e, "data channel send failed");
@@ -2237,7 +2370,7 @@ impl PtyManager {
         shell: &str,
         cols: u16,
         rows: u16,
-        outbound: mpsc::Sender<String>,
+        outbound: mpsc::Sender<pty::Outbound>,
     ) -> Result<()> {
         // Check limits and presence under a short-lived lock, then drop it
         // before spawning the PTY or pump task. The lock guard is `!Send` when
@@ -2290,7 +2423,8 @@ impl PtyManager {
             } else {
                 None
             };
-            let exit_frame = pty::frame_pty_exit(&tid, exit_code, pty::now_ms());
+            let exit_frame =
+                pty::Outbound::Json(pty::frame_pty_exit(&tid, exit_code, pty::now_ms()));
             let _ = outbound.send(exit_frame).await;
         });
 
@@ -2367,7 +2501,7 @@ impl PtyManager {
         shell: &str,
         cols: u16,
         rows: u16,
-        outbound: mpsc::Sender<String>,
+        outbound: mpsc::Sender<pty::Outbound>,
     ) -> Result<()> {
         {
             let lock = self.sessions.lock().await;
@@ -2420,7 +2554,7 @@ mod tests {
     #[cfg(unix)]
     async fn pty_manager_rejects_duplicate_spawn() {
         let manager = PtyManager::new(10);
-        let (out_tx, _out_rx) = mpsc::channel::<String>(16);
+        let (out_tx, _out_rx) = mpsc::channel::<pty::Outbound>(16);
 
         let _ = manager
             .spawn_session("s1".to_string(), "/bin/sh", 80, 24, out_tx.clone())
@@ -2439,7 +2573,7 @@ mod tests {
     #[tokio::test]
     async fn pty_manager_enforces_max_sessions() {
         let manager = PtyManager::new(1);
-        let (out_tx, _out_rx) = mpsc::channel::<String>(16);
+        let (out_tx, _out_rx) = mpsc::channel::<pty::Outbound>(16);
 
         #[cfg(unix)]
         {
