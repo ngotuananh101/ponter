@@ -1121,6 +1121,9 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
     if (!inner || typeof inner.sessionId !== 'string' || !inner.sessionId)
       return null;
     if (typeof inner.sdp !== 'string' || !inner.sdp) return null;
+    const capabilities = Array.isArray(inner.capabilities)
+      ? inner.capabilities.filter((c): c is string => typeof c === 'string')
+      : [];
     // Server is a pure relay for IdentityProof (spec §1): transport verbatim.
     const proof = normalizeProof(inner.proof);
     return {
@@ -1129,6 +1132,7 @@ function parseSignalMessage(frame: unknown): SignalMessage | null {
         sessionId: inner.sessionId,
         sdp: inner.sdp,
         approved: inner.approved !== false,
+        ...(capabilities.length > 0 ? { capabilities } : {}),
         ...(proof ? { proof } : {}),
       },
     } as SignalMessage;

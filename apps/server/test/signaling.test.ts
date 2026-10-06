@@ -232,7 +232,7 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
    */
   async function agentAnswerRoundTrip(
     port: number,
-    answer: { sdp: string; approved: boolean },
+    answer: { sdp: string; approved: boolean; capabilities?: string[] },
   ): Promise<{
     echoed: AgentSocketMessage | undefined;
     pollBody: {
@@ -395,6 +395,29 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
 
       httpServer.close();
     }, 10000);
+
+    it('relays answer capabilities over WebSocket through the full server path', async () => {
+      const { port, server: httpServer } = await startOnEphemeral();
+
+      const { echoed, pollBody } = await agentAnswerRoundTrip(port, {
+        sdp: 'v=0-o=answer',
+        approved: true,
+        capabilities: ['e2ee'],
+      });
+
+      // Review-Focus #3: the field survives parseSignalMessage -> recordSignal -> pushToBrowser -> poll.
+      expect(echoed?.type).toBe('signal');
+      expect(echoed?.data?.type).toBe('answer');
+      expect((echoed?.data as SignalMessage)?.data?.capabilities).toEqual([
+        'e2ee',
+      ]);
+
+      expect(pollBody.signals).toHaveLength(1);
+      expect(pollBody.signals[0]?.type).toBe('answer');
+      expect(pollBody.signals[0]?.payload.capabilities).toEqual(['e2ee']);
+
+      httpServer.close();
+    }, 10000);
   });
 
   describe('ICE servers endpoint', () => {
@@ -554,6 +577,69 @@ describe('WebRTC Signaling, WebSocket Dispatcher & ICE Servers', () => {
         ),
       ).toBe(true);
     });
+
+    it('POST /api/signal/answer forwards capabilities via REST and pushes to the agent', async () => {
+      const { port, server: httpServer } = await startOnEphemeral();
+
+      // Connect a real agent socket first, mirroring agentAnswerRoundTrip.
+      const ws = new WebSocket(`ws://localhost:${port}/api/ws/agent`, {
+        headers: { Authorization: `Bearer ${credential}` },
+      });
+      await waitFor(() =>
+        ws.readyState === WebSocket.OPEN ? true : undefined,
+      );
+      const received: string[] = [];
+      ws.on('message', (data: Buffer) => {
+        received.push(data.toString());
+      });
+      await wait(50);
+
+      const res = await fetch(`http://localhost:${port}/api/signal/answer`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          sessionId,
+          sdp: 'v=0-o=answer',
+          approved: true,
+          capabilities: ['e2ee'],
+        }),
+      });
+      expect(res.status).toBe(201);
+
+      // The agent socket should receive the pushed answer with capabilities.
+      const pushed = await waitFor(() => {
+        const found = received.find((m) => {
+          try {
+            const parsed = JSON.parse(m) as AgentSocketMessage;
+            return parsed.type === 'signal' && parsed.data?.type === 'answer';
+          } catch {
+            return false;
+          }
+        });
+        return found ? (JSON.parse(found) as AgentSocketMessage) : undefined;
+      });
+      expect(pushed?.type).toBe('signal');
+      expect((pushed?.data as SignalMessage)?.data?.capabilities).toEqual([
+        'e2ee',
+      ]);
+
+      // Recorded row carries the field too.
+      const pollRes = await fetch(
+        `http://localhost:${port}/api/signal/poll/${sessionId}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const pollBody = (await pollRes.json()) as {
+        signals: Array<{ type: string; payload: Record<string, unknown> }>;
+      };
+      const answerRow = pollBody.signals.find((s) => s.type === 'answer');
+      expect(answerRow?.payload.capabilities).toEqual(['e2ee']);
+
+      ws.close();
+      httpServer.close();
+    }, 10000);
 
     it('GET /api/signal/poll/:sessionId returns signals for the session', async () => {
       const { app } = createSignalingServer();
