@@ -810,7 +810,7 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => 
 
 ### 7.2 E2EE Implementation
 
-> **⚠️ Trạng thái thực tế (2026-10-01):** phần dưới đây là **thiết kế mục tiêu**, chưa được hiện thực. `packages/crypto/src/encrypt.ts` và class `EncryptionManager` **chưa tồn tại** trong mã nguồn. E2EE tầng ứng dụng là hạng mục chính của **Phase 5 (Tuần 12-14)** — work list đã được audit adversarial xác minh: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md).
+> **Trạng thái thực tế (2026-10-07):** browser-side class `EncryptionManager` và lịch khóa (ECDH P-256 → HKDF-SHA256 → AES-GCM-256, khung `[12-byte IV][ct ‖ 16-byte tag]`) đã tồn tại tại `packages/crypto/src/encrypt.ts` (Phase 5, Tuần 15). Bản đẳng bằng Rust (qua `ring`) dùng chung `e2ee-vectors.json` sẽ đến **Tuần 16**. E2EE tầng ứng dụng chỉ **hiệu lực sau khi agent quảng bá `capabilities`** — cho đến lúc đó kênh dữ liệu terminal chạy trên plaintext. Work list đã được audit adversarial xác minh: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md); thiết kế chi tiết `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §3.4/§3.5.
 
 ```typescript
 // packages/crypto/src/encrypt.ts
@@ -1027,9 +1027,9 @@ gantt
 
 > **Cổng files là trạng thái tạm, không phải bản vá bảo mật.** Peer chưa được định danh (H3); `approved` chưa được enforce (H2); traffic file chỉ được bảo vệ bởi DTLS (H11/M7/M8). Cổng giữ *hệ quả* (file access trên peer chưa xác minh) khỏi mặc định, nhưng các finding còn nguyên — đóng bởi **WS1/WS2/WS3** (Phase 5). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md` và spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
 
-### Phase 5: E2EE & Security & Polish (Tuần 12-14)
+### Phase 5: E2EE & Security & Polish (Tuần 12-16)
 
-> **Đọc trước khi bắt đầu Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — audit adversarial E2EE/Zero-Trust (28 findings đã xác minh kèm evidence file:line) và work list chi tiết (WS1-WS5).
+> **Đọc trước khi bắt đầu Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — audit adversarial E2EE/Zero-Trust (28 findings đã xác minh kèm evidence file:line) và work list chi tiết (WS1-WS5). Lịch tuần nguồn theo spec `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §1 (5 tuần: 12-16, 17-18, 19-20).
 
 - [ ] **WS1 — Application-layer E2EE:** hiện thực `EncryptionManager` (ECDH P-256 + AES-GCM-256), wire vào terminal-core và Rust agent
 - [ ] **WS2 — Peer identity & signaling integrity:** xác minh DTLS fingerprint ngoài băng, keypair thật cho agent, chống MITM signaling
@@ -1037,11 +1037,11 @@ gantt
 - [ ] **WS4 — Auth hardening:** login rate-limit, refresh token rotation, JWT secret startup validation, WS revocation, siết `CORS_ORIGIN`
 - [ ] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, bỏ default secret
 
-### Phase 6: Low-latency Interaction (Tuần 15-16)
+### Phase 6: Low-latency Interaction (Tuần 17-18)
 
 > **Chưa thiết kế.** Trả nợ các ghi chú "later concern" của Phase 3 (spec Tuần 7 §1.2, Tuần 8 §1.2): pipeline WebCodecs low-latency, tinh chỉnh playoutDelayHint/jitter buffer, cursor prediction phía client, và kết quả spike codec phần cứng (ADR-25). Tối ưu trọn vẹn chỉ khả thi sau khi WS2/WS3 (Phase 5) mở cổng input. Nội dung chi tiết sẽ bổ sung khi có spec riêng.
 
-### Phase 7: Agent Desktop App (Tuần 17-18)
+### Phase 7: Agent Desktop App (Tuần 19-20)
 
 > **Chưa thiết kế.** Đóng gói `ponter-agent` thành ứng dụng desktop: đăng nhập tài khoản, đăng ký/quản lý thiết bị (nối tiếp Admin Management), wizard setup trực quan (server, quyền màn hình, cổng input, auto-start), installer/tray/auto-update. Ứng viên framework: Tauri — chốt trong spec. Phụ thuộc WS2 (keypair thật cho agent). Nội dung chi tiết sẽ bổ sung khi có spec riêng.
 

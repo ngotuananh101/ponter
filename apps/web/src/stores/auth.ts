@@ -6,7 +6,6 @@ import { tokenStorage } from '@/services/token-storage';
 import {
   generateUserKeyPair,
   savePrivateKey,
-  deletePrivateKey,
   generateSigningKeyPair,
   saveSigningKey,
   loadSigningKey,
@@ -118,13 +117,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout(): Promise<void> {
     const refreshToken = await tokenStorage.getRefreshToken();
-    if (user.value?.id) {
-      try {
-        await deletePrivateKey(user.value.id);
-      } catch {
-        // ignore storage cleanup failure
-      }
-    }
+    // The ECDH identity key is long-lived (WS1/H4): it is the trust anchor for
+    // peer identity and session-key binding, so logout must NOT delete it. It is
+    // loaded again at the next login.
     try {
       if (refreshToken) {
         await apiClient.auth.logout(refreshToken);

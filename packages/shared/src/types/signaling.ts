@@ -26,6 +26,12 @@ export interface SignalAnswer {
   approved: boolean;
   /** Signed by the answerer's identity key. */
   proof?: IdentityProof;
+  /**
+   * WS1: capabilities the answerer supports (e.g. `"e2ee"`). Optional and
+   * additive — absent today, so an answer without it behaves exactly as before.
+   * The browser reads it to decide whether to negotiate terminal encryption.
+   */
+  capabilities?: string[];
 }
 
 export interface IceCandidateSignal {

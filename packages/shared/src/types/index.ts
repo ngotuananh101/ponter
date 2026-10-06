@@ -95,3 +95,10 @@ export {
   parseSdpFingerprint,
 } from './identity-proof.js';
 export type { PeerRole, CanonicalProofInput } from './identity-proof.js';
+
+export {
+  WS1_KEY_VERSION,
+  WS1_TERMINAL_INFO,
+  canonicalKeyBinding,
+} from './e2ee.js';
+export type { E2eeKeyBinding } from './e2ee.js';
