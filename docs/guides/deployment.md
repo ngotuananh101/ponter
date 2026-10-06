@@ -142,14 +142,15 @@ Workflow build `linux/amd64` và `linux/arm64` trên hai runner native riêng r�
 
 Image được push lên `<ten-dockerhub-cua-ban>/ponter` (hiện tại là `ngotuananh2101/ponter`). **Phải tạo repo đó trên Docker Hub trước** — Docker Hub không tự tạo repo khi push vào tên chưa tồn tại, mà trả về lỗi authorization.
 
-Sinh ra hai tag:
+Ba tag có thể được sinh ra:
 
-| Tag                                             | Khi nào được cập nhật | Dùng để                                            |
-| ----------------------------------------------- | --------------------- | -------------------------------------------------- |
-| `<ten-dockerhub-cua-ban>/ponter:latest`         | Chỉ khi chạy trên `main` | Tag mà các file compose trỏ tới.                |
-| `<ten-dockerhub-cua-ban>/ponter:sha-<sha>`      | Mỗi lần chạy          | Ghim một build cụ thể, hoặc rollback về bản trước. |
+| Tag                                             | Khi nào được cập nhật                     | Dùng để                                             |
+| ----------------------------------------------- | ----------------------------------------- | --------------------------------------------------- |
+| `<ten-dockerhub-cua-ban>/ponter:latest`         | Chỉ khi chạy trên `main`                  | Tag mà các file compose trỏ tới.                    |
+| `<ten-dockerhub-cua-ban>/ponter:sha-<sha>`      | Mỗi lần chạy; **chỉ giữ 3 bản gần nhất**  | Ghim một build cụ thể, hoặc rollback về bản trước.  |
+| `<ten-dockerhub-cua-ban>/ponter:<tag>`          | Khi cung cấp input `tag` (giữ lâu dài)    | Tag có tên người đọc được (vd `v1.2.3`).            |
 
-Chạy từ feature branch chỉ sinh tag `sha-`, nên thử nghiệm không thể làm dịch chuyển image mà production đang dùng.
+Chạy từ feature branch chỉ sinh tag `sha-`, nên thử nghiệm không thể làm dịch chuyển image mà production đang dùng. Mỗi lần publish không nhập input `tag` sẽ prune các tag `sha-` cũ, chỉ giữ lại ba bản gần nhất.
 
 **Bước 2 — Pull và restart trên máy deploy:**
 ```bash
@@ -166,7 +167,7 @@ curl https://<your-domain>/health
 
 **Rollback:** vì `latest` là tag mutable, nếu bản mới lỗi thì sửa dòng `image:` trong file compose thành tag `sha-` của bản trước, rồi `pull && up -d`.
 
-> **Repository secrets:** workflow cần `DOCKERHUB_USERNAME` và `DOCKERHUB_TOKEN` (Docker Hub **access token** tại Account Settings → Personal Access Tokens, quyền Read/Write — không phải mật khẩu account).
+> **Repository secrets:** workflow cần `DOCKERHUB_USERNAME` và `DOCKERHUB_TOKEN` (Docker Hub **access token** tại Account Settings → Personal Access Tokens, quyền Read/Write **và Delete** — không phải mật khẩu account). Bước prune xoá các tag `sha-` cũ qua Docker Hub API, nên token thiếu quyền Delete sẽ làm bước prune đỏ (image vẫn publish thành công).
 
 ---
 

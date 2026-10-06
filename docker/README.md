@@ -155,7 +155,7 @@ The image is pushed as `<your-dockerhub-username>/ponter` (currently `ngotuananh
 | `<your-dockerhub-username>/ponter:sha-<sha>` | Every run; **only the 3 most recent are kept** | Pinning a specific build, or rolling back to an earlier one. |
 | `<your-dockerhub-username>/ponter:<tag>`     | When the `tag` input is supplied (persists)    | A durable, human-readable tag (e.g. `v1.2.3`).               |
 
-A run from a feature branch publishes only the `sha-` tag, so experimenting cannot move the image production resolves. Each tag-less publish (no `tag` input) prunes older `sha-` tags, keeping only the three most recent.
+A run from a feature branch publishes only the `sha-` tag, so experimenting cannot move the image production resolves. Each tag-less publish (no `tag` input) prunes older `sha-` tags, keeping only the three most recent. A custom tag that itself starts with `sha-` is indistinguishable from a build tag and falls inside the retention window — avoid the `sha-` prefix for durable tags.
 
 **2. Pull and restart on the host:**
 
