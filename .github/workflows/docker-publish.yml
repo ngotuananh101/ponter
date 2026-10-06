@@ -17,6 +17,12 @@ name: Docker Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional extra tag to attach to the published manifest (e.g. v1.2.3); empty = latest/sha only'
+        required: false
+        default: ''
+        type: string
 
 # One publish at a time. cancel-in-progress is false so a queued second run
 # cannot truncate the manifest that a running one is assembling.
@@ -36,8 +42,32 @@ env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || 'ponter' }}
 
 jobs:
+  validate:
+    name: Validate tag input
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate tag input
+        if: ${{ inputs.tag != '' }}
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG_INPUT" =~ ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$ ]]; then
+            echo "::error::invalid tag '${TAG_INPUT}' — must match ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$"
+            exit 1
+          fi
+          if [[ "$TAG_INPUT" == "latest" && "$REF_NAME" != "refs/heads/main" ]]; then
+            echo "::error::refusing 'latest' from '${REF_NAME}' — only refs/heads/main may move the production tag"
+            exit 1
+          fi
+          echo "Tag input '${TAG_INPUT}' is valid."
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: validate
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -122,6 +152,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
       - name: Download digests
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
         with:
@@ -160,6 +193,7 @@ jobs:
           # the rollback tag stays what people expect if the default ever moves.
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
             type=sha,format=short
 
       - name: Create and push manifest list
@@ -190,3 +224,56 @@ jobs:
 
           echo "Published tags: ${tags[*]}"
           docker buildx imagetools inspect "${tags[0]}"
+
+      - name: Prune old sha-* tags (keep 3 newest)
+        if: ${{ inputs.tag == '' }}
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          image="${IMAGE_NAME}"
+          ns="${image%%/*}"
+          repo="${image##*/}"
+
+          # A fresh Hub API login: the registry token from docker/login-action
+          # is scoped for pushes, not for the Hub API's tag management.
+          payload="$(jq -nc --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}')"
+          token="$(curl -fsS -X POST https://hub.docker.com/v2/users/login \
+            -H 'Content-Type: application/json' -d "$payload" | jq -r '.token')"
+          if [[ -z "$token" || "$token" == "null" ]]; then
+            echo "::error::Docker Hub API login failed — check DOCKERHUB_USERNAME / DOCKERHUB_TOKEN"
+            exit 1
+          fi
+
+          # Walk every page (the API paginates via `next`).
+          all="$(mktemp)"
+          page="https://hub.docker.com/v2/repositories/${ns}/${repo}/tags?page_size=100"
+          while [[ -n "$page" && "$page" != "null" ]]; do
+            body="$(curl -fsS -H "Authorization: Bearer ${token}" "$page")"
+            jq -c '.results[]' <<<"$body" >> "$all"
+            page="$(jq -r '.next // empty' <<<"$body")"
+          done
+
+          selected="$(mktemp)"
+          bash docker/prune-tags.sh --keep 3 < "$all" > "$selected"
+          mapfile -t to_delete < "$selected"
+          rm -f "$all" "$selected"
+
+          if [[ "${#to_delete[@]}" -eq 0 ]]; then
+            echo "::notice::No sha-* tags to prune (3 or fewer present)."
+            exit 0
+          fi
+
+          for tag in "${to_delete[@]}"; do
+            echo "Deleting ${image}:${tag}"
+            if ! curl -fsS -X DELETE \
+              -H "Authorization: Bearer ${token}" \
+              "https://hub.docker.com/v2/repositories/${ns}/${repo}/tags/${tag}/"; then
+              echo "::error::image published OK, but pruning '${tag}' failed — check the DOCKERHUB_TOKEN Delete scope"
+              exit 1
+            fi
+          done
+          echo "::notice::Pruned ${#to_delete[@]} old sha-* tag(s): ${to_delete[*]}"
