@@ -63,7 +63,7 @@ Numbered steps trace the code path for one terminal tab opening against one agen
 11. **Agent sends the answer (with buffering).** The `SignalClient.run()` loop (`signal.rs:271`) reads inbound frames from the socket stream and forwards them to the `supervise_sessions` loop (`main.rs:164`). When the supervisor sees an `Offer`, it calls `run_one_session` (`main.rs:328`):
     - Builds the peer from the pushed ICE servers (`rtc::build_peer`, `rtc.rs:53`).
     - **Registers `forward_candidates` BEFORE answering** (`main.rs:344`) — gathering starts when the local description is set, and the handler must be installed first or host candidates are lost.
-    - Calls `rtc::answer_offer` (`rtc.rs:148`): sets remote description to the offer, creates an answer, sets local description, then sends `SignalMessage::Answer { sessionId, sdp, approved }` where `approved = offer.capabilities contains TERMINAL_LABEL` (`rtc.rs:153`).
+    - Calls `rtc::answer_offer` (`rtc.rs:741`): sets remote description to the offer, creates an answer, sets local description, then sends `SignalMessage::Answer { sessionId, sdp, approved }` where `approved = offer.capabilities contains TERMINAL_LABEL` (`rtc.rs:747`).
     - Calls `rtc::flush_pending_candidates` (`rtc.rs:117`) to apply any candidates buffered during the offer-handling race (`rtc.rs:117` is the definition; `main.rs:355` is the call site).
 
 12. **Agent receives browser candidates (post-answer).** The browser's trickle arrives as `ice-candidate` signals. The supervisor's `apply_if_candidate` (`main.rs:634`) routes them to `rtc::apply_candidate` (`rtc.rs:264`), which buffers them if `remote_description().is_none()` returns true (`rtc.rs:277`) or adds them directly otherwise.
@@ -152,7 +152,7 @@ The serde tag is `type`, content is `data`, with kebab-case outer type and camel
 ```json
 { "type": "answer", "data": { "sessionId": "s_…", "sdp": "v=0…", "approved": true } }
 ```
-`approved` is the agent's capability gate: `true` when the offer's `capabilities` contained `"terminal"` (`rtc.rs:153`). The server stores it verbatim (`recordSignal` passes `message.data` through); **nothing enforces `approved === false` server-side today** — a refusal is visible only in the flag.
+`approved` is the agent's capability gate: `true` when the offer's `capabilities` contained `"terminal"` (`rtc.rs:747`), and `false` for an ADR-14 refusal. Since Week 14 (WS3) the server enforces it: `recordSignal` only transitions a session `pending → active` when `approved !== false`, and the browser refuses a refusal answer before `setRemoteDescription` (`connection.ts`). The refusal is still recorded and relayed — enforcement gates the transition, not the message.
 
 **ICE candidate** (`IceCandidateSignal`, `signaling.ts:13`):
 ```json
@@ -229,7 +229,7 @@ The `--stun` CLI flag (`main.rs:56`, default `stun:stun.l.google.com:19302`) is 
 | F2 | Offerer data channel created before offer | Browser | `connection.ts:84` — channel pre-created in constructor, so it is registered before `peer.start()` creates the offer. |
 | F3 | Remote candidate applied before offer | Agent | Same buffer as F1, flushed in `run_one_session` after `answer_offer` (`main.rs:355`). |
 | F4 | Empty ICE server config | Agent | `build_peer` (`rtc.rs:75`) — empty pushed list falls back to `--stun`. Empty `--stun` is the air-gapped path. |
-| F5 | Second concurrent session for one agent | Agent supervisor | `supervise_sessions` (`main.rs:282`) — `active.is_some()` is true, so it builds a throwaway peer, sends `approved: false`, closes, and continues. (ADR-14.) |
+| F5 | Second concurrent session for one agent | Agent supervisor | `supervise_sessions` (`main.rs:695`) — `active.is_some()` is true, so it builds a throwaway peer, sends `approved: false`, closes, and continues. (ADR-14.) |
 | F6 | Agent credential missing or invalid | `handleAgentUpgrade` | `ws.ts:60/78` — no credential (`extractAgentCredential` returns null, `ws.ts:58`) or hash mismatch (`agent` not found, `ws.ts:76`) → raw `HTTP/1.1 401`, `socket.destroy()`, returns `false`. |
 | F7 | Agent WebSocket dies mid-session | Server `socket.on('close')` | `ws.ts:156` registers the handler; stale-guard `current?.socket !== socket` is at `ws.ts:159`, skipping superseded reconnects; otherwise marks `isOnline=false` (`ws.ts:165`) and terminates `pending|active` sessions bound to that agent (`ws.ts:169`). |
 | F8 | Agent process exits abruptly (no close frame) | Browser | Polling continues against a server with no live socket; `pushToAgent` silently no-ops. The session stays `pending` until the user closes the tab or the server's close handler runs in a sibling process. |

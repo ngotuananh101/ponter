@@ -44,7 +44,7 @@ re-checked against `main` @ `fdead292` before this spec was written:
 | C3 | No out-of-band DTLS-fingerprint verification | **CONFIRMED** | `devices.fingerprint` (`apps/server/src/db/client.ts:34`) is a device fingerprint, unrelated to DTLS |
 | C5 | README claims client-side public-key verification | **CONFIRMED** | no verification code exists |
 | H1 | Client-controlled `shell` → arbitrary binary execution | **CONFIRMED** | `apps/agent/src/main.rs:164` `resolve_shell_value()` returns any string unmodified |
-| H2 | Session `approved` recorded but never enforced | **CONFIRMED** | no consumer of the flag |
+| H2 | Session `approved` recorded but never enforced | **CONFIRMED** (server) / **STALE** (client) | server: `recordSignal` activated on any answer — fixed in WS3 (Week 14). client: `connection.ts` has refused `approved: false` since `2de7a23` (2026-10-01), before this spec's baseline |
 | H3 | Agent has no peer identity verification | **CONFIRMED** | agent spawns a PTY on offer without verifying the requester |
 | H4 | User private key deleted on logout | **CONFIRMED** | `apps/web/src/stores/auth.ts:112` calls `deletePrivateKey` inside `logout()` |
 | H5 | "Client-side public-key verification" claimed, unimplemented | **CONFIRMED** | — |
@@ -56,7 +56,7 @@ re-checked against `main` @ `fdead292` before this spec was written:
 | H11 | E2EE payload encryption missing | **CONFIRMED** | same root cause as C1 |
 | M1 | Signaling plaintext, no end-to-end signature | **CONFIRMED** | — |
 | M2 | Agent ignores WebSocket close codes | **PARTIALLY** | `apps/agent/src/main.rs:554` reconnects on *every* close including `4409` (replaced) and `4401`, causing a reconnect flap |
-| M3 | `candidate.session_id` not validated against the active offer | **CONFIRMED** | — |
+| M3 | `candidate.session_id` not validated against the active offer | **STALE** | the guard landed in `2de7a23` (2026-10-01), before this spec's baseline `fdead292`; WS3 (Week 14) added the missing regression test and mutation proof |
 | M4 | `packages/crypto` is keygen + storage only | **CONFIRMED** | `packages/crypto/src/index.ts` exports only keygen/import/export/save/load/delete |
 | M6 | Zero-Trust identity partial — keypair never used for peer auth | **CONFIRMED** | — |
 | M7 | Browser terminal input: base64 + JSON, no crypto | **CONFIRMED** | — |
@@ -127,11 +127,11 @@ Closes C3, H3, H6, C5, H5, M1. **This is the foundation week.**
 
 Closes H1, H2, M2, M3.
 
-- **`shell` allowlist** (H1). `resolve_shell_value()` (`apps/agent/src/main.rs:164`) currently
-  returns any client-supplied string unmodified — arbitrary binary execution on the agent host.
-  Replace with an allowlist of absolute paths per platform, validated against the filesystem.
-- **Enforce `approved`** in server and client (H2, completeness-critic 5.3). The flag is written
-  but nothing reads it; an unapproved session must not consume SDP.
+- **`shell` allowlist** (H1). `resolve_shell_value()` returned any client-supplied string
+  unmodified — arbitrary binary execution on the agent host. Closed in WS3: a client-supplied
+  shell is now resolved through `ShellPolicy` (absolute path, canonicalized, allowlisted) — see §2.
+- **Enforce `approved`** in server and client (H2, completeness-critic 5.3). The flag was written
+  but never read; an unapproved session must not consume SDP. Closed in WS3 — see §2.
 - **Close-code handling** (M2). The agent must distinguish `4409` (replaced — stop reconnecting)
   and `4401` (unauthorized — stop) from transient closes.
 - **Validate `candidate.session_id`** against the active offer (M3).
