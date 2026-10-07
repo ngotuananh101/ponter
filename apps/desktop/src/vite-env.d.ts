@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-empty-object-type, @typescript-eslint/no-explicit-any */
 /// <reference types="vite/client" />
 
 declare module '*.vue' {

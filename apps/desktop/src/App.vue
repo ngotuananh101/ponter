@@ -1,47 +1,12 @@
-<script setup lang="ts"></script>
+<script setup lang="ts">
+import { useAuthStore } from '@/stores/auth';
+import LoginView from '@/views/LoginView.vue';
+
+const store = useAuthStore();
+</script>
 
 <template>
-  <main class="container">
-    <h1>Ponter Desktop</h1>
-    <p>The setup wizard arrives in Task 4.</p>
-  </main>
+  <LoginView v-if="!store.isAuthenticated" />
+  <p v-else data-testid="welcome">Signed in as {{ store.user?.username }}</p>
+  <p v-if="store.isAuthenticated">The setup wizard arrives in Task 5.</p>
 </template>
-
-<style>
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-}
-
-h1 {
-  text-align: center;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-}
-</style>
