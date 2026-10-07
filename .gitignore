@@ -46,3 +46,7 @@ Thumbs.db
 .mf/
 wrangler.*.local.toml
 
+
+# Test outputs
+test-results/
+playwright-report/

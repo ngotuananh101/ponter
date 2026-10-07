@@ -76,18 +76,24 @@ enum DesktopInputWire {
     PointerMove {
         x: f64,
         y: f64,
+        #[serde(default)]
+        seq: Option<u64>,
     },
     PointerButton {
         button: Button,
         pressed: bool,
         x: f64,
         y: f64,
+        #[serde(default)]
+        seq: Option<u64>,
     },
     Wheel {
         dx: f64,
         dy: f64,
         x: f64,
         y: f64,
+        #[serde(default)]
+        seq: Option<u64>,
     },
     Key {
         code: String,
@@ -161,6 +167,7 @@ fn clamp01(n: f64) -> f64 {
 pub struct DecodedDesktopInput {
     pub event: DesktopInput,
     pub timestamp_ms: i64,
+    pub seq: Option<u64>,
 }
 
 /// Decode an inbound `desktop-input` frame (spec §6.1).
@@ -184,42 +191,56 @@ pub fn decode_desktop_input(raw: &str) -> Result<Option<DecodedDesktopInput>> {
     }
     let wire: DesktopInputWire =
         serde_json::from_value(envelope.payload).context("payload is not a DesktopInput")?;
-    let event = match wire {
-        DesktopInputWire::PointerMove { x, y } => DesktopInput::PointerMove {
-            x: clamp01(x),
-            y: clamp01(y),
-        },
+    let (event, seq) = match wire {
+        DesktopInputWire::PointerMove { x, y, seq } => (
+            DesktopInput::PointerMove {
+                x: clamp01(x),
+                y: clamp01(y),
+            },
+            seq,
+        ),
         DesktopInputWire::PointerButton {
             button,
             pressed,
             x,
             y,
-        } => DesktopInput::PointerButton {
-            button,
-            pressed,
-            x: clamp01(x),
-            y: clamp01(y),
-        },
-        DesktopInputWire::Wheel { dx, dy, x, y } => DesktopInput::Wheel {
-            dx,
-            dy,
-            x: clamp01(x),
-            y: clamp01(y),
-        },
+            seq,
+        } => (
+            DesktopInput::PointerButton {
+                button,
+                pressed,
+                x: clamp01(x),
+                y: clamp01(y),
+            },
+            seq,
+        ),
+        DesktopInputWire::Wheel { dx, dy, x, y, seq } => (
+            DesktopInput::Wheel {
+                dx,
+                dy,
+                x: clamp01(x),
+                y: clamp01(y),
+            },
+            seq,
+        ),
         DesktopInputWire::Key {
             code,
             pressed,
             modifiers,
-        } => DesktopInput::Key {
-            code,
-            pressed,
-            modifiers,
-        },
-        DesktopInputWire::Text { text } => DesktopInput::Text { text },
+        } => (
+            DesktopInput::Key {
+                code,
+                pressed,
+                modifiers,
+            },
+            None,
+        ),
+        DesktopInputWire::Text { text } => (DesktopInput::Text { text }, None),
     };
     Ok(Some(DecodedDesktopInput {
         event,
         timestamp_ms: envelope.timestamp,
+        seq,
     }))
 }
 
@@ -237,27 +258,29 @@ pub fn to_absolute(nx: f64, ny: f64, source: &DesktopSourceInfo) -> (i32, i32) {
 
 /// Apply one frame to the injector iff the gate is open (spec §6.3).
 ///
-/// Returns `true` iff an event was injected. **Fail-soft**: a decode error, a
-/// non-input frame, or an injector error all return `false` after logging — the
-/// caller continues the session (spec §6.3, §9.4). Pure over its inputs except
-/// for the injector, so the gate is unit-testable without a display.
+/// Returns `Some(seq)` iff an event was injected, echoing the browser-assigned
+/// `seq` from the frame so the cursor layer can report round-trip latency
+/// (ADR-47). `None` for a closed gate, a non-input frame, a decode error, or an
+/// injector error — the caller continues the session (spec §6.3, §9.4). Pure
+/// over its inputs except for the injector, so the gate is unit-testable
+/// without a display.
 pub fn apply_if_allowed(
     allow_input: bool,
     raw: &str,
     source: &DesktopSourceInfo,
     injector: &mut dyn InputInjector,
     now_ms: i64,
-) -> bool {
+) -> Option<u64> {
     if !allow_input {
         tracing::debug!("dropping desktop-input: input disabled");
-        return false;
+        return None;
     }
     let decoded = match decode_desktop_input(raw) {
         Ok(Some(decoded)) => decoded,
-        Ok(None) => return false,
+        Ok(None) => return None,
         Err(e) => {
             tracing::debug!(error = %e, "dropping a malformed desktop-input frame");
-            return false;
+            return None;
         }
     };
     let result = match decoded.event {
@@ -300,11 +323,11 @@ pub fn apply_if_allowed(
                 delta_ms = (now_ms - decoded.timestamp_ms).max(0),
                 "desktop-input applied"
             );
-            true
+            decoded.seq
         }
         Err(e) => {
             tracing::debug!(error = %e, "dropping desktop-input after an injector error");
-            false
+            None
         }
     }
 }
@@ -604,14 +627,14 @@ mod tests {
         let future = serde_json::json!({
             "type": "desktop-input",
             "channel": "control",
-            "payload": { "kind": "pointer-move", "x": 0.5, "y": 0.5 },
+            "payload": { "kind": "pointer-move", "x": 0.5, "y": 0.5, "seq": 1 },
             "timestamp": 5_000,
         })
         .to_string();
         let mut injector = CountingInjector::default();
         // now_ms = 1_000 < timestamp 5_000 → the raw delta is -4000.
         let applied = apply_if_allowed(true, &future, &source(), &mut injector, 1_000);
-        assert!(applied);
+        assert_eq!(applied, Some(1));
         assert_eq!(
             injector
                 .pointer_moves
@@ -770,7 +793,9 @@ mod tests {
                 &source(),
                 &mut injector,
                 0,
-            ) {
+            )
+            .is_some()
+            {
                 applied += 1;
             }
         }
@@ -788,12 +813,12 @@ mod tests {
         let mut injector = CountingInjector::default();
         let applied = apply_if_allowed(
             true,
-            &frame(serde_json::json!({ "kind": "pointer-move", "x": 0.5, "y": 0.5 })),
+            &frame(serde_json::json!({ "kind": "pointer-move", "x": 0.5, "y": 0.5, "seq": 2 })),
             &source(),
             &mut injector,
             0,
         );
-        assert!(applied);
+        assert_eq!(applied, Some(2));
         assert_eq!(
             injector
                 .pointer_moves
@@ -808,7 +833,7 @@ mod tests {
         injector
             .fail_next
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        // Returns false (nothing applied) but does NOT panic/Err out.
+        // Returns None (nothing applied) but does NOT panic/Err out.
         let applied = apply_if_allowed(
             true,
             &frame(serde_json::json!({ "kind": "pointer-move", "x": 0.5, "y": 0.5 })),
@@ -816,7 +841,7 @@ mod tests {
             &mut injector,
             0,
         );
-        assert!(!applied);
+        assert!(applied.is_none());
     }
 
     #[test]
@@ -866,5 +891,21 @@ mod tests {
         }
         assert_eq!(admitted, 120);
         assert_eq!(dropped, 10);
+    }
+
+    #[test]
+    fn decode_preserves_optional_input_seq() {
+        let raw = r#"{"type":"desktop-input","channel":"control","payload":{"kind":"pointer-move","x":0.5,"y":0.25,"seq":123},"timestamp":100}"#;
+        let decoded = decode_desktop_input(raw).unwrap().unwrap();
+        assert_eq!(decoded.seq, Some(123));
+    }
+
+    #[test]
+    fn apply_returns_applied_input_seq() {
+        let raw = r#"{"type":"desktop-input","channel":"control","payload":{"kind":"pointer-move","x":0.5,"y":0.25,"seq":456},"timestamp":100}"#;
+        let mut injector = CountingInjector::default();
+        let src = source();
+        let echoed = apply_if_allowed(true, raw, &src, &mut injector, 100);
+        assert_eq!(echoed, Some(456));
     }
 }

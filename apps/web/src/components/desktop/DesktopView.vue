@@ -12,12 +12,141 @@ import { Button } from '@/components/ui/button';
 import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import { useTerminalStore } from '@/stores/terminal';
 import type { TabItem } from '@/stores/terminal';
-import { toNormalized } from '@/lib/desktop-input';
+import {
+  toNormalized,
+  toClient,
+  contentBox,
+  extrapolateCursor,
+} from '@/lib/desktop-input';
 import type { KeyModifiers } from '@ponter/shared';
 
 const props = defineProps<{ tab: TabItem }>();
 const store = useTerminalStore();
 const videoEl = ref<HTMLVideoElement | null>(null);
+const cursorCanvas = ref<HTMLCanvasElement | null>(null);
+
+/** Prior cursor sample for velocity-based extrapolation (view-only mode). */
+let prevCursor: { x: number; y: number; time: number } | null = null;
+
+let rafId: number | null = null;
+
+/** Draw the remote/local cursor arrow onto the overlay canvas. */
+function renderCursorFrame() {
+  const canvas = cursorCanvas.value;
+  const ctx = canvas?.getContext('2d');
+  if (!canvas || !ctx) return;
+
+  const video = videoEl.value;
+  if (!video) return;
+
+  // Hide canvas when the cursor is explicitly hidden or in-frame (remote will draw it).
+  if (
+    props.tab.desktopCursorInFrame ||
+    props.tab.desktopCursor?.visible === false
+  ) {
+    return;
+  }
+
+  const rect = video.getBoundingClientRect();
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
+  if (videoWidth <= 0 || videoHeight <= 0) return;
+
+  const box = contentBox(rect, videoWidth, videoHeight);
+
+  // Size the canvas to the video element's layout box.
+  canvas.style.left = `${box.left}px`;
+  canvas.style.top = `${box.top}px`;
+  canvas.style.width = `${box.width}px`;
+  canvas.style.height = `${box.height}px`;
+  canvas.width = box.width;
+  canvas.height = box.height;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (inputOn.value) {
+    // Controlling: the local OS cursor is visible, so we don't draw a remote cursor.
+    // The video has cursor-none so the native cursor shows instead.
+    return;
+  }
+
+  // View-only: render the remote pointer arrow.
+  const cursor = props.tab.desktopCursor;
+  if (!cursor) return;
+
+  const now = performance.now();
+  const targetTimeMs = now;
+  const maxDeltaMs = 100;
+
+  let nx: number, ny: number;
+  if (prevCursor && prevCursor.x !== cursor.x && prevCursor.y !== cursor.y) {
+    const extrapolated = extrapolateCursor(
+      prevCursor,
+      { x: cursor.x, y: cursor.y, time: now },
+      targetTimeMs,
+      maxDeltaMs,
+    );
+    nx = extrapolated.x;
+    ny = extrapolated.y;
+  } else {
+    nx = cursor.x;
+    ny = cursor.y;
+  }
+
+  const clientPos = toClient(nx, ny, rect, videoWidth, videoHeight);
+
+  // Convert to canvas-local coordinates (canvas is sized to content box).
+  const cx = clientPos.x - box.left;
+  const cy = clientPos.y - box.top;
+
+  // Draw a simple arrow/cursor shape.
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1.5, 1.5);
+  ctx.strokeStyle = '#ffffff';
+  ctx.fillStyle = '#0099ff';
+  ctx.lineWidth = 1;
+  ctx.lineJoin = 'round';
+  // Simple arrow pointing to the upper-left (cursor tip at origin).
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(18, 20);
+  ctx.lineTo(8, 14);
+  ctx.lineTo(-2, 22);
+  ctx.lineTo(4, 24);
+  ctx.lineTo(10, 16);
+  ctx.lineTo(18, 26);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.fill('evenodd');
+  ctx.restore();
+
+  prevCursor = { x: cursor.x, y: cursor.y, time: now };
+}
+
+function startRAF() {
+  if (rafId !== null) return;
+  function tick() {
+    renderCursorFrame();
+    rafId = requestAnimationFrame(tick);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function stopRAF() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+// Reset extrapolation state when the cursor payload changes significantly.
+watch(
+  () => props.tab.desktopCursor?.seq,
+  () => {
+    prevCursor = null;
+  },
+);
 
 /** Assign the stream, guarding the detached-element case during teardown. */
 function attach() {
@@ -45,9 +174,13 @@ watch(() => props.tab.desktopStream, attach, { immediate: true });
 // first call is a no-op. When the component remounts with the stream already
 // present (the tab is keyed by tab id, so switching away and back remounts),
 // the watcher's source never changes and would never fire — attach here instead.
-onMounted(attach);
+onMounted(() => {
+  attach();
+  startRAF();
+});
 
 onBeforeUnmount(() => {
+  stopRAF();
   // Release the decoder without touching the store's client lifecycle — the
   // store owns closing the client/peer (closeTab).
   if (videoEl.value) videoEl.value.srcObject = null;
@@ -193,8 +326,18 @@ const inputHandlers = computed(() => {
         playsinline
         :tabindex="inputOn ? 0 : undefined"
         class="h-full w-full object-contain"
+        :class="{ 'cursor-none': inputOn }"
         v-on="inputHandlers"
       />
+      <canvas
+        ref="cursorCanvas"
+        data-test="desktop-cursor-canvas"
+        class="pointer-events-none absolute inset-0"
+        :class="{
+          hidden:
+            tab.desktopCursorInFrame || tab.desktopCursor?.visible === false,
+        }"
+      ></canvas>
 
       <!-- Desktop handshake can take up to 20s waiting for the first track; the
            step list makes that wait legible instead of a bare spinner. -->
@@ -227,7 +370,8 @@ const inputHandlers = computed(() => {
          (manual bitrate), and telemetry stats. -->
     <div
       v-if="
-        tab.status === 'active' && (tab.desktopSources?.length || statsLine)
+        tab.status === 'active' &&
+        (tab.desktopSources?.length || statsLine || tab.desktopEchoMs != null)
       "
       class="relative h-7 flex-shrink-0 flex items-center justify-between border-t border-border/40 bg-card/90 px-3 text-xs select-none"
     >
@@ -326,6 +470,14 @@ const inputHandlers = computed(() => {
         class="font-mono text-muted-foreground"
       >
         {{ statsLine }}
+      </span>
+
+      <span
+        v-if="tab.desktopEchoMs != null"
+        data-test="desktop-echo"
+        class="font-mono text-muted-foreground"
+      >
+        echo: {{ tab.desktopEchoMs }}ms
       </span>
     </div>
   </div>

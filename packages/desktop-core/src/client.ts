@@ -1,4 +1,5 @@
 import type {
+  DesktopCursorPayload,
   DesktopInput,
   DesktopSourcesPayload,
   DesktopStats,
@@ -35,12 +36,16 @@ export class DesktopClient {
   private readonly trackTimeoutMs: number;
   private readonly controlTimeoutMs: number;
   private readonly inputRateLimitHz: number;
+  private readonly playoutDelayMs: number | null;
   private readonly stateListeners: Array<(state: string) => void> = [];
   private readonly errorListeners: Array<(message: string) => void> = [];
   private readonly sourceListeners: Array<
     (payload: DesktopSourcesPayload) => void
   > = [];
   private readonly statsListeners: Array<(stats: DesktopStats) => void> = [];
+  private readonly cursorListeners: Array<
+    (cursor: DesktopCursorPayload) => void
+  > = [];
   private closed = false;
   private started = false;
   /**
@@ -51,6 +56,13 @@ export class DesktopClient {
    */
   private lastSources: DesktopSourcesPayload | undefined;
   private lastStats: DesktopStats | undefined;
+  /** The most recent `desktop-cursor` frame, cached like `lastSources` (ADR-45). */
+  private lastCursor: DesktopCursorPayload | undefined;
+  /**
+   * Monotonic input sequence stamped in place on pointer/wheel events (ADR-45).
+   * The web store (Task 16) reads `event.seq` off the same object after the call.
+   */
+  private inputSeq = 0;
   /** The newest coalesced `pointer-move` awaiting the next allowed send. */
   private pendingMove: DesktopInput | null = null;
   /** Whether a flush is already scheduled for the current rate window. */
@@ -80,6 +92,8 @@ export class DesktopClient {
       options?.controlTimeoutMs ?? DEFAULT_CONTROL_TIMEOUT_MS;
     this.inputRateLimitHz =
       options?.inputRateLimitHz ?? DEFAULT_INPUT_RATE_LIMIT_HZ;
+    this.playoutDelayMs =
+      options?.playoutDelayMs !== undefined ? options.playoutDelayMs : 100;
   }
 
   /**
@@ -155,6 +169,7 @@ export class DesktopClient {
     try {
       const stream = await trackPromise;
       this.subscribeControl();
+      this.applyPlayoutTuning();
       cleanup(true);
       return stream;
     } catch (error) {
@@ -256,13 +271,15 @@ export class DesktopClient {
         const payload = msg.payload as
           Partial<DesktopSourcesPayload> | undefined;
         // Normalize to the Week 9 payload shape: a Week 8 agent that omits
-        // `inputEnabled` yields `false` (the gate is closed), and a pre-6a
-        // agent that omits `peerVerified` yields `false` (unverified) —
-        // never `undefined`, so the UI can never render a false claim.
+        // `inputEnabled` yields `false` (the gate is closed), a pre-6a agent
+        // that omits `peerVerified` yields `false` (unverified), and a pre-6b
+        // agent that omits `cursorInFrame` yields `false` (no cursor stream) —
+        // none ever `undefined`, so the UI can never render a false claim.
         const next: DesktopSourcesPayload = {
           sources: payload?.sources ?? [],
           inputEnabled: payload?.inputEnabled === true,
           peerVerified: payload?.peerVerified === true,
+          cursorInFrame: payload?.cursorInFrame === true,
         };
         // Cache before fan-out so a listener registered later still sees it,
         // and so the cache updates even with zero listeners attached.
@@ -278,6 +295,30 @@ export class DesktopClient {
         this.lastStats = stats;
         for (const listener of this.statsListeners.slice()) {
           listener(stats);
+        }
+        break;
+      }
+      case 'desktop-cursor': {
+        // ADR-45: fan out cursor-within-frame updates to subscribers. A cached
+        // last frame is replayed to late listeners (the picker may query cursor
+        // visibility before the first cursor after sources arrives).
+        const payload = msg.payload as
+          Partial<DesktopCursorPayload> | undefined;
+        // Drop malformed frames rather than fan them out.
+        if (typeof payload !== 'object' || payload === null) break;
+        const next: DesktopCursorPayload = {
+          x: payload.x ?? 0,
+          y: payload.y ?? 0,
+          visible: payload.visible === true,
+          seq: typeof payload.seq === 'number' ? (payload.seq as number) : 0,
+          ...(payload.lastInputSeq !== undefined
+            ? { lastInputSeq: payload.lastInputSeq }
+            : {}),
+          ...(payload.shape !== undefined ? { shape: payload.shape } : {}),
+        };
+        this.lastCursor = next;
+        for (const listener of this.cursorListeners.slice()) {
+          listener(next);
         }
         break;
       }
@@ -355,6 +396,20 @@ export class DesktopClient {
   }
 
   /**
+   * Cursor-within-frame updates from the agent's capture pipeline (ADR-45/47).
+   * Mirrors `onStats`: push the listener first, then replay the cached last
+   * frame so a store that subscribes after the first cursor still sees it.
+   */
+  onCursor(handler: (cursor: DesktopCursorPayload) => void): () => void {
+    this.cursorListeners.push(handler);
+    if (this.lastCursor !== undefined) handler(this.lastCursor);
+    return () => {
+      const idx = this.cursorListeners.indexOf(handler);
+      if (idx >= 0) this.cursorListeners.splice(idx, 1);
+    };
+  }
+
+  /**
    * Ask the agent to switch to `sourceId`.
    *
    * `sendJson` throws when the `'control'` label is not registered
@@ -387,9 +442,18 @@ export class DesktopClient {
    */
   sendInput(event: DesktopInput): void {
     if (event.kind !== 'pointer-move') {
+      // Stamp a monotonic input-seq on pointer-button and wheel only; key/text
+      // carry no seq (they are not order-observable against cursor latency).
+      // The `void` signature is intentional: the caller reads `event.seq` off
+      // the same object reference after this call (Task 16 store).
+      if (event.kind === 'pointer-button' || event.kind === 'wheel') {
+        event.seq = ++this.inputSeq;
+      }
       this.sendControl('desktop-input', event);
       return;
     }
+    // Stamped in place on the same object that flushPendingMove forwards.
+    event.seq = ++this.inputSeq;
     this.pendingMove = event;
     if (this.moveFlushScheduled) return;
     this.flushPendingMove();
@@ -439,6 +503,33 @@ export class DesktopClient {
     this.peer.dataChannels.sendJson('control', type, payload);
   }
 
+  /**
+   * Apply playout-delay tuning to the remote video receiver (Task 9).
+   *
+   * Called once `start()` resolves with the first track. Two browser seams
+   * exist: Chrome exposes `jitterBufferTarget` (ms), Firefox exposes
+   * `playoutDelayHint` (seconds). One or the other is written when present;
+   * when the receiver is absent (werift agent / mock peer) this is a no-op.
+   * `playoutDelayMs === null` disables tuning entirely.
+   */
+  private applyPlayoutTuning(): void {
+    if (this.playoutDelayMs === null) return;
+    const peerAny = this.peer as unknown as {
+      peer?: { getVideoReceiver?: () => unknown };
+    };
+    const receiver = peerAny.peer?.getVideoReceiver?.() as
+      Record<string, unknown> | undefined;
+    if (!receiver) return;
+    if ('jitterBufferTarget' in receiver) {
+      receiver.jitterBufferTarget = Math.min(
+        4000,
+        Math.max(0, this.playoutDelayMs),
+      );
+    } else if ('playoutDelayHint' in receiver) {
+      receiver.playoutDelayHint = Math.max(0, this.playoutDelayMs) / 1000;
+    }
+  }
+
   /** Idempotent: closes the underlying peer exactly once. */
   close(): void {
     if (this.closed) return;
@@ -460,6 +551,7 @@ export class DesktopClient {
     this.errorListeners.length = 0;
     this.sourceListeners.length = 0;
     this.statsListeners.length = 0;
+    this.cursorListeners.length = 0;
     void this.peer.close();
   }
 }

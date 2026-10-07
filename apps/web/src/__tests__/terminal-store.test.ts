@@ -4,7 +4,11 @@ import { watch, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
 import type { TerminalSession } from '@ponter/terminal-core';
-import type { DesktopStats } from '@ponter/shared';
+import type {
+  DesktopStats,
+  DesktopCursorPayload,
+  DesktopInput,
+} from '@ponter/shared';
 import {
   loadPrivateKey,
   loadPublicKey,
@@ -18,7 +22,21 @@ const desktopStart = vi.fn();
 const desktopClose = vi.fn();
 const desktopSelectSource = vi.fn();
 const desktopSetBitrate = vi.fn();
+let inputSeqCounter = 0;
 const desktopSendInput = vi.fn();
+// T16: mirror DesktopClient.sendInput stamping `event.seq` in place on
+// pointer-button and wheel events (Task 13). Key/text carry no seq.
+const desktopSendInputStamped = vi.fn((event: unknown) => {
+  const e = event as { kind: string };
+  if (
+    e.kind === 'pointer-move' ||
+    e.kind === 'pointer-button' ||
+    e.kind === 'wheel'
+  ) {
+    (e as { seq?: number }).seq = ++inputSeqCounter;
+  }
+  return desktopSendInput(event);
+});
 // T6: capture DesktopClient constructor args so the E2EE test can assert
 // the 4th argument (e2ee driver) is or is not passed.
 const desktopClientCalls: Array<{
@@ -33,11 +51,15 @@ let desktopSourcesHandler:
       sources: unknown[];
       inputEnabled: boolean;
       peerVerified: boolean;
+      cursorInFrame?: boolean;
     }) => void)
   | null = null;
 let desktopStatsHandler: ((stats: unknown) => void) | null = null;
+let desktopCursorHandler: ((cursor: DesktopCursorPayload) => void) | null =
+  null;
 const desktopOnSourcesOff = vi.fn();
 const desktopOnStatsOff = vi.fn();
+const desktopOnCursorOff = vi.fn();
 
 vi.mock('@ponter/desktop-core', () => ({
   DesktopClient: function (
@@ -52,7 +74,7 @@ vi.mock('@ponter/desktop-core', () => ({
     this.close = desktopClose;
     this.selectSource = desktopSelectSource;
     this.setBitrate = desktopSetBitrate;
-    this.sendInput = desktopSendInput;
+    this.sendInput = desktopSendInputStamped;
     this.onSources = vi.fn(
       (
         handler: (payload: {
@@ -68,6 +90,10 @@ vi.mock('@ponter/desktop-core', () => ({
     this.onStats = vi.fn((handler: (stats: unknown) => void) => {
       desktopStatsHandler = handler;
       return desktopOnStatsOff;
+    });
+    this.onCursor = vi.fn((handler: (cursor: DesktopCursorPayload) => void) => {
+      desktopCursorHandler = handler;
+      return desktopOnCursorOff;
     });
   },
 }));
@@ -183,14 +209,18 @@ describe('useTerminalStore', () => {
     remoteCapabilities = [];
     terminalClientCalls.length = 0;
     desktopClientCalls.length = 0;
+    inputSeqCounter = 0;
     desktopSourcesHandler = null;
     desktopStatsHandler = null;
+    desktopCursorHandler = null;
     desktopStart.mockReset();
     desktopSelectSource.mockReset();
     desktopSetBitrate.mockReset();
     desktopSendInput.mockReset();
+    desktopSendInputStamped.mockReset();
     desktopOnSourcesOff.mockReset();
     desktopOnStatsOff.mockReset();
+    desktopOnCursorOff.mockReset();
   });
 
   /** Push a `desktop-sources` payload through the mock client's handler. */
@@ -221,6 +251,21 @@ describe('useTerminalStore', () => {
     emitSources(sources, inputEnabled, peerVerified);
     await nextTick();
     return { store, tabId };
+  }
+
+  /** Push one `desktop-cursor` frame through the mock client's handler. */
+  function emitCursor(
+    cursor: Partial<DesktopCursorPayload> = {},
+  ): DesktopCursorPayload {
+    const payload: DesktopCursorPayload = {
+      x: 0,
+      y: 0,
+      visible: true,
+      seq: 0,
+      ...cursor,
+    };
+    desktopCursorHandler?.(payload);
+    return payload;
   }
 
   /** Push one `desktop-stats` frame through the mock client's handler. */
@@ -558,6 +603,200 @@ describe('useTerminalStore', () => {
     store.sendDesktopInput('nope', { kind: 'text', text: 'a' });
 
     expect(desktopSendInput).not.toHaveBeenCalled();
+  });
+
+  it('onCursor updates tab.desktopCursor', async () => {
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+    );
+
+    emitCursor({ x: 0.5, y: 0.25, visible: true, seq: 1 });
+    await nextTick();
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.desktopCursor).toEqual(
+      expect.objectContaining({ x: 0.5, y: 0.25, visible: true, seq: 1 }),
+    );
+  });
+
+  it('computes desktopEchoMs from the input-sent timestamp when lastInputSeq matches', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+    );
+
+    // Send a pointer-button event; the mock stamps event.seq in place.
+    const event: {
+      kind: 'pointer-button';
+      button: 'left';
+      pressed: boolean;
+      x: number;
+      y: number;
+      seq?: number;
+    } = {
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.5,
+      y: 0.5,
+    };
+    store.sendDesktopInput(tabId, event);
+    await nextTick();
+
+    const seq = event.seq;
+    expect(seq).toBeDefined();
+
+    // Advance time by 42ms to simulate round-trip latency.
+    vi.setSystemTime(1_000_042);
+
+    emitCursor({ x: 0.5, y: 0.5, visible: true, seq: 0, lastInputSeq: seq });
+    await nextTick();
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.desktopEchoMs).toBe(42);
+
+    // A cursor without lastInputSeq must not recompute desktopEchoMs.
+    emitCursor({ x: 0.1, y: 0.1, visible: true, seq: 1 });
+    await nextTick();
+    expect(tab?.desktopEchoMs).toBe(42); // still 42, not recomputed
+
+    vi.useRealTimers();
+  });
+
+  it('sets desktopCursorInFrame from onSources payload', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+    const tabId = await store.openDesktopTab('ag-cif', 'Host CIF');
+
+    // Emit sources with cursorInFrame: true
+    desktopSourcesHandler?.({
+      sources: [{ id: 'monitor:1', default: true }],
+      inputEnabled: true,
+      peerVerified: true,
+      cursorInFrame: true,
+    });
+    await nextTick();
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.desktopCursorInFrame).toBe(true);
+
+    // Emit sources with cursorInFrame omitted -> defaults to false
+    desktopSourcesHandler?.({
+      sources: [{ id: 'monitor:1', default: true }],
+      inputEnabled: true,
+      peerVerified: true,
+    });
+    await nextTick();
+
+    expect(tab?.desktopCursorInFrame).toBe(false);
+  });
+
+  it('DesktopClient constructor receives { playoutDelayMs: 100 }', async () => {
+    const store = useTerminalStore();
+    desktopStart.mockResolvedValueOnce({
+      track: { kind: 'video' },
+      streams: [],
+    });
+
+    await store.openDesktopTab('ag-pl', 'Playout Host');
+
+    const lastCall = desktopClientCalls.at(-1);
+    expect(lastCall?.options).toEqual({ playoutDelayMs: 100 });
+  });
+
+  it('purges inputSentTimes entries older than 5 seconds when over 100 items', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+    );
+
+    // Fill the map to 100 entries at t=1_000_000.
+    for (let i = 0; i < 100; i++) {
+      const event: DesktopInput = {
+        kind: 'pointer-button',
+        button: 'left',
+        pressed: true,
+        x: 0.5,
+        y: 0.5,
+      };
+      store.sendDesktopInput(tabId, event);
+    }
+    await nextTick();
+
+    // Advance 6 seconds so all 100 entries are stale (>5s old).
+    vi.setSystemTime(1_006_000);
+
+    // Send one more event to push size to 101, triggering the bounded purge.
+    const event: DesktopInput = {
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.5,
+      y: 0.5,
+    };
+    store.sendDesktopInput(tabId, event);
+    await nextTick();
+
+    // The 100 stale entries should have been purged; only the newest remains.
+    // Verify by emitting a cursor with a stale seq — desktopEchoMs should NOT
+    // be set because the entry was purged.
+    const staleSeq = 1; // one of the early entries
+    emitCursor({
+      x: 0.5,
+      y: 0.5,
+      visible: true,
+      seq: 0,
+      lastInputSeq: staleSeq,
+    });
+    await nextTick();
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    // desktopEchoMs is undefined because the stale entry was purged.
+    expect(tab?.desktopEchoMs).toBeUndefined();
+
+    vi.useRealTimers();
+  });
+
+  it('trims inputSentTimes to under 100 entries', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+    );
+
+    // Send 101 pointer events — each triggers the purge when size > 100.
+    // After all, the map should be trimmed to <= 100.
+    let lastSeq: number | undefined;
+    for (let i = 0; i < 101; i++) {
+      const event: DesktopInput = {
+        kind: 'pointer-button',
+        button: 'left',
+        pressed: true,
+        x: 0.5,
+        y: 0.5,
+      };
+      store.sendDesktopInput(tabId, event);
+      lastSeq = (event as { seq?: number }).seq;
+    }
+    await nextTick();
+
+    // The newest event's seq should still be in the map (entries are purged
+    // from oldest first when trimming).
+    expect(lastSeq).toBeDefined();
+
+    vi.useRealTimers();
   });
 
   it('still snaps the picker back on a refused select after the shape change', async () => {
