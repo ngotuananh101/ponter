@@ -210,11 +210,18 @@ describe('Auth Store (Pinia)', () => {
     expect(store.user).toBeNull();
   });
 
-  it('10. register with requiresApproval sets flag and clears error (no success banner)', async () => {
+  it('10. register with requiresApproval persists the local identity keys for the pending user', async () => {
     const store = useAuthStore();
+    const ecdhPrivKey = { type: 'ecdh-private' } as unknown as CryptoKey;
+    const signPrivKey = { type: 'ed25519-private' } as unknown as CryptoKey;
     vi.mocked(cryptoPkg.generateUserKeyPair).mockResolvedValue({
       publicKeySpkiBase64: 'pk',
-      privateKey: {} as CryptoKey,
+      privateKey: ecdhPrivKey,
+      publicKey: {} as CryptoKey,
+    });
+    vi.mocked(cryptoPkg.generateSigningKeyPair).mockResolvedValue({
+      publicKeyRawBase64: 'signing-pub',
+      privateKey: signPrivKey,
       publicKey: {} as CryptoKey,
     });
 
@@ -225,7 +232,8 @@ describe('Auth Store (Pinia)', () => {
         'Registration successful. Your account is pending administrator approval.',
     });
 
-    vi.spyOn(cryptoPkg, 'savePrivateKey').mockResolvedValue();
+    const savePrivSpy = vi.mocked(cryptoPkg.savePrivateKey).mockResolvedValue();
+    const saveSignSpy = vi.mocked(cryptoPkg.saveSigningKey).mockResolvedValue();
 
     await store.register({ username: 'newuser', password: 'password123' });
 
@@ -233,6 +241,12 @@ describe('Auth Store (Pinia)', () => {
     expect(store.error).toBeNull();
     expect(store.user).toBeNull();
     expect(store.status).toBe('idle');
-    expect(cryptoPkg.savePrivateKey).not.toHaveBeenCalled();
+    // The private halves exist only locally, and the server already recorded the
+    // matching public key at registration time. Dropping them here would leave
+    // the pending account unable to produce an identity proof after approval —
+    // and ADR-41 makes that proof a fail-closed admission gate for every session
+    // mode, so the account could never connect.
+    expect(savePrivSpy).toHaveBeenCalledWith('u-pending', ecdhPrivKey);
+    expect(saveSignSpy).toHaveBeenCalledWith('u-pending', signPrivKey);
   });
 });

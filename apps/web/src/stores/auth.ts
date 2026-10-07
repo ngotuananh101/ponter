@@ -94,6 +94,17 @@ export const useAuthStore = defineStore('auth', () => {
         signingPublicKey: signPair.publicKeyRawBase64,
       });
 
+      // Persist the locally generated private keys BEFORE branching on
+      // approval. The server records the matching public keys at registration
+      // time even for a pending account, so the private halves can never be
+      // regenerated later — a key generated at login would not match. Dropping
+      // them here would leave the pending account unable to sign an identity
+      // proof, and ADR-41 makes that proof a fail-closed admission gate for
+      // every session mode (terminal/desktop/files).
+      await savePrivateKey(res.user.id, keyPair.privateKey);
+      await savePublicKey(res.user.id, keyPair.publicKey);
+      await saveSigningKey(res.user.id, signPair.privateKey);
+
       if (res.requiresApproval) {
         status.value = 'idle';
         user.value = null;
@@ -101,10 +112,6 @@ export const useAuthStore = defineStore('auth', () => {
         error.value = null;
         return;
       }
-
-      await savePrivateKey(res.user.id, keyPair.privateKey);
-      await savePublicKey(res.user.id, keyPair.publicKey);
-      await saveSigningKey(res.user.id, signPair.privateKey);
 
       user.value = res.user;
       requiresApproval.value = false;
