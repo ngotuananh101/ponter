@@ -112,3 +112,39 @@ describe('signing store is separate from ECDH store', () => {
     expect(signSig.byteLength).toBe(64);
   });
 });
+
+describe('opening a legacy v1 database (pre-WS2, no signing store)', () => {
+  beforeEach(async () => {
+    // Reproduce a database created by a pre-Week-13 build: version 1 with only
+    // the ECDH 'keys' store. The WS2 signing store was added to
+    // `onupgradeneeded` without a version bump, so on such a database the
+    // upgrade never runs and the store stays missing.
+    await new Promise<void>((resolve, reject) => {
+      const del = indexedDB.deleteDatabase('remote-crypto');
+      del.onsuccess = () => resolve();
+      del.onerror = () => reject(del.error);
+      del.onblocked = () => resolve();
+    });
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('remote-crypto', 1);
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore('keys');
+      };
+      req.onsuccess = () => {
+        req.result.close();
+        resolve();
+      };
+      req.onerror = () => reject(req.error);
+    });
+  });
+
+  it('creates the signing store on the next open and round-trips a key', async () => {
+    const pair = await generateSigningKeyPair();
+
+    await saveSigningKey('legacy-user', pair.privateKey);
+    const loaded = await loadSigningKey('legacy-user');
+
+    expect(loaded).not.toBeNull();
+    expect(loaded!.type).toBe('private');
+  });
+});
