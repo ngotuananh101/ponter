@@ -1,9 +1,12 @@
+pub mod commands;
 pub mod keychain;
+pub mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![])
+        .manage(state::AppState::new())
+        .invoke_handler(tauri::generate_handler![commands::login::login])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
