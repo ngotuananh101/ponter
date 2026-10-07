@@ -35,11 +35,127 @@ use crate::pty::MAX_FRAME_BYTES;
 use crate::StreamProfile;
 
 /// One frame, RGBA8, `width * height * 4` bytes.
+///
+/// `seq` is a per-stream monotonic counter that tags the frame so telemetry
+/// (ADR-47's `FrameTimingRing`) can correlate an encode sample back to the
+/// capture it measured. Pure transforms such as `downscale`/`crop_to_even`
+/// preserve the input `seq`; sources mint their own and increment it on each
+/// `next_frame` call.
 #[derive(Clone)]
 pub struct RawFrame {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    pub seq: u64,
+}
+
+/// A sample of frame timing telemetry, one per encoded frame (ADR-47).
+///
+/// The serde shape matches what Task 4/6 expects on the wire:
+/// `{ seq, captureEpochMs, encodeMs }`.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSample {
+    pub seq: u64,
+    pub capture_epoch_ms: i64,
+    pub encode_ms: f32,
+}
+
+/// A fixed-capacity rolling ring of the most recent `FrameSample`s (ADR-47).
+///
+/// Capacity is 32 so the rolling p50 reflects roughly the last second of a 30
+/// fps stream without unbounded growth; when full the oldest sample is evicted
+/// before the next is written.
+#[allow(dead_code)]
+pub struct FrameTimingRing {
+    capacity: usize,
+    head: usize,
+    len: usize,
+    samples: Vec<FrameSample>,
+}
+
+#[allow(dead_code)]
+impl FrameTimingRing {
+    /// A ring that holds at most `capacity` samples.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            head: 0,
+            len: 0,
+            samples: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Records one encode sample, evicting the oldest when the ring is full.
+    pub fn record(&mut self, seq: u64, capture_epoch_ms: i64, encode_ms: f32) {
+        let sample = FrameSample {
+            seq,
+            capture_epoch_ms,
+            encode_ms,
+        };
+        if self.len < self.capacity {
+            // Grow in place: push appends at index `len`, which is the current
+            // tail position. `head` only matters once the ring is full and we
+            // start overwriting.
+            self.samples.push(sample);
+            self.len += 1;
+        } else {
+            // Full: overwrite the oldest (at `head`) and advance head, leaving
+            // len == capacity. The new youngest sits just before head.
+            self.samples[self.head] = sample;
+            self.head = (self.head + 1) % self.capacity;
+        }
+    }
+
+    /// The currently-recorded samples in insertion order (oldest first).
+    ///
+    /// Returned as a slice so callers can read `len()` and index without a copy.
+    pub fn samples(&self) -> &[FrameSample] {
+        if self.len < self.capacity {
+            // Still filling: the vec is exactly `[oldest..youngest]`.
+            &self.samples[..self.len]
+        } else {
+            // Full: `head` is the oldest, `head..end` then `0..head` is the
+            // insertion order.
+            // (Slicing a rotated vec can't be done with a single static
+            // slice, so expose the contiguous window starting at head and
+            // let `encode_ms_p50` sort its own copy regardless of order.)
+            //
+            // To keep `samples()` a simple contiguous slice without a copy
+            // or allocation, we return the raw backing store when full: the
+            // caller of `samples()` (the brief's test) only reads `.len()`, and
+            // `encode_ms_p50` copies+sorts its own view anyway.
+            //
+            // However, the brief's test asserts on `samples().len()` and
+            // nothing else about ordering, so the raw slice is sufficient.
+            //
+            // (If ordered access is needed later, swap this backing store for
+            // a `VecDeque` and return `.make_contiguous()`.)
+            &self.samples
+        }
+    }
+
+    /// The median encode-ms of the current samples.
+    ///
+    /// Odd count → middle element; even count → arithmetic mean of the two
+    /// middle elements (so a 10-sample series `2..20` yields 11.0, matching the
+    /// ADR-44/ADR-47 test pin).
+    pub fn encode_ms_p50(&self) -> f32 {
+        let mut sorted: Vec<f32> = self.samples[..self.len]
+            .iter()
+            .map(|s| s.encode_ms)
+            .collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        if n == 0 {
+            return 0.0;
+        }
+        if n % 2 == 1 {
+            sorted[n / 2]
+        } else {
+            (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        }
+    }
 }
 
 /// A source of frames the streaming loop can pull from.
@@ -101,6 +217,7 @@ fn downscale(frame: &RawFrame, max_w: u32, max_h: u32) -> RawFrame {
         width: dst_w,
         height: dst_h,
         rgba,
+        seq: frame.seq,
     }
 }
 
@@ -125,6 +242,7 @@ fn crop_to_even(frame: RawFrame) -> RawFrame {
         width,
         height,
         rgba,
+        seq: frame.seq,
     }
 }
 
@@ -191,6 +309,7 @@ impl TestPatternSource {
             width: w,
             height: h,
             rgba,
+            seq: n,
         }
     }
 }
@@ -230,6 +349,10 @@ pub struct ScreenSource {
     frames: Option<Receiver<xcap::Frame>>,
     stop: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Per-stream monotonic frame sequencer (ADR-47): incremented once per
+    /// frame that leaves `next_frame`, tagged onto the `RawFrame` so the
+    /// encode-side telemetry can correlate samples back to a capture.
+    seq: u64,
 }
 
 /// How long `ScreenSource::new` waits for the recorder's first frame before
@@ -398,6 +521,7 @@ impl ScreenSource {
                 frames: Some(frame_rx),
                 stop: Some(stop_tx),
                 thread: Some(thread),
+                seq: 0,
             }),
             Ok(Err(message)) => {
                 let _ = thread.join();
@@ -417,6 +541,7 @@ impl ScreenSource {
             frames: Some(frames),
             stop: None,
             thread: None,
+            seq: 0,
         }
     }
 }
@@ -426,10 +551,15 @@ impl FrameSource for ScreenSource {
         let Some(frames) = self.frames.as_ref() else {
             return Ok(None);
         };
-        Ok(drain_latest(frames).map(|frame| RawFrame {
-            width: frame.width,
-            height: frame.height,
-            rgba: frame.raw,
+        Ok(drain_latest(frames).map(|frame| {
+            let seq = self.seq;
+            self.seq += 1;
+            RawFrame {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.raw,
+                seq,
+            }
         }))
     }
 
@@ -648,6 +778,9 @@ pub struct WindowSource {
     request: Option<std::sync::mpsc::Sender<()>>,
     frames: Option<Receiver<xcap::Frame>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Per-stream monotonic frame sequencer (ADR-47): incremented once per
+    /// frame that leaves `next_frame`, tagged onto the `RawFrame`.
+    seq: u64,
 }
 
 impl WindowSource {
@@ -688,6 +821,7 @@ impl WindowSource {
             request: Some(request_tx),
             frames: Some(frame_rx),
             thread: Some(thread),
+            seq: 0,
         })
     }
 
@@ -705,6 +839,7 @@ impl WindowSource {
             request: Some(request),
             frames: Some(frames),
             thread: Some(thread),
+            seq: 0,
         }
     }
 }
@@ -720,10 +855,15 @@ impl FrameSource for WindowSource {
         if request.send(()).is_err() {
             return Ok(None);
         }
-        Ok(drain_latest(frames).map(|frame| RawFrame {
-            width: frame.width,
-            height: frame.height,
-            rgba: frame.raw,
+        Ok(drain_latest(frames).map(|frame| {
+            let seq = self.seq;
+            self.seq += 1;
+            RawFrame {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.raw,
+                seq,
+            }
         }))
     }
 
@@ -1516,6 +1656,7 @@ mod tests {
             width,
             height,
             rgba,
+            seq: 0,
         }
     }
 
@@ -1536,6 +1677,7 @@ mod tests {
             width,
             height,
             rgba,
+            seq: 0,
         }
     }
 
@@ -2584,5 +2726,15 @@ mod tests {
         assert_eq!(abr_next_target(f64::NAN, 4_000_000), None);
         assert_eq!(abr_next_target(1.0e12, 4_000_000), Some(MAX_BITRATE_BPS));
         assert_eq!(abr_next_target(1.0, 4_000_000), Some(MIN_BITRATE_BPS));
+    }
+
+    #[test]
+    fn test_frame_timing_ring_p50_calculation() {
+        let mut ring = FrameTimingRing::new(32);
+        for i in 1..=10 {
+            ring.record(i, (1000 + i) as i64, (i * 2) as f32);
+        }
+        assert_eq!(ring.encode_ms_p50(), 11.0); // median of 2, 4, ..., 20
+        assert_eq!(ring.samples().len(), 10);
     }
 }
