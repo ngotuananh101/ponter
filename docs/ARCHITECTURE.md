@@ -990,15 +990,19 @@ gantt
 
 > **Đọc trước khi bắt đầu Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — audit adversarial E2EE/Zero-Trust (28 findings đã xác minh kèm evidence file:line) và work list chi tiết (WS1-WS5). Lịch tuần nguồn theo spec `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §1 (5 tuần: 12-16, 17-18, 19-20).
 
-- [ ] **WS1 — Application-layer E2EE:** hiện thực `EncryptionManager` (ECDH P-256 + AES-GCM-256), wire vào terminal-core và Rust agent
-- [ ] **WS2 — Peer identity & signaling integrity:** xác minh DTLS fingerprint ngoài băng, keypair thật cho agent, chống MITM signaling
-- [ ] **WS3 — Agent session hardening:** shell allowlist, enforce cờ `approved`, xử lý WS close code, validate `candidate.session_id`
-- [ ] **WS4 — Auth hardening:** login rate-limit, refresh token rotation, JWT secret startup validation, WS revocation, siết `CORS_ORIGIN`
-- [ ] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, bỏ default secret
+- [x] **WS1 — Application-layer E2EE:** hiện thực `EncryptionManager` (ECDH P-256 + AES-GCM-256), wire vào terminal-core và Rust agent
+- [x] **WS2 — Peer identity & signaling integrity:** xác minh DTLS fingerprint ngoài băng, keypair thật cho agent, chống MITM signaling
+- [x] **WS3 — Agent session hardening:** shell allowlist, enforce cờ `approved`, xử lý WS close code, validate `candidate.session_id`
+- [x] **WS4 — Auth hardening:** login rate-limit, refresh token rotation, JWT secret startup validation, WS revocation, siết `CORS_ORIGIN`
+- [x] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, bỏ default secret
 
 ### Phase 6: Low-latency Interaction (Tuần 17-18)
 
-> **6a đã hoàn thành (2026-10-07), 6b chưa thiết kế.** Phase 6 tách đôi: **6a Interactivity** đóng carry-forward C1 (ADR-41: `verify_offer_identity` thành cổng admission cho mọi session mode — terminal, desktop, files, unknown), mở cổng input ADR-29 theo mô hình hai cổng (ADR-42: `--allow-input` của operator VÀ peer đã xác minh; UI hiển thị badge "Verified peer" + trạng thái Controlling/View only), thêm rate cap 120 Hz phía agent (ADR-43) và đo baseline latency input cho 6b (ADR-44). **6b Latency** (WebCodecs low-latency, `playoutDelayHint`/jitter buffer, cursor prediction, kết quả spike codec phần cứng ADR-25) sẽ có spec riêng. Chi tiết: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`.
+> **6a đã hoàn thành (2026-10-07; `48edac1`).** **6b Latency đang triển khai** (`feat/phase6b-low-latency`).
+>
+> **Phase 6a Interactivity** — đã merged `main` @ `48edac1` (PR #49): ADR-41 (`verify_offer_identity` thành cổng admission cho mọi session mode — terminal, desktop, files, unknown); ADR-42 hai cổng input (`--allow-input` của operator VÀ peer đã xác minh; UI badge "Verified peer" + trạng thái Controlling/View only); ADR-43 rate cap 120 Hz; ADR-44 baseline latency input.
+>
+> **Phase 6b Latency** — ADR-45 cursor stream (position, shape, local echo, extrapolation ≤100ms); ADR-46 browser playout tuning (`jitterBufferTarget`/`playoutDelayHint`, default 100ms); ADR-47 bốn tầng đo latency (capture→encode rolling stats, present-time health, input-echo round-trip, same-host g2g); ADR-48 WebCodecs spike **FAIL + descope** (giữ `<video>` + tuning); ADR-49 Playwright spike **ADOPT**. P3 hardware-codec investigation (ADR-25) — tìm kiếm, không chốt. Chi tiết 6a: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`. Chi tiết 6b: `docs/superpowers/specs/2026-10-07-phase6b-low-latency-design.md`, demo: `docs/demos/2026-10-07-phase6b-low-latency-demo.md`. Spike evidence: `docs/spikes/2026-10-07-p1-playwright-smoke.md` (ADOPT), `docs/spikes/2026-10-07-p2-webcodecs-probe.md` (FAIL+DESCOPE), `docs/spikes/2026-10-07-p3-hardware-codec.md` (investigation).
 
 ### Phase 7: Agent Desktop App (Tuần 19-20)
 
@@ -1125,8 +1129,11 @@ cargo build --release --target x86_64-unknown-linux-gnu
 |--------|--------|--------|
 | Terminal Latency | < 10ms | P2P DataChannel |
 | Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
-| Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt |
+| Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — [spike ADR-25](docs/spikes/2026-10-07-p3-hardware-codec.md), **chưa chốt** |
 | File Transfer | > 10MB/s | Giao thức nhị phân lai cửa sổ trượt 64 chunk (ADR-36/37); đo **~11–14 MB/s cách ly trên loopback** (mẫu 11.16 / 14.12 / 11.08 / 14.28 / 14.19 / 13.82 MB/s; 50 MiB / 1600 chunk; `process.hrtime.bigint()` từ `files-download` đến `files-download-end`; agent built debug qua `cargo build`). Đo bởi E2E suite `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts` (test 3, assertion >10 MB/s). Lưu ý: giảm còn ~7–9 MB/s dưới tải đồng thời. |
+| Desktop Latency (capture → encode) | *(measured, not promised)* | ADR-47: `desktop-stats` rolling ring `captureMsP50` / `encodeMsP50`; đo bởi E2E `publishes rolling frame timing samples in desktop-stats (ADR-47)` trong `packages/webrtc-core/test/e2e/desktop.e2e.test.ts` |
+| Desktop Input-Echo Round-trip | *(measured, not promised)* | ADR-47: browser gửi `seq` → agent inject → agent echo `lastInputSeq` trên `desktop-cursor` → browser tính thời gian. Đo bởi E2E `measures the cursor input-echo round-trip and prints a summary (ADR-47)`; output `[6b echo] n=... min=...ms median=...ms max=...ms` |
+| Desktop Glass-to-Glass (loopback, 100/50/0ms) | *(measured, not promised)* | ADR-47: test-pattern decode — bar_x = (n*8)%1280; browser vẽ frame ra canvas, decode `n`, so sánh với `captureEpochMs(n)` trong `desktop-stats` ring. Cùng host (Date.now() domains align). Đo bởi P1 Playwright smoke ([ADOPT](docs/spikes/2026-10-07-p1-playwright-smoke.md)) hoặc thủ công |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |
 | Bundle Size | < 5MB | Tree-shaking |
