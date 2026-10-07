@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { ref, onMounted } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 
 const spikeResult = ref<string | null>(null);
 const spikeError = ref<string | null>(null);
 
 onMounted(async () => {
   try {
-    const result = await invoke("spike_start");
+    const result = await invoke('spike_start');
     spikeResult.value = result as string;
     // Also log to the console so the boot log proves the backend command ran.
-    console.log("[spike] backend command spike_start returned:", result);
+    console.log('[spike] backend command spike_start returned:', result);
   } catch (e) {
     spikeError.value = String(e);
-    console.error("[spike] invoke failed:", e);
+    console.error('[spike] invoke failed:', e);
   }
 });
 </script>
@@ -25,12 +25,8 @@ onMounted(async () => {
     <p v-if="spikeResult">
       Backend command result: <strong>{{ spikeResult }}</strong>
     </p>
-    <p v-else-if="spikeError">
-      Invoke failed: {{ spikeError }}
-    </p>
-    <p v-else>
-      Starting...
-    </p>
+    <p v-else-if="spikeError">Invoke failed: {{ spikeError }}</p>
+    <p v-else>Starting...</p>
   </main>
 </template>
 
