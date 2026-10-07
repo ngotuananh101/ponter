@@ -258,8 +258,6 @@ pub async fn register_device_impl(
 
     // Persist the credential to the OS keychain IMMEDIATELY (R3). Failure fails
     // the registration loudly — same posture as login's refresh-token write.
-    // Persist the credential to the OS keychain IMMEDIATELY (R3). Failure fails
-    // the registration loudly — same posture as login's refresh-token write.
     // On re-registration the value is REPLACED (R3 swap behavior): a device is
     // re-registered after a manual delete, the latest credential must win.
     keychain::set_secret(
@@ -414,8 +412,7 @@ pub async fn delete_device(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{ensure_provider, spawn_stub};
-    use std::io::{Read, Write};
+    use crate::test_util::{ensure_provider, spawn_stub, spawn_stub_capturing};
     use std::sync::Mutex as SyncMutex;
 
     /// Guards keychaint-touching integration tests that all write to the shared
@@ -694,48 +691,13 @@ mod tests {
     #[test]
     fn register_device_sends_auth_header_and_body() {
         // Inspect the request line + Authorization header via a capturing stub.
-        // The spawn_stub_capturing captures the request line; for headers we use
-        // a tiny inline capturing stub here.
         ensure_provider();
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    match stream.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buf.extend_from_slice(&chunk[..n]);
-                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                let raw = String::from_utf8_lossy(&buf).to_string();
-                let _ = tx.send(raw);
-                let body = r#"{
-                    "agent": {"id":"dev-1","userId":"u1","hostname":"mybox","platform":"linux","osVersion":"unknown","agentVersion":"0.1.0","publicKey":"","signingPublicKey":null,"isOnline":false,"lastHeartbeat":null,"capabilities":[],"createdAt":"2026-10-08T00:00:00Z"},
-                    "credential":"ag_deadbeefcafebabe"
-                }"#;
-                let resp = format!(
-                    "HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body,
-                );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-            }
-        });
-
-        let url = format!("http://{addr}");
+        let body = r#"{
+            "agent": {"id":"dev-1","userId":"u1","hostname":"mybox","platform":"linux","osVersion":"unknown","agentVersion":"0.1.0","publicKey":"","signingPublicKey":null,"isOnline":false,"lastHeartbeat":null,"capabilities":[],"createdAt":"2026-10-08T00:00:00Z"},
+            "credential":"ag_deadbeefcafebabe"
+        }"#;
+        let (url, rx) = spawn_stub_capturing(201, body.to_string());
         let client = reqwest::Client::new();
         let _ = tauri::async_runtime::block_on(register_device_impl(
             &client,

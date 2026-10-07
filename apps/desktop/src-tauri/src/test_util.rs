@@ -1,10 +1,11 @@
 //! Shared `#[cfg(test)]`-gated test helpers.
 //!
 //! (I-note, Task 6.) `spawn_stub` previously existed as an inline copy in both
-//! `login.rs` and `wizard.rs`. A third copy in `devices.rs` would trip
-//! SonarCloud new-code duplication (the Week 13/16 gotcha). This module
-//! centralizes the stub + provider helpers so all three test modules share one
-//! copy. Declared `#[cfg(test)] mod test_util;` from `lib.rs`.
+//! `login.rs` and `wizard.rs`, and a third copy lived in `devices.rs`. All
+//! three would trip SonarCloud new-code duplication (the Week 13/16 gotcha).
+//! This module centralizes the stub + provider helpers so all three test
+//! modules share one copy. Declared `#[cfg(test)] mod test_util;` from
+//! `lib.rs`.
 
 use std::io::{Read, Write};
 use std::thread;
@@ -59,14 +60,9 @@ pub fn spawn_stub(canned_status: u16, canned_body: String) -> String {
     format!("http://{addr}")
 }
 
-/// Like `spawn_stub` but also captures the request line (first line) and hands
-/// it back via a channel receiver, so a test can assert which path the client
-/// requested. Returns `(base_url, receiver)`.
-///
-/// Shared test utility; not every test module exercises it — `#[expect]` silences
-/// the dead-code gate while keeping it available for new tests that need path
-/// inspection.
-#[expect(dead_code)]
+/// Like `spawn_stub` but also captures the full raw request header block and
+/// hands it back via a channel receiver, so a test can assert on the request
+/// line and headers. Returns `(base_url, receiver)`.
 pub fn spawn_stub_capturing(
     canned_status: u16,
     canned_body: String,
@@ -93,11 +89,7 @@ pub fn spawn_stub_capturing(
                 }
             }
 
-            // Extract the request line (first line up to \r\n).
-            if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-                let line = buf[..nl].to_vec();
-                let _ = tx.send(String::from_utf8_lossy(&line).to_string());
-            }
+            let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
 
             let body = canned_body.clone();
             let resp = format!(
