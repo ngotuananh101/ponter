@@ -23,6 +23,8 @@ export type {
   DesktopStats,
   DesktopInput,
   DesktopSourcesPayload,
+  DesktopShape,
+  DesktopCursorPayload,
   KeyModifiers,
 } from './desktop.js';
 
