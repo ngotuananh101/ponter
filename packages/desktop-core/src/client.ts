@@ -35,6 +35,7 @@ export class DesktopClient {
   private readonly trackTimeoutMs: number;
   private readonly controlTimeoutMs: number;
   private readonly inputRateLimitHz: number;
+  private readonly playoutDelayMs: number | null;
   private readonly stateListeners: Array<(state: string) => void> = [];
   private readonly errorListeners: Array<(message: string) => void> = [];
   private readonly sourceListeners: Array<
@@ -80,6 +81,8 @@ export class DesktopClient {
       options?.controlTimeoutMs ?? DEFAULT_CONTROL_TIMEOUT_MS;
     this.inputRateLimitHz =
       options?.inputRateLimitHz ?? DEFAULT_INPUT_RATE_LIMIT_HZ;
+    this.playoutDelayMs =
+      options?.playoutDelayMs !== undefined ? options.playoutDelayMs : 100;
   }
 
   /**
@@ -155,6 +158,7 @@ export class DesktopClient {
     try {
       const stream = await trackPromise;
       this.subscribeControl();
+      this.applyPlayoutTuning();
       cleanup(true);
       return stream;
     } catch (error) {
@@ -437,6 +441,33 @@ export class DesktopClient {
       return;
     }
     this.peer.dataChannels.sendJson('control', type, payload);
+  }
+
+  /**
+   * Apply playout-delay tuning to the remote video receiver (Task 9).
+   *
+   * Called once `start()` resolves with the first track. Two browser seams
+   * exist: Chrome exposes `jitterBufferTarget` (ms), Firefox exposes
+   * `playoutDelayHint` (seconds). One or the other is written when present;
+   * when the receiver is absent (werift agent / mock peer) this is a no-op.
+   * `playoutDelayMs === null` disables tuning entirely.
+   */
+  private applyPlayoutTuning(): void {
+    if (this.playoutDelayMs === null) return;
+    const peerAny = this.peer as unknown as {
+      peer?: { getVideoReceiver?: () => unknown };
+    };
+    const receiver = peerAny.peer?.getVideoReceiver?.() as
+      Record<string, unknown> | undefined;
+    if (!receiver) return;
+    if ('jitterBufferTarget' in receiver) {
+      receiver.jitterBufferTarget = Math.min(
+        4000,
+        Math.max(0, this.playoutDelayMs),
+      );
+    } else if ('playoutDelayHint' in receiver) {
+      receiver.playoutDelayHint = Math.max(0, this.playoutDelayMs) / 1000;
+    }
   }
 
   /** Idempotent: closes the underlying peer exactly once. */

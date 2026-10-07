@@ -116,6 +116,11 @@ function mockPeer() {
       waitForChannel,
       // T6-A: negotiateE2ee reads `this.peer.options.sessionId` for the hello.
       options: { sessionId: 'test-session' },
+      // The underlying RTCPeerConnectionLike; Task 9 uses getVideoReceiver
+      // to apply playout-delay tuning. Default: undefined receiver.
+      peer: {
+        getVideoReceiver: vi.fn().mockReturnValue(undefined),
+      },
     } as unknown as PeerConnection,
     emitTrack: (t: MediaStreamTrackLike, s: MediaStreamLike[]) =>
       trackHandler?.(t, s),
@@ -1136,6 +1141,93 @@ describe('DesktopClient E2EE (Task 6b)', () => {
         expect(call[2]).not.toHaveProperty('data');
       }
     }
+    client.close();
+  });
+});
+
+describe('DesktopClient playout delay tuning (Task 9)', () => {
+  it('sets jitterBufferTarget to 100ms when the receiver supports it', async () => {
+    const mock = mockPeer();
+    const receiver = {
+      jitterBufferTarget: 0,
+      // Has playoutDelayHint too, but jitterBufferTarget takes priority.
+      playoutDelayHint: 0,
+    };
+    // Override the default undefined-returning stub with a real receiver.
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(receiver);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: 100,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+
+    expect(receiver.jitterBufferTarget).toBe(100);
+    client.close();
+  });
+
+  it('sets playoutDelayHint to 0.1 when receiver lacks jitterBufferTarget', async () => {
+    const mock = mockPeer();
+    const receiver = {
+      playoutDelayHint: 0,
+    };
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(receiver);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: 100,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+
+    expect(receiver.playoutDelayHint).toBeCloseTo(0.1);
+    client.close();
+  });
+
+  it('does not modify the receiver when playoutDelayMs is null', async () => {
+    const mock = mockPeer();
+    const receiver = {
+      jitterBufferTarget: 0,
+      playoutDelayHint: 0,
+    };
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(receiver);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: null,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+
+    expect(receiver.jitterBufferTarget).toBe(0);
+    expect(receiver.playoutDelayHint).toBe(0);
+    client.close();
+  });
+
+  it('starts cleanly with no error when getVideoReceiver returns undefined', async () => {
+    const mock = mockPeer();
+    // Default mock stub: getVideoReceiver returns undefined.
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(undefined);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: 100,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+
+    await expect(started).resolves.toEqual({
+      track: fakeTrack,
+      streams: fakeStreams,
+    });
     client.close();
   });
 });

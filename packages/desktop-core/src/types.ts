@@ -18,6 +18,13 @@ export interface DesktopClientOptions {
   controlTimeoutMs?: number;
   /** Max `pointer-move` frames per second the client will forward. Default 60. */
   inputRateLimitHz?: number;
+  /**
+   * Target playout delay in milliseconds for the first remote video track.
+   * Applied to the receiver's `jitterBufferTarget` (Chrome) or
+   * `playoutDelayHint` (Firefox) after the track resolves. `null` disables
+   * tuning (the receiver is left untouched). Default: 100.
+   */
+  playoutDelayMs?: number | null;
 }
 
 /**
