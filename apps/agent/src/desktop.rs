@@ -66,7 +66,6 @@ pub struct FrameSample {
 /// Capacity is 32 so the rolling p50 reflects roughly the last second of a 30
 /// fps stream without unbounded growth; when full the oldest sample is evicted
 /// before the next is written.
-#[allow(dead_code)]
 pub struct FrameTimingRing {
     capacity: usize,
     head: usize,
@@ -74,7 +73,6 @@ pub struct FrameTimingRing {
     samples: Vec<FrameSample>,
 }
 
-#[allow(dead_code)]
 impl FrameTimingRing {
     /// A ring that holds at most `capacity` samples.
     pub fn new(capacity: usize) -> Self {
@@ -1108,6 +1106,28 @@ impl SustainMonitor {
 // events sender, and the stop signal. They are the loop's whole input surface;
 // bundling them into a struct would only move the same fields behind one more
 // name. `run_desktop_session` carries the same allow.
+/// Snapshot the timing telemetry for a stats frame (ADR-47).
+///
+/// Borrowed as parameters (not captured into the `send_stats` closure) so the
+/// closure stays `Fn` and the borrow checker is happy with the mutable updates
+/// to `timing_ring`/`last_frame_seq` in the ticker arm: the select! arms are
+/// mutually exclusive, but the closure would otherwise borrow them for its whole
+/// scope.
+fn timing_snapshot(
+    ring: &FrameTimingRing,
+    last_frame_seq: &Option<u64>,
+) -> (Option<u64>, Option<f32>, Option<Vec<FrameSample>>) {
+    if ring.samples().is_empty() {
+        (*last_frame_seq, None, None)
+    } else {
+        (
+            *last_frame_seq,
+            Some(ring.encode_ms_p50()),
+            Some(ring.samples().to_vec()),
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_stream(
     mut source: Box<dyn FrameSource>,
@@ -1135,6 +1155,8 @@ pub async fn run_stream(
 
     let mut skipped: u64 = 0;
     let mut encoded: u64 = 0;
+    let mut timing_ring = FrameTimingRing::new(32);
+    let mut last_frame_seq: Option<u64> = None;
     // The last encoded frame's dimensions — what `desktop-stats` reports, so
     // the UI's "1920×1080" reflects what is actually on the wire.
     let mut encoded_size = (profile.max_width, profile.max_height);
@@ -1151,13 +1173,20 @@ pub async fn run_stream(
     let send_stats = |events: &tokio::sync::mpsc::Sender<StreamEvent>,
                       size: (u32, u32),
                       profile: StreamProfile,
-                      status: Option<StatsStatus>| {
+                      status: Option<StatsStatus>,
+                      last_frame_seq: Option<u64>,
+                      encode_ms_p50: Option<f32>,
+                      frame_samples: Option<Vec<FrameSample>>| {
         let stats = DesktopStats {
             width: size.0,
             height: size.1,
             fps: profile.fps,
             target_bitrate_bps: profile.bitrate_bps,
             status,
+            frame_seq: last_frame_seq,
+            capture_ms_p50: None,
+            encode_ms_p50,
+            frame_samples,
         };
         let _ = events.try_send(StreamEvent::Stats(stats));
     };
@@ -1178,7 +1207,9 @@ pub async fn run_stream(
                                 // (re-arms only above the floor; ADR-24).
                                 sustain.note_bitrate_change(profile);
                                 // Reflect the effective value to the UI (spec §2.3 step 6).
-                                send_stats(&events, encoded_size, profile, None);
+                                let (fs_seq, enc_p50, enc_samples) =
+                                    timing_snapshot(&timing_ring, &last_frame_seq);
+                                send_stats(&events, encoded_size, profile, None, fs_seq, enc_p50, enc_samples);
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, bps, "desktop: bitrate retarget failed");
@@ -1210,6 +1241,8 @@ pub async fn run_stream(
                                 // The stream keeps running on the current source
                                 // (ADR-22). Tell the UI, per spec §2.2.
                                 tracing::warn!(source_id = %id, error = %e, "desktop: source swap refused");
+                                let (fs_seq, enc_p50, enc_samples) =
+                                    timing_snapshot(&timing_ring, &last_frame_seq);
                                 send_stats(
                                     &events,
                                     encoded_size,
@@ -1218,6 +1251,9 @@ pub async fn run_stream(
                                         kind: StatsStatusKind::SelectRefused,
                                         detail: format!("could not switch source: {e}"),
                                     }),
+                                    fs_seq,
+                                    enc_p50,
+                                    enc_samples,
                                 );
                             }
                         }
@@ -1237,6 +1273,10 @@ pub async fn run_stream(
                 let encode_start = Instant::now();
                 let data = encoder.encode(&frame)?;
                 let encode_time = encode_start.elapsed();
+                let encode_ms = encode_time.as_secs_f32() * 1000.0;
+                let capture_epoch_ms = crate::pty::now_ms();
+                timing_ring.record(frame.seq, capture_epoch_ms, encode_ms);
+                last_frame_seq = Some(frame.seq);
 
                 encoded += 1;
                 encoded_size = (frame.width, frame.height);
@@ -1248,7 +1288,9 @@ pub async fn run_stream(
                 // frame was encoded at the pre-downgrade size.
                 if encoded == 1 || pending_stats.is_some() {
                     let status = pending_stats.take().flatten();
-                    send_stats(&events, encoded_size, profile, status);
+                    let (fs_seq, enc_p50, enc_samples) =
+                        timing_snapshot(&timing_ring, &last_frame_seq);
+                    send_stats(&events, encoded_size, profile, status, fs_seq, enc_p50, enc_samples);
                 }
 
                 if sustain.observe(encode_time) == SustainAction::Downgrade {
@@ -1602,6 +1644,14 @@ pub struct DesktopStats {
     pub target_bitrate_bps: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<StatsStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_ms_p50: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encode_ms_p50: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_samples: Option<Vec<FrameSample>>,
 }
 
 /// An agent→browser note attached to a stats frame (spec §2.2).
@@ -2450,6 +2500,14 @@ mod tests {
                 kind: StatsStatusKind::QualityDowngraded,
                 detail: "720p (quality downgraded)".to_string(),
             }),
+            frame_seq: Some(42),
+            capture_ms_p50: None,
+            encode_ms_p50: Some(11.0),
+            frame_samples: Some(vec![FrameSample {
+                seq: 42,
+                capture_epoch_ms: 1000,
+                encode_ms: 11.0,
+            }]),
         };
         let value: serde_json::Value =
             serde_json::from_str(&frame_desktop_stats(&stats, 3)).unwrap();
@@ -2458,6 +2516,12 @@ mod tests {
         assert_eq!(value["timestamp"], 3);
         assert_eq!(value["payload"]["targetBitrateBps"], 4_000_000);
         assert_eq!(value["payload"]["status"]["kind"], "quality-downgraded");
+        assert_eq!(value["payload"]["frameSeq"], 42);
+        assert_eq!(value["payload"]["encodeMsP50"], 11.0);
+        assert!(value["payload"]["captureMsP50"].is_null()); // omitted -> serde_json yields null
+        assert_eq!(value["payload"]["frameSamples"][0]["seq"], 42);
+        assert_eq!(value["payload"]["frameSamples"][0]["captureEpochMs"], 1000);
+        assert_eq!(value["payload"]["frameSamples"][0]["encodeMs"], 11.0);
     }
 
     #[test]
@@ -2468,10 +2532,18 @@ mod tests {
             fps: 30.0,
             target_bitrate_bps: 6_000_000,
             status: None,
+            frame_seq: None,
+            capture_ms_p50: None,
+            encode_ms_p50: None,
+            frame_samples: None,
         };
         let value: serde_json::Value =
             serde_json::from_str(&frame_desktop_stats(&stats, 1)).unwrap();
         assert!(value["payload"].get("status").is_none());
+        assert!(value["payload"].get("frameSeq").is_none());
+        assert!(value["payload"].get("captureMsP50").is_none());
+        assert!(value["payload"].get("encodeMsP50").is_none());
+        assert!(value["payload"].get("frameSamples").is_none());
     }
 
     /// A `FrameSource` that records how often it was stopped.
