@@ -37,6 +37,7 @@ async function finish() {
       <input
         type="url"
         data-testid="wizard-server-url"
+        aria-label="Server URL"
         placeholder="http://localhost:8787"
         v-model="store.serverUrl"
       />
