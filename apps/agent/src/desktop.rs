@@ -1664,10 +1664,17 @@ pub fn test_source_info() -> DesktopSourceInfo {
 /// `verify_offer_identity` before the mode dispatch, so this frame is
 /// unreachable on a session whose peer was not verified. It stays a parameter
 /// (not a hard-coded `true`) so the unit test can pin both directions.
+///
+/// `cursor_in_frame` is ADR-45's flag: macOS captures the cursor in-frame
+/// (spec §3.2/§6.2), so the production call site passes `cfg!(target_os = "macos")`.
+/// No poller runs on macOS; the cursor is composited into the frame at capture.
+/// It is a parameter (not a hard-coded `cfg!`) so the unit test can pin both
+/// directions.
 pub fn frame_desktop_sources(
     sources: &[DesktopSourceInfo],
     input_enabled: bool,
     peer_verified: bool,
+    cursor_in_frame: bool,
     timestamp_ms: i64,
 ) -> String {
     let message = crate::pty::DataChannelMessage {
@@ -1677,6 +1684,7 @@ pub fn frame_desktop_sources(
             "sources": sources,
             "inputEnabled": input_enabled,
             "peerVerified": peer_verified,
+            "cursorInFrame": cursor_in_frame,
         }),
         timestamp: timestamp_ms,
     };
@@ -2485,7 +2493,7 @@ mod tests {
 
     #[test]
     fn frame_desktop_sources_carries_the_envelope_and_the_default_flag() {
-        let raw = frame_desktop_sources(&[test_source_info()], true, true, 7);
+        let raw = frame_desktop_sources(&[test_source_info()], true, true, true, 7);
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(value["type"], "desktop-sources");
         assert_eq!(value["channel"], "control");
@@ -2503,6 +2511,7 @@ mod tests {
             &[test_source_info()],
             false,
             true,
+            true,
             7,
         ))
         .unwrap();
@@ -2517,10 +2526,25 @@ mod tests {
             &[test_source_info()],
             true,
             false,
+            true,
             7,
         ))
         .unwrap();
         assert_eq!(unverified["payload"]["peerVerified"], false);
+        // ADR-45: `cursorInFrame` is pinned in BOTH directions. macOS captures the
+        // cursor in-frame (spec §3.2/§6.2), so the production call site passes
+        // `cfg!(target_os = "macos")`. The framing function must render whatever
+        // it is given — asserted true and false to pin both branches.
+        assert_eq!(value["payload"]["cursorInFrame"], true);
+        let cursor_out: serde_json::Value = serde_json::from_str(&frame_desktop_sources(
+            &[test_source_info()],
+            true,
+            true,
+            false,
+            7,
+        ))
+        .unwrap();
+        assert_eq!(cursor_out["payload"]["cursorInFrame"], false);
     }
 
     #[test]

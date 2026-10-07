@@ -438,6 +438,48 @@ pub mod platform {
     }
 }
 
+/// Windows best-effort cursor sampler (ADR-45, spec R8).
+///
+/// Compile-checked only — `apps/agent/Cargo.toml` has no `windows`/`windows-sys`
+/// dependency and we must not add one, so this is self-contained raw FFI.
+/// `GetCursorPos` lives in `user32`. The Windows runtime is unverified (the
+/// established WGC-capture posture); this stub exists so `x86_64-pc-windows-msvc`
+/// builds clean in CI. It is NOT wired into `CursorPoller` (which stays gated to
+/// X11) — marked #[allow(dead_code)] per spec R8.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+mod windows_impl {
+    #[repr(C)]
+    pub struct Point {
+        pub x: i32,
+        pub y: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(lp_point: *mut Point) -> i32;
+    }
+
+    /// A best-effort Windows cursor sampler. Calls `GetCursorPos` and returns the
+    /// root position; the cursor shape (HICON → PNG) is left as a future task —
+    /// WGC capture is the unverified Windows posture (spec R8).
+    pub struct WindowsCursorSampler;
+
+    impl WindowsCursorSampler {
+        /// Returns the current root cursor position, or `None` if
+        /// `GetCursorPos` fails (e.g. no desktop attached).
+        pub fn sample_root(&self) -> Option<(i32, i32)> {
+            let mut pt = Point { x: 0, y: 0 };
+            let ok = unsafe { GetCursorPos(&mut pt) };
+            if ok != 0 {
+                Some((pt.x, pt.y))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
