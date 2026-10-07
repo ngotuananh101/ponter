@@ -127,17 +127,22 @@ impl FrameTimingRing {
             // slice, so expose the contiguous window starting at head and
             // let `encode_ms_p50` sort its own copy regardless of order.)
             //
-            // To keep `samples()` a simple contiguous slice without a copy
-            // or allocation, we return the raw backing store when full: the
-            // caller of `samples()` (the brief's test) only reads `.len()`, and
-            // `encode_ms_p50` copies+sorts its own view anyway.
-            //
-            // However, the brief's test asserts on `samples().len()` and
-            // nothing else about ordering, so the raw slice is sufficient.
-            //
-            // (If ordered access is needed later, swap this backing store for
-            // a `VecDeque` and return `.make_contiguous()`.)
             &self.samples
+        }
+    }
+
+    /// Samples in true insertion order (oldest first), as an owned `Vec`.
+    ///
+    /// When the ring is full, `head` points at the oldest entry and the
+    /// contiguous slice from `head` is the younger half; the wrap-around half
+    /// lives at `0..head`. Concatenating those two slices yields insertion order
+    /// (Ruling BE-T12-R3). Used by `timing_snapshot` so stats frames report
+    /// strictly-monotonic capture epochs to the browser.
+    pub fn ordered_samples(&self) -> Vec<FrameSample> {
+        if self.len < self.capacity {
+            self.samples[..self.len].to_vec()
+        } else {
+            [&self.samples[self.head..], &self.samples[..self.head]].concat()
         }
     }
 
@@ -1153,7 +1158,7 @@ fn timing_snapshot(
             *last_frame_seq,
             Some(ring.capture_ms_p50()),
             Some(ring.encode_ms_p50()),
-            Some(ring.samples().to_vec()),
+            Some(ring.ordered_samples()),
         )
     }
 }
@@ -1689,6 +1694,22 @@ pub fn frame_desktop_sources(
         timestamp: timestamp_ms,
     };
     serde_json::to_string(&message).expect("a frame of plain data cannot fail to serialize")
+}
+
+/// Frame a `DesktopCursorPayload` as a `desktop-cursor` control message (ADR-45,
+/// spec §2.2/§4.2). The payload is PLAINTEXT over the control channel.
+///
+/// `timestamp_ms` is `i64` for parity with `DataChannelMessage.timestamp`
+/// (`pty.rs:44`) and the sibling builders `frame_desktop_sources` and
+/// `frame_desktop_stats` (Ruling BE-T12-R1).
+pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: i64) -> String {
+    let message = crate::pty::DataChannelMessage {
+        r#type: "desktop-cursor".to_string(),
+        channel: "control".to_string(),
+        payload: cursor,
+        timestamp: timestamp_ms,
+    };
+    serde_json::to_string(&message).expect("desktop-cursor serialization")
 }
 
 /// Telemetry the agent pushes for the UI (spec §2.2/§5.1).
@@ -2967,6 +2988,147 @@ mod tests {
         assert_eq!(fs, Some(2));
         assert_eq!(cap, Some(4.0)); // median of 3.5, 4.5
         assert_eq!(enc, Some(16.5)); // median of 11.0, 22.0
-        assert_eq!(samples, Some(ring.samples().to_vec()));
+        assert!(samples.is_some());
+        // ordering is guaranteed by the monotonic-seq test below
+    }
+
+    #[test]
+    fn frame_desktop_cursor_envelope_and_payload() {
+        let payload = DesktopCursorPayload {
+            x: 0.25,
+            y: 0.75,
+            visible: true,
+            seq: 7,
+            last_input_seq: Some(3),
+            shape: Some(DesktopShape {
+                png: "iVBORw0KGgo=".to_string(),
+                hotspot_x: 4,
+                hotspot_y: 8,
+                serial: 42,
+            }),
+        };
+        let frame = frame_desktop_cursor(&payload, 1_700_000_000);
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+
+        // Envelope fields.
+        assert_eq!(value["type"], "desktop-cursor");
+        assert_eq!(value["channel"], "control");
+        assert_eq!(value["timestamp"], 1_700_000_000);
+
+        // Payload fields — camelCase on the wire.
+        let p = &value["payload"];
+        assert_eq!(p["x"], 0.25);
+        assert_eq!(p["y"], 0.75);
+        assert_eq!(p["visible"], true);
+        assert_eq!(p["seq"], 7);
+        assert_eq!(p["lastInputSeq"], 3);
+        assert_eq!(p["shape"]["png"], "iVBORw0KGgo=");
+        assert_eq!(p["shape"]["hotspotX"], 4);
+        assert_eq!(p["shape"]["hotspotY"], 8);
+        assert_eq!(p["shape"]["serial"], 42);
+    }
+
+    #[test]
+    fn frame_desktop_cursor_omits_last_input_seq_when_none() {
+        let payload = DesktopCursorPayload {
+            x: 0.1,
+            y: 0.2,
+            visible: false,
+            seq: 1,
+            last_input_seq: None,
+            shape: None,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&frame_desktop_cursor(&payload, 0)).unwrap();
+
+        // `last_input_seq` None -> omitted from the wire (skip_serializing_if).
+        assert!(value["payload"].get("lastInputSeq").is_none());
+        // `shape` None -> omitted as well.
+        assert!(value["payload"].get("shape").is_none());
+        // But the always-present fields are still there.
+        assert_eq!(value["payload"]["x"], 0.1);
+        assert_eq!(value["payload"]["visible"], false);
+        assert_eq!(value["payload"]["seq"], 1);
+    }
+
+    #[test]
+    fn frame_desktop_cursor_includes_shape_when_some_and_omits_when_none() {
+        let shape = DesktopShape {
+            png: "AA==".to_string(),
+            hotspot_x: 1,
+            hotspot_y: 2,
+            serial: 9,
+        };
+        let with_shape = DesktopCursorPayload {
+            x: 0.0,
+            y: 0.0,
+            visible: true,
+            seq: 0,
+            last_input_seq: None,
+            shape: Some(shape.clone()),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&frame_desktop_cursor(&with_shape, 0)).unwrap();
+        assert_eq!(value["payload"]["shape"]["serial"], 9);
+
+        let without_shape = DesktopCursorPayload {
+            x: 0.0,
+            y: 0.0,
+            visible: true,
+            seq: 0,
+            last_input_seq: None,
+            shape: None,
+        };
+        let value_none: serde_json::Value =
+            serde_json::from_str(&frame_desktop_cursor(&without_shape, 0)).unwrap();
+        assert!(value_none["payload"].get("shape").is_none());
+    }
+
+    #[test]
+    fn ordered_samples_are_strictly_monotonic_when_wrapped() {
+        // 32-capacity ring, push >32 samples so `head` wraps and `ordered_samples`
+        // exercises the `[head..] ++ [..head]` concat branch (Ruling BE-T12-R3).
+        let mut ring = FrameTimingRing::new(32);
+        let mut seqs = Vec::new();
+        let mut epochs = Vec::new();
+        for i in 0..40u64 {
+            let seq = i + 1;
+            let epoch = 1_000_000 + (i as i64) * 10;
+            ring.record(seq, epoch, 1.0, 0.5);
+            seqs.push(seq);
+            epochs.push(epoch);
+        }
+
+        let ordered = ring.ordered_samples();
+        // The ring is full (capacity 32), so exactly 32 samples are retained.
+        assert_eq!(
+            ordered.len(),
+            32,
+            "a full 32-slot ring must hold exactly 32"
+        );
+
+        // The retained window is the last 32 pushed: seq 9..=40, epoch 1_008_000..=1_039_000.
+        let expected_seqs: Vec<u64> = (9..=40).collect();
+        let expected_epochs: Vec<i64> = (8..=39).map(|i| 1_000_000 + i * 10).collect();
+        let got_seqs: Vec<u64> = ordered.iter().map(|s| s.seq).collect();
+        let got_epochs: Vec<i64> = ordered.iter().map(|s| s.capture_epoch_ms).collect();
+        assert_eq!(got_seqs, expected_seqs, "seq must be the last 32 in order");
+        assert_eq!(got_epochs, expected_epochs);
+
+        // Strictly monotonically increasing for both seq and capture_epoch_ms.
+        for w in ordered.windows(2) {
+            assert!(
+                w[0].seq < w[1].seq,
+                "seq not strictly increasing: {} -> {}",
+                w[0].seq,
+                w[1].seq
+            );
+            assert!(
+                w[0].capture_epoch_ms < w[1].capture_epoch_ms,
+                "capture_epoch_ms not strictly increasing: {} -> {}",
+                w[0].capture_epoch_ms,
+                w[1].capture_epoch_ms
+            );
+        }
     }
 }
