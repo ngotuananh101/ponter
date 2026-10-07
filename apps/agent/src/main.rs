@@ -947,6 +947,18 @@ async fn run_one_session(
     // Candidates that arrive before the remote description is set (spec R3).
     let mut pending: Vec<RTCIceCandidateInit> = Vec::new();
 
+    // ADR-41 (Phase 6a): identity verification is an ADMISSION gate for every
+    // session mode, not a terminal-only step. It runs here — after the peer is
+    // built, before the files-root probe and before the mode dispatch — so an
+    // unverifiable offer is refused before any resource (filesystem root
+    // resolution, capture pipeline, PTY) is touched. Fail-closed: the `?` bails
+    // out of `run_one_session` with NO answer of any kind — not even
+    // `approved: false` — so a peer without a valid proof learns nothing. The
+    // supervisor logs the error text (main.rs driver loop). Desktop and Files
+    // previously returned at :970/:988 before the old terminal-only call at
+    // :1025 and were therefore never verified (carry-forward C1, WS1 Rust doc).
+    verify_offer_identity(offer, &cfg.identity)?;
+
     // ADR-32: the files gate is evaluated per offer, before the answer. An
     // unset, missing, non-directory, or unreadable root is one refusal —
     // `approved: false` and the peer closed, with a log line the E2E pins.
@@ -1012,17 +1024,6 @@ async fn run_one_session(
         }
         SessionMode::Terminal => {}
     }
-
-    // H3 security gate (Task 9): verify the user's identity proof on the offer
-    // BEFORE the agent sends its answer, so the browser never learns the
-    // session was accepted when the proof was missing or tampered. Both PTY
-    // spawn sites live in the dispatcher task (below), which is only fed by the
-    // poll task spawned after the channel opens; gating the answer itself gates
-    // every downstream path: a tampered/missing proof bails before
-    // `rtc::answer_offer`, the answer SDP is never sent, the browser aborts the
-    // handshake, and no PTY is ever created. Fail-closed: on error we bail out
-    // of the session entirely before sending any SDP.
-    verify_offer_identity(offer, &cfg.identity)?;
 
     rtc::answer_offer(&peer, offer, outbound, &cfg.identity).await?;
 
@@ -1931,8 +1932,11 @@ async fn run_desktop_session(
     for source in &mut sources {
         source.default = source.id == default_id;
     }
+    // ADR-42: `true` is a structural fact, not an assumption — ADR-41 gates
+    // admission on `verify_offer_identity`, so `run_desktop_session` (and thus
+    // this frame) only runs on a session whose peer identity was verified.
     let sources_frame =
-        desktop::frame_desktop_sources(&sources, cfg.allow_input, crate::pty::now_ms());
+        desktop::frame_desktop_sources(&sources, cfg.allow_input, true, crate::pty::now_ms());
 
     // The geometry `to_absolute` (spec §6.2) maps normalized input into. It is
     // the source the session started on, taken from the enumeration so the
@@ -2074,6 +2078,8 @@ async fn run_desktop_session(
         // The injector is built lazily (first allowed input frame) and reused,
         // so a host with no display fails one frame, not the session (§6.3).
         let mut injector: Option<Box<dyn input::InputInjector>> = None;
+        // ADR-43: per-session fixed-window cap on accepted input frames.
+        let mut input_limiter = input::InputRateLimiter::new(input::INPUT_RATE_CAP_HZ);
         // WS1 E2EE session state (R14): a plain local, no Arc/RwLock — the
         // control loop is the only task touching it.
         let mut e2ee_session: Option<e2ee::E2eeSession> = None;
@@ -2153,6 +2159,13 @@ async fn run_desktop_session(
                                 text
                             };
                             if allow_input {
+                                // ADR-43: cap AFTER decrypt and the Gate-A
+                                // check, BEFORE decode/inject. The drop log
+                                // matches every other drop path.
+                                if !input_limiter.allow(crate::pty::now_ms()) {
+                                    tracing::debug!("dropping desktop-input: rate cap exceeded");
+                                    continue;
+                                }
                                 if injector.is_none() {
                                     match input::platform::PlatformInjector::try_new() {
                                         Ok(i) => injector = Some(Box::new(i)),
@@ -2162,6 +2175,7 @@ async fn run_desktop_session(
                                 if let Some(injector) = injector.as_mut() {
                                     input::apply_if_allowed(
                                         allow_input, text, &current_source, injector.as_mut(),
+                                        crate::pty::now_ms(),
                                     );
                                 }
                             } else {
@@ -3290,7 +3304,7 @@ mod tests {
             .expect("event");
         assert!(
             matches!(
-                decoded,
+                decoded.event,
                 crate::input::DesktopInput::PointerMove { x: 0.5, y: 0.25 }
             ),
             "decoded = {decoded:?}"
@@ -3365,7 +3379,7 @@ mod tests {
         };
 
         let mut injector = NoopInjector;
-        let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector);
+        let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector, 0);
         assert!(!applied, "gate closed must drop the frame and return false");
     }
 

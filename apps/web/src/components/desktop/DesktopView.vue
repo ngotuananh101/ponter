@@ -7,7 +7,7 @@ import {
   onMounted,
   onBeforeUnmount,
 } from 'vue';
-import { RefreshCw, Settings } from '@lucide/vue';
+import { RefreshCw, Settings, ShieldCheck } from '@lucide/vue';
 import { Button } from '@/components/ui/button';
 import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import { useTerminalStore } from '@/stores/terminal';
@@ -253,8 +253,18 @@ const inputHandlers = computed(() => {
           </select>
         </label>
 
+        <span
+          v-if="tab.desktopPeerVerified"
+          data-test="desktop-peer-verified"
+          class="flex items-center gap-1 text-emerald-500"
+          title="This session's peer identity was verified by the agent"
+        >
+          <ShieldCheck class="w-3.5 h-3.5" />
+          <span>Verified peer</span>
+        </span>
+
         <label
-          v-if="tab.desktopInputEnabled"
+          v-if="tab.desktopInputEnabled && tab.desktopPeerVerified"
           class="flex items-center gap-1 text-muted-foreground"
         >
           <input
@@ -265,6 +275,14 @@ const inputHandlers = computed(() => {
           />
           <span>Input</span>
         </label>
+
+        <span
+          v-if="tab.desktopInputEnabled && tab.desktopPeerVerified"
+          data-test="desktop-input-status"
+          class="text-muted-foreground"
+        >
+          {{ inputOn ? 'Controlling' : 'View only' }}
+        </span>
 
         <!-- Settings (gear) popover tucking the manual bitrate control. -->
         <div class="relative flex items-center">

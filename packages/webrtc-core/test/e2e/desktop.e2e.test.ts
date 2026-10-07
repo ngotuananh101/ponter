@@ -622,4 +622,189 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       await offerer.close();
     }
   }, 120_000);
+
+  // ADR-41 (Phase 6a): before the hoist, the Desktop arm returned at
+  // `main.rs:970` — upstream of the terminal-only `verify_offer_identity` at
+  // `:1025` — so a proof-less offer opened a desktop session. Now the verify
+  // is an admission gate: the agent bails with NO answer, the channel never
+  // opens, and the agent log names the missing proof.
+  it('refuses a proof-less desktop offer (ADR-41 admission gate)', async () => {
+    const { token, agentId, credential, sessionId } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    const agent = spawnAgent(agentId, credential, ['--desktop-source', 'test']);
+    await waitForAgentOnline(token, agentId);
+    await waitForAgentSigningKey(token, agentId);
+
+    // No `identity` argument → no proof on the offer.
+    await expect(openDesktopPeer(sessionId, token, undefined)).rejects.toThrow(
+      /refus|declin|timeout/i,
+    );
+
+    const agentLog = agent.output();
+    expect(agentLog).toMatch(/identity proof|no identity proof|refused/i);
+  }, 90_000);
+
+  // ADR-43 (Phase 6a): a flooding peer is capped at the agent. The exact
+  // 120/window math is pinned in the Rust unit tests; this test proves the cap
+  // is WIRED (drops appear) and the session SURVIVES (a later frame lands).
+  it('caps a flooding peer at 120 Hz and keeps the session alive', async () => {
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    const agent = spawnAgent(
+      agentId,
+      credential,
+      ['--desktop-source', 'test', '--allow-input'],
+      { DISPLAY: process.env.DISPLAY ?? ':99', RUST_LOG: 'debug' },
+    );
+    await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
+
+    const { offerer, controlFrames } = await openDesktopPeer(
+      sessionId,
+      token,
+      identity,
+    );
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      // ADR-42: the live frame carries the verified fact (Task 4's literal).
+      const sourcesFrame = controlFrames.findLast(
+        (f) => f.type === 'desktop-sources',
+      );
+      expect(
+        (sourcesFrame?.payload as { peerVerified?: boolean } | undefined)
+          ?.peerVerified,
+      ).toBe(true);
+      expect(inputEnabled(controlFrames)).toBe(true);
+
+      // Burst: 300 frames, all within one window (well above the 120 cap).
+      for (let i = 0; i < 300; i++) {
+        sendPointerMove(offerer, 0.5, 0.5);
+      }
+
+      // (a) at least one frame was applied and at least one was capped —
+      // which frames landed is timing-dependent, so the assertion is >= 1.
+      await waitFor(
+        () => agent.output().includes('desktop-input applied'),
+        'the agent to apply at least one burst frame',
+        15_000,
+      );
+      await waitFor(
+        () => agent.output().includes('rate cap exceeded'),
+        'the agent to log at least one capped frame',
+        15_000,
+      );
+
+      // (b) the session SURVIVES: a frame in the NEXT window still injects
+      // (the cap is a per-window counter, not a session kill).
+      execFileSync('xdotool', ['mousemove', '0', '0']);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const appliedBefore = agent
+        .output()
+        .split('desktop-input applied').length;
+      sendPointerMove(offerer, 0.25, 0.25);
+      await waitFor(
+        () =>
+          agent.output().split('desktop-input applied').length > appliedBefore,
+        'a post-burst frame to be applied in the next window',
+        15_000,
+      );
+      await waitFor(
+        () => {
+          const out = execFileSync('xdotool', ['getmouselocation']).toString();
+          const x = Number(/x:(\d+)/.exec(out)?.[1]);
+          const y = Number(/y:(\d+)/.exec(out)?.[1]);
+          return Math.abs(x - 320) <= 2 && Math.abs(y - 180) <= 2;
+        },
+        'the post-burst pointer to land near (320, 180)',
+        15_000,
+      );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
+
+  // ADR-44 (Phase 6a): the control-path latency baseline Phase 6b needs.
+  // 10 pointer-moves, 100 ms apart, gate open under Xvfb; every `delta_ms`
+  // (agent receive − browser send) must be ≤ 1000 ms — a loose CI guard —
+  // and the summary is logged for the demo doc to record.
+  it('measures the input-latency baseline (ADR-44)', async () => {
+    const { token, agentId, credential, sessionId, userSigning } = await seed({
+      capabilities: ['desktop'],
+    });
+
+    const agent = spawnAgent(
+      agentId,
+      credential,
+      ['--desktop-source', 'test', '--allow-input'],
+      { DISPLAY: process.env.DISPLAY ?? ':99' }, // default RUST_LOG=info: the log is info
+    );
+    await waitForAgentOnline(token, agentId);
+    const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
+    const identity = buildPeerIdentity(
+      userSigning.privateKey,
+      userSigning.publicKeyRawBase64,
+      agentSigningPublicKey,
+    );
+
+    const { offerer, controlFrames } = await openDesktopPeer(
+      sessionId,
+      token,
+      identity,
+    );
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+
+      for (let i = 0; i < 10; i++) {
+        sendPointerMove(offerer, 0.1 + i * 0.05, 0.5);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // The 10 applied lines must be visible before parsing.
+      await waitFor(
+        () =>
+          (agent.output().match(/desktop-input applied/g)?.length ?? 0) >= 10,
+        '10 applied input frames in the agent log',
+        20_000,
+      );
+
+      // tracing-subscriber::fmt emits ANSI styling by default; strip it so the
+      // field-render boundary (`delta_ms=123`) is matched verbatim.
+      const agentLog = agent.output().replace(/\x1b\[[0-9;]*m/g, '');
+      const deltas = [...agentLog.matchAll(/delta_ms=(\d+)/g)].map((m) =>
+        Number(m[1]),
+      );
+      expect(deltas.length).toBeGreaterThanOrEqual(10);
+      for (const delta of deltas) {
+        expect(delta).toBeLessThanOrEqual(1000);
+      }
+
+      const sorted = [...deltas].sort((a, b) => a - b);
+      const min = sorted[0]!;
+      const median = sorted[Math.floor(sorted.length / 2)]!;
+      const p90 =
+        sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]!;
+      console.log(
+        `[ADR-44 baseline] n=${deltas.length} min=${min}ms median=${median}ms p90=${p90}ms max=${sorted[sorted.length - 1]!}ms`,
+      );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
 });

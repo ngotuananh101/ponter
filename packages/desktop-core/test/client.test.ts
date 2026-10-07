@@ -30,11 +30,12 @@ let currentEmitControl: ((msg: unknown) => void) | null = null;
 function emitSources(
   sources: Array<{ id: string; default: boolean }>,
   inputEnabled: boolean,
+  peerVerified = false,
 ): void {
   currentEmitControl?.({
     type: 'desktop-sources',
     channel: 'control',
-    payload: { sources, inputEnabled },
+    payload: { sources, inputEnabled, peerVerified },
     timestamp: 1,
   });
 }
@@ -262,6 +263,7 @@ describe('DesktopClient', () => {
       payload: {
         sources: [{ id: 'monitor:1', default: true }],
         inputEnabled: false,
+        peerVerified: false,
       },
       timestamp: 1,
     });
@@ -306,19 +308,23 @@ describe('DesktopClient control surface', () => {
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [oneSource], inputEnabled: false },
+      payload: {
+        sources: [oneSource],
+        inputEnabled: false,
+        peerVerified: false,
+      },
       timestamp: 1,
     });
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [], inputEnabled: false },
+      payload: { sources: [], inputEnabled: false, peerVerified: false },
       timestamp: 2,
     });
 
     expect(seen).toEqual([
-      { sources: [oneSource], inputEnabled: false },
-      { sources: [], inputEnabled: false },
+      { sources: [oneSource], inputEnabled: false, peerVerified: false },
+      { sources: [], inputEnabled: false, peerVerified: false },
     ]);
     client.close();
   });
@@ -332,7 +338,11 @@ describe('DesktopClient control surface', () => {
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [oneSource], inputEnabled: false },
+      payload: {
+        sources: [oneSource],
+        inputEnabled: false,
+        peerVerified: false,
+      },
       timestamp: 1,
     });
 
@@ -371,14 +381,20 @@ describe('DesktopClient control surface', () => {
     emitControl({
       type: 'desktop-sources',
       channel: 'control',
-      payload: { sources: [oneSource], inputEnabled: true },
+      payload: {
+        sources: [oneSource],
+        inputEnabled: true,
+        peerVerified: false,
+      },
       timestamp: 1,
     });
 
     const seen: unknown[] = [];
     client.onSources((payload) => seen.push(payload));
 
-    expect(seen).toEqual([{ sources: [oneSource], inputEnabled: true }]);
+    expect(seen).toEqual([
+      { sources: [oneSource], inputEnabled: true, peerVerified: false },
+    ]);
     client.close();
   });
 
@@ -671,6 +687,26 @@ describe('DesktopClient input surface (Week 9, spec §5.3)', () => {
     emitSources([{ id: 'monitor:1', default: true }], true);
 
     expect(seen).toEqual([true]);
+    client.close();
+  });
+
+  it('normalizes a missing peerVerified to false (pre-6a agent)', async () => {
+    const { client, emitControl } = await connected();
+    const seen: boolean[] = [];
+    client.onSources((payload) => seen.push(payload.peerVerified));
+
+    // A pre-6a agent: the field is absent entirely.
+    emitControl({
+      type: 'desktop-sources',
+      channel: 'control',
+      payload: {
+        sources: [{ id: 'monitor:1', default: true }],
+        inputEnabled: true,
+      },
+      timestamp: 1,
+    });
+
+    expect(seen).toEqual([false]);
     client.close();
   });
 });

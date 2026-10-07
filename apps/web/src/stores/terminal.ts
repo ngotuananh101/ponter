@@ -78,6 +78,8 @@ export interface TabItem {
   desktopSourceId?: string;
   /** Desktop tabs only: true iff the agent's input gate is open (ADR-29). */
   desktopInputEnabled?: boolean;
+  /** Desktop tabs only: true iff the agent verified the peer identity (Phase 6a ADR-42). */
+  desktopPeerVerified?: boolean;
   /** Files tabs only: current directory ('' = root, spec §7.2). */
   filesPath?: string;
   /** Files tabs only: the latest listing (spec §7.2). */
@@ -865,6 +867,7 @@ export const useTerminalStore = defineStore('terminal', () => {
           if (!tab) return;
           tab.desktopSources = payload.sources;
           tab.desktopInputEnabled = payload.inputEnabled;
+          tab.desktopPeerVerified = payload.peerVerified;
           const defaultId = payload.sources.find((s) => s.default)?.id;
           if (defaultId) confirmedSourceId = defaultId;
           tab.desktopSourceId ??= defaultId;
