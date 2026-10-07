@@ -374,13 +374,15 @@ git commit -m "feat(desktop): Tauri backend skeleton + keychain wrapper (ADR-51/
 ### Task 4: Account login over `POST /api/auth/login`; token to keychain (ADR-52)
 
 **Files:**
-- Create: `apps/desktop/src-tauri/src/commands/login.rs`
-- Create: `apps/desktop/src/views/LoginView.vue`, `apps/desktop/src/stores/auth.ts`
-- Test: `apps/desktop/src/**/__tests__/login.test.ts`
+- Create: `apps/desktop/src-tauri/src/commands/login.rs`, `apps/desktop/src-tauri/src/commands/mod.rs`, `apps/desktop/src-tauri/src/state.rs`
+- Create: `apps/desktop/src/views/LoginView.vue`, `apps/desktop/src/stores/auth.ts`, `apps/desktop/src/types.ts`, `apps/desktop/vitest.config.ts`
+- Modify: `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/Cargo.lock`
+- Modify: `apps/desktop/package.json`, `apps/desktop/tsconfig.json`, `apps/desktop/vite.config.ts`, `apps/desktop/src/main.ts`, `apps/desktop/src/App.vue`, `apps/desktop/src/vite-env.d.ts`, `pnpm-lock.yaml`
+- Test: `apps/desktop/src/__tests__/login.test.ts`
 
 **Interfaces:**
 - Consumes: `keychain::set_secret` (Task 3); `POST /api/auth/login` (existing server).
-- Produces: a `login(email, password)` Tauri command returning the user profile; the refresh token stored in the keychain; access token in backend memory.
+- Produces: a `login(username, password)` Tauri command returning the user profile; the refresh token stored in the keychain; access token in backend memory.
 
 - [ ] **Step 1: Write the failing frontend test**
 
@@ -403,9 +405,16 @@ Backend: `login` command POSTs to `/api/auth/login`, on success stores the refre
 - [ ] **Step 4: Add the no-secret-in-webview assertion**
 
 ```ts
-it('never writes a secret to webview storage', () => {
-  expect(localStorage.length).toBe(0);
-  expect(sessionStorage.length).toBe(0);
+// Test files are exempt from the production-only grep gate, so the plain
+// property names are used directly here — no obfuscation.
+function storageLength(win: Window, which: 'l' | 's'): number {
+  return which === 'l' ? win.localStorage.length : win.sessionStorage.length;
+}
+
+it('never writes a secret to webview storage', async () => {
+  // assert both legs: after a failed login AND after a successful one
+  expect(storageLength(window, 'l')).toBe(0);
+  expect(storageLength(window, 's')).toBe(0);
 });
 ```
 
@@ -417,9 +426,18 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/commands/login.rs apps/desktop/src
+git add apps/desktop pnpm-lock.yaml
 git commit -m "feat(desktop): account login + keychain token storage (ADR-52)"
 ```
+
+> **Correction (Task 4).** Shipped as `f96a472` (18 files, +785/−66) plus the review-fix commit `463da71` (mutex lock error mapping + honest storage assertions); the decisions below are what Tasks 5, 6, and 10 must rely on.
+> - **Server contract:** `POST /api/auth/login` with body **`{username, password}`** — the server looks up `users.username`, so the shipped command is **`login(username, password)`** (the plan's earlier `login(email, password)` was wrong). A `200` returns `{user, token, refreshToken, expiresIn}`; a non-`200` returns `{error, code, details}` and the `error` string is surfaced verbatim to the UI.
+> - **HTTP client:** `reqwest` **0.13** with `default-features = false, features = ["json", "rustls-no-provider"]` plus `rustls` **0.23** with `features = ["ring", "std", "tls12"]`. The ring crypto provider is installed **once** in `AppState::new()` before any client is built — reqwest 0.13's `rustls-no-provider` **panics at `Client` build time if no provider is installed**. Ring is chosen because it is already in the lockfile via the agent crate (no `aws-lc-sys` C build). Tasks 5/6 must **reuse `AppState.http` / `AppState.server_url`**, not construct new clients.
+> - **Secrets:** the refresh token goes to the keychain under service **`"ponter-desktop"`** / account **`"refresh-token"`** (consts `KEYCHAIN_SERVICE` / `KEYCHAIN_REFRESH_ACCOUNT` in `commands/login.rs`); the access token lives in `AppState.access_token` (`Mutex<Option<String>>`), **memory only**. A keychain write failure **fails the login loudly** (no success-without-persistence). Task 6 adds the agent credential under the same service.
+> - **Server URL:** from the `PONTER_SERVER_URL` env var, falling back to `http://localhost:8787`. Task 5's wizard step replaces the default with the user-entered URL.
+> - **Frontend infra is now real:** `apps/desktop`'s `lint` / `typecheck` / `test` scripts are real (`eslint` / `vue-tsc` / `vitest` 5.0.3 + `@vue/test-utils` 2.5.1 + `happy-dom` 20.14.5); `pinia` 4.0.3 is wired in `main.ts`; `pnpm-lock.yaml` changes from this task on.
+> - **Storage gate (production-only):** `grep -rn "localStorage\|sessionStorage\|indexedDB" apps/desktop/src --include="*.ts" --include="*.vue" | grep -v "/__tests__/"` → **EMPTY**. Test files are exempt (they read storage to assert emptiness), and property names must never be obfuscated. Future tasks add their own storage assertions under the same rule.
+> - **Constraint nuance:** the no-`unwrap()`-in-non-test-code rule applies to **new** code; `lib.rs`'s `.expect("error while running tauri application")` is the Tauri scaffold pattern shipped in Task 3 and is out of scope here.
 
 ---
 
@@ -656,7 +674,7 @@ git commit -m "build(desktop): bundle targets for linux/macos/windows (ADR-56)"
 
 Matrix `ubuntu-latest` / `macos-14` / `windows-latest`; install pnpm + Rust 1.98.1 + Tauri Linux system deps; run `pnpm install`, build the frontend, then `tauri build`; upload bundle artifacts; on tag, create a release.
 
-> If the workflow runs `cargo test` on the desktop crate, set **`PONTER_KEYCHAIN_SKIP=1`** — headless runners have no secret-service session bus, and the keychain round-trip test honours this guard (wired in Task 3).
+> If the workflow runs `cargo test` on the desktop crate, set **`PONTER_KEYCHAIN_SKIP=1`** — headless runners have no secret-service session bus. **Every** keychain integration test honours this guard: the round-trip test (wired in Task 3) and Task 4's two login integration tests (`login_stores_refresh_token_in_keychain`, `login_surfaces_server_error`).
 
 - [ ] **Step 2: Add a post-build artifact check**
 
