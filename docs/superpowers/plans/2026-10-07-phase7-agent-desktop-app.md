@@ -47,7 +47,7 @@ The failure modes the spec implies but no single task's happy-path test covers �
 
 | File | Responsibility |
 |---|---|
-| `apps/agent/src/lib.rs` | **New** crate root; `AgentRuntime` (start/stop/status/events) + module re-exports. |
+| `apps/agent/src/lib.rs` | **New** crate root; `AgentRuntime` (start/stop/status + `wait()`) + module re-exports. |
 | `apps/agent/src/main.rs` | **Refactor** to thin CLI over `AgentRuntime`. |
 | `apps/agent/Cargo.toml` | Add `[lib]`; keep `[[bin]]`. |
 | `apps/desktop/src-tauri/Cargo.toml` | **New** Tauri backend crate; path-dep on `ponter-agent`. |
@@ -212,7 +212,7 @@ git commit -m "spike(desktop): Tauri shell embedding feasibility (L0 gate)"
 
 **Interfaces:**
 - Consumes: the existing modules (`cursor`, `desktop`, `e2ee`, `files`, `identity`, `input`, `logging`, `pty`, `rtc`, `shell_policy`, `signal`) and `SessionConfig`/`run_with_reconnect`.
-- Produces: `ponter_agent::AgentRuntime` with `start(config: RuntimeConfig) -> Result<RuntimeHandle>`, `RuntimeHandle::stop()`, and `RuntimeHandle::status() -> RuntimeStatus` — consumed by Task 3's Tauri backend.
+- Produces: `ponter_agent::AgentRuntime` with `start(config: RuntimeConfig) -> Result<RuntimeHandle>`, and `RuntimeHandle::{stop(), status() -> RuntimeStatus, wait()}` — consumed by Task 3's Tauri backend.
 
 - [ ] **Step 1: Add the lib target**
 
@@ -235,26 +235,44 @@ Create `apps/agent/src/lib.rs` holding the `mod` declarations currently at the t
 ```rust
 pub mod identity;
 
+/// Everything `AgentRuntime::start` needs, already resolved by the caller.
 pub struct RuntimeConfig {
-    pub agent_id: String,
     pub server: String,
     pub credential: String,
-    pub identity_path: std::path::PathBuf,
+    pub shell: String,
     pub allow_input: bool,
-    // ... remaining Cli fields needed at runtime
+    pub identity: std::sync::Arc<identity::AgentIdentity>,
+    // ... remaining resolved runtime fields (stun, cols/rows, desktop_*, files_root)
 }
 
-pub struct AgentRuntime { /* handle to the reconnect loop */ }
+/// The embedded agent runtime (ADR-50). `start` spawns the reconnect loop and
+/// returns a handle; the loop runs until it ends naturally or `stop` is called.
+pub struct AgentRuntime;
 
 impl AgentRuntime {
-    pub async fn start(_config: RuntimeConfig) -> anyhow::Result<Self> { todo!() }
-    pub async fn stop(&self) -> anyhow::Result<()> { todo!() }
+    pub async fn start(config: RuntimeConfig) -> anyhow::Result<RuntimeHandle> { /* ... */ }
+}
+
+/// A handle to a running `AgentRuntime`.
+pub struct RuntimeHandle { /* join handle + stop signal + shared status */ }
+
+impl RuntimeHandle {
+    pub fn status(&self) -> RuntimeStatus { /* ... */ }
+    pub async fn wait(&self) -> anyhow::Result<()> { /* ... */ }
+    pub async fn stop(&self) -> anyhow::Result<()> { /* ... */ }
+}
+
+/// What the runtime is doing, for the tray (ADR-55).
+pub enum RuntimeStatus {
+    Stopped,
+    Disconnected,
+    Connected,
 }
 ```
 
 - [ ] **Step 3: Reduce `main.rs` to a thin CLI**
 
-`main.rs` keeps `Cli` (clap) and `resolve_credential`/`resolve_shell`/`resolve_identity_path`, then builds `RuntimeConfig` and calls `AgentRuntime::start(...)`. Behaviour (flags, log lines) unchanged.
+`main.rs` keeps `Cli` (clap), `logging::init()` and `resolve_credential`/`resolve_shell`/`resolve_identity_path`, then builds `RuntimeConfig`, calls `AgentRuntime::start(...)`, and awaits `handle.wait()`. Behaviour (flags, log lines) unchanged.
 
 - [ ] **Step 4: Move `run_with_reconnect`/`SessionConfig` behind the runtime**
 
@@ -278,6 +296,11 @@ Expected: all green. Then run the cross-language E2E (unchanged file) — green.
 git add apps/agent/Cargo.toml apps/agent/src/lib.rs apps/agent/src/main.rs
 git commit -m "refactor(agent): split into lib + thin CLI (ADR-50)"
 ```
+
+> **Correction (Task 2).** The split shipped as `ce162f95` (plus follow-up fix `d315c667`, which dropped a dead `#[cfg(windows)]` path import left by the move). Three details differ from the sketch above and are the shipped reality:
+> - **`logging::init()` stays in the CLI.** The library never initialises a subscriber — `AgentRuntime::start` leaves logging to the caller, so an embedder (the Tauri backend) can install its own. `main.rs` calls `logging::init()` before starting the runtime.
+> - **`shutdown_signal()` lives in `lib.rs`, and the CLI's Ctrl-C/SIGTERM behaviour is preserved via `handle.wait()`.** The CLI awaits `RuntimeHandle::wait()` (not `stop()`), so the reconnect loop's own `shutdown_signal()` branch produces the established log lines and exit behaviour rather than a synthesised stop.
+> - **The E2E suite keeps 5 pre-existing environmental desktop failures** (Xvfb cursor/input on some hosts); they were proven identical with the baseline binary, so the split introduced none. CI is the binding check for this refactor.
 
 **Stop condition:** if `build-agent.yml` verify or E2E cannot be made green, revert the split and report — ADR-50 is reopened.
 
@@ -718,7 +741,7 @@ git commit -m "feat(desktop): signed auto-update (ADR-57)"
 **1. Spec coverage:**
 - ADR-50 (lib/bin) → Task 2. ADR-51 (Vue+Tauri, CSP) → Tasks 1, 3. ADR-52 (keychain, login) → Tasks 3, 4. ADR-53 (wizard) → Task 5. ADR-54 (registration) → Task 6. ADR-55 (tray/auto-start) → Tasks 7, 8. ADR-56 (packaging/CI) → Tasks 9, 10. ADR-57 (updater) → Task 11. ADR-58 (layers) → the layer structure itself. Spec §5.1 (dialog width) → Task 0. Spec §6 mutation discipline → Tasks 5, 11 mutation checks + Task 4 no-secret assertion. No gap.
 
-**2. Placeholder scan:** `AgentRuntime` is stubbed with `todo!()` **only** in Task 2 Step 2 as the interface signature, then implemented in Task 2 Steps 3-4 — the implementer sees the full task text, not a bare `todo!()`. Spike and CI tasks are inherently exploratory and name their concrete artifact/verdict. No "add error handling"/"similar to Task N" placeholders.
+**2. Placeholder scan:** Task 2 Step 2's interface sketch was corrected to the shipped `AgentRuntime`/`RuntimeHandle`/`RuntimeStatus` signatures (no `todo!()`); the earlier stub was replaced by the real API in the "Correction (Task 2)" note. Spike and CI tasks are inherently exploratory and name their concrete artifact/verdict. No "add error handling"/"similar to Task N" placeholders.
 
 **3. Type consistency:** `AgentRuntime::start/stop/status`, `RuntimeConfig`, `RuntimeStatus`, `keychain::set_secret/get_secret/delete_secret`, `probe_server/probe_capture`, `register_device`, `set_autostart/is_autostart_enabled`, `should_apply/verify_manifest` are named once and reused consistently across tasks.
 
