@@ -13,12 +13,14 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
+    "test:browser": "playwright test",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
     "@ponter/shared": "workspace:*"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@ponter/crypto": "workspace:*",
     "@types/node": "24.19.0",
     "typescript": "6.0.3",
