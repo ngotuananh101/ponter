@@ -62,7 +62,7 @@ The failure modes the spec implies but no single task's happy-path test covers �
 | `apps/desktop/vite.config.ts`, `tsconfig.json`, `index.html` | **New** frontend build. |
 | `apps/desktop/src/**/__tests__/*.test.ts` | **New** Vitest specs. |
 | `.github/workflows/build-desktop.yml` | **New** 3-OS build + bundle + release. |
-| `apps/web/src/components/security/EncryptionByChannelDialog.vue` | **Edit** width `max-w-2xl` → `max-w-3xl`. |
+| `apps/web/src/components/security/EncryptionByChannelDialog.vue` | **Edit** width → `sm:max-w-2xl` (same-variant override of the generated `sm:max-w-md` default). |
 | `apps/web/src/__tests__/EncryptionByChannelDialog.test.ts` | **Edit** pin the width class. |
 | `docs/spikes/2026-10-07-phase7-tauri-spike.md` | **New** L0 spike findings. |
 
@@ -87,13 +87,16 @@ The failure modes the spec implies but no single task's happy-path test covers �
 Add to `EncryptionByChannelDialog.test.ts`:
 
 ```ts
-it('uses a wider-than-default dialog width', async () => {
+it('overrides the default sm:max-w-md so the wider sm:max-w-2xl width applies', async () => {
   const wrapper = mountDialog(true);
   await wrapper.vm.$nextTick();
 
   const content = wrapper.find('[data-test="encryption-by-channel-dialog"]');
-  expect(content.classes()).toContain('max-w-3xl');
-  expect(content.classes()).not.toContain('max-w-2xl');
+  const classes = content.classes();
+  expect(classes).toContain('sm:max-w-2xl');
+  expect(classes).not.toContain('sm:max-w-md'); // default was REPLACED by the merge (core regression pin)
+  expect(classes).not.toContain('max-w-3xl'); // broken unprefixed approach removed
+  expect(classes).toContain('max-w-[calc(100%-2rem)]'); // mobile cap default survives the merge
 });
 ```
 > Note: the `mountDialog` helper (defined at the top of the test file) supplies the `Teleport` stub that `DialogPortal` requires; a raw `mount(...)` without it would not render the dialog content.
@@ -101,7 +104,7 @@ it('uses a wider-than-default dialog width', async () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pnpm --filter @ponter/web exec vitest run src/__tests__/EncryptionByChannelDialog.test.ts`
-Expected: FAIL — content has `max-w-2xl`, not `max-w-3xl`.
+Expected: FAIL — content carries the unprefixed `max-w-2xl`, not `sm:max-w-2xl`.
 
 - [ ] **Step 3: Widen the dialog**
 
@@ -114,7 +117,10 @@ In `EncryptionByChannelDialog.vue`, change:
 to:
 
 ```html
-<DialogContent class="max-w-3xl" data-test="encryption-by-channel-dialog">
+<DialogContent
+  class="sm:max-w-2xl"
+  data-test="encryption-by-channel-dialog"
+>
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -131,8 +137,10 @@ Expected: PASS — 307 tests green (Gate G2 in `e2ee-claims.test.ts` unaffected)
 
 ```bash
 git add apps/web/src/components/security/EncryptionByChannelDialog.vue apps/web/src/__tests__/EncryptionByChannelDialog.test.ts
-git commit -m "feat(web): widen Encryption by Channel dialog to max-w-3xl"
+git commit -m "fix(web): make Encryption by Channel dialog width apply via sm:max-w-2xl"
 ```
+
+> **Correction (Task 0b).** The first attempt set an unprefixed `class="max-w-3xl"` on `DialogContent` (commit `998bc95`, shipped as `9f1efba`). It never applied: the generated `DialogContent` default is the **`sm:`-variant** `sm:max-w-md`, and tailwind-merge treats an unprefixed `max-w-*` as a different group, so `sm:max-w-md` kept winning at ≥640px. The fix (commit `6e9c97f`) passes the **same-variant** `sm:max-w-2xl`, which tailwind-merge replaces the default with — effective width 42rem (2xl) at ≥640px. Lesson: when overriding a generated component's width via `class`, match the variant of the default you are replacing.
 
 ---
 

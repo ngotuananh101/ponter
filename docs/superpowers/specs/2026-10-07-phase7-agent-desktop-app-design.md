@@ -138,7 +138,7 @@ The agent's existing platform limitations carry over verbatim: Wayland capture i
 | `apps/web/src/components/security/EncryptionByChannelDialog.vue` | **Edit** — widen the dialog (owner request; see §5.1). |
 
 ### 5.1 Widening the "Encryption by Channel" dialog (owner request, 2026-10-07)
-The dialog currently sets `class="max-w-2xl"` (42rem) on `DialogContent`. The owner asked for it to be **wider horizontally** ("rộng thêm một chút"). Change the width class to `max-w-3xl` (48rem) — a one-line change to `EncryptionByChannelDialog.vue`. (`max-w-2xl` → `max-w-3xl` is the smallest step that is visibly wider without becoming a full-screen dialog; if it still reads as cramped on a wide screen, `max-w-4xl` is the follow-up.) The existing tests assert content presence, not width, so they remain valid; a new assertion pins the width class to prevent silent regression. This is a small, independent task and is **not** part of the Phase 7 runtime work — it ships first.
+The owner asked for the dialog to be **wider horizontally** ("rộng thêm một chút"). The width override must use the **same `sm:` variant** as the generated `DialogContent` default: the default is `sm:max-w-md`, and an unprefixed `max-w-*` sits in a different tailwind-merge group, so it does not replace the default and `sm:max-w-md` still wins at ≥640px. The dialog therefore passes `class="sm:max-w-2xl"` on `DialogContent` — tailwind-merge replaces the default, giving an effective width of 42rem (2xl) at ≥640px. The width test pins this merge-replacement (contains `sm:max-w-2xl`; not `sm:max-w-md`; not `max-w-3xl`; keeps the mobile cap `max-w-[calc(100%-2rem)]`). This is a small, independent task and is **not** part of the Phase 7 runtime work — it ships first.
 
 ---
 
