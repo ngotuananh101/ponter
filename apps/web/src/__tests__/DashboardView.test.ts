@@ -198,6 +198,14 @@ describe('DashboardView.vue', () => {
     expect(videoRow.text()).not.toMatch(/end-to-end/i);
     expect(videoRow.text()).toMatch(/DTLS-SRTP/);
 
+    // Truthful wording: files and signaling are transport-only, never end-to-end.
+    const filesRow = wrapper.find('[data-test="sec-channel-files"]');
+    expect(filesRow.text()).not.toMatch(/e2ee|end-to-end/i);
+    expect(filesRow.text()).toMatch(/DTLS \/ SCTP/);
+
+    const signalingRow = wrapper.find('[data-test="sec-channel-signaling"]');
+    expect(signalingRow.text()).not.toMatch(/e2ee|end-to-end/i);
+
     // Terminal row must reference the app-layer cipher.
     expect(wrapper.find('[data-test="sec-channel-terminal"]').text()).toContain(
       'AES-GCM-256',
