@@ -13,3 +13,5 @@ apps/agent/vendor
 # shadcn-vue generated components — kept byte-identical to the registry
 # (registry ships without semicolons; repo prettier would rewrite them).
 apps/web/src/components/ui
+# Tauri CLI-generated capability schemas (see src-tauri/.gitignore)
+apps/desktop/src-tauri/gen
