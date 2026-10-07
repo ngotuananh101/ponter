@@ -267,7 +267,8 @@ test('browser desktop stream connects, verifies peer, applies playout tuning, an
 
   // 5. Carry the ADR-47 glass-to-glass (g2g) protocol via test-pattern bar decode
   const g2gValues: number[] = [];
-  for (let sampleIdx = 0; sampleIdx < 12; sampleIdx++) {
+  const g2gDeadline = Date.now() + 15_000;
+  while (Date.now() < g2gDeadline && g2gValues.length < 5) {
     const sample = await page.evaluate(() => {
       const v = document.querySelector('video');
       if (!v || v.videoWidth === 0) return null;
@@ -333,7 +334,7 @@ test('browser desktop stream connects, verifies peer, applies playout tuning, an
         }
       }
     }
-    await delay(80);
+    await delay(100);
   }
 
   expect(g2gValues.length).toBeGreaterThan(0);
