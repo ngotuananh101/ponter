@@ -30,6 +30,97 @@ mod rtc;
 mod shell_policy;
 mod signal;
 
+// ADR-53: the desktop setup wizard probes a real capture frame through the same
+// `desktop` code path the agent uses. The `desktop` module is private at crate
+// root; re-export its public surface so the Tauri backend can call it without
+// making the module itself `pub`.
+#[cfg(not(target_env = "musl"))]
+pub use desktop::{
+    DesktopSourceInfo, FrameSource, SourceKind, default_source_id,
+    enumerate_sources, source_for,
+};
+/// The result of a capture probe (ADR-53). `kind` is the plain-string rendering
+/// of `SourceKind` (`"monitor"` / `"window"`) because `SourceKind` has no
+/// `Serialize` derive and must not carry serde attributes.
+#[cfg(not(target_env = "musl"))]
+pub struct CaptureProbe {
+    /// The enumerated source id, e.g. `"monitor:0"`.
+    pub source_id: String,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// `"monitor"` or `"window"`.
+    pub kind: String,
+}
+
+/// Probe the live desktop capture path, returning the first real frame's
+/// geometry. Reuses the exact `enumerate_sources` → `default_source_id` →
+/// `source_for` → `next_frame` chain the streaming loop uses (ADR-53 "same
+/// desktop code path"), so a black-screen Wayland portal denial surfaces here
+/// the same way it surfaces at session start.
+///
+/// Compiled out on musl: the desktop module does not exist there and the
+/// desktop app is not a musl target.
+#[cfg(not(target_env = "musl"))]
+pub async fn probe_capture() -> Result<CaptureProbe, String> {
+    let sources = enumerate_sources()
+        .map_err(|e| format!("enumerating sources: {e}"))?;
+    if sources.is_empty() {
+        return Err("no capture sources were found".to_string());
+    }
+
+    let id = default_source_id(false, "primary")
+        .map_err(|e| format!("resolving the default source: {e}"))?;
+    let mut source = source_for(&id, StreamProfile::SAFE_720P30)
+        .await
+        .map_err(|e| format!("opening the capture source: {e}"))?;
+
+    // Poll `next_frame` synchronously for up to 5 seconds (R3). `next_frame` is
+    // a sync call on the `FrameSource` trait; the await surface is only
+    // `source_for`. Short sleeps keep the poll from busy-spinning.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match source.next_frame() {
+            Ok(Some(frame)) => {
+                let kind = match sources
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.kind)
+                {
+                    Some(SourceKind::Monitor) => "monitor",
+                    Some(SourceKind::Window) => "window",
+                    None => "monitor",
+                };
+                source.stop();
+                if frame.width == 0 || frame.height == 0 {
+                    return Err(format!(
+                        "capture returned a frame with zero dimensions ({}×{})",
+                        frame.width, frame.height
+                    ));
+                }
+                return Ok(CaptureProbe {
+                    source_id: id,
+                    width: frame.width,
+                    height: frame.height,
+                    kind: kind.to_string(),
+                });
+            }
+            Ok(None) => {
+                if std::time::Instant::now() > deadline {
+                    source.stop();
+                    return Err("capture produced no frame within 5s".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                source.stop();
+                return Err(format!("capturing a frame: {e}"));
+            }
+        }
+    }
+}
+
 use std::collections::HashMap;
 #[cfg(not(target_env = "musl"))]
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -2701,6 +2792,31 @@ impl PtyManager {
 mod tests {
     use super::*;
     use ring::signature::KeyPair;
+
+    /// Verify probe_capture runs end-to-end under a real display (Xvfb).
+    /// Requires the `DISPLAY` env var to be set. Skipped otherwise.
+    #[tokio::test]
+    #[cfg(not(target_env = "musl"))]
+    async fn probe_capture_runs_under_display() {
+        if std::env::var("DISPLAY").is_err() {
+            eprintln!("DISPLAY not set — skipping live capture probe test");
+            return;
+        }
+        let result = probe_capture().await;
+        // Under Xvfb we expect either a real frame (Ok) or a graceful error
+        // explaining why capture failed — but never a panic.
+        match &result {
+            Ok(probe) => {
+                assert!(probe.width > 0, "width must be positive");
+                assert!(probe.height > 0, "height must be positive");
+            }
+            Err(e) => {
+                // An honest error is acceptable — we just verify it doesn't
+                // panic and returns a human-readable message.
+                assert!(!e.is_empty(), "error message must not be empty");
+            }
+        }
+    }
 
     /// The TDD anchor for Task 3 (spec Step 1).
     #[tokio::test]
