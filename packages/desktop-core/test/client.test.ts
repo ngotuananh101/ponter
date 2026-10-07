@@ -1149,9 +1149,9 @@ describe('DesktopClient playout delay tuning (Task 9)', () => {
   it('sets jitterBufferTarget to 100ms when the receiver supports it', async () => {
     const mock = mockPeer();
     const receiver = {
-      jitterBufferTarget: 0,
+      jitterBufferTarget: 9999,
       // Has playoutDelayHint too, but jitterBufferTarget takes priority.
-      playoutDelayHint: 0,
+      playoutDelayHint: 9.9,
     };
     // Override the default undefined-returning stub with a real receiver.
     (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
@@ -1172,7 +1172,7 @@ describe('DesktopClient playout delay tuning (Task 9)', () => {
   it('sets playoutDelayHint to 0.1 when receiver lacks jitterBufferTarget', async () => {
     const mock = mockPeer();
     const receiver = {
-      playoutDelayHint: 0,
+      playoutDelayHint: 9.9,
     };
     (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
       .fn()
@@ -1192,8 +1192,8 @@ describe('DesktopClient playout delay tuning (Task 9)', () => {
   it('does not modify the receiver when playoutDelayMs is null', async () => {
     const mock = mockPeer();
     const receiver = {
-      jitterBufferTarget: 0,
-      playoutDelayHint: 0,
+      jitterBufferTarget: 9999,
+      playoutDelayHint: 9.9,
     };
     (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
       .fn()
@@ -1206,8 +1206,10 @@ describe('DesktopClient playout delay tuning (Task 9)', () => {
     mock.emitTrack(fakeTrack, fakeStreams);
     await started;
 
-    expect(receiver.jitterBufferTarget).toBe(0);
-    expect(receiver.playoutDelayHint).toBe(0);
+    // Non-zero sentinels: if the null guard were removed, Math.max(0, null)
+    // would overwrite 9999 -> 0, making this assertion RED.
+    expect(receiver.jitterBufferTarget).toBe(9999);
+    expect(receiver.playoutDelayHint).toBe(9.9);
     client.close();
   });
 
