@@ -56,7 +56,7 @@ The five input classes or failure modes the spec implies that are most critical 
 |------|----------------|--------------|
 | `docs/spikes/2026-10-07-p1-playwright-smoke.md` | P1 Playwright spike report & adoption decision | L0 / Task 1 |
 | `docs/spikes/2026-10-07-p2-webcodecs-probe.md` | P2 WebCodecs probe report & H.264 format findings | L0 / Task 2 |
-| `docs/spikes/2026-10-07-p3-adr25-hardware-codec.md` | P3 Hardware-codec investigation report | L0 / Task 3 |
+| `docs/spikes/2026-10-07-p3-hardware-codec.md` | P3 Hardware-codec investigation report | L0 / Task 3 |
 | `packages/shared/src/types/desktop.ts` | Shared wire types: `DesktopCursorPayload`, `DesktopShape`, stats timing fields, input `seq` | L1 / Task 4 |
 | `packages/shared/test/desktop-types.test.ts` | Wire type instantiation and exhaustiveness tests | L1 / Task 4 |
 | `apps/agent/src/desktop.rs` | `RawFrame.seq`, 32-sample timing ring, rolling p50 calculation, stats serialization | L1 / Task 5, 6 |
@@ -68,9 +68,10 @@ The five input classes or failure modes the spec implies that are most critical 
 | `packages/desktop-core/src/client.ts` | Apply playout tuning at track resolution; cursor control dispatch | L2 / Task 9, L3 / Task 13 |
 | `packages/desktop-core/test/client.test.ts` | Playout tuning unit tests & cursor dispatch tests | L2 / Task 9, L3 / Task 13 |
 | `apps/agent/Cargo.toml` | Add direct `x11rb` (`xfixes`) & `image` (`png`) dependencies for non-musl | L3 / Task 10 |
+| `apps/agent/Cargo.lock` | Additive lock entry for the two direct deps (required for `--locked` CI; ruling BE-T10-R4) | L3 / Task 10 |
 | `apps/agent/src/cursor.rs` | 60Hz poller, X11 XFixes cursor fetch, dirty check, PNG encoding, Windows stub | L3 / Task 10, 11 |
 | `apps/web/src/lib/desktop-input.ts` | `contentBox()` shared geometry, `toClient()` inverse, extrapolation function | L3 / Task 14 |
-| `apps/web/src/test/desktop-input.test.ts` | Unit tests for letterbox mapping, bounds clamping, and extrapolation | L3 / Task 14 |
+| `apps/web/src/__tests__/desktop-input.test.ts` | Unit tests for letterbox mapping, bounds clamping, and extrapolation | L3 / Task 14 |
 | `apps/web/src/components/desktop/DesktopView.vue` | Overlay canvas, local echo when controlling, latency footer telemetry | L3 / Task 15 |
 | `apps/web/src/stores/terminal.ts` | Pinia tab cursor state, `desktopEchoMs` tracking with bounded map | L3 / Task 16 |
 | `apps/web/src/__tests__/DesktopView.test.ts` | Overlay rendering, `cursor: none`, footer latency display tests | L3 / Task 15, 16 |
@@ -543,8 +544,16 @@ Expected: PASS.
 
 - [ ] **Step 5: Commit changes**
 ```bash
-git commit -m "feat(agent): implement X11 cursor poller with XFixes and PNG compression" -- apps/agent/Cargo.toml apps/agent/src/cursor.rs
+git commit -m "feat(agent): implement X11 cursor poller with XFixes and PNG compression" -- apps/agent/Cargo.toml apps/agent/Cargo.lock apps/agent/src/cursor.rs apps/agent/src/desktop.rs apps/agent/src/main.rs
 ```
+
+> **Amendment 2 (2026-10-07, after Task 10 landed as `4ddf993`):** the commit path list above
+> originally named only `Cargo.toml` + `cursor.rs`. It must also carry `Cargo.lock` (adding the
+> direct deps rewrites the `ponter-agent` lock entry — verified: `cargo check --locked` fails
+> without it; ruling BE-T10-R4), `main.rs` (the `mod cursor;` declaration — without it the module
+> is dead and its tests pass vacuously; ruling BE-T10-R1), and `desktop.rs` (the wire structs
+> `DesktopCursorPayload`/`DesktopShape` live in the wire-shape module; ruling BE-T10-R5). The
+> actual landed commit used the corrected list.
 
 ---
 
@@ -595,7 +604,7 @@ git commit -m "feat(agent): add cursorInFrame flag and Windows cursor sampler st
 - [ ] **Step 1: Implement frame_desktop_cursor builder**
 In `apps/agent/src/desktop.rs`:
 ```rust
-pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: u64) -> String {
+pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: i64) -> String {
     serde_json::to_string(&serde_json::json!({
         "type": "desktop-cursor",
         "channel": "control",
@@ -604,6 +613,13 @@ pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: u64) ->
     })).expect("desktop-cursor serialization")
 }
 ```
+
+> **Amendment 3 (2026-10-07, pre-Task-11):** `timestamp_ms` is `i64`, not `u64` — signature parity
+> with `DataChannelMessage.timestamp` (`pty.rs:44`) and both sibling builders
+> (`frame_desktop_sources`, `frame_desktop_stats`), which are called with `crate::pty::now_ms()`
+> (ruling BE-T12-R1). Also: the cursor task spawn must be cfg-gated so the macOS and musl targets
+> compile clean — macOS has no poller (ADR-45: `cursorInFrame: true`) and the X11 module is
+> `unix + non-musl + non-macos` (ruling BE-T12-R2).
 
 - [ ] **Step 2: Add cursor polling task in main.rs**
 In `apps/agent/src/main.rs`:
@@ -665,7 +681,7 @@ git commit -m "feat(desktop-core): dispatch desktop-cursor frames and stamp inpu
 
 **Files:**
 - Modify: `apps/web/src/lib/desktop-input.ts`
-- Create: `apps/web/src/test/desktop-input.test.ts`
+- Create: `apps/web/src/__tests__/desktop-input.test.ts` (repo convention; the file already exists — extend it)
 
 **Interfaces:**
 - Consumes: `contentBox()` letterbox rectangle calculation
@@ -681,7 +697,7 @@ Assert:
 3. `extrapolateCursor` predicts linear trajectory up to 100ms and clamps at 100ms without overshoot.
 
 - [ ] **Step 2: Run tests to verify failure**
-Run: `pnpm --filter @ponter/web test src/test/desktop-input.test.ts`
+Run: `pnpm --filter @ponter/web test src/__tests__/desktop-input.test.ts`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement geometry and extrapolation functions**
@@ -691,13 +707,17 @@ In `apps/web/src/lib/desktop-input.ts`:
 - Implement `extrapolateCursor`: compute velocity from last two samples `(p0, p1)`, apply velocity for `min(now - p1.time, 100ms)`, clamp result to `0..1`.
 
 - [ ] **Step 4: Run tests and typecheck**
-Run: `pnpm --filter @ponter/web test src/test/desktop-input.test.ts && pnpm --filter @ponter/web typecheck`
+Run: `pnpm --filter @ponter/web test src/__tests__/desktop-input.test.ts && pnpm --filter @ponter/web typecheck`
 Expected: PASS.
 
 - [ ] **Step 5: Commit changes**
 ```bash
-git commit -m "feat(web): add contentBox geometry and cursor extrapolation pure function" -- apps/web/src/lib/desktop-input.ts apps/web/src/test/desktop-input.test.ts
+git commit -m "feat(web): add contentBox geometry and cursor extrapolation pure function" -- apps/web/src/lib/desktop-input.ts apps/web/src/__tests__/desktop-input.test.ts
 ```
+
+> **Amendment 4 (2026-10-07, pre-Task-14):** the test path was `apps/web/src/test/`; the repo
+> convention is `apps/web/src/__tests__/` (ruling R-FE-1-adjacent, FE pre-flight — the file
+> `apps/web/src/__tests__/desktop-input.test.ts` already exists and is extended, not created).
 
 ---
 
@@ -794,7 +814,7 @@ git commit -m "feat(web): manage cursor state and input-echo latency in terminal
 
 **Files:**
 - Create/Modify: `apps/web/src/lib/webcodecs/` (or doc note if P2 fails)
-- Test: `apps/web/src/test/webcodecs-controller.test.ts`
+- Test: `apps/web/src/__tests__/webcodecs-controller.test.ts` (repo convention; ruling R-FE-6)
 
 **Interfaces:**
 - Consumes: Probe P2 findings, `RTCRtpScriptTransform`, `VideoDecoder`
