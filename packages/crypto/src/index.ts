@@ -9,7 +9,12 @@ export interface UserKeyPair {
 }
 
 const DB_NAME = 'remote-crypto';
-const DB_VERSION = 1;
+// Bump when the schema changes. The WS2 signing store was added to
+// `onupgradeneeded` without a version bump, so a database created by a
+// pre-Week-13 build (version 1, `keys` only) never ran the upgrade and stayed
+// without `signing-keys` — every `saveSigningKey`/`loadSigningKey` then threw
+// `NotFoundError`. Version 2 re-runs the upgrade and creates the missing store.
+const DB_VERSION = 2;
 const STORE_NAME = 'keys';
 const SIGNING_STORE = 'signing-keys';
 
