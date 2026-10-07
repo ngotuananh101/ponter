@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"          # clap 4.6.7's MSRV is the highest in the set (spec R24)
 
+# The agent is a library plus a thin CLI (ADR-50): the runtime lives in the
+# `ponter_agent` lib so the Tauri desktop backend can embed it in-process, and
+# `main.rs` is the unchanged-behaviour CLI over `AgentRuntime`.
+[lib]
+name = "ponter_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ponter-agent"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.89"
