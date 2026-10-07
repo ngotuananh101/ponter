@@ -53,7 +53,7 @@ pub struct RawFrame {
 ///
 /// The serde shape matches what Task 4/6 expects on the wire:
 /// `{ seq, captureEpochMs, encodeMs }`.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameSample {
     pub seq: u64,
@@ -71,6 +71,11 @@ pub struct FrameTimingRing {
     head: usize,
     len: usize,
     samples: Vec<FrameSample>,
+    /// Parallel ring of per-frame **capture durations** (ms from frame
+    /// acquisition to encode-start), kept in lockstep with `samples` so the
+    /// oldest entry evicts together. `FrameSample`'s wire shape is frozen by
+    /// Task 4 TS, so capture timing is not stored on it.
+    capture_ms: Vec<f32>,
 }
 
 impl FrameTimingRing {
@@ -81,11 +86,12 @@ impl FrameTimingRing {
             head: 0,
             len: 0,
             samples: Vec::with_capacity(capacity),
+            capture_ms: Vec::with_capacity(capacity),
         }
     }
 
     /// Records one encode sample, evicting the oldest when the ring is full.
-    pub fn record(&mut self, seq: u64, capture_epoch_ms: i64, encode_ms: f32) {
+    pub fn record(&mut self, seq: u64, capture_epoch_ms: i64, encode_ms: f32, capture_ms: f32) {
         let sample = FrameSample {
             seq,
             capture_epoch_ms,
@@ -96,11 +102,13 @@ impl FrameTimingRing {
             // tail position. `head` only matters once the ring is full and we
             // start overwriting.
             self.samples.push(sample);
+            self.capture_ms.push(capture_ms);
             self.len += 1;
         } else {
             // Full: overwrite the oldest (at `head`) and advance head, leaving
             // len == capacity. The new youngest sits just before head.
             self.samples[self.head] = sample;
+            self.capture_ms[self.head] = capture_ms;
             self.head = (self.head + 1) % self.capacity;
         }
     }
@@ -143,6 +151,22 @@ impl FrameTimingRing {
             .iter()
             .map(|s| s.encode_ms)
             .collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        if n == 0 {
+            return 0.0;
+        }
+        if n % 2 == 1 {
+            sorted[n / 2]
+        } else {
+            (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        }
+    }
+
+    /// The median capture-latency-ms of the current samples (capture→encode-start),
+    /// same even/odd rule as `encode_ms_p50`. 0.0 when empty.
+    pub fn capture_ms_p50(&self) -> f32 {
+        let mut sorted: Vec<f32> = self.capture_ms[..self.len].to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = sorted.len();
         if n == 0 {
@@ -1116,12 +1140,18 @@ impl SustainMonitor {
 fn timing_snapshot(
     ring: &FrameTimingRing,
     last_frame_seq: &Option<u64>,
-) -> (Option<u64>, Option<f32>, Option<Vec<FrameSample>>) {
+) -> (
+    Option<u64>,
+    Option<f32>,
+    Option<f32>,
+    Option<Vec<FrameSample>>,
+) {
     if ring.samples().is_empty() {
-        (*last_frame_seq, None, None)
+        (*last_frame_seq, None, None, None)
     } else {
         (
             *last_frame_seq,
+            Some(ring.capture_ms_p50()),
             Some(ring.encode_ms_p50()),
             Some(ring.samples().to_vec()),
         )
@@ -1174,7 +1204,8 @@ pub async fn run_stream(
                       size: (u32, u32),
                       profile: StreamProfile,
                       status: Option<StatsStatus>,
-                      last_frame_seq: Option<u64>,
+                      frame_seq: Option<u64>,
+                      capture_ms_p50: Option<f32>,
                       encode_ms_p50: Option<f32>,
                       frame_samples: Option<Vec<FrameSample>>| {
         let stats = DesktopStats {
@@ -1183,8 +1214,8 @@ pub async fn run_stream(
             fps: profile.fps,
             target_bitrate_bps: profile.bitrate_bps,
             status,
-            frame_seq: last_frame_seq,
-            capture_ms_p50: None,
+            frame_seq,
+            capture_ms_p50,
             encode_ms_p50,
             frame_samples,
         };
@@ -1207,9 +1238,12 @@ pub async fn run_stream(
                                 // (re-arms only above the floor; ADR-24).
                                 sustain.note_bitrate_change(profile);
                                 // Reflect the effective value to the UI (spec §2.3 step 6).
-                                let (fs_seq, enc_p50, enc_samples) =
+                                let (fs_seq, cap_p50, enc_p50, enc_samples) =
                                     timing_snapshot(&timing_ring, &last_frame_seq);
-                                send_stats(&events, encoded_size, profile, None, fs_seq, enc_p50, enc_samples);
+                                send_stats(
+                                    &events, encoded_size, profile, None, fs_seq, cap_p50,
+                                    enc_p50, enc_samples,
+                                );
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, bps, "desktop: bitrate retarget failed");
@@ -1241,7 +1275,7 @@ pub async fn run_stream(
                                 // The stream keeps running on the current source
                                 // (ADR-22). Tell the UI, per spec §2.2.
                                 tracing::warn!(source_id = %id, error = %e, "desktop: source swap refused");
-                                let (fs_seq, enc_p50, enc_samples) =
+                                let (fs_seq, cap_p50, enc_p50, enc_samples) =
                                     timing_snapshot(&timing_ring, &last_frame_seq);
                                 send_stats(
                                     &events,
@@ -1252,6 +1286,7 @@ pub async fn run_stream(
                                         detail: format!("could not switch source: {e}"),
                                     }),
                                     fs_seq,
+                                    cap_p50,
                                     enc_p50,
                                     enc_samples,
                                 );
@@ -1269,13 +1304,24 @@ pub async fn run_stream(
                     }
                     continue;
                 };
+                // Stamp the TRUE capture moment (ADR-47): when `next_frame`
+                // returns, before downscale/crop/encode. The wall-clock epoch
+                // feeds FrameSample.captureEpochMs (the g2g base); the Instant
+                // feeds the capture→encode-start duration.
+                let capture_instant = Instant::now();
+                let capture_epoch_ms = crate::pty::now_ms();
                 let frame = crop_to_even(downscale(&frame, profile.max_width, profile.max_height));
                 let encode_start = Instant::now();
                 let data = encoder.encode(&frame)?;
                 let encode_time = encode_start.elapsed();
                 let encode_ms = encode_time.as_secs_f32() * 1000.0;
-                let capture_epoch_ms = crate::pty::now_ms();
-                timing_ring.record(frame.seq, capture_epoch_ms, encode_ms);
+                // Capture latency = acquisition → encode-start (ADR-47
+                // captureMsP50), in ms.
+                let capture_ms = encode_start
+                    .duration_since(capture_instant)
+                    .as_secs_f32()
+                    * 1000.0;
+                timing_ring.record(frame.seq, capture_epoch_ms, encode_ms, capture_ms);
                 last_frame_seq = Some(frame.seq);
 
                 encoded += 1;
@@ -1288,9 +1334,12 @@ pub async fn run_stream(
                 // frame was encoded at the pre-downgrade size.
                 if encoded == 1 || pending_stats.is_some() {
                     let status = pending_stats.take().flatten();
-                    let (fs_seq, enc_p50, enc_samples) =
+                    let (fs_seq, cap_p50, enc_p50, enc_samples) =
                         timing_snapshot(&timing_ring, &last_frame_seq);
-                    send_stats(&events, encoded_size, profile, status, fs_seq, enc_p50, enc_samples);
+                    send_stats(
+                        &events, encoded_size, profile, status, fs_seq, cap_p50, enc_p50,
+                        enc_samples,
+                    );
                 }
 
                 if sustain.observe(encode_time) == SustainAction::Downgrade {
@@ -2518,10 +2567,13 @@ mod tests {
         assert_eq!(value["payload"]["status"]["kind"], "quality-downgraded");
         assert_eq!(value["payload"]["frameSeq"], 42);
         assert_eq!(value["payload"]["encodeMsP50"], 11.0);
-        assert!(value["payload"]["captureMsP50"].is_null()); // omitted -> serde_json yields null
+        // captureMsP50 is None -> omitted from the wire (skip_serializing_if).
+        assert!(value["payload"].get("captureMsP50").is_none());
         assert_eq!(value["payload"]["frameSamples"][0]["seq"], 42);
         assert_eq!(value["payload"]["frameSamples"][0]["captureEpochMs"], 1000);
         assert_eq!(value["payload"]["frameSamples"][0]["encodeMs"], 11.0);
+        // frameSeq is Some(42) -> present.
+        assert!(value["payload"].get("frameSeq").is_some());
     }
 
     #[test]
@@ -2804,9 +2856,53 @@ mod tests {
     fn test_frame_timing_ring_p50_calculation() {
         let mut ring = FrameTimingRing::new(32);
         for i in 1..=10 {
-            ring.record(i, (1000 + i) as i64, (i * 2) as f32);
+            ring.record(i, (1000 + i) as i64, (i * 2) as f32, (i as f32) * 0.5);
         }
         assert_eq!(ring.encode_ms_p50(), 11.0); // median of 2, 4, ..., 20
+        assert_eq!(ring.capture_ms_p50(), 2.75); // median of 0.5..5.0 (even -> avg of 2.5 and 3.0)
         assert_eq!(ring.samples().len(), 10);
+    }
+
+    /// capture_ms_p50 median: odd count -> middle element; even count ->
+    /// arithmetic mean of the two middle elements.
+    #[test]
+    fn test_frame_timing_ring_capture_ms_p50_median() {
+        let mut ring = FrameTimingRing::new(8);
+        // Values: 1.0, 2.0, 3.0 (sorted). Median of 3 -> 2.0.
+        ring.record(0, 0, 0.0, 1.0);
+        ring.record(1, 0, 0.0, 2.0);
+        ring.record(2, 0, 0.0, 3.0);
+        assert_eq!(ring.capture_ms_p50(), 2.0);
+
+        // Add a 4th: values 1.0, 2.0, 3.0, 4.0. Even -> (2.0 + 3.0) / 2 = 2.5.
+        ring.record(3, 0, 0.0, 4.0);
+        assert_eq!(ring.capture_ms_p50(), 2.5);
+    }
+
+    /// An empty ring yields None for all timings (no division by zero / no bogus
+    /// 0.0 on the wire).
+    #[test]
+    fn timing_snapshot_is_none_for_an_empty_ring() {
+        let ring = FrameTimingRing::new(32);
+        let last = None;
+        let (fs, cap, enc, samples) = timing_snapshot(&ring, &last);
+        assert_eq!(fs, None);
+        assert_eq!(cap, None);
+        assert_eq!(enc, None);
+        assert_eq!(samples, None);
+    }
+
+    /// A populated ring surfaces a capture p50 in the snapshot.
+    #[test]
+    fn timing_snapshot_carries_capture_p50_when_populated() {
+        let mut ring = FrameTimingRing::new(32);
+        ring.record(1, 1000, 11.0, 3.5);
+        ring.record(2, 2000, 22.0, 4.5);
+        let last = Some(2);
+        let (fs, cap, enc, samples) = timing_snapshot(&ring, &last);
+        assert_eq!(fs, Some(2));
+        assert_eq!(cap, Some(4.0)); // median of 3.5, 4.5
+        assert_eq!(enc, Some(16.5)); // median of 11.0, 22.0
+        assert_eq!(samples, Some(ring.samples().to_vec()));
     }
 }
