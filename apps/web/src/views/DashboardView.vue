@@ -265,14 +265,22 @@ onUnmounted(() => {
             <p class="text-xs font-medium text-muted-foreground">
               Security Architecture
             </p>
-            <div
-              class="flex items-center gap-1.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400"
-            >
-              <ShieldCheck class="w-4 h-4" />
-              <span>DTLS-Secured Transport</span>
+            <div class="space-y-1">
+              <div
+                class="flex items-center gap-1.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400"
+              >
+                <ShieldCheck class="w-4 h-4" />
+                <span>E2EE: terminal & input</span>
+              </div>
+              <div
+                class="flex items-center gap-1.5 text-sm font-medium text-muted-foreground"
+              >
+                <Lock class="w-4 h-4" />
+                <span>DTLS/SRTP: video & files</span>
+              </div>
             </div>
             <p class="text-[11px] text-muted-foreground">
-              DTLS 1.2 · SCTP · Sub-10ms PTY
+              AES-GCM-256 app-layer · DTLS 1.2 transport
             </p>
           </div>
           <div
@@ -283,6 +291,119 @@ onUnmounted(() => {
         </CardContent>
       </Card>
     </div>
+
+    <!-- Encryption by Channel disclosure card -->
+    <Card
+      data-test="security-architecture-card"
+      class="border-border/80 bg-card/95 shadow-sm"
+    >
+      <CardHeader class="pb-2">
+        <CardTitle class="text-base font-bold flex items-center gap-2">
+          <ShieldCheck class="w-4 h-4 text-primary" />
+          Encryption by Channel
+        </CardTitle>
+        <CardDescription class="text-xs text-muted-foreground mt-0.5">
+          Truthful security architecture: application-layer E2EE vs
+          transport-only
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="pt-0">
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr
+                class="text-left text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/60"
+              >
+                <th class="pb-2 font-medium">Channel</th>
+                <th class="pb-2 font-medium">Mechanism</th>
+                <th class="pb-2 font-medium">Details</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border/50">
+              <tr data-test="sec-channel-terminal">
+                <td class="py-2.5 flex items-center gap-2">
+                  <Terminal class="w-3.5 h-3.5 text-muted-foreground" />
+                  Terminal I/O (PTY)
+                </td>
+                <td class="py-2.5">
+                  <Badge variant="outline" class="text-xs font-mono"
+                    >E2EE · AES-GCM-256</Badge
+                  >
+                </td>
+                <td class="py-2.5 text-muted-foreground">
+                  ECDH P-256 → HKDF-SHA256, session key bound to Ed25519
+                  signature (when the agent advertises e2ee)
+                </td>
+              </tr>
+              <tr data-test="sec-channel-input">
+                <td class="py-2.5 flex items-center gap-2">
+                  <Laptop class="w-3.5 h-3.5 text-muted-foreground" />
+                  Desktop control input
+                </td>
+                <td class="py-2.5">
+                  <Badge variant="outline" class="text-xs font-mono"
+                    >E2EE · AES-GCM-256</Badge
+                  >
+                </td>
+                <td class="py-2.5 text-muted-foreground">
+                  Admitted only after verifying the peer's Ed25519 identity
+                  (ADR-41/42)
+                </td>
+              </tr>
+              <tr data-test="sec-channel-video">
+                <td class="py-2.5 flex items-center gap-2">
+                  <Radio class="w-3.5 h-3.5 text-muted-foreground" />
+                  Desktop video stream
+                </td>
+                <td class="py-2.5">
+                  <Badge variant="secondary" class="text-xs font-mono"
+                    >DTLS-SRTP</Badge
+                  >
+                </td>
+                <td class="py-2.5 text-muted-foreground">
+                  WebRTC P2P transport encryption; no application-layer E2EE
+                  (keeps latency low & enables hardware decode)
+                </td>
+              </tr>
+              <tr data-test="sec-channel-files">
+                <td class="py-2.5 flex items-center gap-2">
+                  <Server class="w-3.5 h-3.5 text-muted-foreground" />
+                  File transfer
+                </td>
+                <td class="py-2.5">
+                  <Badge variant="secondary" class="text-xs font-mono"
+                    >DTLS / SCTP</Badge
+                  >
+                </td>
+                <td class="py-2.5 text-muted-foreground">
+                  WebRTC DataChannel P2P
+                </td>
+              </tr>
+              <tr data-test="sec-channel-signaling">
+                <td class="py-2.5 flex items-center gap-2">
+                  <ShieldCheck class="w-3.5 h-3.5 text-muted-foreground" />
+                  Signaling
+                </td>
+                <td class="py-2.5">
+                  <Badge variant="secondary" class="text-xs font-mono"
+                    >TLS</Badge
+                  >
+                </td>
+                <td class="py-2.5 text-muted-foreground">
+                  Self-hosted server relays SDP/ICE metadata only; it never sees
+                  session payloads
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs text-muted-foreground mt-3">
+          Application-layer E2EE applies to terminal and control-input channels
+          only. Video and file transfer rely on WebRTC's mandatory transport
+          encryption (DTLS/SRTP).
+        </p>
+      </CardContent>
+    </Card>
 
     <!-- Main Grid: Fleet on Left, Devices & Security on Right -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -589,6 +710,10 @@ onUnmounted(() => {
               <div class="flex items-center gap-2">
                 <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
                 <span>Transport: P2P SCTP / DTLS 1.2</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
+                <span>Application-layer E2EE: terminal & input channels</span>
               </div>
               <div class="flex items-center gap-2">
                 <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
