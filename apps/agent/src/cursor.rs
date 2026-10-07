@@ -229,6 +229,52 @@ pub mod platform {
         pub hotspot_y: u32,
     }
 
+    /// Private dirty-check state for the cursor poller.
+    ///
+    /// Holds the last-emitted position, visibility, and shape serial, plus a
+    /// `has_emitted` flag so the FIRST poll always emits a baseline (F1). On
+    /// every subsequent poll, `should_emit` returns true iff position OR
+    /// visibility OR shape-serial changed (F2).
+    #[derive(Default)]
+    struct CursorDirtyState {
+        /// Last emitted normalized x (0..1).
+        last_x: f64,
+        /// Last emitted normalized y (0..1).
+        last_y: f64,
+        /// Last emitted visibility.
+        last_visible: bool,
+        /// Last emitted cursor serial.
+        last_serial: u32,
+        /// Whether we have emitted at least once (first-poll special case).
+        has_emitted: bool,
+    }
+
+    impl CursorDirtyState {
+        /// Returns true when this sample should produce a payload.
+        ///
+        /// The FIRST poll always returns true (establishes the baseline). After
+        /// that, true iff `mapped` or `serial` differs from the last emission.
+        fn should_emit(&self, mapped: &CursorSample, serial: u32) -> bool {
+            if !self.has_emitted {
+                return true;
+            }
+            let position_changed =
+                (mapped.x - self.last_x).abs() > 0.0 || (mapped.y - self.last_y).abs() > 0.0;
+            let visible_changed = mapped.visible != self.last_visible;
+            let shape_changed = serial != self.last_serial;
+            position_changed || visible_changed || shape_changed
+        }
+
+        /// Records the emitted state and marks `has_emitted = true`.
+        fn update(&mut self, mapped: &CursorSample, serial: u32) {
+            self.last_x = mapped.x;
+            self.last_y = mapped.y;
+            self.last_visible = mapped.visible;
+            self.last_serial = serial;
+            self.has_emitted = true;
+        }
+    }
+
     /// A cursor poller that samples X11 via XFixes and emits a payload only on
     /// change.
     #[allow(dead_code)]
@@ -236,11 +282,8 @@ pub mod platform {
         sampler: X11CursorSampler,
         /// The source this cursor is mapped to.
         source: DesktopSourceInfo,
-        /// The last serial we emitted a payload for; drives the dirty check.
-        last_serial: u32,
-        /// The last position we emitted a payload for; drives the dirty check.
-        last_x: f64,
-        last_y: f64,
+        /// Dirty-check state: position, visibility, serial, first-poll flag.
+        state: CursorDirtyState,
         /// Monotonic counter over emitted samples (ADR-45).
         seq: u64,
     }
@@ -254,15 +297,14 @@ pub mod platform {
             Self {
                 sampler,
                 source,
-                last_serial: 0,
-                last_x: 0.0,
-                last_y: 0.0,
+                state: CursorDirtyState::default(),
                 seq: 0,
             }
         }
 
-        /// Sample the cursor and produce a payload if the position or the shape
-        /// serial changed since the last emission.
+        /// Sample the cursor and produce a payload if the position, visibility,
+        /// or shape serial changed since the last emission. The first poll
+        /// always emits a baseline.
         ///
         /// `last_input_seq` is left `None` — Task 12 fills it from the input
         /// forwarding layer.
@@ -278,20 +320,14 @@ pub mod platform {
 
             let mapped = map_cursor_to_source(raw.root_x, raw.root_y, &self.source);
 
-            // Dirty-check: only emit when position OR shape serial changed.
-            // The first poll always emits (initial state: last_x=0, last_y=0,
-            // last_serial=0 — any real sample differs from this sentinel).
-            let position_changed =
-                (mapped.x - self.last_x).abs() > 0.0 || (mapped.y - self.last_y).abs() > 0.0;
-            let shape_changed = raw.serial != self.last_serial;
-
-            if !position_changed && !shape_changed {
+            // Dirty-check: the first poll always emits (F1); every later poll
+            // emits iff position OR visibility OR shape-serial changed (F2).
+            if !self.state.should_emit(&mapped, raw.serial) {
                 return Ok(None);
             }
 
-            // Emit. The visibility bit is driven by whether the cursor is inside
-            // the source rect; a shape is only encoded when there is a non-zero
-            // serial AND actual pixel data.
+            // Emit. A shape is only encoded when there is a non-zero serial
+            // AND actual pixel data.
             let shape = if raw.serial != 0 && !raw.rgba.is_empty() {
                 let encoded = encode_cursor_shape(
                     &raw.rgba,
@@ -315,10 +351,89 @@ pub mod platform {
                 shape,
             };
             self.seq += 1;
-            self.last_x = mapped.x;
-            self.last_y = mapped.y;
-            self.last_serial = raw.serial;
+            self.state.update(&mapped, raw.serial);
             Ok(Some(payload))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn sample_at(x: f64, y: f64, visible: bool) -> CursorSample {
+            CursorSample { x, y, visible }
+        }
+
+        #[test]
+        fn should_emit_true_on_first_sample_regardless_of_state() {
+            let state = CursorDirtyState::default();
+            let mapped = sample_at(0.0, 0.0, true);
+            assert!(
+                state.should_emit(&mapped, 0),
+                "first sample must always emit (F1)"
+            );
+        }
+
+        #[test]
+        fn should_emit_false_after_identical_sample() {
+            let mut state = CursorDirtyState::default();
+            let mapped = sample_at(0.5, 0.5, true);
+            assert!(state.should_emit(&mapped, 42));
+            state.update(&mapped, 42);
+            assert!(
+                !state.should_emit(&mapped, 42),
+                "identical sample after emit must not re-emit"
+            );
+        }
+
+        #[test]
+        fn should_emit_true_on_visibility_flip_at_same_position() {
+            let mut state = CursorDirtyState::default();
+            let visible_sample = sample_at(0.5, 0.5, true);
+            assert!(state.should_emit(&visible_sample, 0));
+            state.update(&visible_sample, 0);
+
+            // Same normalized coords but now invisible (cursor left the source).
+            let invisible_sample = sample_at(0.5, 0.5, false);
+            assert!(
+                state.should_emit(&invisible_sample, 0),
+                "visibility flip at identical coords must re-emit (F2)"
+            );
+        }
+
+        #[test]
+        fn should_emit_true_on_position_change() {
+            let mut state = CursorDirtyState::default();
+            let first = sample_at(0.3, 0.7, true);
+            assert!(state.should_emit(&first, 1));
+            state.update(&first, 1);
+
+            let moved = sample_at(0.4, 0.7, true);
+            assert!(
+                state.should_emit(&moved, 1),
+                "a coordinate change must re-emit"
+            );
+        }
+
+        #[test]
+        fn should_emit_true_on_serial_change() {
+            let mut state = CursorDirtyState::default();
+            let mapped = sample_at(0.5, 0.5, true);
+            assert!(state.should_emit(&mapped, 1));
+            state.update(&mapped, 1);
+
+            assert!(
+                state.should_emit(&mapped, 2),
+                "a shape-serial change must re-emit even at the same position"
+            );
+        }
+
+        #[test]
+        fn should_emit_false_when_nothing_changes_after_update() {
+            let mut state = CursorDirtyState::default();
+            let mapped = sample_at(0.5, 0.5, true);
+            state.update(&mapped, 7);
+            assert!(!state.should_emit(&mapped, 7));
         }
     }
 }
