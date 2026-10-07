@@ -185,7 +185,7 @@ Write `docs/spikes/2026-10-07-phase7-tauri-spike.md` with: Tauri version resolve
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop docs/spikes/2026-10-07-phase7-tauri-spike.md
+git add apps/desktop docs/spikes/2026-10-07-phase7-tauri-spike.md pnpm-lock.yaml
 git commit -m "spike(desktop): Tauri shell embedding feasibility (L0 gate)"
 ```
 
