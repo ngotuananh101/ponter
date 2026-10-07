@@ -129,7 +129,9 @@ pub async fn login_impl(
     .map_err(|e| format!("keychain write failed: {e:?}"))?;
 
     // Access token: memory only.
-    *access_slot.lock().unwrap() = Some(outcome.token.clone());
+    *access_slot
+        .lock()
+        .map_err(|e| format!("state lock poisoned: {e}"))? = Some(outcome.token.clone());
 
     Ok(UserProfile {
         id: outcome.user.id,

@@ -15,14 +15,11 @@ import { invoke } from '@tauri-apps/api/core';
 import LoginView from '@/views/LoginView.vue';
 import { useAuthStore } from '@/stores/auth';
 
-// Helper: read the webview storage length without writing any literal
-// reference that the grep gate would match. The property names are assembled
-// at runtime so the source text contains neither "local" nor "session" as
-// a standalone identifier.
+// Helper: read the webview storage length. Test files are exempt from the
+// production-only grep gate, so we use the plain property names directly —
+// no obfuscation.
 function storageLength(win: Window, which: 'l' | 's'): number {
-  const key =
-    which === 'l' ? 'lo' + 'cal' + 'Storage' : 'sess' + 'ion' + 'Storage';
-  return (win as unknown as Record<string, Storage>)[key].length;
+  return which === 'l' ? win.localStorage.length : win.sessionStorage.length;
 }
 
 describe('LoginView', () => {
