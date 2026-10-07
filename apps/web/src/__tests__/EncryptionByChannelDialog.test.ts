@@ -118,4 +118,13 @@ describe('EncryptionByChannelDialog.vue', () => {
       }
     }
   });
+
+  it('uses a wider-than-default dialog width', async () => {
+    const wrapper = mountDialog(true);
+    await wrapper.vm.$nextTick();
+
+    const content = wrapper.find('[data-test="encryption-by-channel-dialog"]');
+    expect(content.classes()).toContain('max-w-3xl');
+    expect(content.classes()).not.toContain('max-w-2xl');
+  });
 });

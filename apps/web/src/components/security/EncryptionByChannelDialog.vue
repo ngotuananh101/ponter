@@ -15,7 +15,7 @@ defineEmits<{ (e: 'update:open', value: boolean): void }>();
 
 <template>
   <Dialog :open="open" @update:open="$emit('update:open', $event)">
-    <DialogContent class="max-w-2xl" data-test="encryption-by-channel-dialog">
+    <DialogContent class="max-w-3xl" data-test="encryption-by-channel-dialog">
       <DialogHeader>
         <DialogTitle>Encryption by Channel</DialogTitle>
         <DialogDescription>
