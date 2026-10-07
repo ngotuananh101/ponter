@@ -31,8 +31,6 @@ mod shell_policy;
 mod signal;
 
 use std::collections::HashMap;
-#[cfg(windows)]
-use std::path::{Path, PathBuf};
 #[cfg(not(target_env = "musl"))]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -86,7 +84,7 @@ pub struct RuntimeConfig {
 /// What the runtime is doing, for the tray (ADR-55).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeStatus {
-    /// The runtime has not been started, or its reconnect loop has ended.
+    /// The reconnect loop has ended (or has not been started yet).
     Stopped,
     /// The runtime is running but the signaling socket is not connected.
     Disconnected,
