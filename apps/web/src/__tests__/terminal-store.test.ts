@@ -29,8 +29,12 @@ const desktopClientCalls: Array<{
 }> = [];
 // The handler now receives a DesktopSourcesPayload (spec §5.3, breaking change).
 let desktopSourcesHandler:
-  ((payload: { sources: unknown[]; inputEnabled: boolean }) => void) | null =
-  null;
+  | ((payload: {
+      sources: unknown[];
+      inputEnabled: boolean;
+      peerVerified: boolean;
+    }) => void)
+  | null = null;
 let desktopStatsHandler: ((stats: unknown) => void) | null = null;
 const desktopOnSourcesOff = vi.fn();
 const desktopOnStatsOff = vi.fn();
@@ -54,6 +58,7 @@ vi.mock('@ponter/desktop-core', () => ({
         handler: (payload: {
           sources: unknown[];
           inputEnabled: boolean;
+          peerVerified: boolean;
         }) => void,
       ) => {
         desktopSourcesHandler = handler;
@@ -192,8 +197,9 @@ describe('useTerminalStore', () => {
   function emitSources(
     sources: Array<{ id: string; default: boolean }>,
     inputEnabled = false,
+    peerVerified = false,
   ): void {
-    desktopSourcesHandler?.({ sources, inputEnabled });
+    desktopSourcesHandler?.({ sources, inputEnabled, peerVerified });
   }
 
   /**
@@ -204,6 +210,7 @@ describe('useTerminalStore', () => {
   async function openDesktopWithSources(
     sources: Array<{ id: string; default: boolean }>,
     inputEnabled = false,
+    peerVerified = false,
   ) {
     const store = useTerminalStore();
     desktopStart.mockResolvedValueOnce({
@@ -211,7 +218,7 @@ describe('useTerminalStore', () => {
       streams: [],
     });
     const tabId = await store.openDesktopTab('ag-1', 'Host 1');
-    emitSources(sources, inputEnabled);
+    emitSources(sources, inputEnabled, peerVerified);
     await nextTick();
     return { store, tabId };
   }
@@ -389,6 +396,7 @@ describe('useTerminalStore', () => {
         { id: 'monitor:2', default: true },
       ],
       inputEnabled: false,
+      peerVerified: false,
     });
     await nextTick();
 
@@ -517,6 +525,18 @@ describe('useTerminalStore', () => {
     );
 
     expect(store.tabs.find((t) => t.id === tabId)?.desktopInputEnabled).toBe(
+      true,
+    );
+  });
+
+  it('records desktopPeerVerified from the sources payload', async () => {
+    const { store, tabId } = await openDesktopWithSources(
+      [{ id: 'monitor:1', default: true }],
+      true,
+      true,
+    );
+
+    expect(store.tabs.find((t) => t.id === tabId)?.desktopPeerVerified).toBe(
       true,
     );
   });

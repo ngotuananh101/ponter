@@ -78,7 +78,7 @@ describe('Desktop input wire types (Week 9, spec §2.2)', () => {
     if (move?.kind === 'pointer-move') expect(move.x).toBe(0.5);
   });
 
-  it('carries inputEnabled alongside the Week 8 sources', () => {
+  it('carries inputEnabled and peerVerified alongside the Week 8 sources', () => {
     const payload: DesktopSourcesPayload = {
       sources: [
         {
@@ -96,8 +96,10 @@ describe('Desktop input wire types (Week 9, spec §2.2)', () => {
         },
       ],
       inputEnabled: false,
+      peerVerified: true,
     };
     expect(payload.inputEnabled).toBe(false);
+    expect(payload.peerVerified).toBe(true);
     expect(payload.sources[0]?.default).toBe(true);
   });
 });

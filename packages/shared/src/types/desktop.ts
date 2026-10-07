@@ -67,11 +67,18 @@ export type DesktopInput =
   | { kind: 'text'; text: string };
 
 /**
- * The `desktop-sources` payload (Week 8 + the Week 9 additive `inputEnabled`).
- * A Week 8 client that ignores the extra field is unaffected (spec §2.2).
+ * The `desktop-sources` payload (Week 8 + the Week 9 additive `inputEnabled`
+ * + the Phase 6a additive `peerVerified`). A pre-6a client that ignores the
+ * extra field is unaffected (spec §2.2, Phase 6a ADR-42).
  */
 export interface DesktopSourcesPayload {
   sources: DesktopSourceInfo[];
   /** True iff the agent's input gate is open (ADR-29). */
   inputEnabled: boolean;
+  /**
+   * True iff the agent verified this session's peer identity at admission
+   * (Phase 6a ADR-41/42). The agent sends a structural literal `true`; a
+   * pre-6a agent omits the field and the client normalizes to `false`.
+   */
+  peerVerified: boolean;
 }

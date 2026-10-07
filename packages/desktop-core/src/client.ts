@@ -256,10 +256,13 @@ export class DesktopClient {
         const payload = msg.payload as
           Partial<DesktopSourcesPayload> | undefined;
         // Normalize to the Week 9 payload shape: a Week 8 agent that omits
-        // `inputEnabled` yields `false` (the gate is closed), never `undefined`.
+        // `inputEnabled` yields `false` (the gate is closed), and a pre-6a
+        // agent that omits `peerVerified` yields `false` (unverified) —
+        // never `undefined`, so the UI can never render a false claim.
         const next: DesktopSourcesPayload = {
           sources: payload?.sources ?? [],
           inputEnabled: payload?.inputEnabled === true,
+          peerVerified: payload?.peerVerified === true,
         };
         // Cache before fan-out so a listener registered later still sees it,
         // and so the cache updates even with zero listeners attached.
