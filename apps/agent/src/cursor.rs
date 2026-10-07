@@ -149,6 +149,10 @@ pub mod platform {
         #[allow(dead_code)]
         pub fn connect() -> Result<Self> {
             let (conn, screen_num) = x11rb::connect(None).context("connecting to X11")?;
+            let _version = xfixes::query_version(&conn, 5, 0)
+                .context("querying XFixes version")?
+                .reply()
+                .context("waiting for XFixes version reply")?;
             let root = conn
                 .setup()
                 .roots
@@ -434,6 +438,15 @@ pub mod platform {
             let mapped = sample_at(0.5, 0.5, true);
             state.update(&mapped, 7);
             assert!(!state.should_emit(&mapped, 7));
+        }
+
+        #[test]
+        #[ignore = "needs a live X11 display; run manually on dev machine with X11/Xvfb"]
+        fn x11_cursor_sampler_connect_and_sample_smoke() {
+            let sampler = X11CursorSampler::connect().expect("X11 connect");
+            let sample = sampler.sample().expect("X11 sample");
+            assert!(sample.root_x >= 0);
+            assert!(sample.root_y >= 0);
         }
     }
 }
