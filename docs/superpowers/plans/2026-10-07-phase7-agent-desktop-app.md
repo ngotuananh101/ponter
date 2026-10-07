@@ -309,9 +309,10 @@ git commit -m "refactor(agent): split into lib + thin CLI (ADR-50)"
 ### Task 3: Tauri backend skeleton + OS keychain wrapper (ADR-51, ADR-52)
 
 **Files:**
-- Modify: `apps/desktop/src-tauri/Cargo.toml`, `src-tauri/src/lib.rs`, `src-tauri/src/main.rs`
+- Modify: `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/Cargo.lock`, `apps/desktop/src-tauri/src/lib.rs`
+- Modify: `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/capabilities/default.json` (created by Task 1)
+- Modify: `apps/desktop/src/App.vue` (remove the spike invoke)
 - Create: `apps/desktop/src-tauri/src/keychain.rs`
-- Create: `apps/desktop/src-tauri/tauri.conf.json`, `capabilities/default.json`
 
 **Interfaces:**
 - Consumes: `ponter_agent::AgentRuntime` (Task 2).
@@ -360,6 +361,13 @@ In `tauri.conf.json`: set a strict CSP (no `unsafe-eval`, no remote origins); in
 git add apps/desktop/src-tauri
 git commit -m "feat(desktop): Tauri backend skeleton + keychain wrapper (ADR-51/52)"
 ```
+
+> **Correction (Task 3).** Shipped as `13fa265`; the decisions below are what Tasks 4, 6, and 10 must rely on.
+> - **Keychain crate:** `keyring` **4.2.0** (`features = ["apple-native-keyring-store"]`). `Entry::new(service, account)` returns a `Result`, so the `?` is required; the value API is `set_password` / `get_password` / `delete_credential`. A **missing** credential is matched as the exact variant **`keyring::Error::NoEntry`** → `Ok(None)` (get) and idempotent `Ok(())` (delete). **Every other error bubbles** — `PlatformFailure` / `NoStorageAccess` must surface, so callers can distinguish "no credential stored yet" from "the store is broken".
+> - **Headless-CI env guard:** the round-trip test returns early when `PONTER_KEYCHAIN_SKIP=1`; locally it runs for real against the OS secret store. **Task 10's workflow author must set `PONTER_KEYCHAIN_SKIP=1` if the CI job ever runs `cargo test`** on the desktop crate — GitHub runners have no secret-service session bus.
+> - **`[patch.crates-io]` must be repeated in the desktop root manifest:** Cargo reads `[patch]` only from the **root** manifest of the build, so `apps/desktop/src-tauri/Cargo.toml` carries `[patch.crates-io] xcap = { path = "../../agent/vendor/xcap" }` plus the Windows-only `xcap` wgc target-dep block (same as `apps/agent`). Verify with `cargo tree -i xcap` → vendored path. **Without it the desktop build silently links the unpatched registry `xcap`** (the Wayland black-stream regression the vendored patch fixes).
+> - **Shell lockdown shipped:** production `csp` (no `unsafe-eval`, `script-src 'self'`, no remote origins) plus a separate `devCsp` permitting only the Vite HMR origins (`ws://localhost:1420 http://localhost:1420`); `capabilities/default.json` = `["core:default"]` **only**; the opener plugin is removed from `Cargo.toml` + `lib.rs` + the capability (the npm `@tauri-apps/plugin-opener` wrapper is left in `package.json`, untouched); `greet`/`spike_start` are removed and `invoke_handler` is empty; `App.vue` is a static placeholder; a contract test pins `ponter_agent::{AgentRuntime, RuntimeStatus}`.
+> - **`src-tauri/src/main.rs` was not touched** by this task (it stays as Task 1 scaffolded it).
 
 ---
 
@@ -647,6 +655,8 @@ git commit -m "build(desktop): bundle targets for linux/macos/windows (ADR-56)"
 - [ ] **Step 1: Write the workflow**
 
 Matrix `ubuntu-latest` / `macos-14` / `windows-latest`; install pnpm + Rust 1.98.1 + Tauri Linux system deps; run `pnpm install`, build the frontend, then `tauri build`; upload bundle artifacts; on tag, create a release.
+
+> If the workflow runs `cargo test` on the desktop crate, set **`PONTER_KEYCHAIN_SKIP=1`** — headless runners have no secret-service session bus, and the keychain round-trip test honours this guard (wired in Task 3).
 
 - [ ] **Step 2: Add a post-build artifact check**
 
