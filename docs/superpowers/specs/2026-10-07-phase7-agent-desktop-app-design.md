@@ -63,7 +63,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
   1. **Server** — enter the signaling/server URL; the wizard probes reachability (`GET /api/health` or equivalent) and reports success/failure before continuing.
   2. **Screen permission** — trigger a real capture probe through the same `desktop` code path the agent uses (X11 direct; Wayland via the portal path, which is the recorded limitation — see §4.4); report the observed result. On macOS, guide the user to grant Screen Recording in System Settings and re-probe.
   3. **Input gate** — a clearly-worded toggle mirroring `--allow-input` (Gate A of ADR-42), defaulting **off**, with the two-gate explanation (Gate A here + Gate B peer identity at admission) shown verbatim from the ADR-42 posture.
-  4. **Auto-start** — opt-in; installs the platform auto-start entry (ADR-55).
+  4. **Auto-start** — opt-in; installs the platform auto-start entry (ADR-55; the launch-entry wiring lands in Task 8 — Task 5 ships this step informational only).
 - **Why.** The CLI's failure modes (wrong URL, missing capture permission, gate confusion) are exactly what a GUI should turn into a guided, verified step. Collecting a string and failing at runtime would waste the operator's time.
 
 ### ADR-54: Device registration reuses `POST /api/agents`; the one-time credential lands in the keychain
