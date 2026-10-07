@@ -446,13 +446,15 @@ git commit -m "feat(desktop): account login + keychain token storage (ADR-52)"
 ### Task 5: Setup wizard with real verification (ADR-53)
 
 **Files:**
-- Create: `apps/desktop/src-tauri/src/commands/wizard.rs`
-- Create: `apps/desktop/src/views/WizardView.vue`, `apps/desktop/src/stores/wizard.ts`
-- Test: `apps/desktop/src/**/__tests__/wizard.test.ts`
+- Create: `apps/desktop/src-tauri/src/commands/wizard.rs`, `apps/desktop/src/views/WizardView.vue`, `apps/desktop/src/stores/wizard.ts`
+- Test: `apps/desktop/src/__tests__/wizard.test.ts`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src-tauri/src/state.rs`, `apps/desktop/src-tauri/src/commands/login.rs`
+- Modify: `apps/desktop/src/App.vue`, `apps/desktop/src/types.ts`
+- Modify: `apps/agent/src/lib.rs` (new cfg-gated capture-probe surface — see the Correction note)
 
 **Interfaces:**
 - Consumes: the agent `desktop` capture path (probe), `keychain` (Task 3).
-- Produces: `probe_server(url) -> ProbeResult`, `probe_capture() -> ProbeResult`, wizard state machine.
+- Produces: `probe_server(url) -> ProbeResult`, `probe_capture() -> ProbeResult`, `save_wizard_settings(server_url, allow_input)`, and the wizard state machine.
 
 - [ ] **Step 1: Write the failing wizard-state test**
 
@@ -474,7 +476,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement the wizard steps + probes**
 
-Steps: server (probe reachability), screen permission (real capture probe via the agent path), input gate (default off, ADR-42 wording), auto-start (delegates to Task 8). Each step has a verify action, not just an input.
+Steps: server (probe reachability), screen permission (real capture probe via the agent path), input gate (default off, ADR-42 two-gate wording), auto-start (informational only in Task 5 — the launch-entry wiring arrives in Task 8). Each step has a verify action, not just an input.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -488,9 +490,18 @@ Temporarily flip `allowInput` default to `true`; confirm the default-closed test
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/commands/wizard.rs apps/desktop/src
+git add apps/desktop pnpm-lock.yaml
 git commit -m "feat(desktop): verified setup wizard (ADR-53)"
 ```
+
+> **Correction (Task 5).** Shipped as `50b37c4` (11 files) plus the review-fix commit `b384736`; the decisions below are what Tasks 6, 7, and 8 must rely on.
+> - **Probe contract:** `probe_server(url)` does `GET <url>/health` (the entered URL has its trailing slashes trimmed first; server route `apps/server/src/app.ts:41` → `{"status":"ok"}`, no auth) with a **5s** timeout; success = 2xx **and** `status == "ok"`. Returns `ProbeResult { ok, message }` (camelCase). `probe_capture()` runs `enumerate_sources` → `default_source_id(false, "primary")` → `source_for(id, SAFE_720P30)` → poll `next_frame` ≤5s → `source.stop()`; returns `CaptureProbe { sourceId, width, height, kind }`. The `probe_capture` command is cfg-gated `not(target_env = "musl")` **and its `generate_handler!` entry carries the same per-entry cfg attribute** (the Tauri macro honours per-entry attributes) — without it the musl build fails to resolve the symbol.
+> - **Agent lib surface (new public API):** `apps/agent/src/lib.rs` now re-exports (cfg-gated non-musl) `DesktopSourceInfo`, `FrameSource`, `SourceKind`, `default_source_id`, `enumerate_sources`, `source_for`, and defines `CaptureProbe` + `pub async fn probe_capture()`. Tasks 6/7 use this surface; they must **not** re-open the private `desktop` module.
+> - **Wizard state machine:** steps `server → capture → inputGate → autoStart`; `allowInput` defaults **false** (ADR-42 Gate A). The advance-gate lives **in the store** (`advance()` refuses without `serverProbe.ok` / `captureProbe.ok`); `inputGate → autoStart` is unconditional (Gate B peer-identity verification happens at admission — Task 7). `completed` is set after steps 1-3 verify; step 4 is not required.
+> - **Honesty copy (binding):** the input-gate help names both gates (Gate A here + Gate B peer identity at admission, Task 7); the auto-start step says the launch-entry wiring arrives in Task 8 (ADR-55) and its toggle is informational only — **no `set_autostart` command exists in Task 5**.
+> - **Persistence:** `save_wizard_settings(server_url, allow_input)` updates `AppState.server_url` / `AppState.allow_input` in memory **only** — no disk file, no keychain entry in Task 5 (deliberate stop-safe; settings persistence lands with Task 6/7, which first need it across restarts).
+> - **State shape:** `AppState.server_url` is now `Mutex<String>` (was `String`) and `AppState.allow_input: Mutex<bool>` (default `false`) was added; the `login` command clones `server_url` before its `.await` (Send-bound fix).
+> - **Storage gate:** rule unchanged (production-only grep; test files exempt; never obfuscate).
 
 ---
 
@@ -554,6 +565,8 @@ git commit -m "feat(desktop): device registration + management (ADR-54)"
 - Consumes: `AgentRuntime::status()` (Task 2).
 - Produces: tray menu actions (Start/Stop/Open/Quit); window close hides to tray.
 
+> **Cross-ref (Task 5).** The wizard's input-gate copy says the `allow_input` preference (Gate A, ADR-42) is applied at runtime and that Gate B is "wired in Task 7". Task 7's scope here is the tray + lifecycle (start/stop the runtime, consuming `AgentRuntime::status()`); the runtime it starts carries Gate B — the ADR-41 peer-identity admission gate **already shipped in Phase 6a** (`48edac1`) — so Task 7 adds no new identity code.
+
 - [ ] **Step 1: Write the failing state-mapping test**
 
 ```rust
@@ -596,6 +609,8 @@ git commit -m "feat(desktop): tray icon + lifecycle (ADR-55)"
 **Interfaces:**
 - Consumes: the installed binary path.
 - Produces: `set_autostart(bool)`, `is_autostart_enabled() -> bool`.
+
+> **Cross-ref (Task 5).** Task 5's wizard ships the auto-start step **informational only** — its toggle holds frontend state and no `set_autostart` command exists yet. Task 8 owns the real `set_autostart` / `is_autostart_enabled` commands and the platform launch entry; the wizard's copy already tells the user the wiring arrives here.
 
 - [ ] **Step 1: Write the failing test**
 
