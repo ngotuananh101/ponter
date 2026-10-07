@@ -87,17 +87,20 @@ The failure modes the spec implies but no single task's happy-path test covers �
 Add to `EncryptionByChannelDialog.test.ts`:
 
 ```ts
-it('uses a wider-than-default dialog width', () => {
-  const wrapper = mount(EncryptionByChannelDialog, { props: { open: true } });
+it('uses a wider-than-default dialog width', async () => {
+  const wrapper = mountDialog(true);
+  await wrapper.vm.$nextTick();
+
   const content = wrapper.find('[data-test="encryption-by-channel-dialog"]');
   expect(content.classes()).toContain('max-w-3xl');
   expect(content.classes()).not.toContain('max-w-2xl');
 });
 ```
+> Note: the `mountDialog` helper (defined at the top of the test file) supplies the `Teleport` stub that `DialogPortal` requires; a raw `mount(...)` without it would not render the dialog content.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @ponter/web test -- EncryptionByChannelDialog`
+Run: `pnpm --filter @ponter/web exec vitest run src/__tests__/EncryptionByChannelDialog.test.ts`
 Expected: FAIL — content has `max-w-2xl`, not `max-w-3xl`.
 
 - [ ] **Step 3: Widen the dialog**
@@ -116,13 +119,13 @@ to:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @ponter/web test -- EncryptionByChannelDialog`
+Run: `pnpm --filter @ponter/web exec vitest run src/__tests__/EncryptionByChannelDialog.test.ts`
 Expected: PASS (all dialog tests, including the new width test).
 
 - [ ] **Step 5: Run the full web suite (no regression)**
 
 Run: `pnpm --filter @ponter/web test`
-Expected: PASS — 306+ tests green (Gate G2 in `e2ee-claims.test.ts` unaffected).
+Expected: PASS — 307 tests green (Gate G2 in `e2ee-claims.test.ts` unaffected).
 
 - [ ] **Step 6: Commit**
 
