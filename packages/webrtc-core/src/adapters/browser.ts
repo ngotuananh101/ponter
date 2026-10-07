@@ -172,6 +172,10 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
     return await this.pc.getStats();
   }
 
+  getVideoReceiver(): RTCRtpReceiver | undefined {
+    return this.pc.getReceivers().find((r) => r.track?.kind === 'video');
+  }
+
   async close(): Promise<void> {
     this.pc.close();
   }
