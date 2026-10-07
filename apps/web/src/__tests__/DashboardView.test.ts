@@ -171,4 +171,49 @@ describe('DashboardView.vue', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(true);
     expect(wrapper.text()).toContain('boom');
   });
+
+  it('renders the security-architecture disclosure card', async () => {
+    const wrapper = await mountDashboard([makeAgent()]);
+
+    expect(
+      wrapper.find('[data-test="security-architecture-card"]').exists(),
+    ).toBe(true);
+  });
+
+  it('renders all five channel disclosure rows', async () => {
+    const wrapper = await mountDashboard([makeAgent()]);
+
+    for (const test of [
+      'sec-channel-terminal',
+      'sec-channel-input',
+      'sec-channel-video',
+      'sec-channel-files',
+      'sec-channel-signaling',
+    ]) {
+      expect(wrapper.find(`[data-test="${test}"]`).exists()).toBe(true);
+    }
+
+    // Truthful wording: video is DTLS-SRTP transport only, never end-to-end.
+    const videoRow = wrapper.find('[data-test="sec-channel-video"]');
+    expect(videoRow.text()).not.toMatch(/end-to-end/i);
+    expect(videoRow.text()).toMatch(/DTLS-SRTP/);
+
+    // Truthful wording: files and signaling are transport-only, never end-to-end.
+    const filesRow = wrapper.find('[data-test="sec-channel-files"]');
+    expect(filesRow.text()).not.toMatch(/e2ee|end-to-end/i);
+    expect(filesRow.text()).toMatch(/DTLS \/ SCTP/);
+
+    const signalingRow = wrapper.find('[data-test="sec-channel-signaling"]');
+    expect(signalingRow.text()).not.toMatch(/e2ee|end-to-end/i);
+
+    // Terminal row must reference the app-layer cipher.
+    expect(wrapper.find('[data-test="sec-channel-terminal"]').text()).toContain(
+      'AES-GCM-256',
+    );
+
+    // Footnote must state the scope of app-layer E2EE precisely.
+    expect(wrapper.text()).toContain(
+      'Application-layer E2EE applies to terminal and control-input channels only',
+    );
+  });
 });
