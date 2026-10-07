@@ -12,7 +12,6 @@ const FILES = [
   'components/layout/AppHeader.vue',
   'components/auth/RegisterForm.vue',
   'components/auth/LoginForm.vue',
-  'views/DashboardView.vue',
 ];
 
 describe('no false E2EE claims in the UI', () => {
@@ -23,6 +22,38 @@ describe('no false E2EE claims in the UI', () => {
       expect(source).not.toMatch(/zero-trust/i);
     });
   }
+});
+
+// G2 upgrade — DashboardView now makes *truthful* architectural disclosure rather
+// than a blanket E2EE claim. It must not assert E2EE without also disclosing the
+// non-E2EE transport counterpart (DTLS/SRTP), must not use "Zero-Trust" marketing
+// language, must not make blanket "all/every channels are E2EE" claims, and must
+// positively pin the transparent table so it is not silently deleted.
+describe('DashboardView security disclosure (G2 upgraded)', () => {
+  const file = 'views/DashboardView.vue';
+  const source = read(file);
+
+  it(`${file} pairs every E2EE claim with DTLS disclosure (accompaniment rule)`, () => {
+    if (/e2ee|end-to-end/i.test(source)) {
+      expect(source).toMatch(/DTLS/);
+    }
+  });
+
+  it(`${file} does not claim Zero-Trust`, () => {
+    expect(source).not.toMatch(/zero-trust/i);
+  });
+
+  it(`${file} does not make blanket all/every channels-claims`, () => {
+    expect(source).not.toMatch(
+      /(all|every)\s+(sessions?|channels?|traffic)[^.]{0,80}(e2ee|end-to-end)/i,
+    );
+  });
+
+  it(`${file} positive pin: contains AES-GCM-256, DTLS and SRTP`, () => {
+    expect(source).toMatch(/AES-GCM-256/);
+    expect(source).toMatch(/DTLS/);
+    expect(source).toMatch(/SRTP/);
+  });
 });
 
 // Scope guard C: no UI text may assert a peer-identity property the code does
