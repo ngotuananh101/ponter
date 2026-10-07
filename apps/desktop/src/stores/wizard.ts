@@ -33,6 +33,10 @@ export const useWizardStore = defineStore('wizard', () => {
   /** Whether any probe or save operation is in flight. */
   const loading = ref(false);
 
+  /** Informational auto-start preference (R6). State only — no OS side effect;
+   * the actual autostart wiring arrives in Task 8 (ADR-55). */
+  const autoStart = ref(false);
+
   const currentStepIndex = computed(() => {
     const order: WizardStep[] = ['server', 'capture', 'inputGate', 'autoStart'];
     return order.indexOf(step.value);
@@ -48,6 +52,7 @@ export const useWizardStore = defineStore('wizard', () => {
     serverProbe.value = null;
     captureProbe.value = null;
     allowInput.value = false;
+    autoStart.value = false;
     completed.value = false;
     loading.value = false;
   }
@@ -76,11 +81,20 @@ export const useWizardStore = defineStore('wizard', () => {
     }
   }
 
-  /** Advance to the next step after a successful probe. */
+  /** Advance to the next step. Enforces the probe gate (R1): advancing past
+   * `server` requires `serverProbe.ok`, and advancing past `capture` requires
+   * `captureProbe.ok`. The `inputGate → autoStart` transition is unconditional
+   * (gate B peer-identity verification happens at admission in Task 7). */
   function advance(): void {
     if (step.value === 'server') {
+      if (serverProbe.value?.ok !== true) {
+        return;
+      }
       step.value = 'capture';
     } else if (step.value === 'capture') {
+      if (captureProbe.value?.ok !== true) {
+        return;
+      }
       step.value = 'inputGate';
     } else if (step.value === 'inputGate') {
       step.value = 'autoStart';
@@ -107,6 +121,7 @@ export const useWizardStore = defineStore('wizard', () => {
     serverProbe,
     captureProbe,
     allowInput,
+    autoStart,
     completed,
     loading,
     currentStepIndex,

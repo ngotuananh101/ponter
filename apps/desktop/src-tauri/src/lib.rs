@@ -9,6 +9,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::login::login,
             commands::wizard::probe_server,
+            #[cfg(not(target_env = "musl"))]
             commands::wizard::probe_capture,
             commands::wizard::save_wizard_settings,
         ])

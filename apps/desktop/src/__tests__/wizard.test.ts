@@ -21,6 +21,9 @@ function storageLength(win: Window, which: 'l' | 's'): number {
   return which === 'l' ? win.localStorage.length : win.sessionStorage.length;
 }
 
+const okProbe = { ok: true, message: 'OK' };
+const failProbe = { ok: false, message: 'FAIL' };
+
 describe('wizard store', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -32,6 +35,7 @@ describe('wizard store', () => {
     expect(store.allowInput).toBe(false);
     expect(store.step).toBe('server');
     expect(store.completed).toBe(false);
+    expect(store.autoStart).toBe(false);
   });
 
   it('starts on the server step with no probes', () => {
@@ -41,25 +45,59 @@ describe('wizard store', () => {
     expect(store.captureProbe).toBeNull();
   });
 
-  it('advances server → capture → inputGate → autoStart', () => {
+  it('advances only when probes succeed (R1: store-level gate)', () => {
     const store = useWizardStore();
     expect(store.canAdvance).toBe(true);
 
+    // No probe yet — advance is refused.
+    store.advance();
+    expect(store.step).toBe('server');
+
+    // serverProbe ok → can advance to capture.
+    store.serverProbe = okProbe;
     store.advance();
     expect(store.step).toBe('capture');
 
+    // captureProbe not set yet — advance refused.
+    store.advance();
+    expect(store.step).toBe('capture');
+
+    // captureProbe ok → can advance to inputGate.
+    store.captureProbe = okProbe;
     store.advance();
     expect(store.step).toBe('inputGate');
 
+    // inputGate → autoStart is unconditional (gate B at admission, Task 7).
     store.advance();
     expect(store.step).toBe('autoStart');
 
     expect(store.canAdvance).toBe(false);
   });
 
+  it('advance with failed probe leaves step unchanged (R1 negative)', () => {
+    const store = useWizardStore();
+
+    // serverProbe is ok:false → must not advance.
+    store.serverProbe = failProbe;
+    store.advance();
+    expect(store.step).toBe('server');
+
+    // captureProbe is ok:false → must not advance.
+    store.serverProbe = okProbe;
+    store.advance();
+    expect(store.step).toBe('capture');
+
+    store.captureProbe = failProbe;
+    store.advance();
+    expect(store.step).toBe('capture');
+  });
+
   it('sets allowInput when toggled on the input-gate step', async () => {
     const store = useWizardStore();
+    // Set probes so advance works.
+    store.serverProbe = okProbe;
     store.advance(); // server → capture
+    store.captureProbe = okProbe;
     store.advance(); // capture → inputGate
 
     expect(store.allowInput).toBe(false);
@@ -75,7 +113,9 @@ describe('wizard store', () => {
   it('finish() calls save_wizard_settings with serverUrl and allowInput', async () => {
     const store = useWizardStore();
     store.serverUrl = 'http://localhost:8787';
+    store.serverProbe = okProbe;
     store.advance();
+    store.captureProbe = okProbe;
     store.advance();
     store.advance(); // → autoStart
 
@@ -116,6 +156,8 @@ describe('wizard store', () => {
 
     const result = await store.probeServer();
     expect(result.ok).toBe(false);
+    // The store gate enforces: even if the view called advance(), it would
+    // refuse. But the view only calls advance on ok — double protection.
     expect(store.step).toBe('server');
   });
 
@@ -133,17 +175,23 @@ describe('wizard store', () => {
     expect(invoke).toHaveBeenCalledWith('probe_capture');
   });
 
-  it('reset clears all state', () => {
+  it('reset clears all state including autoStart', () => {
     const store = useWizardStore();
     store.serverUrl = 'http://localhost:8787';
     store.allowInput = true;
+    store.autoStart = true;
     store.serverProbe = { ok: true, message: 'ok' };
+    store.serverProbe = okProbe;
     store.advance();
+    store.captureProbe = okProbe;
+    store.advance();
+    store.completed = true;
 
     store.reset();
     expect(store.step).toBe('server');
     expect(store.serverUrl).toBe('');
     expect(store.allowInput).toBe(false);
+    expect(store.autoStart).toBe(false);
     expect(store.serverProbe).toBeNull();
     expect(store.captureProbe).toBeNull();
     expect(store.completed).toBe(false);
@@ -157,10 +205,7 @@ describe('WizardView', () => {
   });
 
   it('never writes to webview storage', async () => {
-    vi.mocked(invoke).mockResolvedValue({
-      ok: true,
-      message: 'Server reachable',
-    });
+    vi.mocked(invoke).mockResolvedValue({ ok: true, message: 'Server reachable' });
 
     const wrapper = mount(WizardView);
     await wrapper
@@ -268,5 +313,8 @@ describe('WizardView', () => {
 
     expect(store.step).toBe('autoStart');
     expect(wrapper.find('[data-testid="wizard-complete"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="wizard-autostart-checkbox"]').exists()).toBe(
+      true,
+    );
   });
 });

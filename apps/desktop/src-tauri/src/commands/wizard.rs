@@ -67,9 +67,7 @@ pub fn map_capture_error(err: &str) -> String {
         || lower.contains("permission")
         || lower.contains("denied")
     {
-        format!(
-            "{err}; on macOS, grant Screen Recording in System Settings, then re-probe."
-        )
+        format!("{err}; on macOS, grant Screen Recording in System Settings, then re-probe.")
     } else {
         err.to_string()
     }
@@ -82,13 +80,13 @@ pub async fn probe_server(
     url: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<ProbeResult, String> {
-    let trimmed = url.trim_end_matches('/');
-    probe_server_impl(&state.http, trimmed).await
+    probe_server_impl(&state.http, &url).await
 }
 
 /// Testable impl: takes a client and a URL, performs the health probe.
 pub async fn probe_server_impl(http: &reqwest::Client, url: &str) -> Result<ProbeResult, String> {
-    let target = format!("{url}/health");
+    let trimmed = url.trim_end_matches('/');
+    let target = format!("{trimmed}/health");
 
     let resp = match http
         .get(&target)
@@ -97,19 +95,23 @@ pub async fn probe_server_impl(http: &reqwest::Client, url: &str) -> Result<Prob
         .await
     {
         Ok(r) => r,
-        Err(e) => return Ok(ProbeResult {
-            ok: false,
-            message: format!("Could not reach {url}: {e}"),
-        }),
+        Err(e) => {
+            return Ok(ProbeResult {
+                ok: false,
+                message: format!("Could not reach {url}: {e}"),
+            })
+        }
     };
 
     let status = resp.status().as_u16();
     let body = match resp.text().await {
         Ok(b) => b,
-        Err(e) => return Ok(ProbeResult {
-            ok: false,
-            message: format!("response read error: {e}"),
-        }),
+        Err(e) => {
+            return Ok(ProbeResult {
+                ok: false,
+                message: format!("response read error: {e}"),
+            })
+        }
     };
 
     Ok(map_health_response(status, &body))
@@ -119,9 +121,7 @@ pub async fn probe_server_impl(http: &reqwest::Client, url: &str) -> Result<Prob
 /// the wizard's screen-permission step is honest (R3). Only compiled on non-musl.
 #[tauri::command]
 #[cfg(not(target_env = "musl"))]
-pub async fn probe_capture(
-    state: tauri::State<'_, AppState>,
-) -> Result<ProbeResult, String> {
+pub async fn probe_capture(state: tauri::State<'_, AppState>) -> Result<ProbeResult, String> {
     // Touch `state` so the signature stays uniform across cfg variants.
     let _ = &state;
     match ponter_agent::probe_capture().await {
@@ -147,7 +147,12 @@ pub async fn save_wizard_settings(
     allow_input: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    save_wizard_settings_impl(&state.server_url, &state.allow_input, &server_url, allow_input)
+    save_wizard_settings_impl(
+        &state.server_url,
+        &state.allow_input,
+        &server_url,
+        allow_input,
+    )
 }
 
 /// Testable impl: writes verified settings into the given mutexes. Trims
@@ -244,10 +249,84 @@ mod tests {
         assert_eq!(r.message, "server returned HTTP 503");
     }
 
+    /// Spawn a stub that captures the request line and returns it via a channel.
+    /// Returns `(base_url, receiver)` so the test can inspect what path the
+    /// client requested.
+    fn spawn_stub_capturing(
+        canned_status: u16,
+        canned_body: String,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+
+                // Extract the request line (first line up to \r\n).
+                if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                    let line = buf[..nl].to_vec();
+                    let _ = tx.send(String::from_utf8_lossy(&line).to_string());
+                }
+
+                let body = canned_body.clone();
+                let resp = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+                    status = canned_status,
+                    len = body.len(),
+                    body = body,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        (format!("http://{addr}"), rx)
+    }
+
     #[test]
     fn health_trims_trailing_slash_in_message() {
-        // map_health_response itself does not trim; probe_server does.
-        // This tests that a URL like "http://host/" is handled by the command.
+        // Verify that probe_server_impl trims a trailing slash from the URL
+        // before appending /health, so the request path is exactly "/health"
+        // and not "//health".
+        ensure_provider();
+        let (base_url, rx) = spawn_stub_capturing(200, r#"{"status":"ok"}"#.to_string());
+        let url_with_slash = format!("{base_url}/");
+        let state = crate::state::AppState::new();
+
+        let result =
+            tauri::async_runtime::block_on(probe_server_impl(&state.http, &url_with_slash))
+                .expect("should return Ok(ProbeResult)");
+
+        assert!(result.ok);
+        // The stub captured the request line; verify the path is /health.
+        let request_line = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("stub should have received the request");
+        assert!(
+            request_line.contains("GET /health HTTP/"),
+            "request path should be /health, got: {request_line}"
+        );
+        // And NOT a double-slash.
+        assert!(
+            !request_line.contains("//health"),
+            "trailing slash should be trimmed, got: {request_line}"
+        );
     }
 
     // ---- R4: map_capture_error unit tests ----

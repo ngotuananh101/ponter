@@ -36,8 +36,7 @@ mod signal;
 // making the module itself `pub`.
 #[cfg(not(target_env = "musl"))]
 pub use desktop::{
-    DesktopSourceInfo, FrameSource, SourceKind, default_source_id,
-    enumerate_sources, source_for,
+    default_source_id, enumerate_sources, source_for, DesktopSourceInfo, FrameSource, SourceKind,
 };
 /// The result of a capture probe (ADR-53). `kind` is the plain-string rendering
 /// of `SourceKind` (`"monitor"` / `"window"`) because `SourceKind` has no
@@ -64,8 +63,7 @@ pub struct CaptureProbe {
 /// desktop app is not a musl target.
 #[cfg(not(target_env = "musl"))]
 pub async fn probe_capture() -> Result<CaptureProbe, String> {
-    let sources = enumerate_sources()
-        .map_err(|e| format!("enumerating sources: {e}"))?;
+    let sources = enumerate_sources().map_err(|e| format!("enumerating sources: {e}"))?;
     if sources.is_empty() {
         return Err("no capture sources were found".to_string());
     }
@@ -83,11 +81,7 @@ pub async fn probe_capture() -> Result<CaptureProbe, String> {
     loop {
         match source.next_frame() {
             Ok(Some(frame)) => {
-                let kind = match sources
-                    .iter()
-                    .find(|s| s.id == id)
-                    .map(|s| s.kind)
-                {
+                let kind = match sources.iter().find(|s| s.id == id).map(|s| s.kind) {
                     Some(SourceKind::Monitor) => "monitor",
                     Some(SourceKind::Window) => "window",
                     None => "monitor",

@@ -81,8 +81,11 @@ async function finish() {
     >
       <h2>Input Gate</h2>
       <p data-testid="wizard-input-help">
-        The input gate controls whether remote control of your keyboard and
-        mouse is allowed (ADR-42). Default is closed.
+        Two gates protect your input. Gate A (this step) is the
+        --allow-input preference that defaults to closed; enabling it allows
+        the relay to forward keyboard/mouse events. Gate B is the peer-identity
+        verification performed at admission (wired in Task 7) — even with Gate A
+        open, only verified peers can send input events.
       </p>
 
       <label>
@@ -110,8 +113,17 @@ async function finish() {
     >
       <h2>All Set</h2>
       <p data-testid="wizard-complete">
-        Wizard complete. The agent will auto-start on next launch.
+        Wizard complete. Verified settings are saved to the agent's runtime
+        state. Installs the launch entry — wiring arrives in Task 8 (ADR-55).
       </p>
+      <label>
+        <input
+          type="checkbox"
+          data-testid="wizard-autostart-checkbox"
+          v-model="store.autoStart"
+        />
+        Auto-start the agent on login
+      </label>
     </div>
   </div>
 </template>
