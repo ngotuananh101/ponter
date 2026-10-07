@@ -4,6 +4,7 @@ import { useH264 } from 'werift';
 import type { MediaStreamTrack as WeriftTrack, RtpPacket } from 'werift';
 import type {
   DataChannelMessage,
+  DesktopCursorPayload,
   DesktopSourceInfo,
   DesktopStats,
 } from '@ponter/shared';
@@ -55,6 +56,15 @@ function hasIdr(payload: Buffer): boolean {
   }
   return false;
 }
+
+/**
+ * The `--desktop-source test` pattern's geometry (agent `test_source_info`).
+ * The cursor poller maps the X11 root pointer into this box and normalizes to
+ * 0..1, so the E2E converts a reported normalized coordinate back to pixels
+ * with these dims to assert the ±2 px round-trip tolerance (spec §6).
+ */
+const TEST_SOURCE_WIDTH = 1280;
+const TEST_SOURCE_HEIGHT = 720;
 
 /**
  * Layer 3 for desktop streaming: a Rust agent capturing/encoding H.264, a
@@ -153,17 +163,40 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
    * `desktop-stats` frames as a lazy view. The control tests share this whole
    * prologue; keeping it in one place is what keeps them readable (and keeps
    * their bodies from being flagged as duplicate code).
+   *
+   * Phase 6b (ADR-45/47) extends this additively: `allowInput` opens the input
+   * gate, `display` gives the agent an X server (needed by the cursor poller and
+   * by input injection), `env` adds extra agent env, and the agent handle is
+   * returned so a test can assert its logs. Every default preserves the pre-6b
+   * behaviour, so the existing call sites are unchanged.
    */
-  async function openTestDesktopStream(): Promise<{
+  async function openTestDesktopStream({
+    allowInput = false,
+    display = false,
+    env = {},
+  }: {
+    allowInput?: boolean;
+    display?: boolean;
+    env?: NodeJS.ProcessEnv;
+  } = {}): Promise<{
     offerer: PeerConnection;
     packets: RtpPacket[];
     controlFrames: Array<DataChannelMessage<unknown>>;
     stats: () => DesktopStats[];
+    agent: { output: () => string };
   }> {
     const { token, agentId, credential, sessionId, userSigning } = await seed({
       capabilities: ['desktop'],
     });
-    spawnAgent(agentId, credential, ['--desktop-source', 'test']);
+    const args = [
+      '--desktop-source',
+      'test',
+      ...(allowInput ? ['--allow-input'] : []),
+    ];
+    const agent = spawnAgent(agentId, credential, args, {
+      ...(display ? { DISPLAY: process.env.DISPLAY ?? ':99' } : {}),
+      ...env,
+    });
     await waitForAgentOnline(token, agentId);
     const agentSigningPublicKey = await waitForAgentSigningKey(token, agentId);
     const identity = buildPeerIdentity(
@@ -181,7 +214,7 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       controlFrames
         .filter((f) => f.type === 'desktop-stats')
         .map((f) => f.payload as DesktopStats);
-    return { offerer, packets, controlFrames, stats };
+    return { offerer, packets, controlFrames, stats, agent };
   }
 
   /** The `inputEnabled` flag the agent last reported on `desktop-sources`. */
@@ -193,16 +226,33 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       ?.inputEnabled;
   };
 
-  /** Send one pointer-move at a known normalized point. */
+  /** The received `desktop-cursor` payloads, in arrival order (oldest first). */
+  const cursorFrames = (
+    frames: Array<DataChannelMessage<unknown>>,
+  ): DesktopCursorPayload[] =>
+    frames
+      .filter((f) => f.type === 'desktop-cursor')
+      .map((f) => f.payload as DesktopCursorPayload);
+
+  /**
+   * Send one pointer-move at a known normalized point.
+   *
+   * Phase 6b (ADR-47) added an optional browser-assigned `seq`: the agent caches
+   * the last applied seq and echoes it on the next `desktop-cursor` frame, which
+   * is the round-trip signal the cursor E2E pins. Omitting it (the pre-6b call
+   * sites) leaves the field off the wire, so those callers are unchanged.
+   */
   const sendPointerMove = (
     offerer: PeerConnection,
     x: number,
     y: number,
+    seq?: number,
   ): void => {
     offerer.dataChannels.sendJson('control', 'desktop-input', {
       kind: 'pointer-move',
       x,
       y,
+      ...(seq === undefined ? {} : { seq }),
     });
   };
 
@@ -803,6 +853,259 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       console.log(
         `[ADR-44 baseline] n=${deltas.length} min=${min}ms median=${median}ms p90=${p90}ms max=${sorted[sorted.length - 1]!}ms`,
       );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
+
+  // ADR-45 (Phase 6b): the cursor is a first-class streamed layer, not part of
+  // the video frame. With the input gate OPEN, an injected pointer-move carries
+  // a browser-assigned `seq`; the agent caches the last applied seq and echoes
+  // it on the next `desktop-cursor` frame. This test pins the full round-trip:
+  // the cursor frame echoes the exact seq AND lands at the injected point.
+  it('streams cursor position and echoes the applied input sequence under Xvfb', async () => {
+    const { offerer, controlFrames } = await openTestDesktopStream({
+      allowInput: true,
+      display: true,
+    });
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      expect(inputEnabled(controlFrames)).toBe(true);
+
+      // The poller emits its first frame on the initial sample; wait for the
+      // cursor layer to be live before injecting, so the echo below is a fresh
+      // frame rather than a pre-injection one.
+      await waitFor(
+        () => cursorFrames(controlFrames).length > 0,
+        'an initial desktop-cursor frame',
+        20_000,
+      );
+
+      // Inject with a browser-assigned seq and read the echo back. The poller
+      // only emits on a position/shape CHANGE, so each attempt nudges the point;
+      // retrying (bounded) absorbs the tiny window where the poller could sample
+      // the moved pointer before the agent stores the applied seq.
+      const seq = 777;
+      let echoed: DesktopCursorPayload | undefined;
+      for (let attempt = 0; attempt < 6 && echoed === undefined; attempt++) {
+        const x = 0.4 + attempt * 0.02;
+        sendPointerMove(offerer, x, 0.4, seq);
+        try {
+          await waitFor(
+            () => {
+              echoed = cursorFrames(controlFrames).findLast(
+                (c) =>
+                  c.lastInputSeq === seq &&
+                  Math.abs(c.x - x) <= 2 / TEST_SOURCE_WIDTH,
+              );
+              return echoed !== undefined;
+            },
+            `a desktop-cursor frame echoing seq ${seq} at x≈${x.toFixed(2)}`,
+            2_000,
+          );
+        } catch {
+          // Retry with the next point.
+        }
+      }
+
+      expect(echoed).toBeDefined();
+      // Position round-trips through the source box: 0.4 → round(0.4*1280)=512
+      // px → 512/1280 = 0.4. The ±2 px tolerance absorbs X11 pointer rounding.
+      expect(Math.abs(echoed!.y - 0.4)).toBeLessThanOrEqual(
+        2 / TEST_SOURCE_HEIGHT,
+      );
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
+
+  it('keeps streaming cursor frames in view-only mode while dropping input', async () => {
+    const { offerer, controlFrames, agent } = await openTestDesktopStream({
+      display: true,
+      env: { RUST_LOG: 'debug' },
+    });
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      // The gate is closed: this is the shipped, inert default.
+      expect(inputEnabled(controlFrames)).toBe(false);
+
+      // (a) Cursor frames stream even with the gate closed.
+      await waitFor(
+        () => cursorFrames(controlFrames).length > 0,
+        'an initial desktop-cursor frame in view-only mode',
+        20_000,
+      );
+
+      // A viewer may still move the cursor frame it sees; drive the OS pointer
+      // directly (bypassing the gated input path) and assert the layer keeps up.
+      const beforeMove = cursorFrames(controlFrames).length;
+      execFileSync('xdotool', ['mousemove', '400', '300']);
+      await waitFor(
+        () => cursorFrames(controlFrames).length > beforeMove,
+        'a further desktop-cursor frame while the gate is closed',
+        20_000,
+      );
+
+      // (b) The input path is genuinely inert: a forwarded move is dropped, and
+      // the drop is observable in the agent log (it arrived, then was refused).
+      sendPointerMove(offerer, 0.5, 0.5);
+      await waitFor(
+        () => agent.output().includes('dropping desktop-input'),
+        'the agent to log the dropped input',
+        15_000,
+      );
+
+      // (c) The session is unharmed: cursor frames still stream after the drop.
+      const beforeDrop = cursorFrames(controlFrames).length;
+      execFileSync('xdotool', ['mousemove', '500', '350']);
+      await waitFor(
+        () => cursorFrames(controlFrames).length > beforeDrop,
+        'cursor frames to keep streaming after the dropped input',
+        20_000,
+      );
+      expect(inputEnabled(controlFrames)).toBe(false);
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
+
+  // ADR-47 (Phase 6b): `desktop-stats` carries a rolling ring of per-frame
+  // timing — `frameSamples` = [{ seq, captureEpochMs, encodeMs }] — plus the
+  // capture/encode p50s. The ring is filled in capture order, so on the wire the
+  // seqs must strictly increase and the capture timestamps must not go backwards.
+  it('publishes rolling frame timing samples in desktop-stats (ADR-47)', async () => {
+    const { offerer, stats } = await openTestDesktopStream();
+    try {
+      await waitFor(
+        () => stats().some((s) => s.frameSamples !== undefined),
+        'a desktop-stats carrying frameSamples',
+        20_000,
+      );
+
+      // The first stats frame carries a single sample; let the stream accumulate
+      // more frames, then force a fresh snapshot via a bitrate retarget (which
+      // re-emits stats with the current ring — spec §2.3 step 6).
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      const before = stats().length;
+      offerer.dataChannels.sendJson('control', 'desktop-bitrate', {
+        bitrateBps: 3_000_000,
+      });
+      await waitFor(
+        () =>
+          stats()
+            .slice(before)
+            .some((s) => (s.frameSamples?.length ?? 0) >= 2),
+        'a fresh desktop-stats with at least two frame samples',
+        20_000,
+      );
+
+      const sample = stats()
+        .slice(before)
+        .findLast((s) => (s.frameSamples?.length ?? 0) >= 2)!;
+      expect(sample.captureMsP50).toBeGreaterThanOrEqual(0);
+      expect(sample.encodeMsP50).toBeGreaterThanOrEqual(0);
+
+      const frames = sample.frameSamples!;
+      for (let i = 1; i < frames.length; i++) {
+        // Capture order is monotonic: seqs strictly increase, timestamps do not
+        // go backwards, and every encode duration is a real non-negative number.
+        expect(frames[i]!.seq).toBeGreaterThan(frames[i - 1]!.seq);
+        expect(frames[i]!.captureEpochMs).toBeGreaterThanOrEqual(
+          frames[i - 1]!.captureEpochMs,
+        );
+        expect(frames[i]!.encodeMs).toBeGreaterThanOrEqual(0);
+      }
+    } finally {
+      await offerer.close();
+    }
+  }, 120_000);
+
+  // ADR-47 (Phase 6b): the input-echo round-trip is the latency the browser
+  // measures (Task 16's `desktopEchoMs`). Each injected move carries a DISTINCT
+  // browser-assigned seq; the agent echoes the last applied seq on the next
+  // cursor frame, so send-time → echo-receive-time is a full round-trip. The
+  // summary line is recorded for the demo doc.
+  it('measures the cursor input-echo round-trip and prints a summary (ADR-47)', async () => {
+    const { offerer, controlFrames } = await openTestDesktopStream({
+      allowInput: true,
+      display: true,
+    });
+    try {
+      await waitFor(
+        () => controlFrames.some((f) => f.type === 'desktop-sources'),
+        'the source enumeration',
+        20_000,
+      );
+      expect(inputEnabled(controlFrames)).toBe(true);
+
+      // Wait for cursor stream to be active before sending moves so the echo
+      // loop samples against an active poller.
+      await waitFor(
+        () => cursorFrames(controlFrames).length > 0,
+        'an initial desktop-cursor frame',
+        20_000,
+      );
+
+      const sentAt = new Map<number, number>();
+      const echoed = new Set<number>();
+      const echoMs: number[] = [];
+      // Re-scan all frames each tick so an echo is never missed between polls;
+      // `echoed` keeps each seq counted exactly once.
+      const collect = (): void => {
+        for (const c of cursorFrames(controlFrames)) {
+          if (c.lastInputSeq === undefined || echoed.has(c.lastInputSeq)) {
+            continue;
+          }
+          const t = sentAt.get(c.lastInputSeq);
+          if (t === undefined) continue;
+          echoed.add(c.lastInputSeq);
+          echoMs.push(Date.now() - t);
+        }
+      };
+
+      const N = 12;
+      for (let i = 0; i < N; i++) {
+        const seq = 1000 + i;
+        // A distinct x per step makes every move a position change — the poller
+        // emits only on change, so each seq gets its own emit opportunity.
+        sentAt.set(seq, Date.now());
+        sendPointerMove(offerer, 0.3 + i * 0.03, 0.5, seq);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        collect();
+      }
+
+      // Give the trailing echoes a moment to land (bounded, not open-ended).
+      await waitFor(
+        () => {
+          collect();
+          return echoMs.length >= Math.ceil(N / 2);
+        },
+        'at least half of the sent seqs to round-trip',
+        15_000,
+      );
+
+      const sorted = [...echoMs].sort((a, b) => a - b);
+      const min = sorted[0]!;
+      const median = sorted[Math.floor(sorted.length / 2)]!;
+      const max = sorted[sorted.length - 1]!;
+      console.log(
+        `[6b echo] n=${echoMs.length} min=${min}ms median=${median}ms max=${max}ms`,
+      );
+
+      // A seq that never comes back is the failure this pins; the timing bound
+      // stays loose (the poller cadence + control-channel RTT dominate it).
+      expect(echoMs.length).toBeGreaterThan(0);
+      for (const ms of echoMs) {
+        expect(ms).toBeLessThanOrEqual(5_000);
+      }
     } finally {
       await offerer.close();
     }
