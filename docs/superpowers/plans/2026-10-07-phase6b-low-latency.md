@@ -12,6 +12,17 @@
 
 ---
 
+## Plan amendments
+
+**Amendment 1 (2026-10-07, after probe P1 returned ADOPT — spike commit `943aae3`):**
+
+- **Task 18B added** (between Tasks 18 and 19, below): the ADR-49 adopt branch requires a Playwright smoke spec in CI; this plan was written P1-pending, so the smoke was not yet a task.
+- **Ruling PM-3 (smoke location + packaging):** the smoke lives at `packages/webrtc-core/test/e2e/browser-smoke.pw.ts` with `packages/webrtc-core/playwright.config.ts`; `@playwright/test` becomes a devDependency of `@ponter/webrtc-core`; the browser is **pinned via `playwright install chromium --with-deps`** in `ci-e2e.yml` (never a runner's or dev machine's system Chrome); new script `test:browser`. The vitest e2e include (`test/e2e/**/*.e2e.test.ts`) does not match `*.pw.ts`, so the two runners stay separate.
+- **P1 findings folded into Task 18B:** Xvfb `:99` is needed only for the input-echo assertion (the video path is display-independent — proven with `DISPLAY` unset); register through the UI so the IndexedDB signing keys exist (ADR-41 fail-closed); reuse `harness.ts` server/agent spawn helpers; serve the web client with the Vite dev server and allow its origin (`CORS_ORIGIN`).
+- **Probe evidence carried:** throwaway probe scripts at `.superpowers/sdd/2026-10-07-phase6b-low-latency/p1-probe-artifacts/` (`p1-probe.mjs`, `p1-echo.mjs`) are the reference recipe for Task 18B.
+
+---
+
 ## Global Constraints
 
 - **Language rules:** Dialogue/explanations in Vietnamese. Source code, variable names, CLI commands, commit messages, PR descriptions, and technical specifications strictly in English.
@@ -65,6 +76,8 @@ The five input classes or failure modes the spec implies that are most critical 
 | `apps/web/src/__tests__/DesktopView.test.ts` | Overlay rendering, `cursor: none`, footer latency display tests | L3 / Task 15, 16 |
 | `apps/web/src/lib/webcodecs/` | Worker script, WebCodecs controller, fallback state machine (if P2 passes) | L4 / Task 17 |
 | `packages/webrtc-core/test/e2e/desktop.e2e.test.ts` | E2E cursor round-trip, view-only stream, stats timing, echo summary | L5 / Task 18 |
+| `packages/webrtc-core/test/e2e/browser-smoke.pw.ts` | Playwright smoke (ADR-49 adopt): connect → track → sources → echo → playout knob → g2g | L5 / Task 18B |
+| `packages/webrtc-core/playwright.config.ts` | Playwright config (chromium, no Xvfb needed for video path) | L5 / Task 18B |
 | `docs/ARCHITECTURE.md` | Phase 6b architecture updates and §11 performance table | L5 / Task 19 |
 | `docs/demos/2026-10-07-phase6b-low-latency-demo.md` | Phase 6b verification report, benchmarks at 100/50/0ms, security notes | L5 / Task 19 |
 
@@ -872,6 +885,45 @@ git commit -m "test(e2e): verify cursor round-trip, view-only streaming, and lat
 
 ---
 
+### Task 18B: Playwright Browser Smoke (ADR-49 adopt branch)
+
+**Files:**
+- Create: `packages/webrtc-core/playwright.config.ts`
+- Create: `packages/webrtc-core/test/e2e/browser-smoke.pw.ts`
+- Modify: `packages/webrtc-core/package.json` (devDependency `@playwright/test`, script `test:browser`)
+- Modify: `.github/workflows/ci-e2e.yml` (install pinned browser + run `test:browser`)
+
+**Interfaces:**
+- Consumes: `harness.ts` helpers (`setupE2E`, `seed`, `spawnAgent`, `waitForAgentOnline`, `waitForAgentSigningKey`), fresh agent binary, server port 8787, Vite dev server on 5173, `CORS_ORIGIN` allowing the web origin
+- Produces: one CI smoke spec proving the ADR-49 proof list under a real browser; the ADR-47 g2g protocol prints `[6b g2g] n=<count> min=<ms> median=<ms> max=<ms>`
+
+- [ ] **Step 1: Add Playwright to `@ponter/webrtc-core`**
+Add `@playwright/test` as a devDependency and a `test:browser` script (`playwright test`). Run `pnpm install` and commit the lockfile change path-limited.
+
+- [ ] **Step 2: Write `playwright.config.ts`**
+Chromium project only; `testDir: 'test/e2e'`, `testMatch: '**/*.pw.ts'`; `workers: 1`, `fullyParallel: false`; generous `timeout: 120_000`. No `webServer` entry — the spec spawns server + Vite itself via `harness.ts` (same discipline as the vitest e2e).
+
+- [ ] **Step 3: Write the smoke spec**
+`test/e2e/browser-smoke.pw.ts`:
+1. `setupE2E()`; `seed({ capabilities: ['desktop'] })`; `spawnAgent(..., ['--desktop-source', 'test'])`; wait online + signing key.
+2. Start the web client: Vite dev server `--host 127.0.0.1 --port 5173` with `VITE_API_URL=http://127.0.0.1:8787`; server env `CORS_ORIGIN` allows `http://127.0.0.1:5173`.
+3. `page.goto` → register **through the UI** (`/register`) so IndexedDB holds the ECDH + Ed25519 keys (ADR-41 fail-closed otherwise).
+4. Create agent + session via REST; click `[data-test="connect-desktop-<id>"]`.
+5. Assert the ADR-49 proof list: `connectionState === 'connected'`; remote video track present (`<video>.srcObject`); `[data-test="desktop-stats"]` visible; with `--allow-input`, one pointer move over the video → agent log shows `desktop-input applied` and the toggle shows `Controlling`; `page.evaluate` on the app's real `RTCPeerConnection` receiver shows the applied knob (`jitterBufferTarget === 100` and/or `playoutDelayHint === 0.1`).
+6. Carry the ADR-47 g2g protocol (test-pattern bar decode, §ADR-47 item 4) and print `[6b g2g] n=<count> min=<ms> median=<ms> max=<ms>`.
+7. Input-echo assertion runs under Xvfb (`DISPLAY=:99`); the video-only assertions must pass with `DISPLAY` unset (P1 finding — assert nothing display-dependent before the input step).
+
+- [ ] **Step 4: Wire CI**
+In `ci-e2e.yml`: install the pinned browser (`pnpm --filter @ponter/webrtc-core exec playwright install chromium --with-deps`) and run `pnpm --filter @ponter/webrtc-core test:browser` in the same job discipline as the vitest e2e (fresh binary, exclusive 8787, Xvfb `:99`).
+
+- [ ] **Step 5: Run the smoke locally and commit**
+Run: `pnpm --filter @ponter/webrtc-core test:browser` (fresh binary, Xvfb :99). Expected: PASS, g2g line printed.
+```bash
+git commit -m "test(e2e): add Playwright browser smoke (ADR-49 adopt)" -- packages/webrtc-core/playwright.config.ts packages/webrtc-core/test/e2e/browser-smoke.pw.ts packages/webrtc-core/package.json pnpm-lock.yaml .github/workflows/ci-e2e.yml
+```
+
+---
+
 ### Task 19: Architecture Spec Update & Demo Documentation (ADR-47)
 
 **Files:**
@@ -883,8 +935,9 @@ git commit -m "test(e2e): verify cursor round-trip, view-only streaming, and lat
 - Produces: Reconciled repo architecture documentation and comprehensive Phase 6b demo artifact.
 
 - [ ] **Step 1: Update ARCHITECTURE.md**
-- Update §8 (Phase 6): Mark Phase 6b complete with delivered ADR-45..49.
-- Update §11 (Performance table): Fill in measured component latencies (capture, encode, echo round-trip) at 100/50/0ms playout targets.
+- §8 (heading `## 8. Lộ trình Triển khai`, line ~871): replace the stale Phase 6 blockquote (~line 1001) — remove "6b chưa thiết kế / sẽ có spec riêng" — with 6b complete + ADR-45..49 delivered + links to the 6b spec and demo doc. Do not touch Phase 7 (~1003) or `## 9.` (~1009).
+- §8 Phase 5 checkboxes (~lines 993–997): flip `- [ ]` → `- [x]` for WS1–WS5 (Phase 5 shipped; PM-2 ruling).
+- §11 (heading `## 11. Performance Targets`, line ~1122; table 3 cols `Metric | Target | Method`): add measured desktop-latency rows — capture→encode, input-echo round-trip, glass-to-glass @ 100/50/0 ms — each with provenance in the Method column (protocol, sample count, test name), phrased as *measured*, not as a promise. Keep the hardware row (~1128) as "chưa chốt" and link the P3 finding only (adoption not committed).
 - Record cursor platform matrix honestly (X11 full, Windows compile-checked, macOS in-frame, Wayland uncommitted).
 
 - [ ] **Step 2: Write demo document**
