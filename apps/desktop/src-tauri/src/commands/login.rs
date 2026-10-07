@@ -147,9 +147,16 @@ pub async fn login(
     password: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<UserProfile, String> {
+    let server_url = {
+        let guard = state
+            .server_url
+            .lock()
+            .map_err(|e| format!("state lock poisoned: {e}"))?;
+        guard.clone()
+    };
     login_impl(
         &state.http,
-        &state.server_url,
+        &server_url,
         username,
         password,
         &state.access_token,

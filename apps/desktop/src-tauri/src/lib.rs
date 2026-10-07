@@ -6,7 +6,13 @@ pub mod state;
 pub fn run() {
     tauri::Builder::default()
         .manage(state::AppState::new())
-        .invoke_handler(tauri::generate_handler![commands::login::login])
+        .invoke_handler(tauri::generate_handler![
+            commands::login::login,
+            commands::wizard::probe_server,
+            #[cfg(not(target_env = "musl"))]
+            commands::wizard::probe_capture,
+            commands::wizard::save_wizard_settings,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
