@@ -39,7 +39,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 ### ADR-50: `apps/agent` becomes a library plus a thin binary; the Tauri backend embeds the runtime
 
 - **Decision.** Split `apps/agent` into:
-  - `src/lib.rs` — the crate root exposing an `AgentRuntime` API (start/stop/status/events) and the existing modules as `pub(crate)`/`pub` as needed.
+  - `src/lib.rs` — the crate root exposing an `AgentRuntime` API (start/stop/status, plus a `wait()` to await natural end) and the existing modules as `pub(crate)`/`pub` as needed.
   - `src/main.rs` — a **thin** CLI that parses `Cli` (unchanged flags), constructs `AgentRuntime`, and drives it. Its behaviour is identical to today's binary.
 - **Why.** The Tauri backend (`apps/desktop/src-tauri`) must start, stop, and observe the agent **in-process** — a separate process would need lifecycle supervision, credential plumbing over argv/pipe, and a second copy of the identity store. Embedding reuses the exact WS2 identity and E2EE code paths with no duplication.
 - **Compatibility contract.** The CLI binary's observable behaviour does not change: same flags (`--agent-id`, `--server`, `--credential`/`AGENT_CREDENTIAL`, `--identity-path`, `--stun`, `--desktop-source`, `--allow-input`, …), same log lines, same WS protocol. The existing `build-agent.yml` verify gate (fmt/clippy/test/build) and the cross-language E2E must stay green — they are the regression net for this refactor.
@@ -127,7 +127,7 @@ The agent's existing platform limitations carry over verbatim: Wayland capture i
 
 | Area | Change |
 |---|---|
-| `apps/agent/src/lib.rs` | **New** crate root; exposes `AgentRuntime` (start/stop/status/events) + modules. |
+| `apps/agent/src/lib.rs` | **New** crate root; exposes `AgentRuntime` (start/stop/status + `wait()`) + modules. |
 | `apps/agent/src/main.rs` | **Refactor** to a thin CLI over `AgentRuntime`; behaviour identical. |
 | `apps/agent/Cargo.toml` | Add `[lib]` target; keep `[[bin]]` (`ponter-agent`). |
 | `apps/desktop/src-tauri/` | **New** Tauri 2.0 Rust backend: commands (login, register device, wizard probes, set_autostart, updater), keychain integration, path-dep on `ponter-agent`. |
