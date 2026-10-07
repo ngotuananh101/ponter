@@ -29,7 +29,7 @@ use std::collections::HashMap;
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 #[cfg(not(target_env = "musl"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -2080,6 +2080,9 @@ async fn run_desktop_session(
         let mut injector: Option<Box<dyn input::InputInjector>> = None;
         // ADR-43: per-session fixed-window cap on accepted input frames.
         let mut input_limiter = input::InputRateLimiter::new(input::INPUT_RATE_CAP_HZ);
+        // ADR-47: last applied browser-assigned input `seq`, echoed to Task 12's
+        // cursor layer so it can report round-trip latency. 0 = no input applied.
+        let last_input_seq: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
         // WS1 E2EE session state (R14): a plain local, no Arc/RwLock — the
         // control loop is the only task touching it.
         let mut e2ee_session: Option<e2ee::E2eeSession> = None;
@@ -2173,10 +2176,12 @@ async fn run_desktop_session(
                                     }
                                 }
                                 if let Some(injector) = injector.as_mut() {
-                                    input::apply_if_allowed(
+                                    if let Some(seq) = input::apply_if_allowed(
                                         allow_input, text, &current_source, injector.as_mut(),
                                         crate::pty::now_ms(),
-                                    );
+                                    ) {
+                                        last_input_seq.store(seq, Ordering::Relaxed);
+                                    }
                                 }
                             } else {
                                 tracing::debug!("dropping desktop-input: input disabled");
@@ -3380,7 +3385,10 @@ mod tests {
 
         let mut injector = NoopInjector;
         let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector, 0);
-        assert!(!applied, "gate closed must drop the frame and return false");
+        assert!(
+            applied.is_none(),
+            "gate closed must drop the frame and return None"
+        );
     }
 
     // ------------------------------------------------------------------
