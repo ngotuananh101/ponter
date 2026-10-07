@@ -24,32 +24,44 @@ describe('no false E2EE claims in the UI', () => {
   }
 });
 
-// G2 upgrade — DashboardView now makes *truthful* architectural disclosure rather
-// than a blanket E2EE claim. It must not assert E2EE without also disclosing the
-// non-E2EE transport counterpart (DTLS/SRTP), must not use "Zero-Trust" marketing
-// language, must not make blanket "all/every channels are E2EE" claims, and must
-// positively pin the transparent table so it is not silently deleted.
-describe('DashboardView security disclosure (G2 upgraded)', () => {
-  const file = 'views/DashboardView.vue';
-  const source = read(file);
+// G2 upgrade — Dashboard + the disclosure dialog make *truthful* architectural
+// disclosure rather than a blanket E2EE claim. Each file must not assert E2EE
+// without also disclosing the non-E2EE transport counterpart (DTLS/SRTP), must
+// not use "Zero-Trust" marketing language, and must not make blanket
+// "all/every channels are E2EE" claims. Positive pins on both files ensure the
+// disclosure is not silently deleted from either side.
+const DISCLOSURE_FILES = [
+  'views/DashboardView.vue',
+  'components/security/EncryptionByChannelDialog.vue',
+];
 
-  it(`${file} pairs every E2EE claim with DTLS disclosure (accompaniment rule)`, () => {
-    if (/e2ee|end-to-end/i.test(source)) {
-      expect(source).toMatch(/DTLS/);
-    }
+describe('security disclosure (G2 upgraded)', () => {
+  for (const file of DISCLOSURE_FILES) {
+    const source = read(file);
+    it(`${file} pairs every E2EE claim with DTLS disclosure (accompaniment rule)`, () => {
+      if (/e2ee|end-to-end/i.test(source)) {
+        expect(source).toMatch(/DTLS/);
+      }
+    });
+    it(`${file} does not claim Zero-Trust`, () => {
+      expect(source).not.toMatch(/zero-trust/i);
+    });
+    it(`${file} does not make blanket all/every channels-claims`, () => {
+      expect(source).not.toMatch(
+        /(all|every)\s+(sessions?|channels?|traffic)[^.]{0,80}(e2ee|end-to-end)/i,
+      );
+    });
+  }
+
+  it('dialog positive pin: contains AES-GCM-256, DTLS and SRTP', () => {
+    const source = read('components/security/EncryptionByChannelDialog.vue');
+    expect(source).toMatch(/AES-GCM-256/);
+    expect(source).toMatch(/DTLS/);
+    expect(source).toMatch(/SRTP/);
   });
 
-  it(`${file} does not claim Zero-Trust`, () => {
-    expect(source).not.toMatch(/zero-trust/i);
-  });
-
-  it(`${file} does not make blanket all/every channels-claims`, () => {
-    expect(source).not.toMatch(
-      /(all|every)\s+(sessions?|channels?|traffic)[^.]{0,80}(e2ee|end-to-end)/i,
-    );
-  });
-
-  it(`${file} positive pin: contains AES-GCM-256, DTLS and SRTP`, () => {
+  it('dashboard positive pin: contains AES-GCM-256, DTLS and SRTP', () => {
+    const source = read('views/DashboardView.vue');
     expect(source).toMatch(/AES-GCM-256/);
     expect(source).toMatch(/DTLS/);
     expect(source).toMatch(/SRTP/);

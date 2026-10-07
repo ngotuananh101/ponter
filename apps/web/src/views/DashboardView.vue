@@ -30,11 +30,13 @@ import {
   Plus,
   Pencil,
   Trash2,
+  ChevronRight,
 } from '@lucide/vue';
 import { toast } from 'vue-sonner';
 import RegisterAgentDialog from '@/components/agent/RegisterAgentDialog.vue';
 import EditAgentDialog from '@/components/agent/EditAgentDialog.vue';
 import DeleteAgentDialog from '@/components/agent/DeleteAgentDialog.vue';
+import EncryptionByChannelDialog from '@/components/security/EncryptionByChannelDialog.vue';
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -47,6 +49,7 @@ const statusFilter = ref<'all' | 'online' | 'offline'>('all');
 const showRegisterModal = ref(false);
 const editingAgent = ref<Agent | null>(null);
 const deletingAgent = ref<Agent | null>(null);
+const showSecurityDetails = ref(false);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -282,6 +285,15 @@ onUnmounted(() => {
             <p class="text-[11px] text-muted-foreground">
               AES-GCM-256 app-layer · DTLS 1.2 transport
             </p>
+            <button
+              type="button"
+              data-test="security-details-toggle"
+              class="mt-1 inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              @click="showSecurityDetails = true"
+            >
+              Details
+              <ChevronRight class="w-3 h-3" />
+            </button>
           </div>
           <div
             class="w-10 h-10 rounded-lg bg-secondary border border-border flex items-center justify-center text-muted-foreground"
@@ -291,120 +303,6 @@ onUnmounted(() => {
         </CardContent>
       </Card>
     </div>
-
-    <!-- Encryption by Channel disclosure card -->
-    <Card
-      data-test="security-architecture-card"
-      class="border-border/80 bg-card/95 shadow-sm"
-    >
-      <CardHeader class="pb-2">
-        <CardTitle class="text-base font-bold flex items-center gap-2">
-          <ShieldCheck class="w-4 h-4 text-primary" />
-          Encryption by Channel
-        </CardTitle>
-        <CardDescription class="text-xs text-muted-foreground mt-0.5">
-          Truthful security architecture: application-layer E2EE vs
-          transport-only
-        </CardDescription>
-      </CardHeader>
-      <CardContent class="pt-0">
-        <div class="overflow-x-auto">
-          <table class="w-full text-xs">
-            <thead>
-              <tr
-                class="text-left text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/60"
-              >
-                <th class="pb-2 font-medium">Channel</th>
-                <th class="pb-2 font-medium">Mechanism</th>
-                <th class="pb-2 font-medium">Details</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border/50">
-              <tr data-test="sec-channel-terminal">
-                <td class="py-2.5 flex items-center gap-2">
-                  <Terminal class="w-3.5 h-3.5 text-muted-foreground" />
-                  Terminal I/O (PTY)
-                </td>
-                <td class="py-2.5">
-                  <Badge variant="outline" class="text-xs font-mono"
-                    >E2EE · AES-GCM-256</Badge
-                  >
-                </td>
-                <td class="py-2.5 text-muted-foreground">
-                  ECDH P-256 → HKDF-SHA256, session key bound to Ed25519
-                  signature (when the agent advertises e2ee)
-                </td>
-              </tr>
-              <tr data-test="sec-channel-input">
-                <td class="py-2.5 flex items-center gap-2">
-                  <Laptop class="w-3.5 h-3.5 text-muted-foreground" />
-                  Desktop control input
-                </td>
-                <td class="py-2.5">
-                  <Badge variant="outline" class="text-xs font-mono"
-                    >E2EE · AES-GCM-256</Badge
-                  >
-                </td>
-                <td class="py-2.5 text-muted-foreground">
-                  Admitted only after verifying the peer's Ed25519 identity
-                  (ADR-41/42)
-                </td>
-              </tr>
-              <tr data-test="sec-channel-video">
-                <td class="py-2.5 flex items-center gap-2">
-                  <Radio class="w-3.5 h-3.5 text-muted-foreground" />
-                  Desktop video stream
-                </td>
-                <td class="py-2.5">
-                  <Badge variant="secondary" class="text-xs font-mono"
-                    >DTLS-SRTP</Badge
-                  >
-                </td>
-                <td class="py-2.5 text-muted-foreground">
-                  WebRTC P2P transport encryption; no application-layer E2EE
-                  (keeps latency low & enables hardware decode)
-                </td>
-              </tr>
-              <tr data-test="sec-channel-files">
-                <td class="py-2.5 flex items-center gap-2">
-                  <Server class="w-3.5 h-3.5 text-muted-foreground" />
-                  File transfer
-                </td>
-                <td class="py-2.5">
-                  <Badge variant="secondary" class="text-xs font-mono"
-                    >DTLS / SCTP</Badge
-                  >
-                </td>
-                <td class="py-2.5 text-muted-foreground">
-                  WebRTC DataChannel P2P
-                </td>
-              </tr>
-              <tr data-test="sec-channel-signaling">
-                <td class="py-2.5 flex items-center gap-2">
-                  <ShieldCheck class="w-3.5 h-3.5 text-muted-foreground" />
-                  Signaling
-                </td>
-                <td class="py-2.5">
-                  <Badge variant="secondary" class="text-xs font-mono"
-                    >TLS</Badge
-                  >
-                </td>
-                <td class="py-2.5 text-muted-foreground">
-                  Self-hosted server relays SDP/ICE metadata only; it never sees
-                  session payloads
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="text-xs text-muted-foreground mt-3">
-          Application-layer E2EE applies to terminal and control-input channels
-          only. Video and file transfer rely on WebRTC's mandatory transport
-          encryption (DTLS/SRTP).
-        </p>
-      </CardContent>
-    </Card>
-
     <!-- Main Grid: Fleet on Left, Devices & Security on Right -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <!-- Agent Fleet Section (2 Cols on lg) -->
@@ -743,6 +641,11 @@ onUnmounted(() => {
       :agent="deletingAgent"
       @update:open="(v) => !v && (deletingAgent = null)"
       @deleted="handleDeleted"
+    />
+
+    <EncryptionByChannelDialog
+      :open="showSecurityDetails"
+      @update:open="showSecurityDetails = $event"
     />
   </div>
 </template>

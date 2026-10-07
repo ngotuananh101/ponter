@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import DashboardView from '@/views/DashboardView.vue';
+import EncryptionByChannelDialog from '@/components/security/EncryptionByChannelDialog.vue';
 import type { Agent } from '@ponter/shared';
 
 vi.mock('vue-sonner', () => ({
@@ -54,8 +55,14 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
   };
 }
 
+const TeleportStub = {
+  name: 'Teleport',
+  inheritAttrs: false,
+  template: '<slot />',
+};
+
 const STUBS = {
-  Teleport: true,
+  Teleport: TeleportStub,
   RegisterAgentDialog: { template: '<div />' },
 };
 
@@ -172,17 +179,27 @@ describe('DashboardView.vue', () => {
     expect(wrapper.text()).toContain('boom');
   });
 
-  it('renders the security-architecture disclosure card', async () => {
+  it('shows a details toggle on the security tile and keeps the table hidden by default', async () => {
     const wrapper = await mountDashboard([makeAgent()]);
 
+    expect(wrapper.find('[data-test="security-details-toggle"]').exists()).toBe(
+      true,
+    );
     expect(
-      wrapper.find('[data-test="security-architecture-card"]').exists(),
-    ).toBe(true);
+      wrapper.find('[data-test="encryption-by-channel-dialog"]').exists(),
+    ).toBe(false);
   });
 
-  it('renders all five channel disclosure rows', async () => {
+  it('opens the encryption-by-channel dialog when details is clicked', async () => {
     const wrapper = await mountDashboard([makeAgent()]);
 
+    await wrapper
+      .find('[data-test="security-details-toggle"]')
+      .trigger('click');
+
+    expect(
+      wrapper.find('[data-test="encryption-by-channel-dialog"]').exists(),
+    ).toBe(true);
     for (const test of [
       'sec-channel-terminal',
       'sec-channel-input',
@@ -192,28 +209,25 @@ describe('DashboardView.vue', () => {
     ]) {
       expect(wrapper.find(`[data-test="${test}"]`).exists()).toBe(true);
     }
+  });
 
-    // Truthful wording: video is DTLS-SRTP transport only, never end-to-end.
-    const videoRow = wrapper.find('[data-test="sec-channel-video"]');
-    expect(videoRow.text()).not.toMatch(/end-to-end/i);
-    expect(videoRow.text()).toMatch(/DTLS-SRTP/);
+  it('closes the dialog when update:open emits false', async () => {
+    const wrapper = await mountDashboard([makeAgent()]);
 
-    // Truthful wording: files and signaling are transport-only, never end-to-end.
-    const filesRow = wrapper.find('[data-test="sec-channel-files"]');
-    expect(filesRow.text()).not.toMatch(/e2ee|end-to-end/i);
-    expect(filesRow.text()).toMatch(/DTLS \/ SCTP/);
+    await wrapper
+      .find('[data-test="security-details-toggle"]')
+      .trigger('click');
+    expect(
+      wrapper.find('[data-test="encryption-by-channel-dialog"]').exists(),
+    ).toBe(true);
 
-    const signalingRow = wrapper.find('[data-test="sec-channel-signaling"]');
-    expect(signalingRow.text()).not.toMatch(/e2ee|end-to-end/i);
+    const dialog = wrapper.findComponent(EncryptionByChannelDialog);
+    dialog.vm.$emit('update:open', false);
+    await flushPromises();
+    await wrapper.vm.$nextTick();
 
-    // Terminal row must reference the app-layer cipher.
-    expect(wrapper.find('[data-test="sec-channel-terminal"]').text()).toContain(
-      'AES-GCM-256',
-    );
-
-    // Footnote must state the scope of app-layer E2EE precisely.
-    expect(wrapper.text()).toContain(
-      'Application-layer E2EE applies to terminal and control-input channels only',
-    );
+    expect(
+      wrapper.find('[data-test="encryption-by-channel-dialog"]').exists(),
+    ).toBe(false);
   });
 });
