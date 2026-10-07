@@ -1337,7 +1337,9 @@ pub async fn run_stream(
                 // swap's pending frame is consumed on this tick; a downgrade
                 // *below* defers its own to the next tick, because this tick's
                 // frame was encoded at the pre-downgrade size.
-                if encoded == 1 || pending_stats.is_some() {
+                let fps_period = (profile.fps.max(1.0).round() as u64).max(1);
+                let periodic = encoded % fps_period == 0;
+                if encoded == 1 || pending_stats.is_some() || periodic {
                     let status = pending_stats.take().flatten();
                     let (fs_seq, cap_p50, enc_p50, enc_samples) =
                         timing_snapshot(&timing_ring, &last_frame_seq);
