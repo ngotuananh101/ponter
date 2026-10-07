@@ -41,6 +41,14 @@ export interface RTCPeerConnectionLike {
   onTrack?(
     handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
   ): void;
+  /**
+   * Optional media seam (ADR-06/ADR-46). Returns the first RTCRtpReceiver whose
+   * track is video, or `undefined` when none exists or the adapter does not
+   * implement it. Used by desktop-core to apply playout-delay tuning. Optional so
+   * every existing mock and adapter (e.g. werift) keeps typechecking without
+   * changes; callers must treat `undefined` as "no video receiver".
+   */
+  getVideoReceiver?(): unknown;
 }
 
 export interface PeerConnectionOptions {

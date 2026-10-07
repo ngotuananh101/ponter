@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopClient } from '../src/client';
 import type { DesktopClientOptions, DesktopE2eeDriver } from '../src/types';
-import type { DesktopInput } from '@ponter/shared';
+import type { DesktopInput, DesktopCursorPayload } from '@ponter/shared';
 import type {
   MediaStreamLike,
   MediaStreamTrackLike,
@@ -116,6 +116,11 @@ function mockPeer() {
       waitForChannel,
       // T6-A: negotiateE2ee reads `this.peer.options.sessionId` for the hello.
       options: { sessionId: 'test-session' },
+      // The underlying RTCPeerConnectionLike; Task 9 uses getVideoReceiver
+      // to apply playout-delay tuning. Default: undefined receiver.
+      peer: {
+        getVideoReceiver: vi.fn().mockReturnValue(undefined),
+      },
     } as unknown as PeerConnection,
     emitTrack: (t: MediaStreamTrackLike, s: MediaStreamLike[]) =>
       trackHandler?.(t, s),
@@ -323,8 +328,18 @@ describe('DesktopClient control surface', () => {
     });
 
     expect(seen).toEqual([
-      { sources: [oneSource], inputEnabled: false, peerVerified: false },
-      { sources: [], inputEnabled: false, peerVerified: false },
+      {
+        sources: [oneSource],
+        inputEnabled: false,
+        peerVerified: false,
+        cursorInFrame: false,
+      },
+      {
+        sources: [],
+        inputEnabled: false,
+        peerVerified: false,
+        cursorInFrame: false,
+      },
     ]);
     client.close();
   });
@@ -393,7 +408,12 @@ describe('DesktopClient control surface', () => {
     client.onSources((payload) => seen.push(payload));
 
     expect(seen).toEqual([
-      { sources: [oneSource], inputEnabled: true, peerVerified: false },
+      {
+        sources: [oneSource],
+        inputEnabled: true,
+        peerVerified: false,
+        cursorInFrame: false,
+      },
     ]);
     client.close();
   });
@@ -580,6 +600,7 @@ describe('DesktopClient input surface (Week 9, spec §5.3)', () => {
       pressed: true,
       x: 0.5,
       y: 0.5,
+      seq: 1,
     });
     client.close();
   });
@@ -1136,6 +1157,348 @@ describe('DesktopClient E2EE (Task 6b)', () => {
         expect(call[2]).not.toHaveProperty('data');
       }
     }
+    client.close();
+  });
+});
+
+describe('DesktopClient playout delay tuning (Task 9)', () => {
+  it('sets jitterBufferTarget to 100ms when the receiver supports it', async () => {
+    const mock = mockPeer();
+    const receiver = {
+      jitterBufferTarget: 9999,
+      // Has playoutDelayHint too, but jitterBufferTarget takes priority.
+      playoutDelayHint: 9.9,
+    };
+    // Override the default undefined-returning stub with a real receiver.
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(receiver);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: 100,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+
+    expect(receiver.jitterBufferTarget).toBe(100);
+    client.close();
+  });
+
+  it('sets playoutDelayHint to 0.1 when receiver lacks jitterBufferTarget', async () => {
+    const mock = mockPeer();
+    const receiver = {
+      playoutDelayHint: 9.9,
+    };
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(receiver);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: 100,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+
+    expect(receiver.playoutDelayHint).toBeCloseTo(0.1);
+    client.close();
+  });
+
+  it('does not modify the receiver when playoutDelayMs is null', async () => {
+    const mock = mockPeer();
+    const receiver = {
+      jitterBufferTarget: 9999,
+      playoutDelayHint: 9.9,
+    };
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(receiver);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: null,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+    await started;
+
+    // Non-zero sentinels: if the null guard were removed, Math.max(0, null)
+    // would overwrite 9999 -> 0, making this assertion RED.
+    expect(receiver.jitterBufferTarget).toBe(9999);
+    expect(receiver.playoutDelayHint).toBe(9.9);
+    client.close();
+  });
+
+  it('starts cleanly with no error when getVideoReceiver returns undefined', async () => {
+    const mock = mockPeer();
+    // Default mock stub: getVideoReceiver returns undefined.
+    (mock.peer.peer as unknown as Record<string, unknown>).getVideoReceiver = vi
+      .fn()
+      .mockReturnValue(undefined);
+
+    const client = new DesktopClient('agent-1', mock.peer, {
+      playoutDelayMs: 100,
+    });
+    const started = client.start();
+    mock.emitTrack(fakeTrack, fakeStreams);
+
+    await expect(started).resolves.toEqual({
+      track: fakeTrack,
+      streams: fakeStreams,
+    });
+    client.close();
+  });
+});
+
+describe('DesktopClient cursor dispatch (Task 13, ADR-45)', () => {
+  it('dispatches a desktop-cursor frame to onCursor with its fields', async () => {
+    const { client, emitControl } = await connected();
+    const seen: DesktopCursorPayload[] = [];
+    client.onCursor((cursor) => seen.push(cursor));
+
+    const payload: DesktopCursorPayload = {
+      x: 0.25,
+      y: 0.5,
+      visible: true,
+      seq: 42,
+      lastInputSeq: 7,
+    };
+    emitControl({
+      type: 'desktop-cursor',
+      channel: 'control',
+      payload,
+      timestamp: 1,
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(payload);
+    client.close();
+  });
+
+  it('replays the last desktop-cursor frame to a late listener', async () => {
+    const { client, emitControl } = await connected();
+    const payload: DesktopCursorPayload = {
+      x: 0.1,
+      y: 0.2,
+      visible: false,
+      seq: 3,
+    };
+    emitControl({
+      type: 'desktop-cursor',
+      channel: 'control',
+      payload,
+      timestamp: 1,
+    });
+
+    const seen: DesktopCursorPayload[] = [];
+    client.onCursor((cursor) => seen.push(cursor));
+
+    expect(seen).toEqual([payload]);
+    client.close();
+  });
+
+  it('stops delivering onCursor after unsubscribe', async () => {
+    const { client, emitControl } = await connected();
+    const seen: DesktopCursorPayload[] = [];
+    const off = client.onCursor((cursor) => seen.push(cursor));
+
+    off();
+    emitControl({
+      type: 'desktop-cursor',
+      channel: 'control',
+      payload: { x: 0, y: 0, visible: true, seq: 1 },
+      timestamp: 1,
+    });
+
+    expect(seen).toEqual([]);
+    client.close();
+  });
+
+  it('delivers every cursor frame to all live listeners (fan-out)', async () => {
+    const { client, emitControl } = await connected();
+    const a: DesktopCursorPayload[] = [];
+    const b: DesktopCursorPayload[] = [];
+    client.onCursor((c) => a.push(c));
+    client.onCursor((c) => b.push(c));
+
+    const p1: DesktopCursorPayload = { x: 0, y: 0, visible: true, seq: 1 };
+    const p2: DesktopCursorPayload = { x: 0.5, y: 0.5, visible: true, seq: 2 };
+    emitControl({
+      type: 'desktop-cursor',
+      channel: 'control',
+      payload: p1,
+      timestamp: 1,
+    });
+    emitControl({
+      type: 'desktop-cursor',
+      channel: 'control',
+      payload: p2,
+      timestamp: 2,
+    });
+
+    expect(a).toEqual([p1, p2]);
+    expect(b).toEqual([p1, p2]);
+    client.close();
+  });
+});
+
+describe('DesktopClient cursorInFrame normalization (Task 13)', () => {
+  it('normalizes a missing cursorInFrame to false (pre-6b agent)', async () => {
+    const { client } = await connected();
+    const seen: unknown[] = [];
+    client.onSources((payload) => seen.push(payload.cursorInFrame));
+
+    emitSources([{ id: 'monitor:1', default: true }], true);
+
+    expect(seen).toEqual([false]);
+    client.close();
+  });
+
+  it('normalizes an explicit true cursorInFrame', async () => {
+    const { client, emitControl } = await connected();
+    const seen: unknown[] = [];
+    client.onSources((payload) => seen.push(payload.cursorInFrame));
+
+    emitControl({
+      type: 'desktop-sources',
+      channel: 'control',
+      payload: {
+        sources: [{ id: 'monitor:1', default: true }],
+        inputEnabled: true,
+        peerVerified: false,
+        cursorInFrame: true,
+      },
+      timestamp: 1,
+    });
+
+    expect(seen).toEqual([true]);
+    client.close();
+  });
+
+  it('normalizes missing inputEnabled/peerVerified/cursorInFrame together', async () => {
+    const { client, emitControl } = await connected();
+    const seen: unknown[] = [];
+    client.onSources((payload) => seen.push(payload));
+
+    emitControl({
+      type: 'desktop-sources',
+      channel: 'control',
+      payload: {
+        sources: [{ id: 'monitor:1', default: true }],
+        peerVerified: false,
+      },
+      timestamp: 1,
+    });
+
+    expect(seen).toEqual([
+      {
+        sources: [{ id: 'monitor:1', default: true }],
+        inputEnabled: false,
+        peerVerified: false,
+        cursorInFrame: false,
+      },
+    ]);
+    client.close();
+  });
+});
+
+describe('DesktopClient input seq stamping (Task 13)', () => {
+  const sentInputs = (): Array<{ type: string; payload: unknown }> =>
+    mockSendJson.mock.calls
+      .filter((c) => c[1] === 'desktop-input')
+      .map((c) => ({ type: c[1], payload: c[2] }));
+
+  it('stamps a monotonic seq on consecutive pointer-move events (separate windows)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, setControlState } = await connected({
+        inputRateLimitHz: 60,
+      });
+      setControlState('open');
+
+      const e1 = { kind: 'pointer-move' as const, x: 0.1, y: 0.1 };
+      const e2 = { kind: 'pointer-move' as const, x: 0.2, y: 0.2 };
+      const e3 = { kind: 'pointer-move' as const, x: 0.3, y: 0.3 };
+
+      client.sendInput(e1);
+      vi.advanceTimersByTime(17); // flush window elapses
+      client.sendInput(e2);
+      vi.advanceTimersByTime(17);
+      client.sendInput(e3);
+      vi.advanceTimersByTime(17);
+
+      const moves = sentInputs().filter(
+        (s) => (s.payload as { kind: string }).kind === 'pointer-move',
+      );
+      const seqs = moves.map((s) => (s.payload as { seq: number }).seq);
+      expect(seqs).toEqual([1, 2, 3]);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stamps a monotonic seq on pointer-button and wheel events', async () => {
+    const { client, setControlState } = await connected();
+    setControlState('open');
+
+    client.sendInput({
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.5,
+      y: 0.5,
+    });
+    client.sendInput({ kind: 'wheel', dx: 0, dy: -1, x: 0.5, y: 0.5 });
+
+    const inputs = sentInputs();
+    expect((inputs[0]!.payload as { seq: number }).seq).toBe(1);
+    expect((inputs[1]!.payload as { seq: number }).seq).toBe(2);
+    client.close();
+  });
+
+  it('does NOT stamp seq on key or text events', async () => {
+    const { client, setControlState } = await connected();
+    setControlState('open');
+
+    client.sendInput({
+      kind: 'key',
+      code: 'KeyA',
+      pressed: true,
+      modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+    });
+    client.sendInput({ kind: 'text', text: 'hi' });
+
+    const inputs = sentInputs();
+    expect(inputs[0]!.payload).not.toHaveProperty('seq');
+    expect(inputs[1]!.payload).not.toHaveProperty('seq');
+    client.close();
+  });
+
+  it('continues the seq counter across mixed event kinds', async () => {
+    const { client, setControlState } = await connected();
+    setControlState('open');
+
+    client.sendInput({
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.1,
+      y: 0.1,
+    });
+    client.sendInput({
+      kind: 'key',
+      code: 'KeyA',
+      pressed: true,
+      modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+    });
+    client.sendInput({ kind: 'wheel', dx: 0, dy: 1, x: 0.2, y: 0.2 });
+
+    const inputs = sentInputs();
+    // key is NOT stamped; pointer-button and wheel carry 1 and 2.
+    expect((inputs[0]!.payload as { seq: number }).seq).toBe(1);
+    expect(inputs[1]!.payload).not.toHaveProperty('seq');
+    expect((inputs[2]!.payload as { seq: number }).seq).toBe(2);
     client.close();
   });
 });

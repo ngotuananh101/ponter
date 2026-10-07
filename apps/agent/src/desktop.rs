@@ -35,11 +35,154 @@ use crate::pty::MAX_FRAME_BYTES;
 use crate::StreamProfile;
 
 /// One frame, RGBA8, `width * height * 4` bytes.
+///
+/// `seq` is a per-stream monotonic counter that tags the frame so telemetry
+/// (ADR-47's `FrameTimingRing`) can correlate an encode sample back to the
+/// capture it measured. Pure transforms such as `downscale`/`crop_to_even`
+/// preserve the input `seq`; sources mint their own and increment it on each
+/// `next_frame` call.
 #[derive(Clone)]
 pub struct RawFrame {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    pub seq: u64,
+}
+
+/// A sample of frame timing telemetry, one per encoded frame (ADR-47).
+///
+/// The serde shape matches what Task 4/6 expects on the wire:
+/// `{ seq, captureEpochMs, encodeMs }`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSample {
+    pub seq: u64,
+    pub capture_epoch_ms: i64,
+    pub encode_ms: f32,
+}
+
+/// A fixed-capacity rolling ring of the most recent `FrameSample`s (ADR-47).
+///
+/// Capacity is 32 so the rolling p50 reflects roughly the last second of a 30
+/// fps stream without unbounded growth; when full the oldest sample is evicted
+/// before the next is written.
+pub struct FrameTimingRing {
+    capacity: usize,
+    head: usize,
+    len: usize,
+    samples: Vec<FrameSample>,
+    /// Parallel ring of per-frame **capture durations** (ms from frame
+    /// acquisition to encode-start), kept in lockstep with `samples` so the
+    /// oldest entry evicts together. `FrameSample`'s wire shape is frozen by
+    /// Task 4 TS, so capture timing is not stored on it.
+    capture_ms: Vec<f32>,
+}
+
+impl FrameTimingRing {
+    /// A ring that holds at most `capacity` samples.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            head: 0,
+            len: 0,
+            samples: Vec::with_capacity(capacity),
+            capture_ms: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Records one encode sample, evicting the oldest when the ring is full.
+    pub fn record(&mut self, seq: u64, capture_epoch_ms: i64, encode_ms: f32, capture_ms: f32) {
+        let sample = FrameSample {
+            seq,
+            capture_epoch_ms,
+            encode_ms,
+        };
+        if self.len < self.capacity {
+            // Grow in place: push appends at index `len`, which is the current
+            // tail position. `head` only matters once the ring is full and we
+            // start overwriting.
+            self.samples.push(sample);
+            self.capture_ms.push(capture_ms);
+            self.len += 1;
+        } else {
+            // Full: overwrite the oldest (at `head`) and advance head, leaving
+            // len == capacity. The new youngest sits just before head.
+            self.samples[self.head] = sample;
+            self.capture_ms[self.head] = capture_ms;
+            self.head = (self.head + 1) % self.capacity;
+        }
+    }
+
+    /// The currently-recorded samples in insertion order (oldest first).
+    ///
+    /// Returned as a slice so callers can read `len()` and index without a copy.
+    pub fn samples(&self) -> &[FrameSample] {
+        if self.len < self.capacity {
+            // Still filling: the vec is exactly `[oldest..youngest]`.
+            &self.samples[..self.len]
+        } else {
+            // Full: `head` is the oldest, `head..end` then `0..head` is the
+            // insertion order.
+            // (Slicing a rotated vec can't be done with a single static
+            // slice, so expose the contiguous window starting at head and
+            // let `encode_ms_p50` sort its own copy regardless of order.)
+            //
+            &self.samples
+        }
+    }
+
+    /// Samples in true insertion order (oldest first), as an owned `Vec`.
+    ///
+    /// When the ring is full, `head` points at the oldest entry and the
+    /// contiguous slice from `head` is the younger half; the wrap-around half
+    /// lives at `0..head`. Concatenating those two slices yields insertion order
+    /// (Ruling BE-T12-R3). Used by `timing_snapshot` so stats frames report
+    /// strictly-monotonic capture epochs to the browser.
+    pub fn ordered_samples(&self) -> Vec<FrameSample> {
+        if self.len < self.capacity {
+            self.samples[..self.len].to_vec()
+        } else {
+            [&self.samples[self.head..], &self.samples[..self.head]].concat()
+        }
+    }
+
+    /// The median encode-ms of the current samples.
+    ///
+    /// Odd count → middle element; even count → arithmetic mean of the two
+    /// middle elements (so a 10-sample series `2..20` yields 11.0, matching the
+    /// ADR-44/ADR-47 test pin).
+    pub fn encode_ms_p50(&self) -> f32 {
+        let mut sorted: Vec<f32> = self.samples[..self.len]
+            .iter()
+            .map(|s| s.encode_ms)
+            .collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        if n == 0 {
+            return 0.0;
+        }
+        if n % 2 == 1 {
+            sorted[n / 2]
+        } else {
+            (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        }
+    }
+
+    /// The median capture-latency-ms of the current samples (capture→encode-start),
+    /// same even/odd rule as `encode_ms_p50`. 0.0 when empty.
+    pub fn capture_ms_p50(&self) -> f32 {
+        let mut sorted: Vec<f32> = self.capture_ms[..self.len].to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        if n == 0 {
+            return 0.0;
+        }
+        if n % 2 == 1 {
+            sorted[n / 2]
+        } else {
+            (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        }
+    }
 }
 
 /// A source of frames the streaming loop can pull from.
@@ -101,6 +244,7 @@ fn downscale(frame: &RawFrame, max_w: u32, max_h: u32) -> RawFrame {
         width: dst_w,
         height: dst_h,
         rgba,
+        seq: frame.seq,
     }
 }
 
@@ -125,6 +269,7 @@ fn crop_to_even(frame: RawFrame) -> RawFrame {
         width,
         height,
         rgba,
+        seq: frame.seq,
     }
 }
 
@@ -191,6 +336,7 @@ impl TestPatternSource {
             width: w,
             height: h,
             rgba,
+            seq: n,
         }
     }
 }
@@ -230,6 +376,10 @@ pub struct ScreenSource {
     frames: Option<Receiver<xcap::Frame>>,
     stop: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Per-stream monotonic frame sequencer (ADR-47): incremented once per
+    /// frame that leaves `next_frame`, tagged onto the `RawFrame` so the
+    /// encode-side telemetry can correlate samples back to a capture.
+    seq: u64,
 }
 
 /// How long `ScreenSource::new` waits for the recorder's first frame before
@@ -398,6 +548,7 @@ impl ScreenSource {
                 frames: Some(frame_rx),
                 stop: Some(stop_tx),
                 thread: Some(thread),
+                seq: 0,
             }),
             Ok(Err(message)) => {
                 let _ = thread.join();
@@ -417,6 +568,7 @@ impl ScreenSource {
             frames: Some(frames),
             stop: None,
             thread: None,
+            seq: 0,
         }
     }
 }
@@ -426,10 +578,15 @@ impl FrameSource for ScreenSource {
         let Some(frames) = self.frames.as_ref() else {
             return Ok(None);
         };
-        Ok(drain_latest(frames).map(|frame| RawFrame {
-            width: frame.width,
-            height: frame.height,
-            rgba: frame.raw,
+        Ok(drain_latest(frames).map(|frame| {
+            let seq = self.seq;
+            self.seq += 1;
+            RawFrame {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.raw,
+                seq,
+            }
         }))
     }
 
@@ -648,6 +805,9 @@ pub struct WindowSource {
     request: Option<std::sync::mpsc::Sender<()>>,
     frames: Option<Receiver<xcap::Frame>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Per-stream monotonic frame sequencer (ADR-47): incremented once per
+    /// frame that leaves `next_frame`, tagged onto the `RawFrame`.
+    seq: u64,
 }
 
 impl WindowSource {
@@ -688,6 +848,7 @@ impl WindowSource {
             request: Some(request_tx),
             frames: Some(frame_rx),
             thread: Some(thread),
+            seq: 0,
         })
     }
 
@@ -705,6 +866,7 @@ impl WindowSource {
             request: Some(request),
             frames: Some(frames),
             thread: Some(thread),
+            seq: 0,
         }
     }
 }
@@ -720,10 +882,15 @@ impl FrameSource for WindowSource {
         if request.send(()).is_err() {
             return Ok(None);
         }
-        Ok(drain_latest(frames).map(|frame| RawFrame {
-            width: frame.width,
-            height: frame.height,
-            rgba: frame.raw,
+        Ok(drain_latest(frames).map(|frame| {
+            let seq = self.seq;
+            self.seq += 1;
+            RawFrame {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.raw,
+                seq,
+            }
         }))
     }
 
@@ -968,6 +1135,34 @@ impl SustainMonitor {
 // events sender, and the stop signal. They are the loop's whole input surface;
 // bundling them into a struct would only move the same fields behind one more
 // name. `run_desktop_session` carries the same allow.
+/// Snapshot the timing telemetry for a stats frame (ADR-47).
+///
+/// Borrowed as parameters (not captured into the `send_stats` closure) so the
+/// closure stays `Fn` and the borrow checker is happy with the mutable updates
+/// to `timing_ring`/`last_frame_seq` in the ticker arm: the select! arms are
+/// mutually exclusive, but the closure would otherwise borrow them for its whole
+/// scope.
+fn timing_snapshot(
+    ring: &FrameTimingRing,
+    last_frame_seq: &Option<u64>,
+) -> (
+    Option<u64>,
+    Option<f32>,
+    Option<f32>,
+    Option<Vec<FrameSample>>,
+) {
+    if ring.samples().is_empty() {
+        (*last_frame_seq, None, None, None)
+    } else {
+        (
+            *last_frame_seq,
+            Some(ring.capture_ms_p50()),
+            Some(ring.encode_ms_p50()),
+            Some(ring.ordered_samples()),
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_stream(
     mut source: Box<dyn FrameSource>,
@@ -995,6 +1190,8 @@ pub async fn run_stream(
 
     let mut skipped: u64 = 0;
     let mut encoded: u64 = 0;
+    let mut timing_ring = FrameTimingRing::new(32);
+    let mut last_frame_seq: Option<u64> = None;
     // The last encoded frame's dimensions — what `desktop-stats` reports, so
     // the UI's "1920×1080" reflects what is actually on the wire.
     let mut encoded_size = (profile.max_width, profile.max_height);
@@ -1011,13 +1208,21 @@ pub async fn run_stream(
     let send_stats = |events: &tokio::sync::mpsc::Sender<StreamEvent>,
                       size: (u32, u32),
                       profile: StreamProfile,
-                      status: Option<StatsStatus>| {
+                      status: Option<StatsStatus>,
+                      frame_seq: Option<u64>,
+                      capture_ms_p50: Option<f32>,
+                      encode_ms_p50: Option<f32>,
+                      frame_samples: Option<Vec<FrameSample>>| {
         let stats = DesktopStats {
             width: size.0,
             height: size.1,
             fps: profile.fps,
             target_bitrate_bps: profile.bitrate_bps,
             status,
+            frame_seq,
+            capture_ms_p50,
+            encode_ms_p50,
+            frame_samples,
         };
         let _ = events.try_send(StreamEvent::Stats(stats));
     };
@@ -1038,7 +1243,12 @@ pub async fn run_stream(
                                 // (re-arms only above the floor; ADR-24).
                                 sustain.note_bitrate_change(profile);
                                 // Reflect the effective value to the UI (spec §2.3 step 6).
-                                send_stats(&events, encoded_size, profile, None);
+                                let (fs_seq, cap_p50, enc_p50, enc_samples) =
+                                    timing_snapshot(&timing_ring, &last_frame_seq);
+                                send_stats(
+                                    &events, encoded_size, profile, None, fs_seq, cap_p50,
+                                    enc_p50, enc_samples,
+                                );
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, bps, "desktop: bitrate retarget failed");
@@ -1070,6 +1280,8 @@ pub async fn run_stream(
                                 // The stream keeps running on the current source
                                 // (ADR-22). Tell the UI, per spec §2.2.
                                 tracing::warn!(source_id = %id, error = %e, "desktop: source swap refused");
+                                let (fs_seq, cap_p50, enc_p50, enc_samples) =
+                                    timing_snapshot(&timing_ring, &last_frame_seq);
                                 send_stats(
                                     &events,
                                     encoded_size,
@@ -1078,6 +1290,10 @@ pub async fn run_stream(
                                         kind: StatsStatusKind::SelectRefused,
                                         detail: format!("could not switch source: {e}"),
                                     }),
+                                    fs_seq,
+                                    cap_p50,
+                                    enc_p50,
+                                    enc_samples,
                                 );
                             }
                         }
@@ -1093,10 +1309,25 @@ pub async fn run_stream(
                     }
                     continue;
                 };
+                // Stamp the TRUE capture moment (ADR-47): when `next_frame`
+                // returns, before downscale/crop/encode. The wall-clock epoch
+                // feeds FrameSample.captureEpochMs (the g2g base); the Instant
+                // feeds the capture→encode-start duration.
+                let capture_instant = Instant::now();
+                let capture_epoch_ms = crate::pty::now_ms();
                 let frame = crop_to_even(downscale(&frame, profile.max_width, profile.max_height));
                 let encode_start = Instant::now();
                 let data = encoder.encode(&frame)?;
                 let encode_time = encode_start.elapsed();
+                let encode_ms = encode_time.as_secs_f32() * 1000.0;
+                // Capture latency = acquisition → encode-start (ADR-47
+                // captureMsP50), in ms.
+                let capture_ms = encode_start
+                    .duration_since(capture_instant)
+                    .as_secs_f32()
+                    * 1000.0;
+                timing_ring.record(frame.seq, capture_epoch_ms, encode_ms, capture_ms);
+                last_frame_seq = Some(frame.seq);
 
                 encoded += 1;
                 encoded_size = (frame.width, frame.height);
@@ -1106,9 +1337,16 @@ pub async fn run_stream(
                 // swap's pending frame is consumed on this tick; a downgrade
                 // *below* defers its own to the next tick, because this tick's
                 // frame was encoded at the pre-downgrade size.
-                if encoded == 1 || pending_stats.is_some() {
+                let fps_period = (profile.fps.max(1.0).round() as u64).max(1);
+                let periodic = encoded % fps_period == 0;
+                if encoded == 1 || pending_stats.is_some() || periodic {
                     let status = pending_stats.take().flatten();
-                    send_stats(&events, encoded_size, profile, status);
+                    let (fs_seq, cap_p50, enc_p50, enc_samples) =
+                        timing_snapshot(&timing_ring, &last_frame_seq);
+                    send_stats(
+                        &events, encoded_size, profile, status, fs_seq, cap_p50, enc_p50,
+                        enc_samples,
+                    );
                 }
 
                 if sustain.observe(encode_time) == SustainAction::Downgrade {
@@ -1433,10 +1671,17 @@ pub fn test_source_info() -> DesktopSourceInfo {
 /// `verify_offer_identity` before the mode dispatch, so this frame is
 /// unreachable on a session whose peer was not verified. It stays a parameter
 /// (not a hard-coded `true`) so the unit test can pin both directions.
+///
+/// `cursor_in_frame` is ADR-45's flag: macOS captures the cursor in-frame
+/// (spec §3.2/§6.2), so the production call site passes `cfg!(target_os = "macos")`.
+/// No poller runs on macOS; the cursor is composited into the frame at capture.
+/// It is a parameter (not a hard-coded `cfg!`) so the unit test can pin both
+/// directions.
 pub fn frame_desktop_sources(
     sources: &[DesktopSourceInfo],
     input_enabled: bool,
     peer_verified: bool,
+    cursor_in_frame: bool,
     timestamp_ms: i64,
 ) -> String {
     let message = crate::pty::DataChannelMessage {
@@ -1446,10 +1691,27 @@ pub fn frame_desktop_sources(
             "sources": sources,
             "inputEnabled": input_enabled,
             "peerVerified": peer_verified,
+            "cursorInFrame": cursor_in_frame,
         }),
         timestamp: timestamp_ms,
     };
     serde_json::to_string(&message).expect("a frame of plain data cannot fail to serialize")
+}
+
+/// Frame a `DesktopCursorPayload` as a `desktop-cursor` control message (ADR-45,
+/// spec §2.2/§4.2). The payload is PLAINTEXT over the control channel.
+///
+/// `timestamp_ms` is `i64` for parity with `DataChannelMessage.timestamp`
+/// (`pty.rs:44`) and the sibling builders `frame_desktop_sources` and
+/// `frame_desktop_stats` (Ruling BE-T12-R1).
+pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: i64) -> String {
+    let message = crate::pty::DataChannelMessage {
+        r#type: "desktop-cursor".to_string(),
+        channel: "control".to_string(),
+        payload: cursor,
+        timestamp: timestamp_ms,
+    };
+    serde_json::to_string(&message).expect("desktop-cursor serialization")
 }
 
 /// Telemetry the agent pushes for the UI (spec §2.2/§5.1).
@@ -1462,6 +1724,14 @@ pub struct DesktopStats {
     pub target_bitrate_bps: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<StatsStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_ms_p50: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encode_ms_p50: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_samples: Option<Vec<FrameSample>>,
 }
 
 /// An agent→browser note attached to a stats frame (spec §2.2).
@@ -1498,6 +1768,46 @@ pub fn frame_desktop_stats(stats: &DesktopStats, timestamp_ms: i64) -> String {
     serde_json::to_string(&message).expect("a stats frame cannot fail to serialize")
 }
 
+/// A cursor position + shape sample on the wire (ADR-45, spec §2.2).
+///
+/// Emitted by the agent's cursor poller and sent to the browser as a
+/// `desktop-cursor` control frame. Only the agent's pure helpers construct this
+/// in unit tests; the X11 poller fills it in `cursor.rs`.
+#[allow(dead_code)]
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopCursorPayload {
+    /// Normalized 0..1 within the streamed source.
+    pub x: f64,
+    /// Normalized 0..1 within the streamed source.
+    pub y: f64,
+    /// Whether the cursor is currently visible on screen.
+    pub visible: bool,
+    /// Agent-side monotonic per-emitted-sample counter.
+    pub seq: u64,
+    /// Echoed browser-assigned input sequence, filled in by Task 12.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_input_seq: Option<u64>,
+    /// The cursor image, capped to 32 KiB of base64 (ADR-45).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<DesktopShape>,
+}
+
+/// A cursor shape: base64 PNG + hotspot, carried inside a `DesktopCursorPayload`.
+#[allow(dead_code)]
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopShape {
+    /// Base64-encoded RGBA PNG of the cursor icon (32 KiB cap at the wire level).
+    pub png: String,
+    /// Hotspot x, in pixels within the icon (wire: `hotspotX`).
+    pub hotspot_x: u32,
+    /// Hotspot y, in pixels within the icon (wire: `hotspotY`).
+    pub hotspot_y: u32,
+    /// X11 cursor serial — used for dirty-checking without re-encoding.
+    pub serial: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1516,6 +1826,7 @@ mod tests {
             width,
             height,
             rgba,
+            seq: 0,
         }
     }
 
@@ -1536,6 +1847,7 @@ mod tests {
             width,
             height,
             rgba,
+            seq: 0,
         }
     }
 
@@ -2204,7 +2516,7 @@ mod tests {
 
     #[test]
     fn frame_desktop_sources_carries_the_envelope_and_the_default_flag() {
-        let raw = frame_desktop_sources(&[test_source_info()], true, true, 7);
+        let raw = frame_desktop_sources(&[test_source_info()], true, true, true, 7);
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(value["type"], "desktop-sources");
         assert_eq!(value["channel"], "control");
@@ -2222,6 +2534,7 @@ mod tests {
             &[test_source_info()],
             false,
             true,
+            true,
             7,
         ))
         .unwrap();
@@ -2236,10 +2549,25 @@ mod tests {
             &[test_source_info()],
             true,
             false,
+            true,
             7,
         ))
         .unwrap();
         assert_eq!(unverified["payload"]["peerVerified"], false);
+        // ADR-45: `cursorInFrame` is pinned in BOTH directions. macOS captures the
+        // cursor in-frame (spec §3.2/§6.2), so the production call site passes
+        // `cfg!(target_os = "macos")`. The framing function must render whatever
+        // it is given — asserted true and false to pin both branches.
+        assert_eq!(value["payload"]["cursorInFrame"], true);
+        let cursor_out: serde_json::Value = serde_json::from_str(&frame_desktop_sources(
+            &[test_source_info()],
+            true,
+            true,
+            false,
+            7,
+        ))
+        .unwrap();
+        assert_eq!(cursor_out["payload"]["cursorInFrame"], false);
     }
 
     #[test]
@@ -2308,6 +2636,14 @@ mod tests {
                 kind: StatsStatusKind::QualityDowngraded,
                 detail: "720p (quality downgraded)".to_string(),
             }),
+            frame_seq: Some(42),
+            capture_ms_p50: None,
+            encode_ms_p50: Some(11.0),
+            frame_samples: Some(vec![FrameSample {
+                seq: 42,
+                capture_epoch_ms: 1000,
+                encode_ms: 11.0,
+            }]),
         };
         let value: serde_json::Value =
             serde_json::from_str(&frame_desktop_stats(&stats, 3)).unwrap();
@@ -2316,6 +2652,15 @@ mod tests {
         assert_eq!(value["timestamp"], 3);
         assert_eq!(value["payload"]["targetBitrateBps"], 4_000_000);
         assert_eq!(value["payload"]["status"]["kind"], "quality-downgraded");
+        assert_eq!(value["payload"]["frameSeq"], 42);
+        assert_eq!(value["payload"]["encodeMsP50"], 11.0);
+        // captureMsP50 is None -> omitted from the wire (skip_serializing_if).
+        assert!(value["payload"].get("captureMsP50").is_none());
+        assert_eq!(value["payload"]["frameSamples"][0]["seq"], 42);
+        assert_eq!(value["payload"]["frameSamples"][0]["captureEpochMs"], 1000);
+        assert_eq!(value["payload"]["frameSamples"][0]["encodeMs"], 11.0);
+        // frameSeq is Some(42) -> present.
+        assert!(value["payload"].get("frameSeq").is_some());
     }
 
     #[test]
@@ -2326,10 +2671,18 @@ mod tests {
             fps: 30.0,
             target_bitrate_bps: 6_000_000,
             status: None,
+            frame_seq: None,
+            capture_ms_p50: None,
+            encode_ms_p50: None,
+            frame_samples: None,
         };
         let value: serde_json::Value =
             serde_json::from_str(&frame_desktop_stats(&stats, 1)).unwrap();
         assert!(value["payload"].get("status").is_none());
+        assert!(value["payload"].get("frameSeq").is_none());
+        assert!(value["payload"].get("captureMsP50").is_none());
+        assert!(value["payload"].get("encodeMsP50").is_none());
+        assert!(value["payload"].get("frameSamples").is_none());
     }
 
     /// A `FrameSource` that records how often it was stopped.
@@ -2584,5 +2937,200 @@ mod tests {
         assert_eq!(abr_next_target(f64::NAN, 4_000_000), None);
         assert_eq!(abr_next_target(1.0e12, 4_000_000), Some(MAX_BITRATE_BPS));
         assert_eq!(abr_next_target(1.0, 4_000_000), Some(MIN_BITRATE_BPS));
+    }
+
+    #[test]
+    fn test_frame_timing_ring_p50_calculation() {
+        let mut ring = FrameTimingRing::new(32);
+        for i in 1..=10 {
+            ring.record(i, (1000 + i) as i64, (i * 2) as f32, (i as f32) * 0.5);
+        }
+        assert_eq!(ring.encode_ms_p50(), 11.0); // median of 2, 4, ..., 20
+        assert_eq!(ring.capture_ms_p50(), 2.75); // median of 0.5..5.0 (even -> avg of 2.5 and 3.0)
+        assert_eq!(ring.samples().len(), 10);
+    }
+
+    /// capture_ms_p50 median: odd count -> middle element; even count ->
+    /// arithmetic mean of the two middle elements.
+    #[test]
+    fn test_frame_timing_ring_capture_ms_p50_median() {
+        let mut ring = FrameTimingRing::new(8);
+        // Values: 1.0, 2.0, 3.0 (sorted). Median of 3 -> 2.0.
+        ring.record(0, 0, 0.0, 1.0);
+        ring.record(1, 0, 0.0, 2.0);
+        ring.record(2, 0, 0.0, 3.0);
+        assert_eq!(ring.capture_ms_p50(), 2.0);
+
+        // Add a 4th: values 1.0, 2.0, 3.0, 4.0. Even -> (2.0 + 3.0) / 2 = 2.5.
+        ring.record(3, 0, 0.0, 4.0);
+        assert_eq!(ring.capture_ms_p50(), 2.5);
+    }
+
+    /// An empty ring yields None for all timings (no division by zero / no bogus
+    /// 0.0 on the wire).
+    #[test]
+    fn timing_snapshot_is_none_for_an_empty_ring() {
+        let ring = FrameTimingRing::new(32);
+        let last = None;
+        let (fs, cap, enc, samples) = timing_snapshot(&ring, &last);
+        assert_eq!(fs, None);
+        assert_eq!(cap, None);
+        assert_eq!(enc, None);
+        assert_eq!(samples, None);
+    }
+
+    /// A populated ring surfaces a capture p50 in the snapshot.
+    #[test]
+    fn timing_snapshot_carries_capture_p50_when_populated() {
+        let mut ring = FrameTimingRing::new(32);
+        ring.record(1, 1000, 11.0, 3.5);
+        ring.record(2, 2000, 22.0, 4.5);
+        let last = Some(2);
+        let (fs, cap, enc, samples) = timing_snapshot(&ring, &last);
+        assert_eq!(fs, Some(2));
+        assert_eq!(cap, Some(4.0)); // median of 3.5, 4.5
+        assert_eq!(enc, Some(16.5)); // median of 11.0, 22.0
+        assert!(samples.is_some());
+        // ordering is guaranteed by the monotonic-seq test below
+    }
+
+    #[test]
+    fn frame_desktop_cursor_envelope_and_payload() {
+        let payload = DesktopCursorPayload {
+            x: 0.25,
+            y: 0.75,
+            visible: true,
+            seq: 7,
+            last_input_seq: Some(3),
+            shape: Some(DesktopShape {
+                png: "iVBORw0KGgo=".to_string(),
+                hotspot_x: 4,
+                hotspot_y: 8,
+                serial: 42,
+            }),
+        };
+        let frame = frame_desktop_cursor(&payload, 1_700_000_000);
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+
+        // Envelope fields.
+        assert_eq!(value["type"], "desktop-cursor");
+        assert_eq!(value["channel"], "control");
+        assert_eq!(value["timestamp"], 1_700_000_000);
+
+        // Payload fields — camelCase on the wire.
+        let p = &value["payload"];
+        assert_eq!(p["x"], 0.25);
+        assert_eq!(p["y"], 0.75);
+        assert_eq!(p["visible"], true);
+        assert_eq!(p["seq"], 7);
+        assert_eq!(p["lastInputSeq"], 3);
+        assert_eq!(p["shape"]["png"], "iVBORw0KGgo=");
+        assert_eq!(p["shape"]["hotspotX"], 4);
+        assert_eq!(p["shape"]["hotspotY"], 8);
+        assert_eq!(p["shape"]["serial"], 42);
+    }
+
+    #[test]
+    fn frame_desktop_cursor_omits_last_input_seq_when_none() {
+        let payload = DesktopCursorPayload {
+            x: 0.1,
+            y: 0.2,
+            visible: false,
+            seq: 1,
+            last_input_seq: None,
+            shape: None,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&frame_desktop_cursor(&payload, 0)).unwrap();
+
+        // `last_input_seq` None -> omitted from the wire (skip_serializing_if).
+        assert!(value["payload"].get("lastInputSeq").is_none());
+        // `shape` None -> omitted as well.
+        assert!(value["payload"].get("shape").is_none());
+        // But the always-present fields are still there.
+        assert_eq!(value["payload"]["x"], 0.1);
+        assert_eq!(value["payload"]["visible"], false);
+        assert_eq!(value["payload"]["seq"], 1);
+    }
+
+    #[test]
+    fn frame_desktop_cursor_includes_shape_when_some_and_omits_when_none() {
+        let shape = DesktopShape {
+            png: "AA==".to_string(),
+            hotspot_x: 1,
+            hotspot_y: 2,
+            serial: 9,
+        };
+        let with_shape = DesktopCursorPayload {
+            x: 0.0,
+            y: 0.0,
+            visible: true,
+            seq: 0,
+            last_input_seq: None,
+            shape: Some(shape.clone()),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&frame_desktop_cursor(&with_shape, 0)).unwrap();
+        assert_eq!(value["payload"]["shape"]["serial"], 9);
+
+        let without_shape = DesktopCursorPayload {
+            x: 0.0,
+            y: 0.0,
+            visible: true,
+            seq: 0,
+            last_input_seq: None,
+            shape: None,
+        };
+        let value_none: serde_json::Value =
+            serde_json::from_str(&frame_desktop_cursor(&without_shape, 0)).unwrap();
+        assert!(value_none["payload"].get("shape").is_none());
+    }
+
+    #[test]
+    fn ordered_samples_are_strictly_monotonic_when_wrapped() {
+        // 32-capacity ring, push >32 samples so `head` wraps and `ordered_samples`
+        // exercises the `[head..] ++ [..head]` concat branch (Ruling BE-T12-R3).
+        let mut ring = FrameTimingRing::new(32);
+        let mut seqs = Vec::new();
+        let mut epochs = Vec::new();
+        for i in 0..40u64 {
+            let seq = i + 1;
+            let epoch = 1_000_000 + (i as i64) * 10;
+            ring.record(seq, epoch, 1.0, 0.5);
+            seqs.push(seq);
+            epochs.push(epoch);
+        }
+
+        let ordered = ring.ordered_samples();
+        // The ring is full (capacity 32), so exactly 32 samples are retained.
+        assert_eq!(
+            ordered.len(),
+            32,
+            "a full 32-slot ring must hold exactly 32"
+        );
+
+        // The retained window is the last 32 pushed: seq 9..=40, epoch 1_008_000..=1_039_000.
+        let expected_seqs: Vec<u64> = (9..=40).collect();
+        let expected_epochs: Vec<i64> = (8..=39).map(|i| 1_000_000 + i * 10).collect();
+        let got_seqs: Vec<u64> = ordered.iter().map(|s| s.seq).collect();
+        let got_epochs: Vec<i64> = ordered.iter().map(|s| s.capture_epoch_ms).collect();
+        assert_eq!(got_seqs, expected_seqs, "seq must be the last 32 in order");
+        assert_eq!(got_epochs, expected_epochs);
+
+        // Strictly monotonically increasing for both seq and capture_epoch_ms.
+        for w in ordered.windows(2) {
+            assert!(
+                w[0].seq < w[1].seq,
+                "seq not strictly increasing: {} -> {}",
+                w[0].seq,
+                w[1].seq
+            );
+            assert!(
+                w[0].capture_epoch_ms < w[1].capture_epoch_ms,
+                "capture_epoch_ms not strictly increasing: {} -> {}",
+                w[0].capture_epoch_ms,
+                w[1].capture_epoch_ms
+            );
+        }
     }
 }

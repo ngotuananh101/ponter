@@ -53,6 +53,8 @@ openh264 = "0.9.8"     # vendored Cisco source; no network at build time
 # so the two crates resolve to one `openh264-sys2`.
 openh264-sys2 = "0.9.8"
 xcap = "0.9.8"
+x11rb = { version = "0.13", features = ["xfixes"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # On Windows, use xcap's Windows.Graphics.Capture backend instead of DXGI
 # Output Duplication. DXGI's `DuplicateOutput` fails with E_INVALIDARG

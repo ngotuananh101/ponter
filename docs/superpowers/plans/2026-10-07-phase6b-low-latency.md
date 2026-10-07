@@ -12,6 +12,17 @@
 
 ---
 
+## Plan amendments
+
+**Amendment 1 (2026-10-07, after probe P1 returned ADOPT — spike commit `943aae3`):**
+
+- **Task 18B added** (between Tasks 18 and 19, below): the ADR-49 adopt branch requires a Playwright smoke spec in CI; this plan was written P1-pending, so the smoke was not yet a task.
+- **Ruling PM-3 (smoke location + packaging):** the smoke lives at `packages/webrtc-core/test/e2e/browser-smoke.pw.ts` with `packages/webrtc-core/playwright.config.ts`; `@playwright/test` becomes a devDependency of `@ponter/webrtc-core`; the browser is **pinned via `playwright install chromium --with-deps`** in `ci-e2e.yml` (never a runner's or dev machine's system Chrome); new script `test:browser`. The vitest e2e include (`test/e2e/**/*.e2e.test.ts`) does not match `*.pw.ts`, so the two runners stay separate.
+- **P1 findings folded into Task 18B:** Xvfb `:99` is needed only for the input-echo assertion (the video path is display-independent — proven with `DISPLAY` unset); register through the UI so the IndexedDB signing keys exist (ADR-41 fail-closed); reuse `harness.ts` server/agent spawn helpers; serve the web client with the Vite dev server and allow its origin (`CORS_ORIGIN`).
+- **Probe evidence carried:** throwaway probe scripts at `.superpowers/sdd/2026-10-07-phase6b-low-latency/p1-probe-artifacts/` (`p1-probe.mjs`, `p1-echo.mjs`) are the reference recipe for Task 18B.
+
+---
+
 ## Global Constraints
 
 - **Language rules:** Dialogue/explanations in Vietnamese. Source code, variable names, CLI commands, commit messages, PR descriptions, and technical specifications strictly in English.
@@ -45,7 +56,7 @@ The five input classes or failure modes the spec implies that are most critical 
 |------|----------------|--------------|
 | `docs/spikes/2026-10-07-p1-playwright-smoke.md` | P1 Playwright spike report & adoption decision | L0 / Task 1 |
 | `docs/spikes/2026-10-07-p2-webcodecs-probe.md` | P2 WebCodecs probe report & H.264 format findings | L0 / Task 2 |
-| `docs/spikes/2026-10-07-p3-adr25-hardware-codec.md` | P3 Hardware-codec investigation report | L0 / Task 3 |
+| `docs/spikes/2026-10-07-p3-hardware-codec.md` | P3 Hardware-codec investigation report | L0 / Task 3 |
 | `packages/shared/src/types/desktop.ts` | Shared wire types: `DesktopCursorPayload`, `DesktopShape`, stats timing fields, input `seq` | L1 / Task 4 |
 | `packages/shared/test/desktop-types.test.ts` | Wire type instantiation and exhaustiveness tests | L1 / Task 4 |
 | `apps/agent/src/desktop.rs` | `RawFrame.seq`, 32-sample timing ring, rolling p50 calculation, stats serialization | L1 / Task 5, 6 |
@@ -57,14 +68,17 @@ The five input classes or failure modes the spec implies that are most critical 
 | `packages/desktop-core/src/client.ts` | Apply playout tuning at track resolution; cursor control dispatch | L2 / Task 9, L3 / Task 13 |
 | `packages/desktop-core/test/client.test.ts` | Playout tuning unit tests & cursor dispatch tests | L2 / Task 9, L3 / Task 13 |
 | `apps/agent/Cargo.toml` | Add direct `x11rb` (`xfixes`) & `image` (`png`) dependencies for non-musl | L3 / Task 10 |
+| `apps/agent/Cargo.lock` | Additive lock entry for the two direct deps (required for `--locked` CI; ruling BE-T10-R4) | L3 / Task 10 |
 | `apps/agent/src/cursor.rs` | 60Hz poller, X11 XFixes cursor fetch, dirty check, PNG encoding, Windows stub | L3 / Task 10, 11 |
 | `apps/web/src/lib/desktop-input.ts` | `contentBox()` shared geometry, `toClient()` inverse, extrapolation function | L3 / Task 14 |
-| `apps/web/src/test/desktop-input.test.ts` | Unit tests for letterbox mapping, bounds clamping, and extrapolation | L3 / Task 14 |
+| `apps/web/src/__tests__/desktop-input.test.ts` | Unit tests for letterbox mapping, bounds clamping, and extrapolation | L3 / Task 14 |
 | `apps/web/src/components/desktop/DesktopView.vue` | Overlay canvas, local echo when controlling, latency footer telemetry | L3 / Task 15 |
 | `apps/web/src/stores/terminal.ts` | Pinia tab cursor state, `desktopEchoMs` tracking with bounded map | L3 / Task 16 |
 | `apps/web/src/__tests__/DesktopView.test.ts` | Overlay rendering, `cursor: none`, footer latency display tests | L3 / Task 15, 16 |
 | `apps/web/src/lib/webcodecs/` | Worker script, WebCodecs controller, fallback state machine (if P2 passes) | L4 / Task 17 |
 | `packages/webrtc-core/test/e2e/desktop.e2e.test.ts` | E2E cursor round-trip, view-only stream, stats timing, echo summary | L5 / Task 18 |
+| `packages/webrtc-core/test/e2e/browser-smoke.pw.ts` | Playwright smoke (ADR-49 adopt): connect → track → sources → echo → playout knob → g2g | L5 / Task 18B |
+| `packages/webrtc-core/playwright.config.ts` | Playwright config (chromium, no Xvfb needed for video path) | L5 / Task 18B |
 | `docs/ARCHITECTURE.md` | Phase 6b architecture updates and §11 performance table | L5 / Task 19 |
 | `docs/demos/2026-10-07-phase6b-low-latency-demo.md` | Phase 6b verification report, benchmarks at 100/50/0ms, security notes | L5 / Task 19 |
 
@@ -530,8 +544,16 @@ Expected: PASS.
 
 - [ ] **Step 5: Commit changes**
 ```bash
-git commit -m "feat(agent): implement X11 cursor poller with XFixes and PNG compression" -- apps/agent/Cargo.toml apps/agent/src/cursor.rs
+git commit -m "feat(agent): implement X11 cursor poller with XFixes and PNG compression" -- apps/agent/Cargo.toml apps/agent/Cargo.lock apps/agent/src/cursor.rs apps/agent/src/desktop.rs apps/agent/src/main.rs
 ```
+
+> **Amendment 2 (2026-10-07, after Task 10 landed as `4ddf993`):** the commit path list above
+> originally named only `Cargo.toml` + `cursor.rs`. It must also carry `Cargo.lock` (adding the
+> direct deps rewrites the `ponter-agent` lock entry — verified: `cargo check --locked` fails
+> without it; ruling BE-T10-R4), `main.rs` (the `mod cursor;` declaration — without it the module
+> is dead and its tests pass vacuously; ruling BE-T10-R1), and `desktop.rs` (the wire structs
+> `DesktopCursorPayload`/`DesktopShape` live in the wire-shape module; ruling BE-T10-R5). The
+> actual landed commit used the corrected list.
 
 ---
 
@@ -582,7 +604,7 @@ git commit -m "feat(agent): add cursorInFrame flag and Windows cursor sampler st
 - [ ] **Step 1: Implement frame_desktop_cursor builder**
 In `apps/agent/src/desktop.rs`:
 ```rust
-pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: u64) -> String {
+pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: i64) -> String {
     serde_json::to_string(&serde_json::json!({
         "type": "desktop-cursor",
         "channel": "control",
@@ -591,6 +613,13 @@ pub fn frame_desktop_cursor(cursor: &DesktopCursorPayload, timestamp_ms: u64) ->
     })).expect("desktop-cursor serialization")
 }
 ```
+
+> **Amendment 3 (2026-10-07, pre-Task-11):** `timestamp_ms` is `i64`, not `u64` — signature parity
+> with `DataChannelMessage.timestamp` (`pty.rs:44`) and both sibling builders
+> (`frame_desktop_sources`, `frame_desktop_stats`), which are called with `crate::pty::now_ms()`
+> (ruling BE-T12-R1). Also: the cursor task spawn must be cfg-gated so the macOS and musl targets
+> compile clean — macOS has no poller (ADR-45: `cursorInFrame: true`) and the X11 module is
+> `unix + non-musl + non-macos` (ruling BE-T12-R2).
 
 - [ ] **Step 2: Add cursor polling task in main.rs**
 In `apps/agent/src/main.rs`:
@@ -652,7 +681,7 @@ git commit -m "feat(desktop-core): dispatch desktop-cursor frames and stamp inpu
 
 **Files:**
 - Modify: `apps/web/src/lib/desktop-input.ts`
-- Create: `apps/web/src/test/desktop-input.test.ts`
+- Create: `apps/web/src/__tests__/desktop-input.test.ts` (repo convention; the file already exists — extend it)
 
 **Interfaces:**
 - Consumes: `contentBox()` letterbox rectangle calculation
@@ -668,7 +697,7 @@ Assert:
 3. `extrapolateCursor` predicts linear trajectory up to 100ms and clamps at 100ms without overshoot.
 
 - [ ] **Step 2: Run tests to verify failure**
-Run: `pnpm --filter @ponter/web test src/test/desktop-input.test.ts`
+Run: `pnpm --filter @ponter/web test src/__tests__/desktop-input.test.ts`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement geometry and extrapolation functions**
@@ -678,13 +707,17 @@ In `apps/web/src/lib/desktop-input.ts`:
 - Implement `extrapolateCursor`: compute velocity from last two samples `(p0, p1)`, apply velocity for `min(now - p1.time, 100ms)`, clamp result to `0..1`.
 
 - [ ] **Step 4: Run tests and typecheck**
-Run: `pnpm --filter @ponter/web test src/test/desktop-input.test.ts && pnpm --filter @ponter/web typecheck`
+Run: `pnpm --filter @ponter/web test src/__tests__/desktop-input.test.ts && pnpm --filter @ponter/web typecheck`
 Expected: PASS.
 
 - [ ] **Step 5: Commit changes**
 ```bash
-git commit -m "feat(web): add contentBox geometry and cursor extrapolation pure function" -- apps/web/src/lib/desktop-input.ts apps/web/src/test/desktop-input.test.ts
+git commit -m "feat(web): add contentBox geometry and cursor extrapolation pure function" -- apps/web/src/lib/desktop-input.ts apps/web/src/__tests__/desktop-input.test.ts
 ```
+
+> **Amendment 4 (2026-10-07, pre-Task-14):** the test path was `apps/web/src/test/`; the repo
+> convention is `apps/web/src/__tests__/` (ruling R-FE-1-adjacent, FE pre-flight — the file
+> `apps/web/src/__tests__/desktop-input.test.ts` already exists and is extended, not created).
 
 ---
 
@@ -781,7 +814,7 @@ git commit -m "feat(web): manage cursor state and input-echo latency in terminal
 
 **Files:**
 - Create/Modify: `apps/web/src/lib/webcodecs/` (or doc note if P2 fails)
-- Test: `apps/web/src/test/webcodecs-controller.test.ts`
+- Test: `apps/web/src/__tests__/webcodecs-controller.test.ts` (repo convention; ruling R-FE-6)
 
 **Interfaces:**
 - Consumes: Probe P2 findings, `RTCRtpScriptTransform`, `VideoDecoder`
@@ -872,6 +905,45 @@ git commit -m "test(e2e): verify cursor round-trip, view-only streaming, and lat
 
 ---
 
+### Task 18B: Playwright Browser Smoke (ADR-49 adopt branch)
+
+**Files:**
+- Create: `packages/webrtc-core/playwright.config.ts`
+- Create: `packages/webrtc-core/test/e2e/browser-smoke.pw.ts`
+- Modify: `packages/webrtc-core/package.json` (devDependency `@playwright/test`, script `test:browser`)
+- Modify: `.github/workflows/ci-e2e.yml` (install pinned browser + run `test:browser`)
+
+**Interfaces:**
+- Consumes: `harness.ts` helpers (`setupE2E`, `seed`, `spawnAgent`, `waitForAgentOnline`, `waitForAgentSigningKey`), fresh agent binary, server port 8787, Vite dev server on 5173, `CORS_ORIGIN` allowing the web origin
+- Produces: one CI smoke spec proving the ADR-49 proof list under a real browser; the ADR-47 g2g protocol prints `[6b g2g] n=<count> min=<ms> median=<ms> max=<ms>`
+
+- [ ] **Step 1: Add Playwright to `@ponter/webrtc-core`**
+Add `@playwright/test` as a devDependency and a `test:browser` script (`playwright test`). Run `pnpm install` and commit the lockfile change path-limited.
+
+- [ ] **Step 2: Write `playwright.config.ts`**
+Chromium project only; `testDir: 'test/e2e'`, `testMatch: '**/*.pw.ts'`; `workers: 1`, `fullyParallel: false`; generous `timeout: 120_000`. No `webServer` entry — the spec spawns server + Vite itself via `harness.ts` (same discipline as the vitest e2e).
+
+- [ ] **Step 3: Write the smoke spec**
+`test/e2e/browser-smoke.pw.ts`:
+1. `setupE2E()`; `seed({ capabilities: ['desktop'] })`; `spawnAgent(..., ['--desktop-source', 'test'])`; wait online + signing key.
+2. Start the web client: Vite dev server `--host 127.0.0.1 --port 5173` with `VITE_API_URL=http://127.0.0.1:8787`; server env `CORS_ORIGIN` allows `http://127.0.0.1:5173`.
+3. `page.goto` → register **through the UI** (`/register`) so IndexedDB holds the ECDH + Ed25519 keys (ADR-41 fail-closed otherwise).
+4. Create agent + session via REST; click `[data-test="connect-desktop-<id>"]`.
+5. Assert the ADR-49 proof list: `connectionState === 'connected'`; remote video track present (`<video>.srcObject`); `[data-test="desktop-stats"]` visible; with `--allow-input`, one pointer move over the video → agent log shows `desktop-input applied` and the toggle shows `Controlling`; `page.evaluate` on the app's real `RTCPeerConnection` receiver shows the applied knob (`jitterBufferTarget === 100` and/or `playoutDelayHint === 0.1`).
+6. Carry the ADR-47 g2g protocol (test-pattern bar decode, §ADR-47 item 4) and print `[6b g2g] n=<count> min=<ms> median=<ms> max=<ms>`.
+7. Input-echo assertion runs under Xvfb (`DISPLAY=:99`); the video-only assertions must pass with `DISPLAY` unset (P1 finding — assert nothing display-dependent before the input step).
+
+- [ ] **Step 4: Wire CI**
+In `ci-e2e.yml`: install the pinned browser (`pnpm --filter @ponter/webrtc-core exec playwright install chromium --with-deps`) and run `pnpm --filter @ponter/webrtc-core test:browser` in the same job discipline as the vitest e2e (fresh binary, exclusive 8787, Xvfb `:99`).
+
+- [ ] **Step 5: Run the smoke locally and commit**
+Run: `pnpm --filter @ponter/webrtc-core test:browser` (fresh binary, Xvfb :99). Expected: PASS, g2g line printed.
+```bash
+git commit -m "test(e2e): add Playwright browser smoke (ADR-49 adopt)" -- packages/webrtc-core/playwright.config.ts packages/webrtc-core/test/e2e/browser-smoke.pw.ts packages/webrtc-core/package.json pnpm-lock.yaml .github/workflows/ci-e2e.yml
+```
+
+---
+
 ### Task 19: Architecture Spec Update & Demo Documentation (ADR-47)
 
 **Files:**
@@ -883,8 +955,9 @@ git commit -m "test(e2e): verify cursor round-trip, view-only streaming, and lat
 - Produces: Reconciled repo architecture documentation and comprehensive Phase 6b demo artifact.
 
 - [ ] **Step 1: Update ARCHITECTURE.md**
-- Update §8 (Phase 6): Mark Phase 6b complete with delivered ADR-45..49.
-- Update §11 (Performance table): Fill in measured component latencies (capture, encode, echo round-trip) at 100/50/0ms playout targets.
+- §8 (heading `## 8. Lộ trình Triển khai`, line ~871): replace the stale Phase 6 blockquote (~line 1001) — remove "6b chưa thiết kế / sẽ có spec riêng" — with 6b complete + ADR-45..49 delivered + links to the 6b spec and demo doc. Do not touch Phase 7 (~1003) or `## 9.` (~1009).
+- §8 Phase 5 checkboxes (~lines 993–997): flip `- [ ]` → `- [x]` for WS1–WS5 (Phase 5 shipped; PM-2 ruling).
+- §11 (heading `## 11. Performance Targets`, line ~1122; table 3 cols `Metric | Target | Method`): add measured desktop-latency rows — capture→encode, input-echo round-trip, glass-to-glass @ 100/50/0 ms — each with provenance in the Method column (protocol, sample count, test name), phrased as *measured*, not as a promise. Keep the hardware row (~1128) as "chưa chốt" and link the P3 finding only (adoption not committed).
 - Record cursor platform matrix honestly (X11 full, Windows compile-checked, macOS in-frame, Wayland uncommitted).
 
 - [ ] **Step 2: Write demo document**

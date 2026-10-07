@@ -8,6 +8,8 @@
 // Desktop streaming is unavailable on musl (see Cargo.toml): the module is
 // compiled out entirely, so the musl artifact stays terminal-only.
 #[cfg(not(target_env = "musl"))]
+mod cursor;
+#[cfg(not(target_env = "musl"))]
 mod desktop;
 mod e2ee;
 // `input` is gated with `desktop`, not independently: `to_absolute` takes a
@@ -29,7 +31,7 @@ use std::collections::HashMap;
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 #[cfg(not(target_env = "musl"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -1935,8 +1937,13 @@ async fn run_desktop_session(
     // ADR-42: `true` is a structural fact, not an assumption — ADR-41 gates
     // admission on `verify_offer_identity`, so `run_desktop_session` (and thus
     // this frame) only runs on a session whose peer identity was verified.
-    let sources_frame =
-        desktop::frame_desktop_sources(&sources, cfg.allow_input, true, crate::pty::now_ms());
+    let sources_frame = desktop::frame_desktop_sources(
+        &sources,
+        cfg.allow_input,
+        true,
+        cfg!(target_os = "macos"),
+        crate::pty::now_ms(),
+    );
 
     // The geometry `to_absolute` (spec §6.2) maps normalized input into. It is
     // the source the session started on, taken from the enumeration so the
@@ -2056,6 +2063,23 @@ async fn run_desktop_session(
     // The task is `'static`, so clone the Arc identity into it (same reason as
     // `allow_input` being copied out of `cfg`).
     let cfg_identity = std::sync::Arc::clone(&cfg.identity);
+    // ADR-47 / BE-T12: `last_input_seq` is shared between the control task
+    // (writes the last applied browser input seq) and the cursor task (reads
+    // it to stamp `lastInputSeq` on each cursor frame). Hoisted before the
+    // spawn so both tasks can own an `Arc` clone.
+    let last_input_seq: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let last_input_seq_for_control = Arc::clone(&last_input_seq);
+    // `current_source` is borrowed by the control task's input path AND
+    // consumed by the cursor poller; clone the cursor share before `control_task`
+    // moves the original into its `async move` block.
+    #[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+    let cursor_source = current_source.clone();
+    // BE-T12: hand the control data channel to the cursor task via a oneshot
+    // BE-T12: hand the control data channel to the cursor task via a oneshot
+    // once the control task has resolved it. The cursor task waits on `dc_rx`
+    // regardless of `allow_input` — view-only watchers still track the remote
+    // cursor (ADR-45, spec note on input gate).
+    let (dc_tx, dc_rx) = tokio::sync::oneshot::channel::<Arc<dyn DataChannel>>();
     let control_task = tokio::spawn(async move {
         // The control channel opens after the answer; wait for it, but never
         // block the stream on it — a viewer that never opens the picker still
@@ -2071,6 +2095,11 @@ async fn run_desktop_session(
             tracing::debug!(session_id = %session_id, "no control channel opened; media-only session");
             return;
         };
+        // BE-T12: publish the resolved data channel to the cursor task before
+        // the control loop starts consuming messages. `let _ =` ignores the
+        // case where the cursor task already gave up (it is cfg-gated off on
+        // macOS/Windows/musl, where `dc_rx` is simply never awaited).
+        let _ = dc_tx.send(Arc::clone(&dc));
         if let Err(e) = dc.send_text(&sources_frame).await {
             tracing::debug!(error = %e, "sending desktop-sources failed");
             return;
@@ -2173,10 +2202,12 @@ async fn run_desktop_session(
                                     }
                                 }
                                 if let Some(injector) = injector.as_mut() {
-                                    input::apply_if_allowed(
+                                    if let Some(seq) = input::apply_if_allowed(
                                         allow_input, text, &current_source, injector.as_mut(),
                                         crate::pty::now_ms(),
-                                    );
+                                    ) {
+                                        last_input_seq_for_control.store(seq, Ordering::Relaxed);
+                                    }
                                 }
                             } else {
                                 tracing::debug!("dropping desktop-input: input disabled");
@@ -2228,6 +2259,63 @@ async fn run_desktop_session(
         // no-op: the first reason already won.
         let _ = end_tx_for_control.try_send("the control channel closed");
     });
+
+    // BE-T12: cursor poller task. Runs only on Linux (unix, non-macos, non-musl);
+    // on macOS the cursor is composited in-frame (ADR-45), and on Windows/musl the
+    // desktop module does not exist at all. `None` on those targets keeps every CI
+    // build compiling clean (Ruling BE-T12-R2).
+    #[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+    let cursor_task = {
+        let last_input_seq = Arc::clone(&last_input_seq);
+        tokio::spawn(async move {
+            // Wait for the control task to resolve the data channel. If it never
+            // does (no control channel opened), the cursor stream is silently
+            // disabled — a view-only watcher still gets video.
+            let dc = match dc_rx.await {
+                Ok(dc) => dc,
+                Err(_) => {
+                    tracing::debug!(
+                        "cursor task: control channel never opened; cursor stream disabled"
+                    );
+                    return;
+                }
+            };
+            let sampler = match crate::cursor::platform::X11CursorSampler::connect() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!(error = %e, "X11 cursor sampler unavailable; cursor stream disabled");
+                    return;
+                }
+            };
+            let mut poller = crate::cursor::platform::CursorPoller::new(sampler, cursor_source);
+            let mut ticker = tokio::time::interval(Duration::from_nanos(1_000_000_000 / 60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                ticker.tick().await;
+                match poller.poll() {
+                    Ok(Some(mut payload)) => {
+                        let seq = last_input_seq.load(Ordering::Relaxed);
+                        payload.last_input_seq = if seq == 0 { None } else { Some(seq) };
+                        let frame = desktop::frame_desktop_cursor(&payload, crate::pty::now_ms());
+                        if let Err(e) = dc.send_text(&frame).await {
+                            tracing::debug!(error = %e, "sending desktop-cursor frame failed");
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "cursor poller failed; stopping cursor stream");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    #[cfg(not(all(unix, not(target_os = "macos"), not(target_env = "musl"))))]
+    let cursor_task: Option<tokio::task::JoinHandle<()>> = None;
+    #[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+    let cursor_task = Some(cursor_task);
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let mut stream = tokio::spawn(desktop::run_stream(
@@ -2295,6 +2383,12 @@ async fn run_desktop_session(
     // The control dispatcher parks on the data channel's `poll()`, which only
     // ends when the channel closes; abort it so it cannot outlive the session.
     control_task.abort();
+    // BE-T12: abort the cursor poller beside the control dispatcher so neither
+    // outlives the session. `cursor_task` is `None` on macOS/Windows/musl where
+    // it was never spawned (Ruling BE-T12-R2).
+    if let Some(task) = cursor_task {
+        task.abort();
+    }
     // The auto-ABR sampler only sends into the control channel; abort it beside
     // the dispatcher so neither outlives the session.
     if let Some(task) = abr_task {
@@ -3380,7 +3474,10 @@ mod tests {
 
         let mut injector = NoopInjector;
         let applied = crate::input::apply_if_allowed(false, &raw, &source, &mut injector, 0);
-        assert!(!applied, "gate closed must drop the frame and return false");
+        assert!(
+            applied.is_none(),
+            "gate closed must drop the frame and return None"
+        );
     }
 
     // ------------------------------------------------------------------

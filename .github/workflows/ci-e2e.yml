@@ -15,6 +15,7 @@ on:
       - 'packages/shared/**'
       - 'apps/agent/**'
       - 'apps/server/**'
+      - 'apps/web/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
@@ -26,6 +27,7 @@ on:
       - 'packages/shared/**'
       - 'apps/agent/**'
       - 'apps/server/**'
+      - 'apps/web/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
@@ -78,3 +80,9 @@ jobs:
 
       - name: Run the E2E suite
         run: pnpm --filter @ponter/webrtc-core test:e2e
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @ponter/webrtc-core exec playwright install chromium --with-deps
+
+      - name: Run browser smoke
+        run: pnpm --filter @ponter/webrtc-core test:browser

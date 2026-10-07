@@ -495,4 +495,124 @@ describe('DesktopView', () => {
     });
     expect(wrapper.find('video').attributes('controls')).toBeUndefined();
   });
+
+  describe('cursor overlay canvas', () => {
+    it('renders a video with cursor-none class when inputOn is true', async () => {
+      const wrapper = mountWithChrome({
+        desktopInputEnabled: true,
+        desktopPeerVerified: true,
+      });
+      await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+      const video = wrapper.find('video');
+      expect(video.classes()).toContain('cursor-none');
+    });
+
+    it('does not add cursor-none when input is off', () => {
+      const wrapper = mountWithChrome({
+        desktopInputEnabled: true,
+        desktopPeerVerified: true,
+      });
+      const video = wrapper.find('video');
+      expect(video.classes()).not.toContain('cursor-none');
+    });
+
+    it('renders an overlay canvas with the expected data-test attribute', () => {
+      const wrapper = mountWithChrome({
+        desktopInputEnabled: true,
+        desktopPeerVerified: true,
+      });
+      const canvas = wrapper.find('[data-test="desktop-cursor-canvas"]');
+      expect(canvas.exists()).toBe(true);
+      expect(canvas.element.tagName.toLowerCase()).toBe('canvas');
+    });
+
+    it('positions the canvas with pointer-events-none absolute inset-0', () => {
+      const wrapper = mountWithChrome();
+      const canvas = wrapper.find('[data-test="desktop-cursor-canvas"]');
+      expect(canvas.classes()).toContain('pointer-events-none');
+      expect(canvas.classes()).toContain('absolute');
+      expect(canvas.classes()).toContain('inset-0');
+    });
+
+    it('hides the overlay canvas when desktopCursorInFrame is true', async () => {
+      const wrapper = mountWithChrome();
+      const canvas = wrapper.find('[data-test="desktop-cursor-canvas"]');
+      expect(canvas.classes()).not.toContain('hidden');
+
+      await wrapper.setProps({
+        tab: desktopTab({
+          desktopSources: twoSources,
+          desktopSourceId: 'monitor:1',
+          desktopCursorInFrame: true,
+        }),
+      });
+      expect(canvas.classes()).toContain('hidden');
+    });
+
+    it('hides the overlay canvas when cursor visible is false', async () => {
+      const wrapper = mountWithChrome();
+      await wrapper.setProps({
+        tab: desktopTab({
+          desktopSources: twoSources,
+          desktopSourceId: 'monitor:1',
+          desktopCursor: {
+            x: 0.5,
+            y: 0.5,
+            visible: false,
+            seq: 1,
+          },
+        }),
+      });
+      const canvas = wrapper.find('[data-test="desktop-cursor-canvas"]');
+      expect(canvas.classes()).toContain('hidden');
+    });
+
+    it('shows the overlay canvas when cursor is visible and in-frame is false', async () => {
+      const wrapper = mountWithChrome();
+      await wrapper.setProps({
+        tab: desktopTab({
+          desktopSources: twoSources,
+          desktopSourceId: 'monitor:1',
+          desktopCursor: {
+            x: 0.5,
+            y: 0.5,
+            visible: true,
+            seq: 1,
+          },
+          desktopCursorInFrame: false,
+        }),
+      });
+      const canvas = wrapper.find('[data-test="desktop-cursor-canvas"]');
+      expect(canvas.classes()).not.toContain('hidden');
+    });
+  });
+
+  describe('latency telemetry footer', () => {
+    it('surfaces echo latency when desktopEchoMs is defined', async () => {
+      const wrapper = mountWithChrome({
+        desktopEchoMs: 42,
+      });
+      const echo = wrapper.find('[data-test="desktop-echo"]');
+      expect(echo.exists()).toBe(true);
+      expect(echo.text()).toContain('42ms');
+      expect(echo.text()).toContain('echo');
+    });
+
+    it('does not render echo telemetry when desktopEchoMs is undefined', () => {
+      const wrapper = mountWithChrome();
+      expect(wrapper.find('[data-test="desktop-echo"]').exists()).toBe(false);
+    });
+
+    it('still renders the footer when only echo is available (no sources or stats)', () => {
+      const wrapper = mount(DesktopView, {
+        props: {
+          tab: desktopTab({
+            status: 'active',
+            desktopEchoMs: 120,
+          }),
+        },
+      });
+      expect(wrapper.find('[data-test="desktop-echo"]').exists()).toBe(true);
+    });
+  });
 });

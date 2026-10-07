@@ -41,6 +41,7 @@ import type {
   DesktopInput,
   DesktopSourceInfo,
   DesktopStats,
+  DesktopCursorPayload,
 } from '@ponter/shared';
 import { apiClient } from '@/services/client';
 import { tokenStorage } from '@/services/token-storage';
@@ -80,6 +81,12 @@ export interface TabItem {
   desktopInputEnabled?: boolean;
   /** Desktop tabs only: true iff the agent verified the peer identity (Phase 6a ADR-42). */
   desktopPeerVerified?: boolean;
+  /** Desktop tabs only: the latest cursor-within-frame payload (Phase 6b ADR-45). */
+  desktopCursor?: DesktopCursorPayload;
+  /** Desktop tabs only: true iff the agent is emitting cursor-within-frame updates (Phase 6b ADR-45). */
+  desktopCursorInFrame?: boolean;
+  /** Desktop tabs only: one-way input echo latency in ms (Phase 6b ADR-47). */
+  desktopEchoMs?: number;
   /** Files tabs only: current directory ('' = root, spec §7.2). */
   filesPath?: string;
   /** Files tabs only: the latest listing (spec §7.2). */
@@ -233,6 +240,8 @@ export const useTerminalStore = defineStore('terminal', () => {
       client: DesktopClient;
       sessionId: string;
       unsubscribers: Unsubscribe[];
+      /** Monotonic input seq -> Date.now() when sent, for echo latency (ADR-47). */
+      inputSentTimes: Map<number, number>;
     }
   >();
 
@@ -827,14 +836,16 @@ export const useTerminalStore = defineStore('terminal', () => {
       const client = new DesktopClient(
         agentId,
         peer,
-        undefined,
+        { playoutDelayMs: 100 },
         e2eeContext ? new TerminalE2ee(e2eeContext) : undefined,
       );
+      const inputSentTimes = new Map<number, number>();
       desktopConnections.set(agentId, {
         peer,
         client,
         sessionId: sessionResp.id,
         unsubscribers,
+        inputSentTimes,
       });
 
       // The tab may have been closed while the handshake ran; `closeTab` found
@@ -868,6 +879,7 @@ export const useTerminalStore = defineStore('terminal', () => {
           tab.desktopSources = payload.sources;
           tab.desktopInputEnabled = payload.inputEnabled;
           tab.desktopPeerVerified = payload.peerVerified;
+          tab.desktopCursorInFrame = payload.cursorInFrame === true;
           const defaultId = payload.sources.find((s) => s.default)?.id;
           if (defaultId) confirmedSourceId = defaultId;
           tab.desktopSourceId ??= defaultId;
@@ -886,6 +898,21 @@ export const useTerminalStore = defineStore('terminal', () => {
           }
           // A stats frame with no refusal note confirms a pending switch.
           if (tab.desktopSourceId) confirmedSourceId = tab.desktopSourceId;
+        }),
+        client.onCursor((cursor) => {
+          const tab = tabs.value.find((t) => t.id === tabId);
+          if (!tab) return;
+          tab.desktopCursor = cursor;
+          if (
+            cursor.lastInputSeq != null &&
+            inputSentTimes.has(cursor.lastInputSeq)
+          ) {
+            tab.desktopEchoMs = Math.max(
+              0,
+              Date.now() - inputSentTimes.get(cursor.lastInputSeq)!,
+            );
+            inputSentTimes.delete(cursor.lastInputSeq);
+          }
         }),
       );
 
@@ -1280,13 +1307,40 @@ export const useTerminalStore = defineStore('terminal', () => {
     conn.client.setBitrate(bitrateBps);
   }
 
-  /** Forward one input event to the agent (Week 9, spec §7.3). */
+  /**
+   * Forward one input event to the agent (Week 9, spec §7.3).
+   *
+   * PM-5: pointer-move, pointer-button, and wheel events are stamped with a
+   * monotonic `seq` by `DesktopClient.sendInput` (Task 13). After the call,
+   * the seq is read back off the same object to record the send timestamp in
+   * the connection's bounded `inputSentTimes` map, so `onCursor` can later
+   * compute one-way echo latency. The map is bounded: entries older than 5 s
+   * are purged, and if it grows past 100 entries the oldest are trimmed.
+   */
   function sendDesktopInput(tabId: string, event: DesktopInput): void {
     const tab = tabs.value.find((t) => t.id === tabId);
     if (tab?.kind !== 'desktop') return;
     const conn = desktopConnections.get(tab.agentId);
     if (!conn) return;
     conn.client.sendInput(event);
+    if (
+      (event.kind === 'pointer-move' ||
+        event.kind === 'pointer-button' ||
+        event.kind === 'wheel') &&
+      'seq' in event &&
+      typeof (event as { seq?: number }).seq === 'number'
+    ) {
+      const seq = (event as { seq: number }).seq;
+      const now = Date.now();
+      conn.inputSentTimes.set(seq, now);
+      if (conn.inputSentTimes.size > 100) {
+        for (const [s, t] of conn.inputSentTimes) {
+          if (now - t > 5000 || conn.inputSentTimes.size > 100) {
+            conn.inputSentTimes.delete(s);
+          }
+        }
+      }
+    }
   }
 
   /** The files-only fields a tab needs while transfers run. */
