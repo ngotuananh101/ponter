@@ -205,7 +205,10 @@ describe('WizardView', () => {
   });
 
   it('never writes to webview storage', async () => {
-    vi.mocked(invoke).mockResolvedValue({ ok: true, message: 'Server reachable' });
+    vi.mocked(invoke).mockResolvedValue({
+      ok: true,
+      message: 'Server reachable',
+    });
 
     const wrapper = mount(WizardView);
     await wrapper
@@ -313,8 +316,8 @@ describe('WizardView', () => {
 
     expect(store.step).toBe('autoStart');
     expect(wrapper.find('[data-testid="wizard-complete"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="wizard-autostart-checkbox"]').exists()).toBe(
-      true,
-    );
+    expect(
+      wrapper.find('[data-testid="wizard-autostart-checkbox"]').exists(),
+    ).toBe(true);
   });
 });

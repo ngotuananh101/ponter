@@ -81,11 +81,11 @@ async function finish() {
     >
       <h2>Input Gate</h2>
       <p data-testid="wizard-input-help">
-        Two gates protect your input. Gate A (this step) is the
-        --allow-input preference that defaults to closed; enabling it allows
-        the relay to forward keyboard/mouse events. Gate B is the peer-identity
-        verification performed at admission (wired in Task 7) — even with Gate A
-        open, only verified peers can send input events.
+        Two gates protect your input. Gate A (this step) is the --allow-input
+        preference that defaults to closed; enabling it allows the relay to
+        forward keyboard/mouse events. Gate B is the peer-identity verification
+        performed at admission (wired in Task 7) — even with Gate A open, only
+        verified peers can send input events.
       </p>
 
       <label>
