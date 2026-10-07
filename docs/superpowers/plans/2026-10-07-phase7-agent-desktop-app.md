@@ -21,6 +21,16 @@
 - **No server or wire changes:** registration/login/device CRUD reuse existing endpoints; the signaling protocol, WS2 identity, and E2EE are untouched.
 - **Owned files per task** — a task edits only the files its **Files:** block names.
 
+## Owner Actions (gating — the owner must do these; the plan cannot)
+
+These are the points where the plan stops and the **owner** must act. Each is surfaced again at its task.
+
+1. **Updater signing keypair — required before L5 / Task 11.** Run `tauri signer generate` to create a keypair; keep the **private** key + password as CI secrets (e.g. `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`); the **public** key is compiled into the app. Without this, L5 cannot ship. → Task 11 Step 0.
+2. **macOS code-signing + notarization (recommended for L4 distribution).** A Developer ID Application certificate + notarization credentials are needed for a `.dmg` users can open without a Gatekeeper warning. Optional for a build-only artifact; required for a real public release. → Task 9/10.
+3. **Windows code-signing certificate (recommended for L4 distribution).** An Authenticode certificate avoids SmartScreen warnings on the `.msi`. Optional for a build-only artifact. → Task 9/10.
+
+> The owner has asked to be **reminded at the exact step** each key is needed. Surface item 1 before Task 11 begins; surface items 2-3 before Task 9/10.
+
 ## Review Focus
 
 The failure modes the spec implies but no single task's happy-path test covers — each gets a test in the owning task:
@@ -571,6 +581,8 @@ git commit -m "feat(desktop): per-platform auto-start (ADR-55)"
 - Consumes: the built frontend + backend.
 - Produces: bundler targets `.deb`/`.AppImage` (Linux), `.dmg` (macOS), `.msi` (Windows).
 
+> **⚠ REMIND THE OWNER (distribution signing).** For a public release, macOS needs a Developer ID cert + notarization and Windows needs an Authenticode cert; without them the installers build but show Gatekeeper/SmartScreen warnings. Ask the owner whether to configure signing now (production) or ship build-only artifacts for this phase.
+
 - [ ] **Step 1: Configure bundle targets**
 
 In `tauri.conf.json` `bundle.targets`, set the platform targets and app identifier/version.
@@ -636,6 +648,12 @@ git commit -m "ci(desktop): 3-OS build + bundle + release (ADR-56)"
 **Interfaces:**
 - Consumes: the Tauri updater plugin + a signed `latest.json` manifest.
 - Produces: `check_update() -> Option<UpdateInfo>`, `apply_update()`; refuses unsigned/older manifests.
+
+> **⏸ OWNER ACTION REQUIRED BEFORE THIS TASK.** Generate the updater keypair with `tauri signer generate`, store the private key + password as CI secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and give the public key to the implementer to compile in. **Pause and remind the owner here** — do not start Task 11 until the key exists.
+
+- [ ] **Step 0: Owner generates the updater keypair (BLOCKING)**
+
+Owner runs `tauri signer generate -w ~/.tauri/ponter.key`; adds the private key + password as CI secrets; shares only the **public** key for `tauri.conf.json` `plugins.updater.pubkey`.
 
 - [ ] **Step 1: Write the failing decision test**
 
