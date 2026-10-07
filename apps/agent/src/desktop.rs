@@ -1737,6 +1737,46 @@ pub fn frame_desktop_stats(stats: &DesktopStats, timestamp_ms: i64) -> String {
     serde_json::to_string(&message).expect("a stats frame cannot fail to serialize")
 }
 
+/// A cursor position + shape sample on the wire (ADR-45, spec §2.2).
+///
+/// Emitted by the agent's cursor poller and sent to the browser as a
+/// `desktop-cursor` control frame. Only the agent's pure helpers construct this
+/// in unit tests; the X11 poller fills it in `cursor.rs`.
+#[allow(dead_code)]
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopCursorPayload {
+    /// Normalized 0..1 within the streamed source.
+    pub x: f64,
+    /// Normalized 0..1 within the streamed source.
+    pub y: f64,
+    /// Whether the cursor is currently visible on screen.
+    pub visible: bool,
+    /// Agent-side monotonic per-emitted-sample counter.
+    pub seq: u64,
+    /// Echoed browser-assigned input sequence, filled in by Task 12.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_input_seq: Option<u64>,
+    /// The cursor image, capped to 32 KiB of base64 (ADR-45).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<DesktopShape>,
+}
+
+/// A cursor shape: base64 PNG + hotspot, carried inside a `DesktopCursorPayload`.
+#[allow(dead_code)]
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopShape {
+    /// Base64-encoded RGBA PNG of the cursor icon (32 KiB cap at the wire level).
+    pub png: String,
+    /// Hotspot x, in pixels within the icon (wire: `hotspotX`).
+    pub hotspot_x: u32,
+    /// Hotspot y, in pixels within the icon (wire: `hotspotY`).
+    pub hotspot_y: u32,
+    /// X11 cursor serial — used for dirty-checking without re-encoding.
+    pub serial: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

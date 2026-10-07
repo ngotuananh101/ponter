@@ -8,6 +8,8 @@
 // Desktop streaming is unavailable on musl (see Cargo.toml): the module is
 // compiled out entirely, so the musl artifact stays terminal-only.
 #[cfg(not(target_env = "musl"))]
+mod cursor;
+#[cfg(not(target_env = "musl"))]
 mod desktop;
 mod e2ee;
 // `input` is gated with `desktop`, not independently: `to_absolute` takes a
