@@ -22,6 +22,15 @@
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ3QUZGQzFCNTgzRTM1NTEKUldSUk5UNVlHL3l2Unp3cTc0SE1ETWUxTlRPZ3FGUHI1cVoxN2d6a0xzL3J2V2dmOEJvczVaMkIK",
+      "endpoints": [
+        "https://github.com/ngotuananh101/ponter/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
