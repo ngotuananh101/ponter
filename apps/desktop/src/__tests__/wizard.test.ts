@@ -108,17 +108,20 @@ describe('wizard store', () => {
       serverUrl: '',
       allowInput: false,
     });
+    // finish() advances to autoStart but does NOT set completed (R11).
+    expect(store.step).toBe('autoStart');
+    expect(store.completed).toBe(false);
   });
 
-  it('finish() calls save_wizard_settings with serverUrl and allowInput', async () => {
+  it('finish() calls save_wizard_settings and advances to autoStart', async () => {
     const store = useWizardStore();
-    store.serverUrl = 'http://localhost:8787';
+    // Fast-forward to inputGate with probes.
     store.serverProbe = okProbe;
-    store.advance();
+    store.advance(); // server → capture
     store.captureProbe = okProbe;
-    store.advance();
-    store.advance(); // → autoStart
+    store.advance(); // capture → inputGate
 
+    store.serverUrl = 'http://localhost:8787';
     store.allowInput = true;
 
     vi.mocked(invoke).mockResolvedValue(undefined);
@@ -127,7 +130,73 @@ describe('wizard store', () => {
       serverUrl: 'http://localhost:8787',
       allowInput: true,
     });
+    // finish() advances to autoStart but does NOT set completed (R11).
+    expect(store.step).toBe('autoStart');
+    expect(store.completed).toBe(false);
+  });
+
+  it('complete() calls set_autostart then sets completed', async () => {
+    const store = useWizardStore();
+    store.step = 'autoStart';
+    store.autoStart = true;
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await store.complete();
+    expect(invoke).toHaveBeenCalledWith('set_autostart', { enabled: true });
     expect(store.completed).toBe(true);
+  });
+
+  it('complete() with autoStart false calls set_autostart with false', async () => {
+    const store = useWizardStore();
+    store.step = 'autoStart';
+    store.autoStart = false;
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await store.complete();
+    expect(invoke).toHaveBeenCalledWith('set_autostart', { enabled: false });
+    expect(store.completed).toBe(true);
+  });
+
+  it('setAutoStart() calls invoke and updates autoStart', async () => {
+    const store = useWizardStore();
+    store.autoStart = false;
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await store.setAutoStart(true);
+    expect(invoke).toHaveBeenCalledWith('set_autostart', { enabled: true });
+    expect(store.autoStart).toBe(true);
+  });
+
+  it('loadAutoStart() calls is_autostart_enabled and updates autoStart', async () => {
+    const store = useWizardStore();
+    store.autoStart = false;
+
+    vi.mocked(invoke).mockResolvedValue(true);
+    await store.loadAutoStart();
+    expect(invoke).toHaveBeenCalledWith('is_autostart_enabled');
+    expect(store.autoStart).toBe(true);
+  });
+
+  /** setAutoStart surfaces errors and reverts the optimistic update (R11). */
+  it('setAutoStart() rejects and reverts autoStart on error', async () => {
+    const store = useWizardStore();
+    store.autoStart = false;
+
+    vi.mocked(invoke).mockRejectedValue(new Error('OS refused'));
+    await expect(store.setAutoStart(true)).rejects.toThrow('OS refused');
+    expect(store.autoStart).toBe(false); // reverted
+    expect(store.autoStartError).toContain('OS refused');
+  });
+
+  /** complete() does NOT set completed when set_autostart rejects (R11). */
+  it('complete() keeps completed false on set_autostart error', async () => {
+    const store = useWizardStore();
+    store.step = 'autoStart';
+    store.autoStart = true;
+
+    vi.mocked(invoke).mockRejectedValue(new Error('nope'));
+    await expect(store.complete()).rejects.toThrow('nope');
+    expect(store.completed).toBe(false);
   });
 
   it('probeServer stores the result and returns it', async () => {
@@ -186,6 +255,7 @@ describe('wizard store', () => {
     store.captureProbe = okProbe;
     store.advance();
     store.completed = true;
+    store.autoStartError = 'some error';
 
     store.reset();
     expect(store.step).toBe('server');
@@ -308,16 +378,52 @@ describe('WizardView', () => {
     await flushPromises();
     await nextTick();
 
-    // Check the input checkbox and finish
+    // Check the input checkbox and click Continue (finish)
     await wrapper.find('[data-testid="wizard-input-checkbox"]').setValue(true);
     await wrapper.find('[data-testid="wizard-finish"]').trigger('click');
     await flushPromises();
     await nextTick();
 
+    // finish() saves settings and advances to autoStart (step 4), but does NOT
+    // set completed — step 4 is the final step (R11).
     expect(store.step).toBe('autoStart');
-    expect(wrapper.find('[data-testid="wizard-complete"]').exists()).toBe(true);
+    expect(store.completed).toBe(false);
+    expect(wrapper.find('[data-testid="wizard-autostart-help"]').exists()).toBe(
+      true,
+    );
     expect(
       wrapper.find('[data-testid="wizard-autostart-checkbox"]').exists(),
     ).toBe(true);
+    expect(
+      wrapper.find('[data-testid="wizard-autostart-finish"]').exists(),
+    ).toBe(true);
+  });
+
+  it('autoStart checkbox toggle calls set_autostart', async () => {
+    const wrapper = mount(WizardView);
+    const store = useWizardStore();
+    store.step = 'autoStart';
+    await nextTick();
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    const checkbox = wrapper.find('[data-testid="wizard-autostart-checkbox"]');
+    await checkbox.setValue(true);
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith('set_autostart', { enabled: true });
+  });
+
+  it('autostart finish calls complete() which sets completed', async () => {
+    const wrapper = mount(WizardView);
+    const store = useWizardStore();
+    store.step = 'autoStart';
+    store.autoStart = true;
+    await nextTick();
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await wrapper
+      .find('[data-testid="wizard-autostart-finish"]')
+      .trigger('click');
+    await flushPromises();
+    expect(store.completed).toBe(true);
   });
 });

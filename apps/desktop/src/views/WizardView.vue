@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { watch } from 'vue';
 import { useWizardStore } from '@/stores/wizard';
 
 const store = useWizardStore();
@@ -17,12 +18,41 @@ async function probeCapture() {
   }
 }
 
+/** Step 3: persist settings + advance to autoStart (R11). */
 async function finish() {
   await store.finish();
-  if (store.completed) {
-    store.advance();
+}
+
+/** Step 4: apply auto-start toggle + mark complete (R11). */
+async function complete() {
+  await store.complete();
+}
+
+/** When the user toggles the auto-start checkbox, apply it immediately (R11).
+ * The store reverts the checkbox on error and surfaces the message. */
+async function onAutoStartChange(enabled: boolean) {
+  try {
+    await store.setAutoStart(enabled);
+  } catch {
+    // Error is surfaced via store.autoStartError; the checkbox was already
+    // reverted by setAutoStart keeping autoStart in sync.
   }
 }
+
+/** Load the real auto-start state from the OS when step 4 becomes active
+ * (R11). Uses a watch on `store.step` so it fires every time the wizard
+ * (re)enters the autoStart step, not only on initial mount. */
+watch(
+  () => store.step,
+  (newStep) => {
+    if (newStep === 'autoStart') {
+      store.loadAutoStart().catch(() => {
+        /* error surfaced via autoStartError */
+      });
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -34,7 +64,11 @@ async function finish() {
         Enter your Ponter server URL to verify connectivity.
       </p>
 
+      <label for="wizard-server-url-input">
+        <span class="sr-only">Server URL</span>
+      </label>
       <input
+        id="wizard-server-url-input"
         type="url"
         data-testid="wizard-server-url"
         aria-label="Server URL"
@@ -103,7 +137,7 @@ async function finish() {
         :disabled="store.loading"
         @click="finish"
       >
-        {{ store.loading ? 'Saving...' : 'Finish' }}
+        {{ store.loading ? 'Saving...' : 'Continue' }}
       </button>
     </div>
 
@@ -113,18 +147,32 @@ async function finish() {
       data-testid="wizard-step-auto-start"
     >
       <h2>All Set</h2>
-      <p data-testid="wizard-complete">
-        Wizard complete. Verified settings are saved to the agent's runtime
-        state. Installs the launch entry — wiring arrives in Task 8 (ADR-55).
+      <p data-testid="wizard-autostart-help">
+        Adds Ponter to your system's startup so the agent runs on login. Takes
+        effect at the next login.
       </p>
+
       <label>
         <input
           type="checkbox"
           data-testid="wizard-autostart-checkbox"
-          v-model="store.autoStart"
+          :checked="store.autoStart"
+          @change="onAutoStartChange($event.target.checked)"
         />
         Auto-start the agent on login
       </label>
+
+      <p v-if="store.autoStartError" data-testid="wizard-autostart-error">
+        {{ store.autoStartError }}
+      </p>
+
+      <button
+        data-testid="wizard-autostart-finish"
+        :disabled="store.loading"
+        @click="complete"
+      >
+        {{ store.loading ? 'Saving...' : 'Finish' }}
+      </button>
     </div>
   </div>
 </template>
