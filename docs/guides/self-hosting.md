@@ -108,7 +108,8 @@ directory, in a `config.json` file:
 - Windows: `%APPDATA%\com.ponter.desktop\config.json`
 
 This file holds non-secret preferences only — the server URL, the input-gate
-choice, and the theme. The access token lives in the OS keychain, never here.
+choice, and the theme. No secret is stored here: the access token stays in memory
+and the refresh token lives in the OS keychain.
 
 The desktop app also has a dark-mode toggle in the top-right corner. It
 defaults to the OS `prefers-color-scheme` and stores the user's choice through
