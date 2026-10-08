@@ -167,8 +167,7 @@ pub async fn login(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::thread;
+    use crate::test_util::{ensure_provider, spawn_stub};
 
     #[test]
     fn parses_success_response() {
@@ -191,56 +190,6 @@ mod tests {
         assert_eq!(map_login_error(401, body), "Invalid username or password");
         // Non-envelope body falls back to HTTP status.
         assert_eq!(map_login_error(500, "not json"), "Login failed (HTTP 500)");
-    }
-
-    /// Spin up a tiny HTTP/1.1 stub server on an ephemeral port that returns
-    /// `canned_status`/`canned_body` for a single request. Returns the bound
-    /// `http://127.0.0.1:port` URL. The server reads the request header block
-    /// (up to and including `\r\n\r\n`) and ignores any body, then writes the
-    /// canned response with `Connection: close` so the client knows the
-    /// response is complete.
-    fn spawn_stub(canned_status: u16, canned_body: String) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                // Read bytes until we've seen the end-of-headers marker.
-                // We accumulate into a Vec so we can search for the marker across
-                // partial reads.
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    match stream.read(&mut chunk) {
-                        Ok(0) => break, // client closed
-                        Ok(n) => {
-                            buf.extend_from_slice(&chunk[..n]);
-                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                // Respond regardless of how much of the body we read.
-                let body = canned_body.clone();
-                let resp = format!(
-                    "HTTP/1.1 {status} OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
-                    status = canned_status,
-                    len = body.len(),
-                    body = body,
-                );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-            }
-        });
-
-        format!("http://{addr}")
-    }
-
-    fn ensure_provider() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
     }
 
     #[test]

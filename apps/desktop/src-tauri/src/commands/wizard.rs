@@ -176,48 +176,7 @@ pub fn save_wizard_settings_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::thread;
-
-    /// Spin up a tiny HTTP/1.1 stub server on an ephemeral port that returns
-    /// `canned_status`/`canned_body` for a single request. Returns the bound
-    /// `http://127.0.0.1:port` URL. Reused from `login.rs`'s `spawn_stub`
-    /// pattern (R11).
-    fn spawn_stub(canned_status: u16, canned_body: String) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    match stream.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buf.extend_from_slice(&chunk[..n]);
-                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                let body = canned_body.clone();
-                let resp = format!(
-                    "HTTP/1.1 {status} OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
-                    status = canned_status,
-                    len = body.len(),
-                    body = body,
-                );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-            }
-        });
-
-        format!("http://{addr}")
-    }
+    use crate::test_util::{ensure_provider, spawn_stub, spawn_stub_capturing};
 
     // ---- R2: map_health_response unit tests ----
 
@@ -247,56 +206,6 @@ mod tests {
         let r = map_health_response(503, r#"{"status":"ok"}"#);
         assert!(!r.ok);
         assert_eq!(r.message, "server returned HTTP 503");
-    }
-
-    /// Spawn a stub that captures the request line and returns it via a channel.
-    /// Returns `(base_url, receiver)` so the test can inspect what path the
-    /// client requested.
-    fn spawn_stub_capturing(
-        canned_status: u16,
-        canned_body: String,
-    ) -> (String, std::sync::mpsc::Receiver<String>) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    match stream.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buf.extend_from_slice(&chunk[..n]);
-                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-
-                // Extract the request line (first line up to \r\n).
-                if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-                    let line = buf[..nl].to_vec();
-                    let _ = tx.send(String::from_utf8_lossy(&line).to_string());
-                }
-
-                let body = canned_body.clone();
-                let resp = format!(
-                    "HTTP/1.1 {status} OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
-                    status = canned_status,
-                    len = body.len(),
-                    body = body,
-                );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-            }
-        });
-
-        (format!("http://{addr}"), rx)
     }
 
     #[test]
@@ -363,10 +272,6 @@ mod tests {
     }
 
     // ---- R2: probe_server against spawn_stub ----
-
-    fn ensure_provider() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
 
     #[test]
     fn probe_server_success() {

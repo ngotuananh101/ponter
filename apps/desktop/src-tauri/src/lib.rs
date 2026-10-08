@@ -2,6 +2,9 @@ pub mod commands;
 pub mod keychain;
 pub mod state;
 
+#[cfg(test)]
+mod test_util;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -12,6 +15,9 @@ pub fn run() {
             #[cfg(not(target_env = "musl"))]
             commands::wizard::probe_capture,
             commands::wizard::save_wizard_settings,
+            commands::devices::register_device,
+            commands::devices::list_devices,
+            commands::devices::delete_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
