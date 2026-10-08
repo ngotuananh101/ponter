@@ -142,14 +142,28 @@ jobs:
       #   APPLE_ID: ${{ secrets.APPLE_ID }}
       #   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       - name: Build (Tauri bundle)
-        run: pnpm --filter @ponter/desktop tauri build
+        # On the tag/dispatch path, the signing secrets are available and we
+        # enable updater artifact generation via a config overlay so the bundler
+        # emits per-installer `.sig` files (consumed by the release job's
+        # latest.json assembly). On PR/branch pushes the overlay is NOT passed
+        # and NO signing key is required — `tauri build` stays green with zero
+        # secrets (createUpdaterArtifacts defaults to false in tauri.conf.json).
+        run: |
+          set -e
+          if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ] \
+            || { [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+                 && [ "${{ inputs.dry_run }}" != "true" ]; }; then
+            # Tag / real-dispatch: enable updater artifact signing.
+            pnpm --filter @ponter/desktop tauri build \
+              --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            # PR / branch push: no signing, no updater artifacts.
+            pnpm --filter @ponter/desktop tauri build
+          fi
         env:
-          # Set to skip keychain integration tests on headless runners (no
-          # secret-service session bus). Honoured by every keychain test:
-          # the round-trip test (Task 3) and Task 4's two login integration
-          # tests (login_stores_refresh_token_in_keychain,
-          # login_surfaces_server_error).
           PONTER_KEYCHAIN_SKIP: 1
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
@@ -236,6 +250,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
       - name: Download all build artifacts
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
         with:
@@ -297,29 +316,32 @@ jobs:
           fi
           echo "prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
 
-      - name: Assemble signed latest.json manifest (ADR-57)
+      - name: Assemble latest.json manifest (ADR-57)
         # Runs ONLY on tag/dispatch (the release job is gated above). CANNOT be
         # exercised at PR time — this path is CI-proven only on tag/dispatch.
         #
-        # The Tauri bundler already emitted a `.sig` file next to every installer
-        # (e.g. `foo.deb` + `foo.deb.sig`) using TAURI_SIGNING_PRIVATE_KEY.
-        # This step assembles a `latest.json` manifest that aggregates, per
-        # platform target triple, the installer asset URL + its minisign
-        # signature. The manifest body (without the top-level `signature` field)
-        # is then signed with the SAME private key, and that signature is written
-        # as `latest.json`'s top-level `signature` field.
+        # The Tauri bundler (run in the `build` matrix with
+        # `createUpdaterArtifacts: true` on the tag path) emitted a `.sig` file
+        # next to every installer (e.g. `foo.deb` + `foo.deb.sig`). This step
+        # assembles the `latest.json` manifest that the Tauri updater plugin
+        # fetches from `/releases/latest/download/latest.json`.
         #
-        # Canonical signed-bytes decision (mirrors `verify_manifest` in
-        # `src/commands/updater.rs`): the signed bytes are the canonical JSON
-        # serialization of the manifest body WITHOUT the `signature` field,
-        # produced by `serde_json::to_string` (compact, no trailing whitespace).
-        # The release step and the verifier MUST both exclude the `signature`
-        # field before signing/verifying. Any divergence invalidates every
-        # signature.
+        # Manifest shape (matches `tauri-plugin-updater` 2.13.2 `RemoteRelease`
+        # static format — verified in src/updater.rs::get_urls):
+        #   { version, notes, pub_date, platforms: { "{os}-{arch}-{bundle_type}": { url, signature } } }
+        # - keys are `{os}-{arch}-{bundle_type}` (e.g. linux-x86_64-deb,
+        #   darwin-aarch64-app, windows-x86_64-msi), NOT target triples.
+        # - signature is PER-PLATFORM (the minisign sig of each installer binary),
+        #   embedded inside each platform entry. There is NO top-level signature:
+        #   the plugin does NOT read one for static manifests (verified in
+        #   `verify_signature`, called during `Update::download`, which checks the
+        #   downloaded bytes against the per-platform signature).
+        # - url points at the release asset via the tag-consistent
+        #   `/releases/download/<tag>/<file>` path (the `/latest/download/`
+        #   endpoint the app fetches redirects here, so the asset URLs resolve).
+        #
+        # No signing happens HERE — signatures come from the build matrix.
         shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -e
           cd dist
@@ -328,52 +350,42 @@ jobs:
           version="${raw#v}"
           version="${version#desktop-v}"
           GH="https://github.com/${GITHUB_REPOSITORY}/releases/download/${raw}"
-          # Build the manifest body (platforms map keyed by Tauri target triple).
           GH="$GH" VERSION="$version" node <<'NODE'
           const fs = require("fs");
           const GH = process.env.GH;
           const version = process.env.VERSION;
+          // Map installer file → Tauri updater target key `{os}-{arch}-{bundle_type}`.
+          // bundle_type names per `tauri-plugin-updater::Installer::name`:
+          //   appimage | deb | rpm | app | msi | nsis
           const targetFor = (f) => {
-            if (/\.(deb|rpm|AppImage)$/.test(f)) return "x86_64-unknown-linux-gnu";
-            if (/\.dmg$/.test(f)) return "aarch64-apple-darwin";
-            if (/\.(msi|exe)$/.test(f)) return "x86_64-pc-windows-msvc";
+            // Order matters: check more specific suffixes first.
+            if (/\.AppImage$/.test(f))        return { os: "linux",   arch: "x86_64", bundle: "appimage" };
+            if (/\.deb$/.test(f))            return { os: "linux",   arch: "x86_64", bundle: "deb" };
+            if (/\.rpm$/.test(f))            return { os: "linux",   arch: "x86_64", bundle: "rpm" };
+            if (/\.dmg$/.test(f))            return { os: "darwin",  arch: "aarch64", bundle: "app" };
+            if (/\.msi$/.test(f))            return { os: "windows", arch: "x86_64", bundle: "msi" };
+            if (/\.exe$/.test(f))            return { os: "windows", arch: "x86_64", bundle: "nsis" };
             return null;
           };
           const platforms = {};
           for (const f of fs.readdirSync(".")) {
-            const target = targetFor(f);
-            if (!target) continue;
+            const t = targetFor(f);
+            if (!t) continue;
             const sigFile = f + ".sig";
             if (!fs.existsSync(sigFile)) continue;
             const sig = fs.readFileSync(sigFile, "utf8").trim();
-            // First matching artifact per target wins (one installer per OS).
-            if (!platforms[target]) {
-              platforms[target] = { url: GH + "/" + f, signature: sig };
+            const key = `${t.os}-${t.arch}-${t.bundle}`;
+            // First matching artifact per target wins (one installer per OS/bundle).
+            if (!platforms[key]) {
+              platforms[key] = { url: GH + "/" + f, signature: sig };
             }
           }
-          const body = JSON.stringify({
-            version, notes: null,
-            pub_date: new Date().toISOString(), platforms
-          });
-          fs.writeFileSync("latest.json.body", body);
-          console.log("Manifest body:\n" + body);
+          const manifest = { version, notes: null, pub_date: new Date().toISOString(), platforms };
+          fs.writeFileSync("latest.json", JSON.stringify(manifest));
+          console.log("latest.json:\n" + JSON.stringify(manifest, null, 2));
           NODE
           echo
-          # Sign the body with the Tauri signer (minisign). `tauri signer sign`
-          # reads TAURI_SIGNING_PRIVATE_KEY (_PATH) from env and writes
-          # `latest.json.body.sig`. The base64 signature is also printed.
-          tauri signer sign latest.json.body
-          # Inject the top-level signature to form the final latest.json.
-          SIG=$(cat latest.json.body.sig)
-          node <<NODE
-          const fs = require("fs");
-          const body = JSON.parse(fs.readFileSync("latest.json.body","utf8"));
-          body.signature = "$SIG".trim();
-          fs.writeFileSync("latest.json", JSON.stringify(body));
-          console.log("latest.json:\n" + JSON.stringify(body));
-          NODE
-          echo
-          echo "Assembled latest.json + manifest signature."
+          echo "Assembled latest.json with per-platform signatures (no top-level sig)."
 
 
       - name: Create GitHub Release
