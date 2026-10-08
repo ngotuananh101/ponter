@@ -61,7 +61,7 @@ from a four-level precedence chain:
 3. Build-time default `PONTER_DEFAULT_SERVER_URL`
 4. Fallback `http://localhost:8787`
 
-See [Self-hosting guide — §3.1](docs/guides/self-hosting.md#31-server-url-and-config-precedence)
+See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
 for the full precedence table and usage notes.
 
 ## Configuration
@@ -75,7 +75,7 @@ keychain (ADR-52).
 - **macOS:** `~/Library/Application Support/com.ponter.desktop/config.json`
 - **Windows:** `%APPDATA%\com.ponter.desktop\config.json`
 
-See [Self-hosting guide — §3.1](docs/guides/self-hosting.md#31-server-url-and-config-precedence)
+See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
 for config location details.
 
 ## Source layout
@@ -89,8 +89,8 @@ for config location details.
 
 ## Further reading
 
-- Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Self-hosting guide: [docs/guides/self-hosting.md](docs/guides/self-hosting.md)
+- Architecture overview: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)
+- Self-hosting guide: [docs/guides/self-hosting.md](../../docs/guides/self-hosting.md)
 
 ## Recommended IDE setup
 
