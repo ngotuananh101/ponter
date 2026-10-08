@@ -101,4 +101,15 @@ PONTER_DEFAULT_SERVER_URL=https://ponter.example.com \
 
 End users can still change the server from the app's first screen (or via
 "Change" on the login screen); their choice persists in the app config
-directory.
+directory, in a `config.json` file:
+
+- Linux: `~/.config/com.ponter.desktop/config.json`
+- macOS: `~/Library/Application Support/com.ponter.desktop/config.json`
+- Windows: `%APPDATA%\com.ponter.desktop\config.json`
+
+This file holds non-secret preferences only — the server URL, the input-gate
+choice, and the theme. The access token lives in the OS keychain, never here.
+
+The desktop app also has a dark-mode toggle in the top-right corner. It
+defaults to the OS `prefers-color-scheme` and stores the user's choice through
+the same `config.json`, so the selection is kept across restarts.
