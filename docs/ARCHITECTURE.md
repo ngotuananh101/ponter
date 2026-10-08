@@ -1006,7 +1006,13 @@ gantt
 
 ### Phase 7: Agent Desktop App (Tuần 19-20)
 
-> **Chưa thiết kế.** Đóng gói `ponter-agent` thành ứng dụng desktop: đăng nhập tài khoản, đăng ký/quản lý thiết bị (nối tiếp Admin Management), wizard setup trực quan (server, quyền màn hình, cổng input, auto-start), installer/tray/auto-update. Ứng viên framework: Tauri — chốt trong spec. Phụ thuộc WS2 (keypair thật cho agent). Nội dung chi tiết sẽ bổ sung khi có spec riêng.
+> **Đang triển khai — phần lớn đã ship.** Đóng gói `ponter-agent` thành ứng dụng desktop: đăng nhập tài khoản, đăng ký/quản lý thiết bị (nối tiếp Admin Management), wizard setup trực quan (server, quyền màn hình, cổng input, auto-start), installer/tray/auto-update. **Framework CHỐT: Tauri v2.** Chi tiết: spec `docs/superpowers/specs/2026-10-07-phase7-agent-desktop-app-design.md` (ADR-50..58), plan `docs/superpowers/plans/2026-10-07-phase7-agent-desktop-app.md`.
+>
+> **Đã merged `main`:** Task 0/0b scaffolding (dialog width, PR #52 `9f1efba` + fix #54 `26feeb4`); Task 1 L0 spike nhúng Tauri shell — **GATING PASS** (#53 `6fee3e4`, evidence `docs/spikes/2026-10-07-phase7-tauri-spike.md`); Task 2 tách `ponter-agent` thành lib + CLI mỏng (ADR-50, #55 `e830d28`); Task 3 Tauri backend skeleton + keychain wrapper (ADR-51/52, #56 `3f75487`); Task 4 login tài khoản + lưu token trong keychain (ADR-52, #57 `53846de`); Task 5 wizard setup với probe thật (ADR-53, #58 `85ef040`); Task 6 đăng ký/quản lý thiết bị (ADR-54, #59 `2e1fd5c`); Task 7 tray icon + lifecycle (ADR-55, #60 `a358622`); Task 8 per-platform auto-start (ADR-55, #61 `e607e13`); desktop UI sync sang shadcn-vue (#62 `a5dcc63`); L4 packaging + CI build 3-OS (ADR-56, #64 `1c82218`); frontend design audit Phase B (#65 `4526910`).
+>
+> **Đang làm (chưa merge):** L5 Task 11 auto-update có ký manifest (ADR-57) — nhánh `phase7/task-11-updater` (`b0bf020`).
+>
+> **Chưa hoàn tất / giới hạn:** macOS/Windows code-signing = **build-only phase này** (installer ship unsigned; hook ký đã comment trong `.github/workflows/build-desktop.yml`); release job chỉ chạy khi tag hoặc manual dispatch non-dry-run (chưa được PR CI chứng minh — chỉ tag/dispatch thật mới chạy, và tạo GitHub Release công khai); Task 11 chưa merge. Phụ thuộc WS2 (keypair thật cho agent) — đã đóng.
 
 ---
 
