@@ -118,7 +118,7 @@ function handleSubmit() {
             placeholder="Username (min 3 chars)"
             autocomplete="username"
             :disabled="loading"
-            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
+            class="bg-background/60 text-sm focus-visible:ring-primary"
           />
         </div>
 
@@ -137,7 +137,7 @@ function handleSubmit() {
             placeholder="name@example.com"
             autocomplete="email"
             :disabled="loading"
-            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
+            class="bg-background/60 text-sm focus-visible:ring-primary"
           />
         </div>
 
@@ -156,7 +156,7 @@ function handleSubmit() {
             placeholder="Password (min 8 chars)"
             autocomplete="new-password"
             :disabled="loading"
-            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
+            class="bg-background/60 text-sm focus-visible:ring-primary"
           />
         </div>
 
@@ -175,7 +175,7 @@ function handleSubmit() {
             placeholder="Repeat password"
             autocomplete="new-password"
             :disabled="loading"
-            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
+            class="bg-background/60 text-sm focus-visible:ring-primary"
           />
         </div>
       </CardContent>

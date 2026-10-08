@@ -191,7 +191,7 @@ onUnmounted(() => {
            and tab strip and gives the session the whole screen. -->
       <div
         ref="sessionBodyRef"
-        class="workspace-session relative min-h-0 flex-1 overflow-hidden bg-[#090d16]"
+        class="workspace-session relative min-h-0 flex-1 overflow-hidden bg-terminal-bg"
       >
         <template v-if="terminalStore.activeTab">
           <!-- A terminal tab exists before its session does: the store pushes it
@@ -241,7 +241,7 @@ onUnmounted(() => {
                 terminalStore.activeTab.kind === 'files') &&
               terminalStore.activeTab.status === 'error'
             "
-            class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
+            class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/95 p-6 text-center text-foreground"
           >
             <p class="text-sm text-destructive font-semibold">
               Could not connect to {{ terminalStore.activeTab.title }}
@@ -336,10 +336,10 @@ onUnmounted(() => {
       >
         <div class="flex items-center gap-3">
           <span
-            class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400"
+            class="flex items-center gap-1.5 text-success"
           >
             <span
-              class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"
+              class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"
             ></span>
             <span>P2P Direct</span>
           </span>
@@ -377,7 +377,7 @@ onUnmounted(() => {
           </span>
           <span class="text-border">|</span>
           <span class="flex items-center gap-1">
-            <ShieldCheck class="w-3 h-3 text-emerald-500" />
+            <ShieldCheck class="w-3 h-3 text-primary" />
             <span>DTLS 1.2 / SCTP</span>
           </span>
         </div>

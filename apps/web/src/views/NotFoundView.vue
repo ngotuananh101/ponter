@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 
 <template>
   <div
-    class="flex flex-col items-center justify-center min-h-[calc(100vh-4rem)] p-4 text-center"
+    class="flex flex-col items-center justify-center min-h-[calc(100vh-var(--header-height))] p-4 text-center"
   >
     <h1 class="text-6xl font-extrabold text-primary">404</h1>
     <h2 class="text-2xl font-bold tracking-tight mt-4">Page not found</h2>

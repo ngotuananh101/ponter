@@ -115,7 +115,7 @@ async function handleLogout() {
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
             "
           >
-            <ShieldCheck class="w-4 h-4 text-violet-500" />
+            <ShieldCheck class="w-4 h-4 text-primary" />
             Admin
           </router-link>
         </nav>
@@ -124,10 +124,10 @@ async function handleLogout() {
       <div class="flex items-center gap-3">
         <div
           v-if="authStore.isAuthenticated"
-          class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-mono"
+          class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-primary/20 bg-primary/10 text-primary text-xs font-mono"
         >
           <span
-            class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"
+            class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"
           ></span>
           <span>DTLS Secured</span>
         </div>
@@ -176,7 +176,7 @@ async function handleLogout() {
                 </span>
                 <Badge
                   variant="secondary"
-                  class="font-mono text-[10px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-none"
+                  class="font-mono text-[10px] px-1.5 py-0 bg-primary/10 text-primary border-none"
                 >
                   TOKEN AUTH
                 </Badge>

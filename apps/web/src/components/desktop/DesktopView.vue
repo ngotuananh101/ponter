@@ -311,7 +311,7 @@ const inputHandlers = computed(() => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full w-full bg-[#090d16] overflow-hidden">
+  <div class="flex flex-col h-full w-full bg-terminal-bg overflow-hidden">
     <!-- Video container: fills the remaining height above the footer status bar. -->
     <div
       class="relative flex-1 min-h-0 w-full flex items-center justify-center"
@@ -345,7 +345,7 @@ const inputHandlers = computed(() => {
 
       <div
         v-if="tab.status === 'error'"
-        class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
+        class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/95 p-6 text-center text-foreground"
       >
         <p class="text-sm text-destructive font-semibold">
           Could not open the desktop stream for {{ tab.title }}
@@ -400,7 +400,7 @@ const inputHandlers = computed(() => {
         <span
           v-if="tab.desktopPeerVerified"
           data-test="desktop-peer-verified"
-          class="flex items-center gap-1 text-emerald-500"
+          class="flex items-center gap-1 text-primary"
           title="This session's peer identity was verified by the agent"
         >
           <ShieldCheck class="w-3.5 h-3.5" />
@@ -442,7 +442,7 @@ const inputHandlers = computed(() => {
 
           <div
             v-if="settingsOpen"
-            class="absolute bottom-full left-0 mb-1.5 flex items-center gap-1.5 rounded-md border border-border bg-[#090d16]/95 p-2 shadow-lg text-xs"
+            class="absolute bottom-full left-0 mb-1.5 flex items-center gap-1.5 rounded-md border border-border bg-background/95 p-2 shadow-lg text-xs text-foreground"
           >
             <label
               class="flex items-center gap-1 text-muted-foreground whitespace-nowrap"

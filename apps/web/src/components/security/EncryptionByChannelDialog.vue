@@ -31,7 +31,7 @@ defineEmits<{ (e: 'update:open', value: boolean): void }>();
         <table class="w-full text-xs">
           <thead>
             <tr
-              class="text-left text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/60"
+              class="text-left text-[10px] text-muted-foreground border-b border-border/60"
             >
               <th class="pb-2 font-medium">Channel</th>
               <th class="pb-2 font-medium">Mechanism</th>

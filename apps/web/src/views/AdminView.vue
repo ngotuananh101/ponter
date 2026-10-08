@@ -253,7 +253,7 @@ onMounted(() => {
       <button
         type="button"
         data-test="tab-overview"
-        class="px-3 py-1.5 rounded-md font-medium transition-all"
+        class="px-3 py-1.5 rounded-md font-medium transition-colors"
         :class="
           activeTab === 'overview'
             ? 'bg-card text-foreground shadow-xs'
@@ -267,7 +267,7 @@ onMounted(() => {
       <button
         type="button"
         data-test="tab-users"
-        class="px-3 py-1.5 rounded-md font-medium transition-all"
+        class="px-3 py-1.5 rounded-md font-medium transition-colors"
         :class="
           activeTab === 'users'
             ? 'bg-card text-foreground shadow-xs'
@@ -281,7 +281,7 @@ onMounted(() => {
       <button
         type="button"
         data-test="tab-settings"
-        class="px-3 py-1.5 rounded-md font-medium transition-all"
+        class="px-3 py-1.5 rounded-md font-medium transition-colors"
         :class="
           activeTab === 'settings'
             ? 'bg-card text-foreground shadow-xs'
@@ -343,7 +343,7 @@ onMounted(() => {
               </div>
               <div>
                 <p
-                  class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400"
+                  class="text-2xl font-bold font-mono text-success"
                 >
                   {{ stats.users.approved }}
                 </p>
@@ -351,7 +351,7 @@ onMounted(() => {
               </div>
               <div>
                 <p
-                  class="text-2xl font-bold font-mono text-amber-600 dark:text-amber-400"
+                  class="text-2xl font-bold font-mono text-warning"
                 >
                   {{ stats.users.pending }}
                 </p>
@@ -359,7 +359,7 @@ onMounted(() => {
               </div>
               <div>
                 <p
-                  class="text-2xl font-bold font-mono text-red-600 dark:text-red-400"
+                  class="text-2xl font-bold font-mono text-danger"
                 >
                   {{ stats.users.rejected }}
                 </p>
@@ -376,10 +376,10 @@ onMounted(() => {
             <Alert
               v-if="stats.users.pending > 0"
               variant="default"
-              class="mt-4 border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30"
+              class="mt-4 border-warning/30 bg-warning/10 dark:border-warning/30 dark:bg-warning/10"
             >
               <AlertDescription
-                class="text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2"
+                class="text-xs text-warning flex items-center gap-2"
               >
                 <Activity class="w-4 h-4" />
                 There are
@@ -424,7 +424,7 @@ onMounted(() => {
               </div>
               <div>
                 <p
-                  class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400"
+                  class="text-2xl font-bold font-mono text-success"
                 >
                   {{ stats.agents.online }}
                 </p>
@@ -516,7 +516,7 @@ onMounted(() => {
         >
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'all'
                 ? 'bg-card text-foreground shadow-xs'
@@ -531,7 +531,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'pending'
                 ? 'bg-card text-foreground shadow-xs'
@@ -546,7 +546,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'approved'
                 ? 'bg-card text-foreground shadow-xs'
@@ -561,7 +561,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'rejected'
                 ? 'bg-card text-foreground shadow-xs'
@@ -576,7 +576,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'inactive'
                 ? 'bg-card text-foreground shadow-xs'
@@ -626,7 +626,7 @@ onMounted(() => {
         <div
           v-for="u in users"
           :key="u.id"
-          class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+          class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
         >
           <div class="flex items-start gap-3 flex-1 min-w-0">
             <div
@@ -685,7 +685,7 @@ onMounted(() => {
               type="button"
               :data-test="`btn-approve-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="p-1.5 rounded-md text-success hover:bg-success/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Approve user"
               @click="approve(u.id)"
             >
@@ -696,7 +696,7 @@ onMounted(() => {
               type="button"
               :data-test="`btn-reject-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="p-1.5 rounded-md text-danger hover:bg-danger/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Reject user"
               @click="reject(u.id)"
             >
@@ -709,7 +709,7 @@ onMounted(() => {
               type="button"
               :data-test="`btn-promote-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="p-1.5 rounded-md text-warning hover:bg-warning/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Promote to admin"
               @click="promote(u.id)"
             >
@@ -720,7 +720,7 @@ onMounted(() => {
               type="button"
               :data-test="`btn-demote-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-slate-600 dark:text-slate-400 hover:bg-slate-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="p-1.5 rounded-md text-muted-foreground hover:bg-muted/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Demote admin"
               @click="demote(u.id)"
             >
@@ -733,7 +733,7 @@ onMounted(() => {
               type="button"
               :data-test="`btn-deactivate-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="p-1.5 rounded-md text-danger hover:bg-danger/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Deactivate user"
               @click="deactivate(u.id)"
             >
@@ -744,7 +744,7 @@ onMounted(() => {
               type="button"
               :data-test="`btn-activate-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              class="p-1.5 rounded-md text-success hover:bg-success/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Activate user"
               @click="activate(u.id)"
             >

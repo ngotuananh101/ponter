@@ -56,7 +56,7 @@ function handleSubmit() {
         <div
           class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary text-muted-foreground text-xs font-mono"
         >
-          <ShieldCheck class="w-3.5 h-3.5 text-emerald-500" />
+          <ShieldCheck class="w-3.5 h-3.5 text-primary" />
           <span>Token Auth</span>
         </div>
       </div>
@@ -84,7 +84,7 @@ function handleSubmit() {
             placeholder="Username"
             autocomplete="username"
             :disabled="loading"
-            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
+            class="bg-background/60 text-sm focus-visible:ring-primary"
           />
         </div>
 
@@ -103,7 +103,7 @@ function handleSubmit() {
             placeholder="Password"
             autocomplete="current-password"
             :disabled="loading"
-            class="bg-background/60 font-mono text-sm focus-visible:ring-primary"
+            class="bg-background/60 text-sm focus-visible:ring-primary"
           />
         </div>
       </CardContent>

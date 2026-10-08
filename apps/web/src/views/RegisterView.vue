@@ -35,7 +35,7 @@ async function handleRegister(payload: {
 
 <template>
   <div
-    class="container mx-auto flex items-center justify-center min-h-[calc(100vh-4rem)] p-4"
+    class="container mx-auto flex items-center justify-center min-h-[calc(100vh-var(--header-height))] p-4"
   >
     <RegisterForm
       :loading="authStore.status === 'loading'"

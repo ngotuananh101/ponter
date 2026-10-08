@@ -63,7 +63,7 @@ onMounted(() => {
       <div class="flex items-center gap-2">
         <Server class="w-4 h-4 text-primary" />
         <span
-          class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+          class="text-xs font-semibold text-muted-foreground"
         >
           Agent Fleet
         </span>
@@ -119,19 +119,19 @@ onMounted(() => {
         <div
           v-for="a in filteredAgents"
           :key="a.id"
-          class="flex items-center justify-between p-2 rounded-md hover:bg-muted/70 transition-all border border-transparent hover:border-border/60 text-xs"
+          class="flex items-center justify-between p-2 rounded-md hover:bg-muted/70 transition-colors border border-transparent hover:border-border/60 text-xs"
           :data-test="`agent-row-${a.id}`"
         >
           <div class="flex items-center gap-2 truncate">
             <span class="relative flex h-2 w-2 flex-shrink-0">
               <span
                 v-if="a.isOnline"
-                class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
+                class="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"
               ></span>
               <span
                 class="relative inline-flex rounded-full h-2 w-2"
                 :class="
-                  a.isOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+                  a.isOnline ? 'bg-success' : 'bg-muted-foreground/40'
                 "
               ></span>
             </span>

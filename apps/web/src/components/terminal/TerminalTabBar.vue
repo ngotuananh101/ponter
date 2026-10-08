@@ -47,7 +47,7 @@ defineEmits<{
           class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-t border-t border-x cursor-pointer transition-colors group"
           :class="
             tab.id === activeTabId
-              ? 'bg-[#090d16] border-border text-foreground font-medium'
+              ? 'bg-terminal-bg border-border text-foreground font-medium'
               : 'bg-muted/30 border-transparent text-muted-foreground hover:bg-muted/70 hover:text-foreground'
           "
           @click="$emit('selectTab', tab.id)"
@@ -56,7 +56,7 @@ defineEmits<{
                still handshaking reads as "working" rather than merely amber. -->
           <Loader2
             v-if="tab.status === 'connecting'"
-            class="w-3 h-3 flex-shrink-0 text-amber-500 motion-safe:animate-spin"
+            class="w-3 h-3 flex-shrink-0 text-warning motion-safe:animate-spin"
             :data-test="`tab-spinner-${tab.id}`"
             aria-label="Connecting"
           />
@@ -64,7 +64,7 @@ defineEmits<{
             v-else
             class="w-2 h-2 rounded-full flex-shrink-0"
             :class="{
-              'bg-emerald-500': tab.status === 'active',
+              'bg-success': tab.status === 'active',
               'bg-muted-foreground/40': tab.status === 'exited',
               'bg-destructive': tab.status === 'error',
             }"
