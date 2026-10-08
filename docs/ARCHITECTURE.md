@@ -1014,6 +1014,10 @@ gantt
 >
 > **ADR-57 correction:** manifest key là `{os}-{arch}-{bundle_type}` (vd `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **KHÔNG phải target triple**; signature nằm **per-platform** (không có signature top-level); `requireSignedVersion: true` đóng lỗ hổng anti-downgrade (plugin mặc định `false`).
 
+### Phase 8: Open-Source Self-Build + Provider-Selectable TURN
+
+> **Phase 8 (2026-10-08).** Hai workstream độc lập: **8a** bật self-build/self-host (build-from-source cho cả 4 app, fork & self-host guide, Docker self-publish, community files) — giữ nguyên bản sắc tác giả (ADR-60); **8b** TURN chọn nhà cung cấp qua `TURN_PROVIDER=coturn|cloudflare|none` (mặc định `coturn`, không đổi hành vi hiện hữu — ADR-62/63). Chi tiết: spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`. Merged: 8a `6a568c0`, 8b `1ebda79`.
+
 ---
 
 ## 9. Development Workflow
