@@ -297,6 +297,85 @@ jobs:
           fi
           echo "prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
 
+      - name: Assemble signed latest.json manifest (ADR-57)
+        # Runs ONLY on tag/dispatch (the release job is gated above). CANNOT be
+        # exercised at PR time — this path is CI-proven only on tag/dispatch.
+        #
+        # The Tauri bundler already emitted a `.sig` file next to every installer
+        # (e.g. `foo.deb` + `foo.deb.sig`) using TAURI_SIGNING_PRIVATE_KEY.
+        # This step assembles a `latest.json` manifest that aggregates, per
+        # platform target triple, the installer asset URL + its minisign
+        # signature. The manifest body (without the top-level `signature` field)
+        # is then signed with the SAME private key, and that signature is written
+        # as `latest.json`'s top-level `signature` field.
+        #
+        # Canonical signed-bytes decision (mirrors `verify_manifest` in
+        # `src/commands/updater.rs`): the signed bytes are the canonical JSON
+        # serialization of the manifest body WITHOUT the `signature` field,
+        # produced by `serde_json::to_string` (compact, no trailing whitespace).
+        # The release step and the verifier MUST both exclude the `signature`
+        # field before signing/verifying. Any divergence invalidates every
+        # signature.
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -e
+          cd dist
+          # Resolve the tag (strips a leading `v` / `desktop-v`).
+          raw="${{ github.ref_name }}"
+          version="${raw#v}"
+          version="${version#desktop-v}"
+          GH="https://github.com/${GITHUB_REPOSITORY}/releases/download/${raw}"
+          # Build the manifest body (platforms map keyed by Tauri target triple).
+          GH="$GH" VERSION="$version" node <<'NODE'
+          const fs = require("fs");
+          const GH = process.env.GH;
+          const version = process.env.VERSION;
+          const targetFor = (f) => {
+            if (/\.(deb|rpm|AppImage)$/.test(f)) return "x86_64-unknown-linux-gnu";
+            if (/\.dmg$/.test(f)) return "aarch64-apple-darwin";
+            if (/\.(msi|exe)$/.test(f)) return "x86_64-pc-windows-msvc";
+            return null;
+          };
+          const platforms = {};
+          for (const f of fs.readdirSync(".")) {
+            const target = targetFor(f);
+            if (!target) continue;
+            const sigFile = f + ".sig";
+            if (!fs.existsSync(sigFile)) continue;
+            const sig = fs.readFileSync(sigFile, "utf8").trim();
+            // First matching artifact per target wins (one installer per OS).
+            if (!platforms[target]) {
+              platforms[target] = { url: GH + "/" + f, signature: sig };
+            }
+          }
+          const body = JSON.stringify({
+            version, notes: null,
+            pub_date: new Date().toISOString(), platforms
+          });
+          fs.writeFileSync("latest.json.body", body);
+          console.log("Manifest body:\n" + body);
+          NODE
+          echo
+          # Sign the body with the Tauri signer (minisign). `tauri signer sign`
+          # reads TAURI_SIGNING_PRIVATE_KEY (_PATH) from env and writes
+          # `latest.json.body.sig`. The base64 signature is also printed.
+          tauri signer sign latest.json.body
+          # Inject the top-level signature to form the final latest.json.
+          SIG=$(cat latest.json.body.sig)
+          node <<NODE
+          const fs = require("fs");
+          const body = JSON.parse(fs.readFileSync("latest.json.body","utf8"));
+          body.signature = "$SIG".trim();
+          fs.writeFileSync("latest.json", JSON.stringify(body));
+          console.log("latest.json:\n" + JSON.stringify(body));
+          NODE
+          echo
+          echo "Assembled latest.json + manifest signature."
+
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
@@ -311,5 +390,6 @@ jobs:
             dist/**/*.exe
             dist/**/*.sha256
             dist/SHA256SUMS.txt
+            dist/latest.json
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
           generate_release_notes: true
