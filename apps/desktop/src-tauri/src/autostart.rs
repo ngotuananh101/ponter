@@ -193,6 +193,15 @@ fn resolve_autostart_location() -> (PathBuf, &'static str) {
     (macos_launch_agents_dir(home.as_deref()), MACOS_ENTRY_FILE)
 }
 
+/// Windows has no file-based entry: `set_autostart_in`/`is_autostart_enabled_in`
+/// ignore the dir/filename and drive `reg.exe` against `WINDOWS_RUN_KEY`. Return a
+/// documented placeholder; the returned value name mirrors the registry value
+/// (`WINDOWS_RUN_VALUE`) so the tuple stays meaningful to callers.
+#[cfg(windows)]
+fn resolve_autostart_location() -> (PathBuf, &'static str) {
+    (PathBuf::new(), WINDOWS_RUN_VALUE)
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn resolve_autostart_location() -> (PathBuf, &'static str) {
     (PathBuf::from("."), LINUX_ENTRY_FILE)
