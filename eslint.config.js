@@ -28,7 +28,10 @@ export default tseslint.config(
   },
   {
     // shadcn-vue generates single-word component names by convention (Button.vue, Card.vue, etc.)
-    files: ['apps/web/src/components/ui/**/*.vue'],
+    files: [
+      'apps/web/src/components/ui/**/*.vue',
+      'apps/desktop/src/components/ui/**/*.vue',
+    ],
     rules: {
       'vue/multi-word-component-names': 'off',
     },
