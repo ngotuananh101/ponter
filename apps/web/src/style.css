@@ -4,6 +4,8 @@
 @import 'tw-animate-css';
 @import 'shadcn-vue/tailwind.css';
 
+@source "../../../packages/ui-components/src";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

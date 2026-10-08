@@ -14,5 +14,6 @@ apps/agent/vendor
 # (registry ships without semicolons; repo prettier would rewrite them).
 apps/web/src/components/ui
 apps/desktop/src/components/ui
+packages/ui-components/src/components/ui
 # Tauri CLI-generated capability schemas (see src-tauri/.gitignore)
 apps/desktop/src-tauri/gen
