@@ -141,6 +141,9 @@ cd docker
 DOCKERHUB_IMAGE=ngotuananh2101/ponter
 ```
 
+To publish your **own** image instead of pulling the upstream one, see
+[`docs/guides/self-hosting.md` §2](../docs/guides/self-hosting.md#2-docker-image-self-publish).
+
 **1. Publish the image.** In GitHub, go to Actions → _Docker Publish_ → _Run workflow_. Pick the branch to build from.
 
 Optionally, set the **tag** input to also attach a named tag (e.g. `v1.2.3`) to the published manifest; leaving it empty keeps `latest`/`sha` only.
