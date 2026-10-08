@@ -99,24 +99,24 @@ When your VPS already has Nginx running on ports 80/443:
 
 ## Environment Variables
 
-| Variable                   | Required        | Default                 | Description                                                                                        |
-| -------------------------- | --------------- | ----------------------- | -------------------------------------------------------------------------------------------------- |
-| `PORT`                     | No              | `8787`                  | Server listen port (inside container).                                                             |
-| `DATABASE_PATH`            | No              | `/app/data/remote.db`   | SQLite database file.                                                                              |
-| `JWT_SECRET`               | Yes             | —                       | HS256 secret for access tokens. Min 32 chars.                                                      |
-| `REFRESH_TOKEN_SECRET`     | Yes             | —                       | HS256 secret for refresh tokens. Min 32 chars.                                                     |
-| `CORS_ORIGIN`              | No              | `*`                     | CORS allow-origin for the API.                                                                     |
-| `JWT_EXPIRES_IN`           | No              | `900` (15m)             | Access token TTL.                                                                                  |
-| `REFRESH_TOKEN_EXPIRES_IN` | No              | `604800` (7d)           | Refresh token TTL.                                                                                 |
-| `TURN_SECRET`              | Prod only       | —                       | Shared secret for Coturn long-term auth.                                                           |
-| `TURN_URL`                 | Prod only       | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to use an IP instead of the domain.             |
-| `STUN_URL`                 | Prod only       | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to use an IP instead of the domain.             |
-| `DOMAIN`                   | Prod only       | —                       | Your public domain for Caddy TLS + TURN realm.                                                     |
-| `TURN_PROVIDER`            | No              | `coturn`                | TURN provider: `coturn` \| `cloudflare` \| `none`.                                                 |
-| `TURN_KEY_ID`              | Cloudflare only | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                           |
-| `TURN_KEY_API_TOKEN`       | Cloudflare only | —                       | Cloudflare TURN API token (required when `TURN_PROVIDER=cloudflare`).                              |
-| `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only     | —                       | Cloudflare Tunnel token.                                                                           |
-| `DOCKERHUB_IMAGE`          | Deploy only     | `ngotuananh2101/ponter` | Image to pull, e.g. `ngotuananh2101/ponter`. Not used by `docker-compose.local.yml`, which builds. |
+| Variable                   | Required        | Default                 | Description                                                                                           |
+| -------------------------- | --------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| `PORT`                     | No              | `8787`                  | Server listen port (inside container).                                                                |
+| `DATABASE_PATH`            | No              | `/app/data/remote.db`   | SQLite database file.                                                                                 |
+| `JWT_SECRET`               | Yes             | —                       | HS256 secret for access tokens. Min 32 chars.                                                         |
+| `REFRESH_TOKEN_SECRET`     | Yes             | —                       | HS256 secret for refresh tokens. Min 32 chars.                                                        |
+| `CORS_ORIGIN`              | No              | `*`                     | CORS allow-origin for the API.                                                                        |
+| `JWT_EXPIRES_IN`           | No              | `900` (15m)             | Access token TTL.                                                                                     |
+| `REFRESH_TOKEN_EXPIRES_IN` | No              | `604800` (7d)           | Refresh token TTL.                                                                                    |
+| `TURN_SECRET`              | Prod only       | —                       | Shared secret for Coturn long-term auth.                                                              |
+| `TURN_URL`                 | Prod only       | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to use an IP instead of the domain.                |
+| `STUN_URL`                 | Prod only       | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to use an IP instead of the domain.                |
+| `DOMAIN`                   | Prod only       | —                       | Your public domain for Caddy TLS + TURN realm.                                                        |
+| `TURN_PROVIDER`            | No              | `coturn`                | TURN provider: `coturn` \| `cloudflare` (first 1,000 GB/month free, then ~$0.05/GB egress) \| `none`. |
+| `TURN_KEY_ID`              | Cloudflare only | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                              |
+| `TURN_KEY_API_TOKEN`       | Cloudflare only | —                       | Cloudflare TURN API token (required when `TURN_PROVIDER=cloudflare`).                                 |
+| `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only     | —                       | Cloudflare Tunnel token.                                                                              |
+| `DOCKERHUB_IMAGE`          | Deploy only     | `ngotuananh2101/ponter` | Image to pull, e.g. `ngotuananh2101/ponter`. Not used by `docker-compose.local.yml`, which builds.    |
 
 ## Building Locally
 
@@ -135,9 +135,6 @@ podman build -f docker/Dockerfile.server -t ponter-server:test .
 ## Deploying a new version
 
 The three deployment setups (tunnel / prod / nginx) pull the published image instead of building it. `docker-compose.local.yml` is the exception — it builds from source so local development reflects uncommitted edits.
-
-To publish your **own** image instead of pulling the upstream one, see
-[`docs/guides/self-hosting.md` §2](../docs/guides/self-hosting.md#2-docker-image-self-publish).
 
 **0. Point the deployment at your image.** The Docker Hub account is not the same identifier as the GitHub one, so the namespace comes from the `DOCKERHUB_USERNAME` secret the workflow reads, while Compose reads `DOCKERHUB_IMAGE` from `docker/.env`. The shipped default already points at the published repository; override it only when publishing under a different namespace:
 
