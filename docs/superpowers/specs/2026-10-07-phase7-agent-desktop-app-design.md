@@ -89,6 +89,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 - **Decision.** The app checks a Tauri updater endpoint (a static JSON manifest, e.g. `latest.json`, hosted on GitHub Releases) and updates in place when a newer signed version exists. Artifacts are signed with a Tauri updater keypair; the **public** key is compiled into the app, the **private** key is a CI secret used only at release time.
 - **Why.** Tauri's updater is the framework-native, signed, in-place update path; hosting the manifest on GitHub Releases reuses the release pipeline.
 - **Owner action (✅ DONE 2026-10-08):** the owner generated the updater keypair (`tauri signer generate`) and set the private key + password as CI secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — verified via `gh secret list`). Only the **public** key hand-off to the Task 11 implementer remains.
+- **Correction (shipped, `591a53e`):** the static `latest.json` manifest's platform keys are `{os}-{arch}-{bundle_type}` (e.g. `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **not** Rust target triples. The signature is **per-platform** (inside each platform entry; no top-level signature). `plugins.updater.requireSignedVersion: true` is set, closing the anti-downgrade gap (the plugin default is `false`). App-level `verify_manifest` was removed as dead code — signature verification is the plugin's (per-platform, during download).
 
 ### ADR-58: Layered execution (L0-L5) with a stop-safe boundary at every layer
 
@@ -151,10 +152,10 @@ The owner asked for the dialog to be **wider horizontally** ("rộng thêm một
 | Frontend (L1-L3) | Vitest for wizard state machine, login form, device list; the same `@vue/test-utils` setup as the web app. |
 | Shell boot (L0, L3) | Smoke test: the app process starts, the runtime reaches "connected" against a local server under Xvfb (Linux CI); tray presence asserted where headless-testable. |
 | Packaging (L4) | `build-desktop.yml` produces the expected installer artifacts on each OS; a post-build check asserts the files exist and are non-trivial size. |
-| Auto-update (L5) | Updater decision unit-tested (newer/older/equal version, signature-verify failure → refuse); an end-to-end update is documented as a manual procedure if it cannot run in CI. |
+| Auto-update (L5) | Updater decision unit-tested (newer/older/equal version via `should_apply`); signature verification is the plugin's (per-platform, during download) and `requireSignedVersion: true` refuses an unsigned version — the earlier "app-level signature-verify failure → refuse" criterion was dropped with the dead `verify_manifest` (shipped `591a53e`). An end-to-end update is documented as a manual procedure if it cannot run in CI. |
 | Regression | The full existing suite (Node CI, E2E, Sonar) must stay green throughout; the agent refactor is the highest-risk change and is guarded by `build-agent.yml` + E2E. |
 
-**Mutation discipline.** The load-bearing guards for this phase are: (a) the agent CLI's flag behaviour (mutating a flag's effect must turn a test red), (b) the input-gate default is closed (mutating the default to open must turn a test red), (c) secrets never reach webview storage (a test/assert that the keychain path is used and no secret is written to `localStorage`), (d) the updater refuses an unsigned/older manifest (mutation must turn a test red).
+**Mutation discipline.** The load-bearing guards for this phase are: (a) the agent CLI's flag behaviour (mutating a flag's effect must turn a test red), (b) the input-gate default is closed (mutating the default to open must turn a test red), (c) secrets never reach webview storage (a test/assert that the keychain path is used and no secret is written to `localStorage`), (d) the updater refuses an older version (mutating the comparison in `should_apply` must turn a test red); the unsigned-version refusal is enforced by plugin config `requireSignedVersion: true` (not an app-level test — the dead `verify_manifest` was removed, shipped `591a53e`).
 
 ---
 
@@ -178,7 +179,7 @@ Per-layer, each gate is independently checkable:
 3. **L2:** the wizard completes all four steps with verification; device registration creates an agent and the credential is in the keychain; the device list/delete view mirrors the web dashboard.
 4. **L3:** the tray shows connection state (a status menu item reflecting the runtime's real state) and controls start/stop; auto-start toggles the platform-native entry.
 5. **L4:** `build-desktop.yml` produces `.deb` + `.AppImage` (+ `.rpm`) (Linux), `.dmg` (macOS), `.msi` (+ NSIS `.exe`) (Windows); artifacts attach to a release.
-6. **L5:** the app detects and applies a signed update; the updater refuses an unsigned or older manifest (test-pinned).
+6. **L5:** the app detects and applies a signed update; the updater refuses an older manifest (unit-tested via `should_apply`) and an unsigned one (via `requireSignedVersion: true` — plugin config, not a local test; shipped `591a53e`).
 7. **Cross-cutting:** the dialog-width change (§5.1) is shipped and its test green; the full existing CI (Node, E2E, Sonar, agent) stays green.
 
 ---
