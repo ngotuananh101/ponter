@@ -18,11 +18,12 @@ use ponter_agent::{
     AgentRuntime, DesktopSource, RuntimeConfig, RuntimeHandle, RuntimeStatus, StreamProfile,
 };
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager,
 };
 
+use crate::autostart;
 // Imported — never re-declared (R3):
 use crate::commands::devices::KEYCHAIN_AGENT_ACCOUNT;
 use crate::commands::login::KEYCHAIN_SERVICE;
@@ -34,6 +35,7 @@ const ID_STATUS: &str = "status";
 const ID_START: &str = "start";
 const ID_STOP: &str = "stop";
 const ID_OPEN: &str = "open";
+const ID_AUTOSTART: &str = "autostart";
 const ID_QUIT: &str = "quit";
 
 /// Lightweight logging shim: `tracing` is not a direct dependency of this crate
@@ -51,6 +53,7 @@ pub enum TrayAction {
     Start,
     Stop,
     OpenWindow,
+    ToggleAutostart,
     Quit,
 }
 
@@ -69,13 +72,14 @@ pub fn status_text(status: &RuntimeStatus) -> String {
 }
 
 /// What a menu id means (R3 pure-fn).
-/// "start" -> Start, "stop" -> Stop, "open" -> OpenWindow, "quit" -> Quit,
-/// anything else -> None.
+/// "start" -> Start, "stop" -> Stop, "open" -> OpenWindow, "autostart" ->
+/// ToggleAutostart, "quit" -> Quit, anything else -> None.
 pub fn action_for_menu_id(id: &str) -> Option<TrayAction> {
     match id {
         ID_START => Some(TrayAction::Start),
         ID_STOP => Some(TrayAction::Stop),
         ID_OPEN => Some(TrayAction::OpenWindow),
+        ID_AUTOSTART => Some(TrayAction::ToggleAutostart),
         ID_QUIT => Some(TrayAction::Quit),
         _ => None,
     }
@@ -205,6 +209,8 @@ pub struct TrayState {
     start_guard: tauri::async_runtime::Mutex<()>,
     /// The status menu item, stored for the poll loop.
     status_item: std::sync::Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// The "Open at login" check menu item (R8 — stored for the toggle handler).
+    autostart_item: std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     /// Keeps the tray icon alive explicitly (builder result is stored, not dropped).
     _tray: std::sync::Mutex<Option<tauri::tray::TrayIcon>>,
 }
@@ -216,6 +222,7 @@ impl TrayState {
             runtime: std::sync::Mutex::new(None),
             start_guard: tauri::async_runtime::Mutex::new(()),
             status_item: std::sync::Mutex::new(None),
+            autostart_item: std::sync::Mutex::new(None),
             _tray: std::sync::Mutex::new(None),
         }
     }
@@ -265,12 +272,28 @@ impl Default for TrayState {
 }
 
 /// Build the tray menu: Status (disabled) / separator / Start / Stop / separator
-/// / Open / separator / Quit. IDs are the dispatch contract (R4).
-fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, MenuItem<tauri::Wry>)> {
+/// / Open / "Open at login" checkbox / separator / Quit. IDs are the dispatch
+/// contract (R4/R8). Returns the menu + the status item + the autostart checkbox
+/// so `init` can store both.
+fn build_menu(
+    app: &AppHandle,
+) -> tauri::Result<(
+    Menu<tauri::Wry>,
+    MenuItem<tauri::Wry>,
+    CheckMenuItem<tauri::Wry>,
+)> {
     let status_item = MenuItem::with_id(app, ID_STATUS, "Status: Stopped", false, None::<&str>)?;
     let start_item = MenuItem::with_id(app, ID_START, "Start agent", true, None::<&str>)?;
     let stop_item = MenuItem::with_id(app, ID_STOP, "Stop agent", true, None::<&str>)?;
     let open_item = MenuItem::with_id(app, ID_OPEN, "Open window", true, None::<&str>)?;
+    let autostart_item = CheckMenuItem::with_id(
+        app,
+        ID_AUTOSTART,
+        "Open at login",
+        true,
+        autostart::is_autostart_enabled(),
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, ID_QUIT, "Quit", true, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
@@ -287,19 +310,20 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, MenuItem<taur
             &stop_item,
             &sep2,
             &open_item,
+            &autostart_item,
             &sep3,
             &quit_item,
         ],
     )?;
 
-    Ok((menu, status_item))
+    Ok((menu, status_item, autostart_item))
 }
 
 /// Build the tray icon. The icon is set only when `default_window_icon` is Some
 /// (never unwrap — R10). On failure, log and continue: an app without a tray
 /// must still open a window.
 pub fn init(app: &AppHandle) -> tauri::Result<()> {
-    let (menu, status_item) = build_menu(app)?;
+    let (menu, status_item, autostart_item) = build_menu(app)?;
 
     let builder = TrayIconBuilder::with_id("ponter-tray")
         .menu(&menu)
@@ -330,12 +354,20 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
     let tray = builder.build(app)?;
 
     let state = app.state::<TrayState>();
-    // Store the status item + tray, mark active.
+    // Store the status item + autostart item + tray, mark active.
+    // Same poison-handling pattern on every mutex (R8).
     match state.status_item.lock() {
         Ok(mut guard) => *guard = Some(status_item),
         Err(poisoned) => {
             let mut guard = poisoned.into_inner();
             *guard = Some(status_item);
+        }
+    }
+    match state.autostart_item.lock() {
+        Ok(mut guard) => *guard = Some(autostart_item),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = Some(autostart_item);
         }
     }
     match state._tray.lock() {
@@ -372,11 +404,60 @@ async fn handle_menu_action(app: &AppHandle, action: TrayAction) {
                 let _ = window.set_focus();
             }
         }
+        TrayAction::ToggleAutostart => {
+            toggle_autostart(app).await;
+        }
         TrayAction::Quit => {
             if let Err(e) = quit_app(app).await {
                 tray_log!("error during quit: {e}");
             }
             app.exit(0);
+        }
+    }
+}
+
+/// Handle the "Open at login" toggle (R8). tauri flips the checkbox on click,
+/// so the item's `is_checked()` is the user's desired state. On failure,
+/// revert the check so the item never lies.
+async fn toggle_autostart(app: &AppHandle) {
+    let state = app.state::<TrayState>();
+
+    // Read the desired state from the checkbox (tauri toggled it on click).
+    // `is_checked()` returns Result — surface a read failure rather than unwrap.
+    let (desired, item) = {
+        let guard = match state.autostart_item.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match &*guard {
+            Some(item) => {
+                let checked = match item.is_checked() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tray_log!("could not read autostart checkbox state: {e}");
+                        return;
+                    }
+                };
+                (checked, item.clone())
+            }
+            None => return,
+        }
+    };
+
+    // Apply to the platform entry (R3 — entry IS the source of truth).
+    match autostart::set_autostart(desired) {
+        Ok(()) => {
+            tray_log!(
+                "auto-start {} (takes effect at next login)",
+                if desired { "enabled" } else { "disabled" }
+            );
+        }
+        Err(e) => {
+            tray_log!("failed to toggle auto-start: {e}");
+            // Revert the checkbox so it never lies about the real state.
+            if let Err(revert_err) = item.set_checked(!desired) {
+                tray_log!("could not revert autostart checkbox: {revert_err}");
+            }
         }
     }
 }
@@ -553,6 +634,10 @@ mod tests {
         assert_eq!(action_for_menu_id("start"), Some(TrayAction::Start));
         assert_eq!(action_for_menu_id("stop"), Some(TrayAction::Stop));
         assert_eq!(action_for_menu_id("open"), Some(TrayAction::OpenWindow));
+        assert_eq!(
+            action_for_menu_id("autostart"),
+            Some(TrayAction::ToggleAutostart)
+        );
         assert_eq!(action_for_menu_id("quit"), Some(TrayAction::Quit));
     }
 
