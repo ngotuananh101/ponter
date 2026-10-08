@@ -508,26 +508,27 @@ git commit -m "feat(desktop): verified setup wizard (ADR-53)"
 ### Task 6: Device registration + management (ADR-54)
 
 **Files:**
-- Create: `apps/desktop/src-tauri/src/commands/devices.rs`
-- Create: `apps/desktop/src/views/DevicesView.vue`
-- Test: `apps/desktop/src/**/__tests__/devices.test.ts`
+- Create: `apps/desktop/src-tauri/src/commands/devices.rs`, `apps/desktop/src-tauri/src/test_util.rs`
+- Create: `apps/desktop/src/views/DevicesView.vue`, `apps/desktop/src/stores/devices.ts`
+- Test: `apps/desktop/src/__tests__/devices.test.ts`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/Cargo.lock`
+- Modify: `apps/desktop/src-tauri/src/commands/login.rs`, `apps/desktop/src-tauri/src/commands/wizard.rs` (adopt the extracted shared test stubs)
+- Modify: `apps/desktop/src/App.vue`, `apps/desktop/src/types.ts`
 
 **Interfaces:**
-- Consumes: `POST /api/agents`, `GET /api/agents`, `DELETE /api/agents/:id` (existing); `keychain` (Task 3); agent identity (WS2).
-- Produces: `register_device(...)` returning the created agent; credential written to the keychain.
+- Consumes: `POST /api/agents`, `GET /api/agents`, `DELETE /api/agents/:id` (existing); `keychain` (Task 3); the logged-in access token (Task 4).
+- Produces: `register_device()`, `list_devices()`, `delete_device(agent_id)` Tauri commands; the one-time credential written to the keychain (service `ponter-desktop`, account `agent-credential`) **inside `register_device`** and **never returned to the frontend**; the `DesktopDevice` projection (no `credential` field).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-it('stores the one-time credential in the keychain, not the webview', async () => {
-  // mock invoke('register_device') returning { agent, credential }
-  // assert keychain set called with the credential AND localStorage empty
-});
-
-it('uses the new credential after re-registration', async () => {
-  // re-register -> the keychain value is replaced
+it('registers without ever receiving the credential', async () => {
+  // mock invoke('register_device') resolving the projection (no `credential` field)
+  // assert the store result has no `credential` property AND localStorage/sessionStorage stay empty
 });
 ```
+
+Rust side (the load-bearing half — the credential is written to the keychain inside the command): `register_device_stores_credential_in_keychain` (asserts the real keychain holds `ag_...` and the returned projection serializes without `ag_`), `register_device_swap_replaces_keychain_value` (re-registration replaces), plus `generate_device_id` / `map_devices_error` pure-fn tests.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -536,7 +537,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement registration + device list/delete**
 
-Reuse the existing endpoints; write the credential to the keychain immediately; the list/delete view mirrors the web dashboard.
+Reuse the existing endpoints (`POST`/`GET`/`DELETE /api/agents`); write the credential to the keychain **inside `register_device`** (before it returns) and never return it to the frontend; the list/delete view mirrors the web dashboard. Registration does **not** start the runtime — that is Task 7.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -546,9 +547,18 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/commands/devices.rs apps/desktop/src
+git add apps/desktop pnpm-lock.yaml
 git commit -m "feat(desktop): device registration + management (ADR-54)"
 ```
+
+> **Correction (Task 6).** Shipped as `f7216ec` (11 files) plus the review-dedup commit `da016f1` (4 files); 13 files total across the range. The decisions below are what Tasks 7+ must rely on.
+> - **Command surface:** 3 new commands — `register_device()`, `list_devices()`, `delete_device(agent_id)` — bringing `invoke_handler` to **7** total (`login`, `probe_server`, `probe_capture`, `save_wizard_settings`, + these 3). No command starts the runtime; the tray/lifecycle is Task 7.
+> - **Credential handling:** on a `201` the response envelope `{ agent, credential }` is deserialized, the `credential` is written to the keychain under service **`"ponter-desktop"`** (imported `KEYCHAIN_SERVICE` from `commands/login.rs`) / account **`"agent-credential"`** (`KEYCHAIN_AGENT_ACCOUNT`), then dropped. Only the `DesktopDevice` projection (no `credential` field) crosses to the frontend. A keychain write failure **fails the registration loudly**. **Re-registration replaces** the stored value (last credential wins) — no "write only if absent".
+> - **Server contract:** `POST /api/agents` with body `{id, hostname, platform, osVersion, agentVersion}` and header `Authorization: Bearer <access token>`; `publicKey` and `capabilities` are **deliberately omitted** (not fabricated). Success is exactly **201**; `GET /api/agents` → 200 list; `DELETE /api/agents/:id` → 200 `{success:true}`. Non-2xx maps `{error, code, details}` → the `error` string verbatim (`map_devices_error`).
+> - **Device id:** `generate_device_id(hostname, random)` → `{sanitized-hostname}-{8 lowercase hex}` (lowercase; non-`[a-z0-9-]` runs → `-`; empty → `device`). The 8-hex suffix comes from **`ring::rand::SystemRandom`** — `ring = "0.17.14"` is now a **direct** dependency (already resolved transitively; zero new crates). Hostname resolution: `HOSTNAME` env → `/etc/hostname` (Linux) → `COMPUTERNAME` (Windows) → `"device"`.
+> - **State access:** each command clones `server_url` / `access_token` out of their mutexes **before** any `.await` (the Task 4 Send-bound lesson); lock errors map to `state lock poisoned: {e}`.
+> - **Shared test stubs:** `apps/desktop/src-tauri/src/test_util.rs` (`#[cfg(test)]`) centralizes `spawn_stub` / `spawn_stub_capturing` / `ensure_provider`, now used by the login, wizard, and devices test modules (kills the SonarCloud new-code duplication risk — Week 13/16 gotcha).
+> - **Frontend:** `DevicesView.vue` replaces the welcome paragraph after the wizard completes (`App.vue`: login → wizard → devices); `types.ts` adds `DesktopDevice` (the no-`credential` projection) + `DeviceSummary`. Storage gate unchanged (production-only grep; test files exempt; never obfuscate).
 
 ---
 

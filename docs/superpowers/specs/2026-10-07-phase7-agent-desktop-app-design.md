@@ -68,7 +68,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 
 ### ADR-54: Device registration reuses `POST /api/agents`; the one-time credential lands in the keychain
 
-- **Decision.** The app registers a device by calling the existing `POST /api/agents` (id + hostname/platform/osVersion/capabilities) with the logged-in user's token, receives the one-time `credential`, and **immediately writes it to the keychain**. The identity keypair is generated locally (WS2) and its public key is proven at first WS connect (unchanged flow).
+- **Decision.** The app registers a device by calling the existing `POST /api/agents` (id + hostname/platform/osVersion/agentVersion; `publicKey` and `capabilities` are omitted rather than fabricated) with the logged-in user's token, receives the one-time `credential`, and **immediately writes it to the keychain** (service `ponter-desktop`, account `agent-credential`) — the credential is never returned to the frontend. The identity keypair is generated locally (WS2) and its public key is proven at first WS connect (unchanged flow).
 - **Why.** No new server endpoint is needed; the existing contract (credential returned exactly once, only its hash stored) already matches a "register once, store securely" desktop flow.
 - **Device management.** Listing/deleting devices reuses `GET /api/agents` and `DELETE /api/agents/:id`, so the app's "manage devices" view mirrors the web dashboard.
 
