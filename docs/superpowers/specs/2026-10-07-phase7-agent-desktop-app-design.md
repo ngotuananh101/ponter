@@ -47,7 +47,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 
 ### ADR-51: Desktop UI is Vue 3 + Vite inside Tauri 2.0; strict capabilities and CSP
 
-- **Decision.** The Tauri frontend uses the **same stack as the web client** (Vue 3 + Vite + TypeScript). Tauri 2.0's per-window **capabilities** are restricted to the minimum command set; the webview CSP is locked down (no remote script, no `unsafe-eval`).
+- **Decision.** The Tauri frontend uses the **same stack as the web client** (Vue 3 + Vite + TypeScript). The UI layer likewise adopts the web client's **shadcn-vue** stack (reka-ui + Tailwind v4 + generated `components/ui/*`), so component and theming parity hold between the two clients. Tauri 2.0's per-window **capabilities** are restricted to the minimum command set; the webview CSP is locked down (no remote script, no `unsafe-eval`). *(Desktop shadcn-vue sync shipped post-Task-8 — see the plan's "Correction (Desktop UI sync → shadcn-vue)" note.)*
 - **Why.** Stack consistency means the existing lint/typecheck/vitest tooling and the team's familiarity carry over. Tauri 2's capability model is the security boundary: the webview must not be able to invoke arbitrary shell or filesystem commands.
 - **Boundary.** All privileged work (keychain, filesystem, process, updater) goes through **explicitly declared Tauri commands** in the Rust backend; the frontend never gets a general-purpose IPC bridge.
 
@@ -131,7 +131,7 @@ The agent's existing platform limitations carry over verbatim: Wayland capture i
 | `apps/agent/src/main.rs` | **Refactor** to a thin CLI over `AgentRuntime`; behaviour identical. |
 | `apps/agent/Cargo.toml` | Add `[lib]` target; keep `[[bin]]` (`ponter-agent`). |
 | `apps/desktop/src-tauri/` | **New** Tauri 2.0 Rust backend: commands (login, register device, wizard probes, set_autostart, updater), keychain integration, path-dep on `ponter-agent`. |
-| `apps/desktop/src/` | **New** Vue 3 frontend: login view, wizard, device manager, tray-driven status. |
+| `apps/desktop/src/` | **New** Vue 3 frontend: login view, wizard, device manager, tray-driven status. UI built on the web client's **shadcn-vue** layer (`components/ui/*` — reka-ui + Tailwind v4; generated, byte-identical from the `reka-vega` registry). |
 | `apps/desktop/package.json` | Real `dev`/`build`/`lint`/`typecheck`/`test` scripts replacing the stub. |
 | `apps/desktop/src-tauri/tauri.conf.json` | Window config, CSP, capabilities, bundler targets, updater endpoint + public key. |
 | `.github/workflows/build-desktop.yml` | **New** 3-OS build + bundle + release workflow. |
