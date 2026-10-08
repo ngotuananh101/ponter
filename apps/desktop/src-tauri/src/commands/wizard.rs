@@ -150,6 +150,30 @@ pub struct ConfigPayload {
     pub has_server_url: bool,
 }
 
+/// Build the frontend config payload. `server_url` is the EFFECTIVE URL
+/// (ADR-64 chain, always non-empty — the localhost fallback guarantees it),
+/// so a deployment that supplies the URL via runtime env or a build-time
+/// default displays it instead of "not set". `has_server_url` keeps its
+/// "a real source supplied the URL" semantics.
+pub fn config_payload(state: &AppState) -> Result<ConfigPayload, String> {
+    let persisted = state
+        .persisted
+        .lock()
+        .map_err(|e| format!("state lock poisoned: {e}"))?
+        .clone();
+    let effective = state
+        .server_url
+        .lock()
+        .map_err(|e| format!("state lock poisoned: {e}"))?
+        .clone();
+    Ok(ConfigPayload {
+        server_url: Some(effective),
+        allow_input: persisted.allow_input,
+        theme: persisted.theme,
+        has_server_url: state.has_server_url || persisted.server_url.is_some(),
+    })
+}
+
 /// Read the effective config for the frontend (ADR-64/65).
 ///
 /// `has_server_url` is recomputed against the CURRENT persisted value, not only
@@ -161,17 +185,7 @@ pub struct ConfigPayload {
 /// is monotonic and correct.
 #[tauri::command]
 pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<ConfigPayload, String> {
-    let persisted = state
-        .persisted
-        .lock()
-        .map_err(|e| format!("state lock poisoned: {e}"))?
-        .clone();
-    Ok(ConfigPayload {
-        server_url: persisted.server_url.clone(),
-        allow_input: persisted.allow_input,
-        theme: persisted.theme,
-        has_server_url: state.has_server_url || persisted.server_url.is_some(),
-    })
+    config_payload(&state)
 }
 
 /// Persist the user's choices to `config.json` and update the runtime mirrors.
@@ -455,5 +469,40 @@ mod tests {
             "get_config must report hasServerUrl=true after an in-session save"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- F3: get_config must return the EFFECTIVE server URL ----
+
+    #[test]
+    fn config_payload_returns_effective_url_from_persisted() {
+        let dir = std::env::temp_dir().join(format!("ponter-cfgpayload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        crate::config::save_config(
+            &path,
+            &crate::config::PersistedConfig {
+                server_url: Some("http://file:9".to_string()),
+                allow_input: false,
+                theme: None,
+            },
+        )
+        .unwrap();
+        let state = crate::state::AppState::with_config(Some(path));
+        let payload = config_payload(&state).expect("payload");
+        assert_eq!(payload.server_url.as_deref(), Some("http://file:9"));
+        assert!(payload.has_server_url);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_payload_reports_effective_fallback_url_not_none() {
+        // F3 regression: with NO persisted URL (env/build-default deployment) the
+        // payload must carry the EFFECTIVE url (localhost fallback), never None —
+        // otherwise LoginView shows "Server: not set".
+        let state = crate::state::AppState::with_config(None);
+        let payload = config_payload(&state).expect("payload");
+        assert_eq!(payload.server_url.as_deref(), Some("http://localhost:8787"));
+        assert!(!payload.has_server_url);
     }
 }

@@ -34,15 +34,6 @@ export const useConfigStore = defineStore('config', () => {
     hasServerUrl.value = cfg.hasServerUrl;
   }
 
-  /** Persist the current values. */
-  async function save(): Promise<void> {
-    await invoke('save_config', {
-      serverUrl: serverUrl.value || null,
-      allowInput: allowInput.value,
-      theme: theme.value,
-    });
-  }
-
   /** Set the server URL, persist, and leave edit mode. */
   async function setServerUrl(url: string): Promise<void> {
     serverUrl.value = url;
@@ -82,7 +73,6 @@ export const useConfigStore = defineStore('config', () => {
     hasServerUrl,
     editing,
     load,
-    save,
     setServerUrl,
     setAllowInput,
     setTheme,
