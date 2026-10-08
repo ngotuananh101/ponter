@@ -1,6 +1,6 @@
 # Phase 8c: Desktop Server Configuration, Persistence, Login Ordering & Dark Mode — Design Spec
 
-- **Status:** Draft (owner-approved scope 2026-10-08; spec pending review)
+- **Status:** Approved; implemented/merged — PR #72 (squash `2f608e7`)
 - **Phase:** 8 (extension — workstream **8c**; sibling of 8a self-build and 8b TURN)
 - **Related:** `apps/desktop/src-tauri/src/state.rs`, `apps/desktop/src-tauri/src/commands/wizard.rs`, `apps/desktop/src-tauri/src/commands/login.rs`, `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/App.vue`, `apps/desktop/src/views/{LoginView,WizardView}.vue`, `apps/desktop/src/stores/{auth,wizard}.ts`, `apps/desktop/src/style.css`, `.github/workflows/build-desktop.yml`, `apps/web/src/composables/useTheme.ts` (parity source), `docs/guides/self-hosting.md`.
 
