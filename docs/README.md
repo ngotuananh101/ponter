@@ -17,6 +17,7 @@ Welcome to the Ponter technical documentation.
 
 - **[Local Development Guide](guides/development.md)**: Setup, running the backend (`@ponter/server`), Vue 3 web workspace, native agent, and cross-language E2E tests.
 - **[Deployment Guide](guides/deployment.md)**: Self-hosted Docker Compose setups (Local LAN, Homelab via Cloudflare Tunnel, Production VPS with Caddy + Coturn) and Cloudflare Pages static web deployment.
+- **[Self-Hosting & Fork Guide](guides/self-hosting.md)**: Fork the repo, repoint or disable the desktop updater, and build/publish your own Docker image.
 - **[Desktop Agent Setup Guide](guides/agent-setup.md)**: Compiling, configuring CLI options, and running the native Rust daemon interactively or as a systemd background service.
 - **[Terminal Multiplexing & Wire Protocol](guides/terminal-protocol.md)**: Wire framing protocol specification for WebRTC DataChannel shell multiplexing.
 

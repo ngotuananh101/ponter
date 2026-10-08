@@ -75,6 +75,10 @@ ponter/
 
 ## ⚡ Quick Start (Local Development)
 
+> Building from source, self-hosting your own instance, or forking the desktop
+> app? See [`docs/guides/development.md`](docs/guides/development.md) (build all
+> four apps) and [`docs/guides/self-hosting.md`](docs/guides/self-hosting.md).
+
 ### 1. Prerequisites
 
 - **Node.js**: `>= 24.0.0`
