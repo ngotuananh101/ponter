@@ -367,11 +367,20 @@ jobs:
             if (/\.exe$/.test(f))            return { os: "windows", arch: "x86_64", bundle: "nsis" };
             return null;
           };
+          const path = require("path");
+          // Nesting-safe: download-artifact (merge-multiple: true) preserves
+          // per-type subdirs (dist/deb/, dist/dmg/, …). Walk recursively.
+          const walk = (dir) =>
+            fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+              const p = path.join(dir, e.name);
+              return e.isDirectory() ? walk(p) : [p];
+            });
           const platforms = {};
-          for (const f of fs.readdirSync(".")) {
+          for (const fp of walk(".")) {
+            const f = path.basename(fp); // release assets upload FLAT
             const t = targetFor(f);
             if (!t) continue;
-            const sigFile = f + ".sig";
+            const sigFile = fp + ".sig"; // sibling of the FULL path
             if (!fs.existsSync(sigFile)) continue;
             const sig = fs.readFileSync(sigFile, "utf8").trim();
             const key = `${t.os}-${t.arch}-${t.bundle}`;
@@ -379,6 +388,10 @@ jobs:
             if (!platforms[key]) {
               platforms[key] = { url: GH + "/" + f, signature: sig };
             }
+          }
+          if (Object.keys(platforms).length === 0) {
+            console.error("no platforms resolved from dist/");
+            process.exit(1);
           }
           const manifest = { version, notes: null, pub_date: new Date().toISOString(), platforms };
           fs.writeFileSync("latest.json", JSON.stringify(manifest));
