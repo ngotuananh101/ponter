@@ -11,16 +11,18 @@ const app = createApp(App).use(createPinia());
 app.mount('#app');
 
 // Reconcile the persisted theme once the store can read config (ADR-68).
-import('@/stores/config').then(({ useConfigStore }) => {
-  useConfigStore()
-    .load()
-    .then(() => {
-      const stored = useConfigStore().theme;
-      if (stored === 'light' || stored === 'dark') {
-        import('@/composables/useTheme').then(({ useTheme }) =>
-          useTheme().set(stored),
-        );
-      }
-    })
-    .catch(() => {});
-});
+// A single async task with every promise awaited/handled: a failed config read
+// must not break the app, so the error is swallowed and the initial theme kept.
+void (async () => {
+  try {
+    const { useConfigStore } = await import('@/stores/config');
+    const { useTheme } = await import('@/composables/useTheme');
+    await useConfigStore().load();
+    const stored = useConfigStore().theme;
+    if (stored === 'light' || stored === 'dark') {
+      useTheme().set(stored);
+    }
+  } catch {
+    // Config could not be read — keep the OS/initial theme.
+  }
+})();
