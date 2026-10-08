@@ -24,7 +24,12 @@ async function connect() {
   try {
     probe.value = await invoke<ProbeResult>('probe_server', { url: url.value });
     if (probe.value.ok) {
-      await config.setServerUrl(url.value.trim());
+      try {
+        await config.setServerUrl(url.value.trim());
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Unknown error';
+        probe.value = { ok: false, message };
+      }
     }
   } finally {
     loading.value = false;

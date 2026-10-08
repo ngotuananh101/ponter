@@ -41,7 +41,8 @@ pub fn save_config(path: &Path, cfg: &PersistedConfig) -> Result<(), String> {
 /// Resolve the effective server URL from the four-level precedence chain
 /// (ADR-64): runtime env → persisted → build-time default → localhost.
 /// A whitespace-only value at any level is treated as unset; the result has
-/// trailing slashes trimmed.
+/// trailing slashes trimmed. A slash-only value (e.g. `"///"`) is also treated
+/// as unset after trimming trailing slashes.
 pub fn resolve_server_url(
     runtime_env: Option<&str>,
     persisted: Option<&str>,
@@ -53,7 +54,10 @@ pub fn resolve_server_url(
     {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
-            return trimmed.trim_end_matches('/').to_string();
+            let stripped = trimmed.trim_end_matches('/');
+            if !stripped.is_empty() {
+                return stripped.to_string();
+            }
         }
     }
     "http://localhost:8787".to_string()
@@ -117,6 +121,22 @@ mod tests {
         assert_eq!(
             resolve_server_url(Some("http://host:8787///"), None, None),
             "http://host:8787"
+        );
+    }
+
+    #[test]
+    fn resolve_treats_slash_only_as_unset() {
+        assert_eq!(
+            resolve_server_url(Some("///"), Some("http://file:2"), None),
+            "http://file:2"
+        );
+    }
+
+    #[test]
+    fn resolve_slash_only_all_levels_falls_to_localhost() {
+        assert_eq!(
+            resolve_server_url(Some("///"), Some("//"), Some("/")),
+            "http://localhost:8787"
         );
     }
 
