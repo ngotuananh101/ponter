@@ -136,6 +136,19 @@ cd docker
 DOCKERHUB_IMAGE=ngotuananh2101/ponter
 ```
 
+### 3.1.1 Publish your own image (fork)
+
+The shipped `DOCKERHUB_IMAGE` points at the upstream image. To deploy an image
+you built yourself:
+
+```bash
+docker build -f docker/Dockerfile.server -t <your-namespace>/ponter:latest .
+docker push <your-namespace>/ponter:latest
+# then set DOCKERHUB_IMAGE=<your-namespace>/ponter:latest in docker/.env
+```
+
+See `docs/guides/self-hosting.md` §2 for the full fork walkthrough.
+
 **Bước 1 — Publish image:** trên GitHub, vào Actions → *Docker Publish* → *Run workflow*, chọn branch cần build.
 
 Workflow build `linux/amd64` và `linux/arm64` trên hai runner native riêng rồi gộp thành một manifest multi-arch, nên cùng một image chạy được trên VPS x86 lẫn máy ARM (Oracle Cloud, Ampere, Raspberry Pi) mà không cần QEMU.
