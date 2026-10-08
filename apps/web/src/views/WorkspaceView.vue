@@ -156,6 +156,7 @@ onUnmounted(() => {
       @click="sidebarOpen = false"
       class="absolute top-1/2 -translate-y-1/2 left-64 z-30 flex items-center justify-center w-5 h-10 bg-card border border-l-0 border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Hide sidebar"
+      aria-label="Hide sidebar"
     >
       <ChevronLeft
         class="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground"
@@ -166,6 +167,7 @@ onUnmounted(() => {
       @click="sidebarOpen = true"
       class="fixed top-1/2 -translate-y-1/2 left-0 z-30 flex items-center justify-center w-5 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Show sidebar"
+      aria-label="Show sidebar"
     >
       <ChevronRight
         class="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground"
@@ -335,11 +337,9 @@ onUnmounted(() => {
         class="h-6 bg-card border-t border-border px-3 hidden sm:flex items-center justify-between text-[11px] font-mono text-muted-foreground select-none flex-shrink-0"
       >
         <div class="flex items-center gap-3">
-          <span
-            class="flex items-center gap-1.5 text-success"
-          >
+          <span class="flex items-center gap-1.5 text-success">
             <span
-              class="w-1.5 h-1.5 rounded-full bg-success animate-pulse"
+              class="w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse"
             ></span>
             <span>P2P Direct</span>
           </span>

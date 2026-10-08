@@ -127,7 +127,7 @@ async function handleLogout() {
           class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-primary/20 bg-primary/10 text-primary text-xs font-mono"
         >
           <span
-            class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"
+            class="w-1.5 h-1.5 rounded-full bg-primary motion-safe:animate-pulse"
           ></span>
           <span>DTLS Secured</span>
         </div>

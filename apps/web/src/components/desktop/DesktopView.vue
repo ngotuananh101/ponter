@@ -9,6 +9,8 @@ import {
 } from 'vue';
 import { RefreshCw, Settings, ShieldCheck } from '@lucide/vue';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import ConnectionProgress from '@/components/terminal/ConnectionProgress.vue';
 import { useTerminalStore } from '@/stores/terminal';
 import type { TabItem } from '@/stores/terminal';
@@ -233,8 +235,8 @@ watch(inputOn, async (on) => {
 });
 
 /** The input toggle is our own chrome, so its state is the local `inputOn`. */
-function onToggle(event: Event): void {
-  inputOn.value = (event.target as HTMLInputElement).checked;
+function onToggle(val: boolean | 'indeterminate'): void {
+  inputOn.value = val === true;
 }
 
 function modifiersOf(e: KeyboardEvent | MouseEvent): KeyModifiers {
@@ -407,18 +409,19 @@ const inputHandlers = computed(() => {
           <span>Verified peer</span>
         </span>
 
-        <label
+        <div
           v-if="tab.desktopInputEnabled && tab.desktopPeerVerified"
           class="flex items-center gap-1 text-muted-foreground"
         >
-          <input
+          <Checkbox
             data-test="desktop-input-toggle"
-            type="checkbox"
-            :checked="inputOn"
-            @change="onToggle"
+            id="desktop-input-toggle"
+            :model-value="inputOn"
+            @update:model-value="onToggle"
+            aria-label="Toggle remote input"
           />
-          <span>Input</span>
-        </label>
+          <Label for="desktop-input-toggle" class="text-xs">Input</Label>
+        </div>
 
         <span
           v-if="tab.desktopInputEnabled && tab.desktopPeerVerified"

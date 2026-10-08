@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button } from '@/components/ui/button';
+import { RouterLink } from 'vue-router';
 </script>
 
 <template>
@@ -11,8 +11,11 @@ import { Button } from '@/components/ui/button';
     <p class="text-muted-foreground mt-2 max-w-sm">
       The page you are looking for doesn't exist or has been moved.
     </p>
-    <router-link to="/" class="mt-6">
-      <Button>Back to Home</Button>
-    </router-link>
+    <RouterLink
+      to="/"
+      class="mt-6 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      Back to Home
+    </RouterLink>
   </div>
 </template>

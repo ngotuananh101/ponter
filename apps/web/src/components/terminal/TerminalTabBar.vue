@@ -84,6 +84,7 @@ defineEmits<{
             :data-test="`retry-tab-${tab.id}`"
             class="hover:text-foreground hover:bg-muted rounded p-0.5 transition-colors opacity-70 group-hover:opacity-100"
             title="Retry connection"
+            aria-label="Retry connection"
             @click.stop="$emit('retryTab', tab.id)"
           >
             <RefreshCw class="w-3.5 h-3.5" />
@@ -92,6 +93,7 @@ defineEmits<{
             :data-test="`close-tab-${tab.id}`"
             class="hover:text-destructive hover:bg-destructive/10 rounded p-0.5 transition-colors opacity-70 group-hover:opacity-100"
             title="Close tab"
+            aria-label="Close tab"
             @click.stop="$emit('closeTab', tab.id)"
           >
             <X class="w-3.5 h-3.5" />
@@ -113,6 +115,7 @@ defineEmits<{
     <button
       class="p-1.5 mr-1 hover:bg-muted text-muted-foreground hover:text-foreground rounded-md transition-colors flex-shrink-0"
       title="Open new tab"
+      aria-label="Open new tab"
       @click="$emit('newTab')"
     >
       <Plus class="w-4 h-4" />

@@ -4,6 +4,9 @@ import { useWizardStore } from '@/stores/wizard';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Loader2 } from '@lucide/vue';
 
 const store = useWizardStore();
 
@@ -33,11 +36,10 @@ async function complete() {
 
 /** When the user toggles the auto-start checkbox, apply it immediately (R11).
  * The store reverts the checkbox on error and surfaces the message. */
-async function onAutoStartChange(e: Event) {
-  const target = e.target as HTMLInputElement | null;
-  const enabled = target?.checked ?? false;
+async function onAutoStartChange(enabled: boolean | 'indeterminate') {
+  const isEnabled = enabled === true;
   try {
-    await store.setAutoStart(enabled);
+    await store.setAutoStart(isEnabled);
   } catch {
     // Error is surfaced via store.autoStartError; the checkbox was already
     // reverted by setAutoStart keeping autoStart in sync.
@@ -64,19 +66,16 @@ watch(
   <div data-testid="wizard-root">
     <!-- Step 1: Server -->
     <div v-if="store.step === 'server'" data-testid="wizard-step-server">
-      <h2>Server Connection</h2>
+      <h1>Server Connection</h1>
       <p data-testid="wizard-server-help">
         Enter your Ponter server URL to verify connectivity.
       </p>
 
-      <Label for="wizard-server-url-input">
-        <span class="sr-only">Server URL</span>
-      </Label>
+      <Label for="wizard-server-url-input" class="sr-only">Server URL</Label>
       <Input
         id="wizard-server-url-input"
         type="url"
         data-testid="wizard-server-url"
-        aria-label="Server URL"
         placeholder="http://localhost:8787"
         v-model="store.serverUrl"
       />
@@ -86,17 +85,24 @@ watch(
         :disabled="store.loading || !store.serverUrl"
         @click="probeServer"
       >
-        {{ store.loading ? 'Probing...' : 'Probe Server' }}
+        <Loader2 v-if="store.loading" class="mr-2 h-4 w-4 animate-spin" />
+        {{ store.loading ? 'Probing...' : 'Connect' }}
       </Button>
 
-      <p v-if="store.serverProbe" data-testid="wizard-server-message">
-        {{ store.serverProbe.message }}
-      </p>
+      <Alert
+        v-if="store.serverProbe && !store.serverProbe.ok"
+        data-testid="wizard-server-message"
+        variant="destructive"
+        role="alert"
+        aria-live="polite"
+      >
+        <AlertDescription>{{ store.serverProbe.message }}</AlertDescription>
+      </Alert>
     </div>
 
     <!-- Step 2: Capture -->
     <div v-else-if="store.step === 'capture'" data-testid="wizard-step-capture">
-      <h2>Screen Capture</h2>
+      <h1>Screen Capture</h1>
       <p data-testid="wizard-capture-help">
         Grant screen-recording permission when prompted, then verify capture.
       </p>
@@ -106,12 +112,19 @@ watch(
         :disabled="store.loading"
         @click="probeCapture"
       >
-        {{ store.loading ? 'Probing...' : 'Probe Capture' }}
+        <Loader2 v-if="store.loading" class="mr-2 h-4 w-4 animate-spin" />
+        {{ store.loading ? 'Probing...' : 'Verify Capture' }}
       </Button>
 
-      <p v-if="store.captureProbe" data-testid="wizard-capture-message">
-        {{ store.captureProbe.message }}
-      </p>
+      <Alert
+        v-if="store.captureProbe && !store.captureProbe.ok"
+        data-testid="wizard-capture-message"
+        variant="destructive"
+        role="alert"
+        aria-live="polite"
+      >
+        <AlertDescription>{{ store.captureProbe.message }}</AlertDescription>
+      </Alert>
     </div>
 
     <!-- Step 3: Input Gate -->
@@ -119,7 +132,7 @@ watch(
       v-else-if="store.step === 'inputGate'"
       data-testid="wizard-step-input-gate"
     >
-      <h2>Input Gate</h2>
+      <h1>Input Gate</h1>
       <p data-testid="wizard-input-help">
         Two gates protect your input. Gate A (this step) is the --allow-input
         preference that defaults to closed; enabling it allows the relay to
@@ -128,20 +141,20 @@ watch(
         verified peers can send input events.
       </p>
 
-      <Label>
-        <input
-          type="checkbox"
-          data-testid="wizard-input-checkbox"
-          v-model="store.allowInput"
-        />
-        Allow remote input
-      </Label>
+      <Label for="wizard-input-checkbox">Allow remote input</Label>
+      <Checkbox
+        id="wizard-input-checkbox"
+        data-testid="wizard-input-checkbox"
+        v-model="store.allowInput"
+        aria-label="Allow remote input"
+      />
 
       <Button
         data-testid="wizard-finish"
         :disabled="store.loading"
         @click="finish"
       >
+        <Loader2 v-if="store.loading" class="mr-2 h-4 w-4 animate-spin" />
         {{ store.loading ? 'Saving...' : 'Continue' }}
       </Button>
     </div>
@@ -151,32 +164,40 @@ watch(
       v-else-if="store.step === 'autoStart'"
       data-testid="wizard-step-auto-start"
     >
-      <h2>All Set</h2>
+      <h1>All Set</h1>
       <p data-testid="wizard-autostart-help">
         Adds Ponter to your system's startup so the agent runs on login. Takes
         effect at the next login.
       </p>
 
-      <Label>
-        <input
-          type="checkbox"
-          data-testid="wizard-autostart-checkbox"
-          :checked="store.autoStart"
-          @change="onAutoStartChange"
-        />
-        Auto-start the agent on login
-      </Label>
+      <Label for="wizard-autostart-checkbox"
+        >Auto-start the agent on login</Label
+      >
+      <Checkbox
+        id="wizard-autostart-checkbox"
+        data-testid="wizard-autostart-checkbox"
+        :model-value="store.autoStart"
+        @update:model-value="onAutoStartChange"
+        aria-label="Auto-start the agent on login"
+      />
 
-      <p v-if="store.autoStartError" data-testid="wizard-autostart-error">
-        {{ store.autoStartError }}
-      </p>
+      <Alert
+        v-if="store.autoStartError"
+        data-testid="wizard-autostart-error"
+        variant="destructive"
+        role="alert"
+        aria-live="polite"
+      >
+        <AlertDescription>{{ store.autoStartError }}</AlertDescription>
+      </Alert>
 
       <Button
         data-testid="wizard-autostart-finish"
         :disabled="store.loading"
         @click="complete"
       >
-        {{ store.loading ? 'Saving...' : 'Finish' }}
+        <Loader2 v-if="store.loading" class="mr-2 h-4 w-4 animate-spin" />
+        {{ store.loading ? 'Saving...' : 'Done' }}
       </Button>
     </div>
   </div>

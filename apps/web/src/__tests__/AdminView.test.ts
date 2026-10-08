@@ -127,8 +127,10 @@ describe('AdminView', () => {
     await flushPromises();
 
     const regInput = wrapper.find('[data-test="settings-allow-registration"]');
+    expect(regInput.attributes('aria-checked')).toBe('true');
     await regInput.trigger('click');
     await flushPromises();
+    expect(regInput.attributes('aria-checked')).toBe('false');
 
     await wrapper.find('[data-test="btn-save-settings"]').trigger('click');
     await flushPromises();

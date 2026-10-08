@@ -572,6 +572,9 @@ describe('FilesView', () => {
       await waitForOpen();
 
       expect(wrapper.find('[data-test="transfer-drawer"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="transfer-drawer"]').classes()).toContain(
+        'open',
+      );
     });
 
     it('pauses and resumes a transfer from the drawer', async () => {

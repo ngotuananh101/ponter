@@ -62,9 +62,7 @@ onMounted(() => {
     >
       <div class="flex items-center gap-2">
         <Server class="w-4 h-4 text-primary" />
-        <span
-          class="text-xs font-semibold text-muted-foreground"
-        >
+        <span class="text-xs font-semibold text-muted-foreground">
           Agent Fleet
         </span>
       </div>
@@ -76,6 +74,7 @@ onMounted(() => {
           class="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted transition-colors"
           :class="{ 'animate-spin': loading }"
           title="Refresh agents"
+          aria-label="Refresh agents"
           @click="loadAgents"
         >
           <RefreshCw class="w-3.5 h-3.5" />
@@ -130,9 +129,7 @@ onMounted(() => {
               ></span>
               <span
                 class="relative inline-flex rounded-full h-2 w-2"
-                :class="
-                  a.isOnline ? 'bg-success' : 'bg-muted-foreground/40'
-                "
+                :class="a.isOnline ? 'bg-success' : 'bg-muted-foreground/40'"
               ></span>
             </span>
             <div class="flex flex-col truncate">

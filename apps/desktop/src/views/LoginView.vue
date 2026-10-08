@@ -31,6 +31,7 @@ async function handleSubmit() {
   <main
     class="container flex min-h-screen flex-col items-center justify-center"
   >
+    <h1 class="sr-only">Login</h1>
     <Card class="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Ponter Desktop</CardTitle>
@@ -60,6 +61,8 @@ async function handleSubmit() {
             v-if="store.error"
             data-testid="login-error"
             variant="destructive"
+            role="alert"
+            aria-live="polite"
           >
             <AlertDescription>{{ store.error }}</AlertDescription>
           </Alert>

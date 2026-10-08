@@ -385,7 +385,7 @@ onUnmounted(() => {
               <div
                 v-for="i in 3"
                 :key="i"
-                class="h-20 rounded-lg bg-muted/40 border border-border/50 animate-pulse"
+                class="h-20 rounded-lg bg-muted/40 border border-border/50 motion-safe:animate-pulse"
               />
             </div>
 

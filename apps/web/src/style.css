@@ -90,8 +90,8 @@
   --header-height: 3.5rem;
   --success: oklch(0.55 0.15 155);
   --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.70 0.16 75);
-  --warning-foreground: oklch(0.20 0.02 260);
+  --warning: oklch(0.7 0.16 75);
+  --warning-foreground: oklch(0.2 0.02 260);
   --danger: oklch(0.56 0.22 25);
   --danger-foreground: oklch(0.99 0 0);
   --terminal-bg: oklch(0.14 0.02 260);

@@ -11,7 +11,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Shield, KeyRound, User, Mail, Lock } from '@lucide/vue';
+import { Shield, KeyRound, User, Mail, Lock, Loader2 } from '@lucide/vue';
 import { toast } from 'vue-sonner';
 
 const props = defineProps<{
@@ -182,9 +182,7 @@ function handleSubmit() {
       <CardFooter class="flex flex-col space-y-3 pt-2">
         <Button type="submit" class="w-full font-medium" :disabled="loading">
           <span v-if="loading" class="flex items-center gap-2">
-            <span
-              class="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin"
-            ></span>
+            <Loader2 class="w-4 h-4 animate-spin" />
             Generating Keys & Registering...
           </span>
           <span v-else>Register</span>
