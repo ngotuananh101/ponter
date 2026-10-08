@@ -30,6 +30,7 @@ on:
       - develop
     paths:
       - 'apps/desktop/**'
+      - '!apps/desktop/**/*.md'
       - 'apps/agent/**'
       - '.github/workflows/build-desktop.yml'
   pull_request:
@@ -38,6 +39,7 @@ on:
       - develop
     paths:
       - 'apps/desktop/**'
+      - '!apps/desktop/**/*.md'
       - 'apps/agent/**'
       - '.github/workflows/build-desktop.yml'
   workflow_dispatch:
