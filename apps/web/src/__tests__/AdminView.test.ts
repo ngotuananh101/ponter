@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import AdminView from '@/views/AdminView.vue';
 import { apiClient } from '@/services/client';
@@ -47,7 +48,9 @@ function makeUser(overrides: Partial<User> = {}): User {
 
 /** Mount AdminView with the default mocked admin API and settle initial loads. */
 async function mountAdminView() {
-  const wrapper = mount(AdminView);
+  const wrapper = mount(AdminView, {
+    attachTo: document.body,
+  });
   await flushPromises();
   return wrapper;
 }
@@ -57,6 +60,26 @@ async function mountOnUsersTab() {
   const wrapper = await mountAdminView();
   await wrapper.find('[data-test="tab-users"]').trigger('click');
   return wrapper;
+}
+
+/**
+ * Shared helper for approve/reject tests: sets up the updateUser spy,
+ * mounts on the Users tab, and clicks the given action button.
+ * Returns the spy so each `it()` keeps its own `expect(updateSpy).toHaveBeenCalledWith(...)`.
+ */
+async function triggerUserAction(action: 'approve' | 'reject'): Promise<{
+  updateSpy: ReturnType<typeof vi.spyOn>;
+  wrapper: Awaited<ReturnType<typeof mountOnUsersTab>>;
+}> {
+  const updateSpy = vi.spyOn(apiClient.admin, 'updateUser').mockResolvedValue({
+    user: makeUser({
+      id: 'u1',
+      approvalStatus: action === 'approve' ? 'approved' : 'rejected',
+    }),
+  });
+  const wrapper = await mountOnUsersTab();
+  await wrapper.find(`[data-test="btn-${action}-u1"]`).trigger('click');
+  return { updateSpy, wrapper };
 }
 
 describe('AdminView', () => {
@@ -83,14 +106,7 @@ describe('AdminView', () => {
   });
 
   it('triggers approve user action', async () => {
-    const updateSpy = vi
-      .spyOn(apiClient.admin, 'updateUser')
-      .mockResolvedValue({
-        user: makeUser({ id: 'u1', approvalStatus: 'approved' }),
-      });
-    const wrapper = await mountOnUsersTab();
-
-    await wrapper.find('[data-test="btn-approve-u1"]').trigger('click');
+    const { updateSpy } = await triggerUserAction('approve');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
       approvalStatus: 'approved',
@@ -98,14 +114,7 @@ describe('AdminView', () => {
   });
 
   it('triggers reject user action', async () => {
-    const updateSpy = vi
-      .spyOn(apiClient.admin, 'updateUser')
-      .mockResolvedValue({
-        user: makeUser({ id: 'u1', approvalStatus: 'rejected' }),
-      });
-    const wrapper = await mountOnUsersTab();
-
-    await wrapper.find('[data-test="btn-reject-u1"]').trigger('click');
+    const { updateSpy } = await triggerUserAction('reject');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
       approvalStatus: 'rejected',
@@ -124,8 +133,10 @@ describe('AdminView', () => {
     await flushPromises();
 
     const regInput = wrapper.find('[data-test="settings-allow-registration"]');
-    expect(regInput.element).toBeInstanceOf(HTMLInputElement);
-    await regInput.setValue(false);
+    expect(regInput.attributes('aria-checked')).toBe('true');
+    await regInput.trigger('click');
+    await flushPromises();
+    expect(regInput.attributes('aria-checked')).toBe('false');
 
     await wrapper.find('[data-test="btn-save-settings"]').trigger('click');
     await flushPromises();
@@ -148,13 +159,21 @@ describe('AdminView', () => {
       users: [makeUser({ id: 'u1', role: 'admin' })],
       total: 1,
     });
-    vi.stubGlobal('confirm', () => true);
-
     const wrapper = await mountAdminView();
     await wrapper.find('[data-test="tab-users"]').trigger('click');
     await flushPromises();
 
     await wrapper.find('[data-test="btn-demote-u1"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Confirm the AlertDialog action (content is Teleported to document.body)
+    const confirmBtn = document.querySelector(
+      '[data-slot="alert-dialog-action"]',
+    ) as HTMLElement;
+    expect(confirmBtn).not.toBeNull();
+    await confirmBtn.click();
     await flushPromises();
 
     expect(toast.error).toHaveBeenCalledWith('Cannot demote the last admin');

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { mount, flushPromises } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import DesktopView from '@/components/desktop/DesktopView.vue';
 import { useTerminalStore } from '@/stores/terminal';
@@ -349,7 +350,7 @@ describe('DesktopView', () => {
       .trigger('pointermove', { clientX: 10, clientY: 10 });
     expect(sendInput).not.toHaveBeenCalled();
 
-    await toggle.setValue(true);
+    await toggle.trigger('click');
     await wrapper
       .find('video')
       .trigger('pointermove', { clientX: 10, clientY: 10 });
@@ -365,7 +366,7 @@ describe('DesktopView', () => {
       desktopInputEnabled: true,
       desktopPeerVerified: true,
     });
-    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+    await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
 
     await wrapper.find('video').trigger('pointerdown', {
       clientX: 10,
@@ -401,7 +402,7 @@ describe('DesktopView', () => {
       desktopInputEnabled: true,
       desktopPeerVerified: true,
     });
-    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+    await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
 
     // The agent can close the gate mid-session (a new desktop-sources frame).
     await wrapper.setProps({
@@ -435,7 +436,9 @@ describe('DesktopView', () => {
       // move `document.activeElement`, so an unattached mount cannot prove it.
       attachTo: document.body,
     });
-    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+    await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
+    await flushPromises();
+    await nextTick();
 
     expect(document.activeElement).toBe(wrapper.find('video').element);
     wrapper.unmount();
@@ -482,7 +485,10 @@ describe('DesktopView', () => {
     expect(status.exists()).toBe(true);
     expect(status.text()).toBe('View only');
 
-    await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+    await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
     expect(wrapper.find('[data-test="desktop-input-status"]').text()).toBe(
       'Controlling',
     );
@@ -502,7 +508,9 @@ describe('DesktopView', () => {
         desktopInputEnabled: true,
         desktopPeerVerified: true,
       });
-      await wrapper.find('[data-test="desktop-input-toggle"]').setValue(true);
+      await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
+      await flushPromises();
+      await nextTick();
       const video = wrapper.find('video');
       expect(video.classes()).toContain('cursor-none');
     });

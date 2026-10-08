@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { useDevicesStore } from '@/stores/devices';
 import {
@@ -13,20 +13,43 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 const authStore = useAuthStore();
 const store = useDevicesStore();
+
+const deleteDialogOpen = ref(false);
+const deleteTarget = ref<string | null>(null);
 
 async function handleRegister() {
   await store.register();
 }
 
-async function handleDelete(deviceId: string) {
-  const confirmed = window.confirm(
-    `Delete device "${deviceId}"? This cannot be undone.`,
-  );
-  if (!confirmed) return;
+function handleDelete(deviceId: string) {
+  deleteTarget.value = deviceId;
+  deleteDialogOpen.value = true;
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value) return;
+  const deviceId = deleteTarget.value;
+  deleteDialogOpen.value = false;
+  deleteTarget.value = null;
   await store.remove(deviceId);
+}
+
+function cancelDelete() {
+  deleteDialogOpen.value = false;
+  deleteTarget.value = null;
 }
 
 onMounted(() => {
@@ -88,7 +111,6 @@ onMounted(() => {
             </div>
             <Button
               data-testid="device-delete"
-              :data-testid-device="device.id"
               variant="destructive"
               @click="handleDelete(device.id)"
             >
@@ -103,12 +125,35 @@ onMounted(() => {
           :disabled="store.loading"
           @click="handleRegister"
         >
-          {{ store.loading ? 'Registering...' : 'Register this device' }}
+          {{ store.loading ? 'Registering...' : 'Register Device' }}
         </Button>
         <p v-if="!store.registered" data-testid="devices-register-hint">
           The agent runtime runs from the system tray.
         </p>
       </CardFooter>
+
+      <!-- Delete confirmation dialog -->
+      <AlertDialog
+        :open="deleteDialogOpen"
+        @update:open="
+          (val: boolean) => {
+            deleteDialogOpen = val;
+          }
+        "
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete device?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel @click="cancelDelete">Cancel</AlertDialogCancel>
+            <AlertDialogAction @click="confirmDelete">Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   </div>
 </template>

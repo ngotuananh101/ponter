@@ -82,7 +82,7 @@ describe('devices store', () => {
 
     expect(result).toEqual(sampleDevice);
     expect(store.registered).toBe(true);
-    // The register command returns the projection only — no credential field.
+    // The register result must never carry a credential field.
     expect(result).not.toHaveProperty('credential');
     expect(invoke).toHaveBeenCalledWith('register_device');
   });
@@ -181,19 +181,35 @@ describe('DevicesView', () => {
       if (cmd === 'delete_device') return true;
       return undefined;
     });
-    window.confirm = vi.fn(() => true);
 
-    const wrapper = mount(DevicesView);
+    const wrapper = mount(DevicesView, {
+      global: {
+        stubs: {
+          Teleport: { template: '<slot />' },
+        },
+      },
+    });
     await flushPromises();
     await nextTick();
 
+    const store = useDevicesStore();
+    const removeSpy = vi.spyOn(store, 'remove');
+
     await wrapper.find('[data-testid="device-delete"]').trigger('click');
     await flushPromises();
+    await nextTick();
 
+    const deleteBtn = wrapper.find('[data-slot="alert-dialog-action"]');
+    expect(deleteBtn.exists()).toBe(true);
+
+    await deleteBtn.trigger('click');
+    await flushPromises();
+
+    expect(removeSpy).toHaveBeenCalledWith(sampleDevice.id);
     expect(invoke).toHaveBeenCalledWith('delete_device', {
       agentId: sampleDevice.id,
     });
-    expect(window.confirm).toHaveBeenCalled();
+    wrapper.unmount();
   });
 
   it('never writes a credential or secret to webview storage', async () => {

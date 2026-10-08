@@ -13,7 +13,18 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   ShieldCheck,
   Users,
@@ -64,6 +75,39 @@ const statusFilter = ref<StatusFilter>('all');
 
 // Self-protection (spec §4.2): the current admin may not act on their own row.
 const isSelf = (u: User) => u.id === authStore.user?.id;
+
+const confirmDialog = ref<{
+  open: boolean;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  action: (() => void) | null;
+}>({
+  open: false,
+  title: '',
+  description: '',
+  confirmLabel: 'Confirm',
+  action: null,
+});
+
+function confirmAction(title: string, description: string, action: () => void) {
+  confirmDialog.value = {
+    open: true,
+    title,
+    description,
+    confirmLabel: 'Confirm',
+    action,
+  };
+}
+
+function handleConfirm() {
+  confirmDialog.value.action?.();
+  confirmDialog.value.open = false;
+}
+
+function handleCancel() {
+  confirmDialog.value.open = false;
+}
 
 async function loadOverview() {
   overviewLoading.value = true;
@@ -160,22 +204,24 @@ function promote(id: string) {
   void handleUserAction(id, { role: 'admin' }, 'User promoted to admin');
 }
 
-function demote(id: string) {
-  if (!confirm('Are you sure you want to demote this admin?')) {
-    return;
-  }
-  void handleUserAction(id, { role: 'user' }, 'Admin demoted');
+function demote(id: string, username: string) {
+  confirmAction(
+    'Demote Admin',
+    `Are you sure you want to demote ${username} from admin?`,
+    () => void handleUserAction(id, { role: 'user' }, 'Admin demoted'),
+  );
 }
 
 function activate(id: string) {
   void handleUserAction(id, { isActive: true }, 'User activated');
 }
 
-function deactivate(id: string) {
-  if (!confirm('Are you sure you want to deactivate this user?')) {
-    return;
-  }
-  void handleUserAction(id, { isActive: false }, 'User deactivated');
+function deactivate(id: string, username: string) {
+  confirmAction(
+    'Deactivate User',
+    `Are you sure you want to deactivate ${username}?`,
+    () => void handleUserAction(id, { isActive: false }, 'User deactivated'),
+  );
 }
 
 async function saveSettings() {
@@ -253,7 +299,7 @@ onMounted(() => {
       <button
         type="button"
         data-test="tab-overview"
-        class="px-3 py-1.5 rounded-md font-medium transition-all"
+        class="px-3 py-1.5 rounded-md font-medium transition-colors"
         :class="
           activeTab === 'overview'
             ? 'bg-card text-foreground shadow-xs'
@@ -267,7 +313,7 @@ onMounted(() => {
       <button
         type="button"
         data-test="tab-users"
-        class="px-3 py-1.5 rounded-md font-medium transition-all"
+        class="px-3 py-1.5 rounded-md font-medium transition-colors"
         :class="
           activeTab === 'users'
             ? 'bg-card text-foreground shadow-xs'
@@ -281,7 +327,7 @@ onMounted(() => {
       <button
         type="button"
         data-test="tab-settings"
-        class="px-3 py-1.5 rounded-md font-medium transition-all"
+        class="px-3 py-1.5 rounded-md font-medium transition-colors"
         :class="
           activeTab === 'settings'
             ? 'bg-card text-foreground shadow-xs'
@@ -342,25 +388,19 @@ onMounted(() => {
                 <p class="text-xs text-muted-foreground">Total</p>
               </div>
               <div>
-                <p
-                  class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400"
-                >
+                <p class="text-2xl font-bold font-mono text-success">
                   {{ stats.users.approved }}
                 </p>
                 <p class="text-xs text-muted-foreground">Approved</p>
               </div>
               <div>
-                <p
-                  class="text-2xl font-bold font-mono text-amber-600 dark:text-amber-400"
-                >
+                <p class="text-2xl font-bold font-mono text-warning">
                   {{ stats.users.pending }}
                 </p>
                 <p class="text-xs text-muted-foreground">Pending</p>
               </div>
               <div>
-                <p
-                  class="text-2xl font-bold font-mono text-red-600 dark:text-red-400"
-                >
+                <p class="text-2xl font-bold font-mono text-danger">
                   {{ stats.users.rejected }}
                 </p>
                 <p class="text-xs text-muted-foreground">Rejected</p>
@@ -376,10 +416,10 @@ onMounted(() => {
             <Alert
               v-if="stats.users.pending > 0"
               variant="default"
-              class="mt-4 border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30"
+              class="mt-4 border-warning/30 bg-warning/10 dark:border-warning/30 dark:bg-warning/10"
             >
               <AlertDescription
-                class="text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2"
+                class="text-xs text-warning flex items-center gap-2"
               >
                 <Activity class="w-4 h-4" />
                 There are
@@ -423,9 +463,7 @@ onMounted(() => {
                 <p class="text-xs text-muted-foreground">Total Agents</p>
               </div>
               <div>
-                <p
-                  class="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400"
-                >
+                <p class="text-2xl font-bold font-mono text-success">
                   {{ stats.agents.online }}
                 </p>
                 <p class="text-xs text-muted-foreground">Online</p>
@@ -516,7 +554,7 @@ onMounted(() => {
         >
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'all'
                 ? 'bg-card text-foreground shadow-xs'
@@ -531,7 +569,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'pending'
                 ? 'bg-card text-foreground shadow-xs'
@@ -546,7 +584,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'approved'
                 ? 'bg-card text-foreground shadow-xs'
@@ -561,7 +599,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'rejected'
                 ? 'bg-card text-foreground shadow-xs'
@@ -576,7 +614,7 @@ onMounted(() => {
           </button>
           <button
             type="button"
-            class="px-2.5 py-1 rounded-md font-medium transition-all"
+            class="px-2.5 py-1 rounded-md font-medium transition-colors"
             :class="
               statusFilter === 'inactive'
                 ? 'bg-card text-foreground shadow-xs'
@@ -626,7 +664,7 @@ onMounted(() => {
         <div
           v-for="u in users"
           :key="u.id"
-          class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+          class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
         >
           <div class="flex items-start gap-3 flex-1 min-w-0">
             <div
@@ -685,8 +723,9 @@ onMounted(() => {
               type="button"
               :data-test="`btn-approve-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Approve user"
+              class="p-1.5 rounded-md text-success hover:bg-success/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="`Approve ${u.username}`"
+              :aria-label="`Approve ${u.username}`"
               @click="approve(u.id)"
             >
               <UserCheck class="w-3.5 h-3.5" />
@@ -696,8 +735,9 @@ onMounted(() => {
               type="button"
               :data-test="`btn-reject-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Reject user"
+              class="p-1.5 rounded-md text-danger hover:bg-danger/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="`Reject ${u.username}`"
+              :aria-label="`Reject ${u.username}`"
               @click="reject(u.id)"
             >
               <UserX class="w-3.5 h-3.5" />
@@ -709,8 +749,9 @@ onMounted(() => {
               type="button"
               :data-test="`btn-promote-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Promote to admin"
+              class="p-1.5 rounded-md text-warning hover:bg-warning/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="`Promote ${u.username} to admin`"
+              :aria-label="`Promote ${u.username} to admin`"
               @click="promote(u.id)"
             >
               <Shield class="w-3.5 h-3.5" />
@@ -720,9 +761,10 @@ onMounted(() => {
               type="button"
               :data-test="`btn-demote-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-slate-600 dark:text-slate-400 hover:bg-slate-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Demote admin"
-              @click="demote(u.id)"
+              class="p-1.5 rounded-md text-muted-foreground hover:bg-muted/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="`Demote ${u.username} from admin`"
+              :aria-label="`Demote ${u.username} from admin`"
+              @click="demote(u.id, u.username)"
             >
               <ShieldOff class="w-3.5 h-3.5" />
             </button>
@@ -733,9 +775,10 @@ onMounted(() => {
               type="button"
               :data-test="`btn-deactivate-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Deactivate user"
-              @click="deactivate(u.id)"
+              class="p-1.5 rounded-md text-danger hover:bg-danger/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="`Deactivate ${u.username}`"
+              :aria-label="`Deactivate ${u.username}`"
+              @click="deactivate(u.id, u.username)"
             >
               <Ban class="w-3.5 h-3.5" />
             </button>
@@ -744,8 +787,9 @@ onMounted(() => {
               type="button"
               :data-test="`btn-activate-${u.id}`"
               :disabled="isSelf(u)"
-              class="p-1.5 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Activate user"
+              class="p-1.5 rounded-md text-success hover:bg-success/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :title="`Activate ${u.username}`"
+              :aria-label="`Activate ${u.username}`"
               @click="activate(u.id)"
             >
               <Unlock class="w-3.5 h-3.5" />
@@ -792,17 +836,16 @@ onMounted(() => {
               >Allow Registration
             </Label>
             <div class="flex items-center gap-3">
-              <input
+              <Checkbox
                 id="settings-allow-registration"
                 data-test="settings-allow-registration"
-                type="checkbox"
-                :checked="settings.allowRegistration"
-                @change="
-                  settings.allowRegistration = (
-                    $event.target as HTMLInputElement
-                  ).checked
+                :model-value="settings?.allowRegistration"
+                @update:model-value="
+                  (val) => {
+                    if (settings) settings.allowRegistration = val === true;
+                  }
                 "
-                class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                class="border-border text-primary focus:ring-primary"
               />
               <Label
                 for="settings-allow-registration"
@@ -819,17 +862,16 @@ onMounted(() => {
               >Auto-approve Users
             </Label>
             <div class="flex items-center gap-3">
-              <input
+              <Checkbox
                 id="settings-auto-approve"
                 data-test="settings-auto-approve"
-                type="checkbox"
-                :checked="settings.autoApproveUsers"
-                @change="
-                  settings.autoApproveUsers = (
-                    $event.target as HTMLInputElement
-                  ).checked
+                :model-value="settings?.autoApproveUsers"
+                @update:model-value="
+                  (val) => {
+                    if (settings) settings.autoApproveUsers = val === true;
+                  }
                 "
-                class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                class="border-border text-primary focus:ring-primary"
               />
               <Label
                 for="settings-auto-approve"
@@ -876,5 +918,27 @@ onMounted(() => {
         </div>
       </Card>
     </div>
+
+    <!-- Confirmation Dialog -->
+    <AlertDialog
+      v-bind="confirmDialog.open ? {} : {}"
+      :open="confirmDialog.open"
+      @update:open="(val: boolean) => (confirmDialog.open = val)"
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{{ confirmDialog.title }}</AlertDialogTitle>
+          <AlertDialogDescription>{{
+            confirmDialog.description
+          }}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel @click="handleCancel">Cancel</AlertDialogCancel>
+          <AlertDialogAction @click="handleConfirm">{{
+            confirmDialog.confirmLabel
+          }}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>
 </template>

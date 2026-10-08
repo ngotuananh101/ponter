@@ -227,7 +227,7 @@ onUnmounted(() => {
             </p>
           </div>
           <div
-            class="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500"
+            class="w-10 h-10 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary"
           >
             <Radio class="w-5 h-5" />
           </div>
@@ -270,7 +270,7 @@ onUnmounted(() => {
             </p>
             <div class="space-y-1">
               <div
-                class="flex items-center gap-1.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400"
+                class="flex items-center gap-1.5 text-sm font-semibold text-primary"
               >
                 <ShieldCheck class="w-4 h-4" />
                 <span>E2EE: terminal & input</span>
@@ -328,7 +328,7 @@ onUnmounted(() => {
               >
                 <button
                   type="button"
-                  class="px-2.5 py-1 rounded-md font-medium transition-all"
+                  class="px-2.5 py-1 rounded-md font-medium transition-colors"
                   :class="
                     statusFilter === 'all'
                       ? 'bg-card text-foreground shadow-xs'
@@ -340,10 +340,10 @@ onUnmounted(() => {
                 </button>
                 <button
                   type="button"
-                  class="px-2.5 py-1 rounded-md font-medium transition-all"
+                  class="px-2.5 py-1 rounded-md font-medium transition-colors"
                   :class="
                     statusFilter === 'online'
-                      ? 'bg-card text-emerald-600 dark:text-emerald-400 shadow-xs'
+                      ? 'bg-card text-success shadow-xs'
                       : 'text-muted-foreground hover:text-foreground'
                   "
                   @click="statusFilter = 'online'"
@@ -352,7 +352,7 @@ onUnmounted(() => {
                 </button>
                 <button
                   type="button"
-                  class="px-2.5 py-1 rounded-md font-medium transition-all"
+                  class="px-2.5 py-1 rounded-md font-medium transition-colors"
                   :class="
                     statusFilter === 'offline'
                       ? 'bg-card text-muted-foreground shadow-xs'
@@ -385,7 +385,7 @@ onUnmounted(() => {
               <div
                 v-for="i in 3"
                 :key="i"
-                class="h-20 rounded-lg bg-muted/40 border border-border/50 animate-pulse"
+                class="h-20 rounded-lg bg-muted/40 border border-border/50 motion-safe:animate-pulse"
               />
             </div>
 
@@ -424,14 +424,14 @@ onUnmounted(() => {
               <div
                 v-for="a in filteredAgents"
                 :key="a.id"
-                class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 hover:border-primary/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 hover:border-primary/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div class="flex items-start gap-3">
                   <div
                     class="w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors"
                     :class="
                       a.isOnline
-                        ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                        ? 'bg-success/10 text-success border border-success/20'
                         : 'bg-muted text-muted-foreground border border-border'
                     "
                   >
@@ -449,7 +449,7 @@ onUnmounted(() => {
                         class="text-[10px] font-mono px-1.5 py-0"
                         :class="
                           a.isOnline
-                            ? 'bg-emerald-500 text-white dark:bg-emerald-600'
+                            ? 'bg-success text-white dark:bg-success'
                             : ''
                         "
                       >
@@ -589,7 +589,7 @@ onUnmounted(() => {
         <Card class="border-border/80 bg-secondary/30 shadow-sm">
           <CardHeader class="pb-2">
             <CardTitle
-              class="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5"
+              class="text-xs font-semibold text-muted-foreground flex items-center gap-1.5"
             >
               <Activity class="w-3.5 h-3.5 text-primary" />
               Direct P2P Connectivity
@@ -602,19 +602,19 @@ onUnmounted(() => {
             </p>
             <div class="space-y-1.5 pt-1 text-[11px] font-mono">
               <div class="flex items-center gap-2">
-                <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
+                <CheckCircle2 class="w-3.5 h-3.5 text-primary" />
                 <span>Signaling: Self-hosted Node.js Server</span>
               </div>
               <div class="flex items-center gap-2">
-                <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
+                <CheckCircle2 class="w-3.5 h-3.5 text-primary" />
                 <span>Transport: P2P SCTP / DTLS 1.2</span>
               </div>
               <div class="flex items-center gap-2">
-                <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
+                <CheckCircle2 class="w-3.5 h-3.5 text-primary" />
                 <span>Application-layer E2EE: terminal & input channels</span>
               </div>
               <div class="flex items-center gap-2">
-                <CheckCircle2 class="w-3.5 h-3.5 text-emerald-500" />
+                <CheckCircle2 class="w-3.5 h-3.5 text-primary" />
                 <span>PTY: RingBuffer 64 KiB Virtualization</span>
               </div>
             </div>

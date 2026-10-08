@@ -203,7 +203,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
             <div class="grid grid-cols-3 gap-2">
               <button
                 type="button"
-                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-all"
+                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-colors"
                 :class="
                   platform === 'linux'
                     ? 'border-primary bg-primary/10 text-primary shadow-xs'
@@ -217,7 +217,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
 
               <button
                 type="button"
-                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-all"
+                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-colors"
                 :class="
                   platform === 'macos'
                     ? 'border-primary bg-primary/10 text-primary shadow-xs'
@@ -231,7 +231,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
 
               <button
                 type="button"
-                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-all"
+                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-colors"
                 :class="
                   platform === 'windows'
                     ? 'border-primary bg-primary/10 text-primary shadow-xs'
@@ -270,7 +270,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
         <!-- Success Step: Credential & Runbook -->
         <div v-else class="p-6 space-y-4 overflow-y-auto">
           <div
-            class="flex items-center gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+            class="flex items-center gap-2 p-3 rounded-lg bg-success/10 border border-success/20 text-success"
           >
             <Shield class="w-4 h-4 flex-shrink-0" />
             <div class="text-xs">
@@ -285,14 +285,14 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
           <div class="space-y-1.5">
             <div class="flex items-center justify-between">
               <Label
-                class="text-xs font-semibold flex items-center gap-1.5 text-amber-600 dark:text-amber-400"
+                class="text-xs font-semibold flex items-center gap-1.5 text-warning"
               >
                 <AlertTriangle class="w-3.5 h-3.5" />
                 Agent Credential Token
               </Label>
               <Badge
                 variant="outline"
-                class="font-mono text-[10px] text-amber-600 border-amber-500/30"
+                class="font-mono text-[10px] text-warning border-warning/30"
               >
                 Issued Once
               </Badge>
@@ -312,7 +312,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
               >
                 <Check
                   v-if="copiedTarget === 'credential'"
-                  class="w-3 h-3 text-emerald-500"
+                  class="w-3 h-3 text-success"
                 />
                 <Copy v-else class="w-3 h-3" />
                 {{ copiedTarget === 'credential' ? 'Copied' : 'Copy' }}
@@ -336,7 +336,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
               >
                 <Check
                   v-if="copiedTarget === 'command'"
-                  class="w-3 h-3 text-emerald-500"
+                  class="w-3 h-3 text-success"
                 />
                 <Copy v-else class="w-3 h-3" />
                 {{
@@ -346,7 +346,7 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
             </div>
 
             <div
-              class="relative bg-zinc-950 dark:bg-black rounded-lg p-3 border border-border/80 font-mono text-xs text-emerald-400 overflow-x-auto select-all"
+              class="relative bg-muted rounded-lg p-3 border border-border/80 font-mono text-xs text-success overflow-x-auto select-all"
             >
               <code>{{ runCommand }}</code>
             </div>

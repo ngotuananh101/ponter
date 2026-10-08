@@ -30,7 +30,7 @@ function stateOf(index: number): StepState {
 
 <template>
   <div
-    class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-[#090d16] p-6"
+    class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-background/95 p-6 text-foreground"
   >
     <div class="flex flex-col items-center gap-3">
       <Loader2
@@ -64,7 +64,7 @@ function stateOf(index: number): StepState {
           class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
           :class="
             stateOf(i) === 'done'
-              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-500'
+              ? 'border-success/40 bg-success/15 text-success'
               : stateOf(i) === 'active'
                 ? 'border-primary/40 bg-primary/10 text-primary'
                 : 'border-border/60 text-transparent'

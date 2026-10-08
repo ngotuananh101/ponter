@@ -367,7 +367,7 @@ function onCancel(id: string): void {
       <p
         v-if="tab.fileList?.truncated"
         data-test="files-truncated"
-        class="px-3 py-1.5 text-[11px] text-amber-500"
+        class="px-3 py-1.5 text-[11px] text-warning"
       >
         Listing truncated: showing the first 4096 entries.
       </p>
@@ -436,8 +436,8 @@ function onCancel(id: string): void {
 
 <style scoped>
 .drag-active {
-  outline: 2px dashed var(--primary, #3b82f6);
+  outline: 2px dashed var(--primary);
   outline-offset: -2px;
-  background-color: var(--primary, #3b82f6) / 10;
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
 }
 </style>
