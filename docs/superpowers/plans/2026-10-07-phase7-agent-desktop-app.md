@@ -26,11 +26,11 @@
 
 These are the points where the plan stops and the **owner** must act. Each is surfaced again at its task.
 
-1. **Updater signing keypair — required before L5 / Task 11.** Run `tauri signer generate` to create a keypair; keep the **private** key + password as CI secrets (e.g. `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`); the **public** key is compiled into the app. Without this, L5 cannot ship. → Task 11 Step 0.
-2. **macOS code-signing + notarization (recommended for L4 distribution).** A Developer ID Application certificate + notarization credentials are needed for a `.dmg` users can open without a Gatekeeper warning. Optional for a build-only artifact; required for a real public release. → Task 9/10.
-3. **Windows code-signing certificate (recommended for L4 distribution).** An Authenticode certificate avoids SmartScreen warnings on the `.msi`. Optional for a build-only artifact. → Task 9/10.
+1. **Updater signing keypair — ✅ DONE (2026-10-08).** The owner ran `tauri signer generate`; the **private** key + password are set as CI secrets `TAURI_SIGNING_PRIVATE_KEY` (2026-10-08T08:54:53Z) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (2026-10-08T08:55:24Z) — verified via `gh secret list`. The **public** key is compiled into the app by Task 11. → Task 11 Step 0. (The public key still needs to reach the Task 11 implementer; the secrets side is complete.)
+2. **macOS code-signing + notarization (recommended for L4 distribution) — NOT YET SET.** A Developer ID Application certificate + notarization credentials are needed for a `.dmg` users can open without a Gatekeeper warning. **Optional for a build-only artifact** (PM decision #1 — L4 ships unsigned); required for a real public release. → Task 9/10 (hooks commented in `build-desktop.yml`).
+3. **Windows code-signing certificate (recommended for L4 distribution) — NOT YET SET.** An Authenticode certificate avoids SmartScreen warnings on the `.msi`. **Optional for a build-only artifact**; required for a real public release. → Task 9/10 (hooks commented in `build-desktop.yml`).
 
-> The owner has asked to be **reminded at the exact step** each key is needed. Surface item 1 before Task 11 begins; surface items 2-3 before Task 9/10.
+> The owner has asked to be **reminded at the exact step** each key is needed. Item 1 is **complete** (keypair generated + CI secrets set); only the **public key** hand-off to the Task 11 implementer remains. Items 2-3 remain optional this phase (L4 is build-only) and are only needed before a real public release.
 
 ## Review Focus
 
@@ -701,22 +701,22 @@ git commit -m "feat(desktop): per-platform auto-start (ADR-55)"
 ### Task 9: Bundle configuration per platform (ADR-56)
 
 **Files:**
-- Modify: `apps/desktop/src-tauri/tauri.conf.json`
+- Modify: `apps/desktop/src-tauri/tauri.conf.json` (`bundle.active` → `true`; `bundle.targets` → `"all"`; icon array gains `icons/icon.ico` + `icons/icon.icns`)
 
 **Interfaces:**
 - Consumes: the built frontend + backend.
-- Produces: bundler targets `.deb`/`.AppImage` (Linux), `.dmg` (macOS), `.msi` (Windows).
+- Produces: bundler targets — Linux `.deb`/`.AppImage`/`.rpm`, macOS `.dmg`/`.app`, Windows `.msi` (WiX)/`.exe` (NSIS) — via Tauri 2's `"targets": "all"`.
 
-> **⚠ REMIND THE OWNER (distribution signing).** For a public release, macOS needs a Developer ID cert + notarization and Windows needs an Authenticode cert; without them the installers build but show Gatekeeper/SmartScreen warnings. Ask the owner whether to configure signing now (production) or ship build-only artifacts for this phase.
+> **⚠ REMIND THE OWNER (distribution signing).** For a public release, macOS needs a Developer ID cert + notarization and Windows needs an Authenticode cert; without them the installers build but show Gatekeeper/SmartScreen warnings. **Decision #1 (shipped): build-only this phase** — installers ship unsigned; the signing hooks live commented in `build-desktop.yml` (see Task 10).
 
 - [ ] **Step 1: Configure bundle targets**
 
-In `tauri.conf.json` `bundle.targets`, set the platform targets and app identifier/version.
+In `tauri.conf.json`: set `bundle.active = true`, `bundle.targets = "all"` (Tauri 2 expands to the per-platform installer set), and add `icons/icon.ico` (Windows) + `icons/icon.icns` (macOS) to the `icon` array so every bundler target has its required format. `identifier` + `version` were already set.
 
 - [ ] **Step 2: Build locally on Linux**
 
 Run: `pnpm --filter @ponter/desktop tauri build`
-Expected: a `.deb` and `.AppImage` produced under `src-tauri/target/release/bundle/`.
+Expected: `.deb`/`.AppImage`/`.rpm` produced under `src-tauri/target/release/bundle/`. (On this Fedora dev box the bundler panics with "Can't detect any appindicator library" — a missing-system-lib environment limitation, not a code defect; CI installs the full apt union. Best-effort locally; CI is the real gate.)
 
 - [ ] **Step 3: Commit**
 
@@ -731,29 +731,30 @@ git commit -m "build(desktop): bundle targets for linux/macos/windows (ADR-56)"
 
 **Files:**
 - Create: `.github/workflows/build-desktop.yml`
+- Modify: `apps/desktop/src-tauri/src/autostart.rs` (add the missing `#[cfg(windows)]` arm for `resolve_autostart_location` — surfaced by Task 10's first Windows compile; see the correction note)
 
 **Interfaces:**
 - Consumes: `apps/desktop` + `apps/agent`.
-- Produces: installer artifacts on a matrix; attached to a GitHub Release on tag.
+- Produces: installer artifacts on a matrix; attached to a GitHub Release on tag (or a non-dry-run manual dispatch).
 
 - [ ] **Step 1: Write the workflow**
 
-Matrix `ubuntu-latest` / `macos-14` / `windows-latest`; install pnpm + Rust 1.98.1 + Tauri Linux system deps; run `pnpm install`, build the frontend, then `tauri build`; upload bundle artifacts; on tag, create a release.
+Matrix `ubuntu-latest` / `macos-14` / `windows-latest`; install pnpm 12.6.0 + Node 24 + Rust 1.98.1 + the **union** of Tauri and agent capture-stack Linux system deps; run `pnpm install --frozen-lockfile`, build the frontend, then `tauri build`; upload bundle artifacts; on tag (or non-dry-run dispatch), create a release.
 
 > If the workflow runs `cargo test` on the desktop crate, set **`PONTER_KEYCHAIN_SKIP=1`** — headless runners have no secret-service session bus. **Every** keychain integration test honours this guard: the round-trip test (wired in Task 3) and Task 4's two login integration tests (`login_stores_refresh_token_in_keychain`, `login_surfaces_server_error`).
 
 - [ ] **Step 2: Add a post-build artifact check**
 
-Assert each expected installer file exists and is non-trivial in size; fail the job otherwise.
+Assert each expected installer file exists and is non-trivial in size (≥ 10 KB); fail the job otherwise. Bash for Linux/macOS, PowerShell for Windows. A second assert in the **release** job fails if zero installers reach `dist/` (guards the silent-empty-release class).
 
 - [ ] **Step 3: Path-filter the workflow**
 
-Trigger on `apps/desktop/**`, `apps/agent/**`, and the workflow file itself.
+Trigger on `apps/desktop/**`, `apps/agent/**`, and the workflow file itself. (Push filter is `main`/`develop` + tags — a plain feature-branch push does not fire it; open a PR or push to main/develop to get the 3-OS run.)
 
 - [ ] **Step 4: Verify on a branch push**
 
 Run: push a branch touching `apps/desktop/**`; watch all three OS jobs.
-Expected: all green; artifacts present.
+Expected: all green; artifacts present. (First-ever Rust compile of `src-tauri` on macOS/Windows happens here — expect platform-specific fixes; see the correction note.)
 
 - [ ] **Step 5: Commit**
 
@@ -761,6 +762,17 @@ Expected: all green; artifacts present.
 git add .github/workflows/build-desktop.yml
 git commit -m "ci(desktop): 3-OS build + bundle + release (ADR-56)"
 ```
+
+> **Correction (Task 9/10).** Shipped as `1c82218` (PR #64, squash; base `a5dcc63`), 3 files, +329/−3. Pre-squash commits: `7608cc5` (Task 9 bundle config) → `f80caa9` (Task 10 workflow) → `d9349a3` (Windows compile fix) → `e8afcde` (Windows assert fix). The decisions below are what Task 11 must rely on.
+>
+> - **Task 9 (ADR-56).** `tauri.conf.json` bundle stanza: `active: true`, `targets: "all"`, icon array gains `icons/icon.ico` + `icons/icon.icns` (in addition to the 4 PNGs).
+> - **Task 10 (ADR-56).** New `.github/workflows/build-desktop.yml` — 3-OS matrix (`ubuntu-latest`/`macos-14`/`windows-latest`), build + bundle + artifact upload + per-OS assert, plus a `release` job gated on tag or a non-dry-run dispatch.
+> - **Two Windows defects, found only at the first cross-platform compile** (the desktop crate had never been compiled on Windows before this task):
+>   1. `d9349a3` — `autostart.rs` was missing the `#[cfg(windows)] fn resolve_autostart_location()` arm, so the Windows build hit `E0425` (unresolved name). This was a **pre-existing Task 8 gap** surfaced by Task 10's first Windows compile; the fix returns a placeholder `(PathBuf::new(), WINDOWS_RUN_VALUE)` that the Windows runtime arms ignore.
+>   2. `e8afcde` — the Windows assert step filtered on `$_.Extension -match '^(msi|exe)$'`, which **never matched** because `FileInfo.Extension` carries a leading dot (`.msi`); the fix uses `-in '.msi', '.exe'`.
+> - **Release-glob regression (fixed in the same PR).** The release `files:` globs were widened to recursive `dist/**/*.<ext>` and a **0-installer assert** was added to the release job, closing a silent-empty-release class (a non-recursive glob would have matched nothing while the job stayed green).
+> - **Signing is build-only this phase** (PM decision #1). The macOS (notarization) and Windows (Authenticode) signing hooks are present but **commented** in `build-desktop.yml`; installers ship unsigned.
+> - **Carry-forward (not proven by CI).** The `release` job is skipped at PR time (tag/dispatch only), so the recursive release globs and the 0-installer assert are **reasoned-but-unproven** by PR CI — only a real tag or non-dry-run dispatch exercises them (side effect: that creates a public GitHub Release).
 
 ---
 
@@ -777,11 +789,11 @@ git commit -m "ci(desktop): 3-OS build + bundle + release (ADR-56)"
 - Consumes: the Tauri updater plugin + a signed `latest.json` manifest.
 - Produces: `check_update() -> Option<UpdateInfo>`, `apply_update()`; refuses unsigned/older manifests.
 
-> **⏸ OWNER ACTION REQUIRED BEFORE THIS TASK.** Generate the updater keypair with `tauri signer generate`, store the private key + password as CI secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), and give the public key to the implementer to compile in. **Pause and remind the owner here** — do not start Task 11 until the key exists.
+> **✅ OWNER ACTION COMPLETE (2026-10-08).** The updater keypair exists and the private key + password are set as CI secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — verified via `gh secret list`). Only the **public key** hand-off to the implementer (to compile in) remains — the blocking secret side is done, so Task 11 is unblocked.
 
-- [ ] **Step 0: Owner generates the updater keypair (BLOCKING)**
+- [ ] **Step 0: Owner keypair + CI secrets (✅ DONE 2026-10-08)**
 
-Owner runs `tauri signer generate -w ~/.tauri/ponter.key`; adds the private key + password as CI secrets; shares only the **public** key for `tauri.conf.json` `plugins.updater.pubkey`.
+The owner generated the keypair and added the private key + password as CI secrets. The remaining hand-off is the **public** key for `tauri.conf.json` `plugins.updater.pubkey` — the implementer needs it before Step 3.
 
 - [ ] **Step 1: Write the failing decision test**
 
@@ -826,7 +838,7 @@ git add apps/desktop/src-tauri/src/commands/updater.rs apps/desktop/src-tauri/ta
 git commit -m "feat(desktop): signed auto-update (ADR-57)"
 ```
 
-**Stop condition:** L5 does not start until the owner provides the updater signing keypair as a CI secret (ADR-57 owner action).
+**Stop condition:** L5 does not start until the **public** updater key is available to compile in (ADR-57 owner action). The private key + password CI secrets are already set (2026-10-08), so only the public-key hand-off gates Task 11.
 
 ---
 
