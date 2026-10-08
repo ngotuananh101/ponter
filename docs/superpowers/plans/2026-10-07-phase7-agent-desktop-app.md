@@ -18,6 +18,7 @@
 - **No secret in webview storage (ADR-52):** the agent credential and refresh token live in the OS keychain; never `localStorage`/`IndexedDB`/`sessionStorage`.
 - **Input gate default is CLOSED (ADR-42/ADR-53):** the wizard's input toggle defaults off; Gate A (operator) + Gate B (peer identity) both required.
 - **`apps/web/src/components/ui/` is generated** — never hand-modified; new files byte-identical from the `reka-vega` registry (project rule).
+- **Desktop UI uses shadcn-vue (owner constraint):** `apps/desktop/src/components/ui/**` mirrors the web client's generated layer — byte-identical from the `reka-vega` registry, **never hand-modified** (same rule as the web `ui/` at L20; extended to desktop when the UI sync shipped).
 - **No server or wire changes:** registration/login/device CRUD reuse existing endpoints; the signaling protocol, WS2 identity, and E2EE are untouched.
 - **Owned files per task** — a task edits only the files its **Files:** block names.
 
@@ -675,6 +676,23 @@ git commit -m "feat(desktop): per-platform auto-start (ADR-55)"
 > - **Tray item:** a `CheckMenuItem` (id `autostart`, text "Open at login"), placed after "Open window" and before Quit; its checked state is the real OS state at build time. On toggle failure the checkbox **reverts** so it never lies about the real state.
 > - **Wizard flow fix:** `completed` is set at **step 4** (`complete()`), not step 3 (`finish()`). Step 3's "Continue" persists settings + advances; step 4's "Finish" applies the auto-start toggle then completes. This makes step 4 reachable in the real app (`App.vue` unmounts the wizard when `completed` is true — previously step 4 was dead). `setAutoStart`/`loadAutoStart` surface errors via `autoStartError`.
 > - **Role split (owner ruling 2026-10-08):** `apps/desktop` is split **by file** — Rust `src-tauri/**` = BE, Vue/TS `src/**` = FE. Task 8 was role-split mid-flight (BE originally wrote all 6; the owner flagged it; re-committed per role). See the execution note below.
+
+---
+
+### Desktop UI sync → shadcn-vue (owner-requested addition, not in the original plan)
+
+**Shipped:** branch `phase7/desktop-shadcn-sync` (base `e607e13`) — 2 commits, 34 files, **FE-only**.
+
+> **Correction (Desktop UI sync → shadcn-vue).** Shipped as `c4f17a9` (feat: infra + 3 views) → `6601650` (fix: restore device hostname in the device row). The desktop app adopted the **shadcn-vue** UI stack for parity with `apps/web`. What the note below records is what Tasks 9+ and the later design audit must rely on.
+> - **Infra (parity with `apps/web`):** Tailwind v4 + `@tailwindcss/vite` plugin (wired into `vite.config.ts`), `shadcn-vue` + `reka-ui` + `class-variance-authority` + `clsx` + `tailwind-merge` + `tw-animate-css` + `@lucide/vue`; `components.json` (style `reka-vega`, baseColor neutral, cssVariables); `src/style.css` token layer imported from `main.ts`; `src/lib/utils.ts` `cn()`.
+> - **Generated UI layer:** `apps/desktop/src/components/ui/**` — alert / badge / button / card / input / label (21 files), **byte-identical to the web client's** `ui/` (verified: matching git blob hashes vs `apps/web/src/components/ui/`).
+> - **3 views rewritten** on shadcn components: `LoginView.vue`, `WizardView.vue`, `DevicesView.vue`. The stale DevicesView copy was fixed and the device hostname restored in the row (`6601650`).
+> - **Byte-identity + ignore rule extended:** `.prettierignore` now also ignores `apps/desktop/src/components/ui` (registry ships without semicolons; repo prettier would rewrite them — same rationale as the web `ui/`); `eslint.config.js` turns off `vue/multi-word-component-names` for the desktop `ui/**` glob too.
+> - **`@vueuse/core` runtime-dep nuance:** added as a **runtime** `dependency` (shadcn-vue components import it), unlike the build-only tooling deps (`@tailwindcss/vite`, `tailwindcss`) added to `devDependencies`. Recorded so a later dependency audit does not "fix" it into devDependencies.
+> - **WizardView Card-free ruling (ACCEPTED):** the sync brief mentioned a `Card`, but the shipped WizardView uses Input/Label/Button only — no `Card`. Accepted: the owner's constraint is **reuse the shadcn stack to minimize hand-written code**, not "a Card is mandatory"; visual polish/parity is the concern of the separate frontend design audit below, not this sync.
+> - **Owner constraint:** the desktop UI uses shadcn-vue; `apps/desktop/src/components/ui/**` is generated and byte-identical from the `reka-vega` registry, never hand-modified (mirrors the web rule; recorded in Global Constraints).
+> - **Queue position:** this landed **after Task 8 (L3)** and **before L4**. Order: **Task 8 → desktop shadcn sync → frontend design audit → L4 (Task 9/10) → L5 (Task 11)**.
+> - **Frontend design audit — separate, later task (referenced, not specified here):** a follow-on pass over the frontend `.vue` surfaces (web 28 + desktop 4) using the frontend-design skill. Its content is out of scope for this note.
 
 ---
 
