@@ -262,3 +262,71 @@ Log bao gồm:
 - Signal dispatch (`pushToAgent`)
 - Database operations
 - Authentication failures
+
+---
+
+## 7. Building Release Artifacts from Source
+
+This section builds a production artifact for each of the four apps. It assumes
+the prerequisites from §1 (Node.js 24, pnpm 12, Rust stable). For Docker images,
+see `docker/README.md`; for a fork that repoints the desktop updater, see
+`docs/guides/self-hosting.md`.
+
+### 7.1 Server (`apps/server`)
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @ponter/server build
+```
+
+Output: `apps/server/dist/` (compiled JavaScript). Run it with:
+
+```bash
+node apps/server/dist/index.js
+```
+
+Required environment: `JWT_SECRET`, `REFRESH_TOKEN_SECRET` (each ≥ 32 chars).
+`DATABASE_PATH` defaults to `:memory:` — data is lost on restart. To persist to
+a file, create the directory first (the server does not create it) and point at
+the file:
+
+```bash
+mkdir -p data
+DATABASE_PATH=./data/remote.db node apps/server/dist/index.js
+```
+
+### 7.2 Web (`apps/web`)
+
+```bash
+pnpm --filter @ponter/web build
+```
+
+Output: `apps/web/dist/` (static assets). Set `VITE_API_URL` (and, if you use
+WebSocket signaling, `VITE_BROWSER_WS_SIGNALING=true`) **before** the build —
+they are compiled in. Serve `dist/` from any static host.
+
+### 7.3 Agent (`apps/agent`)
+
+```bash
+cargo build --release --manifest-path apps/agent/Cargo.toml
+```
+
+Output: `apps/agent/target/release/ponter-agent`. See
+`docs/guides/agent-setup.md` for CLI options and systemd setup.
+
+### 7.4 Desktop (`apps/desktop`)
+
+The desktop app is Tauri v2. A self-built copy inherits the author's updater
+key/endpoint from `apps/desktop/src-tauri/tauri.conf.json` unless you change it —
+read `docs/guides/self-hosting.md` first.
+
+```bash
+pnpm --filter @ponter/desktop build          # frontend assets -> apps/desktop/dist
+pnpm --filter @ponter/desktop tauri build    # native bundle
+```
+
+Output: installers under `apps/desktop/src-tauri/target/release/bundle/`
+(`.deb` + `.AppImage` + `.rpm` on Linux, `.dmg` on macOS, `.msi` + `.exe` on Windows).
+Building a signed auto-update bundle requires your own signing key; building
+without one is supported (auto-update simply stays inert). `pnpm tauri build`
+needs the platform's Tauri prerequisites (system webkit/gtk packages on Linux).
