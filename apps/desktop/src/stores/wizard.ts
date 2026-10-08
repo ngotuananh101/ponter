@@ -154,10 +154,9 @@ export const useWizardStore = defineStore('wizard', () => {
     } catch (e: unknown) {
       // Revert the optimistic update so the checkbox reflects reality.
       autoStart.value = !enabled;
+      const message = e instanceof Error ? e.message : String(e);
       autoStartError.value =
-        e instanceof Error
-          ? e.message
-          : (String(e) ?? 'Failed to update auto-start preference');
+        message || 'Failed to update auto-start preference';
       throw e;
     }
   }

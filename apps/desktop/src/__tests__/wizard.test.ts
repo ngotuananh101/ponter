@@ -188,6 +188,19 @@ describe('wizard store', () => {
     expect(store.autoStartError).toContain('OS refused');
   });
 
+  /** The `||` fallback must be load-bearing when the error message is empty. */
+  it('setAutoStart() falls back to a generic message on an empty error message', async () => {
+    const store = useWizardStore();
+    store.autoStart = false;
+
+    vi.mocked(invoke).mockRejectedValue(new Error(''));
+    await expect(store.setAutoStart(true)).rejects.toThrow();
+    // The optimistic toggle was reverted.
+    expect(store.autoStart).toBe(false);
+    // An empty Error message must fall back to the generic message.
+    expect(store.autoStartError).toBe('Failed to update auto-start preference');
+  });
+
   /** complete() does NOT set completed when set_autostart rejects (R11). */
   it('complete() keeps completed false on set_autostart error', async () => {
     const store = useWizardStore();
