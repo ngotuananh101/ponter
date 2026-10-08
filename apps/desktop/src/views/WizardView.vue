@@ -30,7 +30,9 @@ async function complete() {
 
 /** When the user toggles the auto-start checkbox, apply it immediately (R11).
  * The store reverts the checkbox on error and surfaces the message. */
-async function onAutoStartChange(enabled: boolean) {
+async function onAutoStartChange(e: Event) {
+  const target = e.target as HTMLInputElement | null;
+  const enabled = target?.checked ?? false;
   try {
     await store.setAutoStart(enabled);
   } catch {
@@ -157,7 +159,7 @@ watch(
           type="checkbox"
           data-testid="wizard-autostart-checkbox"
           :checked="store.autoStart"
-          @change="onAutoStartChange($event.target.checked)"
+          @change="onAutoStartChange"
         />
         Auto-start the agent on login
       </label>
