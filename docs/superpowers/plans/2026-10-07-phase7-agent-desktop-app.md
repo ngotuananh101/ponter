@@ -625,19 +625,22 @@ git commit -m "feat(desktop): tray icon + lifecycle (ADR-55)"
 **Files:**
 - Create: `apps/desktop/src-tauri/src/autostart.rs`
 - Test: `apps/desktop/src-tauri/src/autostart.rs` (unit)
+- Modify: `apps/desktop/src-tauri/src/lib.rs` (`pub mod autostart;` + register the 2 new commands → `invoke_handler` 7 → 9)
+- Modify: `apps/desktop/src-tauri/src/tray.rs` ("Open at login" `CheckMenuItem` + `ToggleAutostart` action + handler)
+- Modify: `apps/desktop/src/stores/wizard.ts`, `apps/desktop/src/views/WizardView.vue`, `apps/desktop/src/__tests__/wizard.test.ts` (wizard step-4 wiring — FE)
 
 **Interfaces:**
-- Consumes: the installed binary path.
-- Produces: `set_autostart(bool)`, `is_autostart_enabled() -> bool`.
+- Consumes: the installed binary path (`std::env::current_exe()`); `TrayState` (Task 7); the wizard store (Task 5).
+- Produces: `set_autostart(enabled)` / `is_autostart_enabled() -> bool` Tauri commands (bringing `invoke_handler` to **9**); the platform launch entry (Linux `.desktop` / macOS LaunchAgent plist / Windows `Run` value); the tray "Open at login" `CheckMenuItem` (id `autostart`) and the wizard's functional step 4.
 
-> **Cross-ref (Task 5).** Task 5's wizard ships the auto-start step **informational only** — its toggle holds frontend state and no `set_autostart` command exists yet. Task 8 owns the real `set_autostart` / `is_autostart_enabled` commands and the platform launch entry; the wizard's copy already tells the user the wiring arrives here.
+> **Cross-ref (Task 5).** Task 5's wizard ships the auto-start step **informational only** — its toggle holds frontend state and no `set_autostart` command exists yet. Task 8 owns the real `set_autostart` / `is_autostart_enabled` commands and the platform launch entry, and wires the wizard's step 4 to them; the copy that promised "wiring arrives in Task 8" is replaced with the real behavior.
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
-fn generated_entry_points_at_the_binary() {
-    let entry = render_autostart_entry(Path::new("/opt/ponter/ponter-desktop"));
+fn render_linux_desktop_entry_contains_binary() {
+    let entry = render_linux_desktop_entry(Path::new("/opt/ponter/ponter-desktop"));
     assert!(entry.contains("/opt/ponter/ponter-desktop"));
 }
 ```
@@ -649,7 +652,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement per-platform entries**
 
-Linux `~/.config/autostart/*.desktop`; macOS LaunchAgent/`SMAppService`; Windows registry `Run`. Render is pure (unit-tested); install/uninstall is the side effect.
+Linux `<config>/autostart/ponter-desktop.desktop` (the `autostart/` subdir is mandatory — XDG only discovers that dir); macOS LaunchAgent plist `~/Library/LaunchAgents/com.ponter.desktop.plist` (not `SMAppService` — see note); Windows `reg.exe` `Run` value `PonterDesktop` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Render is pure (unit-tested); install/uninstall is the side effect. All three take effect at the **next login**.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -659,9 +662,19 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/autostart.rs
+git add apps/desktop/src-tauri/src/autostart.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/src/tray.rs apps/desktop/src/stores/wizard.ts apps/desktop/src/views/WizardView.vue apps/desktop/src/__tests__/wizard.test.ts
 git commit -m "feat(desktop): per-platform auto-start (ADR-55)"
 ```
+
+> **Correction (Task 8).** Shipped as 5 commits on `phase7/task-8-autostart` (base `a358622`): `b286f28` (BE Rust) → `916e51e` (FE wizard) → `8e75d41` (FE type fix) → `7536b82` (BE XDG-subdir fix) → `2d467cb` (FE view tests) — 6 files, +848/−25. The decisions below are what Tasks 9+ must rely on.
+> - **Full scope (owner ruling 2026-10-08):** backend `autostart.rs` + the tray "Open at login" `CheckMenuItem` + wizard step-4 wiring. The plan's original Files block named only `autostart.rs`; the real set is **6 files** (3 Rust + 3 Vue/TS).
+> - **`invoke_handler` 7 → 9:** `set_autostart(enabled: bool)` and `is_autostart_enabled() -> bool`, both sync, both callable directly from `tray.rs` (no `State` arg). No new deps; `Cargo.lock` byte-identical.
+> - **The entry IS the source of truth (no stored boolean):** `is_autostart_enabled()` reports whether the platform entry exists; `set_autostart` installs/removes it. Both idempotent. Returns `false` on any resolution error (never panics).
+> - **Linux entry path = `<XDG config>/autostart/ponter-desktop.desktop`** — the `autostart/` subdir is **mandatory** (XDG only discovers that dir). The initial implementation wrote to `<config>/ponter-desktop.desktop` (a real defect), fixed in `7536b82`; the pin test `linux_autostart_entry_dir_appends_autostart_subdir` locks it. `linux_autostart_dir` keeps its base-config-dir contract; the caller appends the subdir.
+> - **macOS** = LaunchAgent plist `~/Library/LaunchAgents/com.ponter.desktop.plist` (chosen over `SMAppService`, which needs a signed/bundled app + entitlements and cannot be verified on this branch). **Windows** = `reg.exe` `Run` value `PonterDesktop` under `HKCU\...\Run` (no `winreg` crate). All take effect at the **next login** (no immediate launch).
+> - **Tray item:** a `CheckMenuItem` (id `autostart`, text "Open at login"), placed after "Open window" and before Quit; its checked state is the real OS state at build time. On toggle failure the checkbox **reverts** so it never lies about the real state.
+> - **Wizard flow fix:** `completed` is set at **step 4** (`complete()`), not step 3 (`finish()`). Step 3's "Continue" persists settings + advances; step 4's "Finish" applies the auto-start toggle then completes. This makes step 4 reachable in the real app (`App.vue` unmounts the wizard when `completed` is true — previously step 4 was dead). `setAutoStart`/`loadAutoStart` surface errors via `autoStartError`.
+> - **Role split (owner ruling 2026-10-08):** `apps/desktop` is split **by file** — Rust `src-tauri/**` = BE, Vue/TS `src/**` = FE. Task 8 was role-split mid-flight (BE originally wrote all 6; the owner flagged it; re-committed per role). See the execution note below.
 
 ---
 
@@ -813,3 +826,5 @@ git commit -m "feat(desktop): signed auto-update (ADR-57)"
 ## Execution Handoff
 
 Per ADR-58, execute **layer by layer** (L0 → L5); each layer is a stop-safe boundary. Task 0 ships first and is independent. L0 (Task 1) gates L1; if it fails, stop and report.
+
+**Role split within `apps/desktop` (owner ruling 2026-10-08).** The desktop app is split **by file**, not by task: Rust under `apps/desktop/src-tauri/**` is the **BE** role; Vue/TS under `apps/desktop/src/**` is the **FE** role. A task whose scope spans both (e.g. Task 8's backend + tray + wizard wiring) is dispatched as two role-owned slices on one branch, and each role commits only its own files. Task 8 was role-split mid-flight (BE originally wrote all 6 files; the owner flagged the mixing; the work was re-committed per role — the 3 Rust files by BE, the 3 Vue/TS files by FE).
