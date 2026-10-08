@@ -62,9 +62,7 @@ onMounted(() => {
     >
       <div class="flex items-center gap-2">
         <Server class="w-4 h-4 text-primary" />
-        <span
-          class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-        >
+        <span class="text-xs font-semibold text-muted-foreground">
           Agent Fleet
         </span>
       </div>
@@ -76,6 +74,7 @@ onMounted(() => {
           class="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted transition-colors"
           :class="{ 'animate-spin': loading }"
           title="Refresh agents"
+          aria-label="Refresh agents"
           @click="loadAgents"
         >
           <RefreshCw class="w-3.5 h-3.5" />
@@ -119,20 +118,18 @@ onMounted(() => {
         <div
           v-for="a in filteredAgents"
           :key="a.id"
-          class="flex items-center justify-between p-2 rounded-md hover:bg-muted/70 transition-all border border-transparent hover:border-border/60 text-xs"
+          class="flex items-center justify-between p-2 rounded-md hover:bg-muted/70 transition-colors border border-transparent hover:border-border/60 text-xs"
           :data-test="`agent-row-${a.id}`"
         >
           <div class="flex items-center gap-2 truncate">
             <span class="relative flex h-2 w-2 flex-shrink-0">
               <span
                 v-if="a.isOnline"
-                class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"
+                class="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"
               ></span>
               <span
                 class="relative inline-flex rounded-full h-2 w-2"
-                :class="
-                  a.isOnline ? 'bg-emerald-500' : 'bg-muted-foreground/40'
-                "
+                :class="a.isOnline ? 'bg-success' : 'bg-muted-foreground/40'"
               ></span>
             </span>
             <div class="flex flex-col truncate">

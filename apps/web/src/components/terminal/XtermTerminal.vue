@@ -97,7 +97,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="w-full h-full bg-[#090d16] p-2 overflow-hidden flex flex-col">
+  <div class="w-full h-full bg-terminal-bg p-2 overflow-hidden flex flex-col">
     <div ref="containerRef" class="terminal-container flex-1 w-full h-full" />
   </div>
 </template>

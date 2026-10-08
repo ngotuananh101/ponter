@@ -1,5 +1,16 @@
 <script setup lang="ts">
-defineProps<{
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+
+const props = defineProps<{
   open: boolean;
   name: string;
   isDirectory: boolean;
@@ -9,39 +20,31 @@ const emit = defineEmits<{
   (e: 'cancel'): void;
 }>();
 
-function onDelete(recursive: boolean): void {
-  emit('confirm', recursive);
+function onDelete(): void {
+  emit('confirm', props.isDirectory);
+  emit('cancel');
 }
 </script>
 
 <template>
-  <dialog
-    v-if="open"
-    data-test="delete-dialog"
-    open
-    @click.self="emit('cancel')"
-    @keydown.escape="emit('cancel')"
-  >
-    <form method="dialog">
-      <p>
-        Delete <strong>{{ name }}</strong
-        >?
-        <span v-if="isDirectory">
-          This is a directory. Deleting it removes its contents.
-        </span>
-      </p>
-      <div class="dialog-actions">
-        <button
-          type="button"
-          data-test="delete-confirm"
-          @click="onDelete(isDirectory)"
-        >
-          {{ isDirectory ? 'Delete folder' : 'Delete' }}
-        </button>
-        <button type="button" data-test="delete-cancel" @click="emit('cancel')">
+  <AlertDialog :open="open">
+    <AlertDialogContent data-test="delete-dialog">
+      <AlertDialogHeader>
+        <AlertDialogTitle>Delete {{ name }}?</AlertDialogTitle>
+        <AlertDialogDescription>
+          <span v-if="isDirectory">
+            This is a directory. Deleting it removes its contents.
+          </span>
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel data-test="delete-cancel" @click="emit('cancel')">
           Cancel
-        </button>
-      </div>
-    </form>
-  </dialog>
+        </AlertDialogCancel>
+        <AlertDialogAction data-test="delete-confirm" @click="onDelete">
+          {{ isDirectory ? 'Delete folder' : 'Delete' }}
+        </AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
 </template>

@@ -50,7 +50,7 @@ describe('RegisterView.vue', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(toast.success).toHaveBeenCalledWith(
-      'Đăng ký thành công! Tài khoản của bạn đang chờ Quản trị viên phê duyệt trước khi có thể đăng nhập.',
+      'Registration successful! Your account is pending admin approval. You will be able to sign in once an administrator approves your registration.',
     );
     expect(toast.success).toHaveBeenCalledTimes(1);
     expect(toast.error).not.toHaveBeenCalled();

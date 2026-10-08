@@ -191,7 +191,7 @@ const visible = computed(() => props.transfers);
 }
 .transfer-drawer-bar {
   height: 100%;
-  background: var(--primary, #3b82f6);
+  background: var(--primary);
   transition: width 0.1s ease;
 }
 .transfer-drawer-meta {

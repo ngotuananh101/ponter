@@ -156,6 +156,7 @@ onUnmounted(() => {
       @click="sidebarOpen = false"
       class="absolute top-1/2 -translate-y-1/2 left-64 z-30 flex items-center justify-center w-5 h-10 bg-card border border-l-0 border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Hide sidebar"
+      aria-label="Hide sidebar"
     >
       <ChevronLeft
         class="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground"
@@ -166,6 +167,7 @@ onUnmounted(() => {
       @click="sidebarOpen = true"
       class="fixed top-1/2 -translate-y-1/2 left-0 z-30 flex items-center justify-center w-5 h-10 bg-card border border-border rounded-r-md shadow-md hover:bg-accent transition-colors group"
       title="Show sidebar"
+      aria-label="Show sidebar"
     >
       <ChevronRight
         class="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground"
@@ -191,7 +193,7 @@ onUnmounted(() => {
            and tab strip and gives the session the whole screen. -->
       <div
         ref="sessionBodyRef"
-        class="workspace-session relative min-h-0 flex-1 overflow-hidden bg-[#090d16]"
+        class="workspace-session relative min-h-0 flex-1 overflow-hidden bg-terminal-bg"
       >
         <template v-if="terminalStore.activeTab">
           <!-- A terminal tab exists before its session does: the store pushes it
@@ -241,7 +243,7 @@ onUnmounted(() => {
                 terminalStore.activeTab.kind === 'files') &&
               terminalStore.activeTab.status === 'error'
             "
-            class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#090d16]/95 p-6 text-center"
+            class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/95 p-6 text-center text-foreground"
           >
             <p class="text-sm text-destructive font-semibold">
               Could not connect to {{ terminalStore.activeTab.title }}
@@ -335,11 +337,9 @@ onUnmounted(() => {
         class="h-6 bg-card border-t border-border px-3 hidden sm:flex items-center justify-between text-[11px] font-mono text-muted-foreground select-none flex-shrink-0"
       >
         <div class="flex items-center gap-3">
-          <span
-            class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400"
-          >
+          <span class="flex items-center gap-1.5 text-success">
             <span
-              class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"
+              class="w-1.5 h-1.5 rounded-full bg-success motion-safe:animate-pulse"
             ></span>
             <span>P2P Direct</span>
           </span>
@@ -377,7 +377,7 @@ onUnmounted(() => {
           </span>
           <span class="text-border">|</span>
           <span class="flex items-center gap-1">
-            <ShieldCheck class="w-3 h-3 text-emerald-500" />
+            <ShieldCheck class="w-3 h-3 text-primary" />
             <span>DTLS 1.2 / SCTP</span>
           </span>
         </div>
