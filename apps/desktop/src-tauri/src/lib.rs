@@ -17,7 +17,6 @@ pub fn run() {
     use tauri::Manager;
 
     tauri::Builder::default()
-        .manage(state::AppState::new())
         .manage(tray::TrayState::new())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -25,7 +24,8 @@ pub fn run() {
             commands::wizard::probe_server,
             #[cfg(not(target_env = "musl"))]
             commands::wizard::probe_capture,
-            commands::wizard::save_wizard_settings,
+            commands::wizard::get_config,
+            commands::wizard::save_config,
             commands::devices::register_device,
             commands::devices::list_devices,
             commands::devices::delete_device,
@@ -35,6 +35,15 @@ pub fn run() {
             autostart::is_autostart_enabled,
         ])
         .setup(|app| {
+            // Resolve the config dir now that an AppHandle exists, then build
+            // and register AppState (ADR-64/65).
+            let config_path = app
+                .path()
+                .app_config_dir()
+                .ok()
+                .map(|dir| dir.join("config.json"));
+            app.manage(state::AppState::with_config(config_path));
+
             // The tray must not be able to prevent the window from opening.
             // On failure we log and continue — an app without a tray still opens.
             if let Err(e) = tray::init(app.handle()) {
