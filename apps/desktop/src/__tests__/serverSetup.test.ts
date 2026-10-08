@@ -98,6 +98,37 @@ describe('ServerSetupView', () => {
     expect(config.hasServerUrl).toBe(false);
   });
 
+  it('a failed save_config shows an error and does not clear editing', async () => {
+    const wrapper = mount(ServerSetupView);
+    const config = useConfigStore();
+    config.editing = true;
+
+    // probe_server succeeds
+    vi.mocked(invoke).mockResolvedValueOnce({
+      ok: true,
+      message: 'Server reachable',
+    });
+    // save_config rejects
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('Disk full'));
+
+    await wrapper
+      .find('[data-testid="server-setup-url"]')
+      .setValue('http://localhost:8787');
+    await wrapper.find('[data-testid="server-setup-connect"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    // An honest error is surfaced via the alert
+    expect(wrapper.find('[data-testid="server-setup-message"]').exists()).toBe(
+      true,
+    );
+    expect(
+      wrapper.find('[data-testid="server-setup-message"]').text(),
+    ).toContain('Disk full');
+    // editing must NOT have been cleared on failure
+    expect(config.editing).toBe(true);
+  });
+
   it('never writes to webview storage', async () => {
     vi.mocked(invoke).mockResolvedValue({
       ok: true,
