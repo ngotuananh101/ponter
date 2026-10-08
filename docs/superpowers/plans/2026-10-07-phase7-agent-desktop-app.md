@@ -567,13 +567,14 @@ git commit -m "feat(desktop): device registration + management (ADR-54)"
 ### Task 7: Tray icon with connection state (ADR-55)
 
 **Files:**
-- Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Create: `apps/desktop/src-tauri/src/tray.rs`
 - Test: `apps/desktop/src-tauri/src/tray.rs` (unit)
+- Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Modify: `apps/desktop/src-tauri/Cargo.toml` (single feature flip: `features = ["tray-icon"]`; `Cargo.lock` stays byte-identical)
 
 **Interfaces:**
-- Consumes: `AgentRuntime::status()` (Task 2).
-- Produces: tray menu actions (Start/Stop/Open/Quit); window close hides to tray.
+- Consumes: `AgentRuntime::start/stop`, `RuntimeHandle::status()` (Task 2); `AppState.server_url` / `AppState.allow_input` (Task 5); the keychain credential (Task 6); the identity-path rule mirrored from `apps/agent/src/main.rs`.
+- Produces: `tray::TrayState` (managed state owning the runtime slot + tray bookkeeping); 7 pure fns (`tray_label`, `status_text`, `action_for_menu_id`, `derive_ws_url`, `should_hide_on_close`, `resolve_identity_path`, `build_runtime_config`); the lifecycle fns (`init`, `build_menu`, `handle_menu_action`, `start_agent`, `stop_agent`, `quit_app`, `spawn_status_poll`); the exact menu ids `status` / `start` / `stop` / `open` / `quit`; close-to-tray (hide only when the tray built).
 
 > **Cross-ref (Task 5).** The wizard's input-gate copy says the `allow_input` preference (Gate A, ADR-42) is applied at runtime and that Gate B is "wired in Task 7". Task 7's scope here is the tray + lifecycle (start/stop the runtime, consuming `AgentRuntime::status()`); the runtime it starts carries Gate B — the ADR-41 peer-identity admission gate **already shipped in Phase 6a** (`48edac1`) — so Task 7 adds no new identity code.
 
@@ -604,9 +605,18 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/tray.rs apps/desktop/src-tauri/src/lib.rs
+git add apps/desktop/src-tauri/src/tray.rs apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/Cargo.toml
 git commit -m "feat(desktop): tray icon + lifecycle (ADR-55)"
 ```
+
+> **Correction (Task 7).** Shipped as `b1d7868` (3 files, +731/−1) on `phase7/task-7-tray` (base `2e1fd5c`). The decisions below are what Tasks 8+ must rely on.
+> - **File set:** `tray.rs` (create, 703 lines) + `lib.rs` (modify) + `Cargo.toml` (modify) — the `Cargo.toml` change is the ONE-line feature flip `features = []` → `features = ["tray-icon"]` (R2). `Cargo.lock` is **byte-identical** (`tray-icon v0.25.1` / `muda` / `libappindicator` were already resolved transitively; zero new crates).
+> - **Honest state surface (3 states only):** the tray label maps `RuntimeStatus`'s exactly three variants — `Stopped` → "Stopped", `Disconnected` → "Disconnected", `Connected` → "Connected". No "Connecting"/"Error" state is fabricated (R7) — the runtime API does not have one.
+> - **Menu ids (dispatch contract):** `status` (disabled label "Status: …"), `start`, `stop`, `open`, `quit`. **No "Open at login" item** — auto-start is Task 8 (ADR-55's `set_autostart`).
+> - **Close-to-tray:** `WindowEvent::CloseRequested` hides the window (`api.prevent_close()` + `window.hide()`) **only when `tray_active`** is true; if the tray failed to build, `tray_active` stays false and the window closes normally (no stranding). `init` logs + continues on error — the app still opens a window.
+> - **Lifecycle:** menu events spawn async (`tauri::async_runtime::spawn`); `start_agent` serializes via a `start_guard` mutex, reads the keychain credential, loads identity via `resolve_identity_path`, and starts `AgentRuntime::start(config)` (stale handle stopped first); `stop_agent`/`quit_app` take the handle and `stop().await`. Status poll = `std::thread::spawn` loop, 1 s tick, `MenuItem::set_text` only on change.
+> - **R5 enforcement point:** `build_runtime_config` reads `AppState.allow_input` into `RuntimeConfig.allow_input` — this is where Task 5's Gate A preference (ADR-42) is applied at runtime. Missing/blank credential → `Err` naming registration ("no agent credential stored — register this device in the Devices view first"). `files_root = None` (the files gate stays closed).
+> - **No new commands:** `invoke_handler` stays at **7** entries; the tray is backend-only, the frontend is untouched. Start-failure is log-only (no window UI yet) — carry-forward to Task 8/9. Windows pwsh shell detection is a documented CLI-parity gap (uses `cmd.exe`).
 
 ---
 
