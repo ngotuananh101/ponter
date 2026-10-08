@@ -787,7 +787,7 @@ git commit -m "ci(desktop): 3-OS build + bundle + release (ADR-56)"
 
 **Interfaces:**
 - Consumes: the Tauri updater plugin + a signed `latest.json` manifest.
-- Produces: `check_update() -> Option<UpdateInfo>`, `apply_update()`; refuses unsigned/older manifests.
+- Produces: `check_update() -> Option<UpdateInfo>`, `apply_update()`; `should_apply` refuses an older/equal version. Signature verification is the plugin's (per-platform, during download); `requireSignedVersion: true` refuses an unsigned version (anti-downgrade).
 
 > **✅ OWNER ACTION COMPLETE (2026-10-08).** The updater keypair exists and the private key + password are set as CI secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — verified via `gh secret list`). Only the **public key** hand-off to the implementer (to compile in) remains — the blocking secret side is done, so Task 11 is unblocked.
 
@@ -802,12 +802,9 @@ The owner generated the keypair and added the private key + password as CI secre
 fn refuses_an_older_version() {
     assert!(should_apply("1.0.0", "0.9.0").is_none());
 }
-
-#[test]
-fn refuses_an_unsigned_manifest() {
-    assert!(verify_manifest(unsigned_manifest()).is_err());
-}
 ```
+
+> **Shipped reality (ADR-57).** The original sketch also asserted an app-level `verify_manifest(unsigned_manifest()).is_err()`. That function was **removed as dead code** (0 callers) — the updater plugin verifies each artifact's **per-platform minisign signature** internally during `Update::download()`, so an app-level re-implementation would duplicate the plugin (and risk divergence). The two tests whose only subject was that function (`refuses_an_unsigned_manifest`, `refuses_a_bad_signature`) were removed with it; the surviving decision test is `should_apply` (shown above). See the "Correction (Task 11)" note for the test-count accounting.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -816,7 +813,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement the updater**
 
-Compile in the **public** updater key; set the manifest endpoint in `tauri.conf.json`; the decision function compares semver and verifies the signature.
+Compile in the **public** updater key (`plugins.updater.pubkey`); set the manifest endpoint (`plugins.updater.endpoints`) and **`requireSignedVersion: true`** in `tauri.conf.json`; the decision function (`should_apply`) compares semver. The plugin performs the per-platform signature check during download.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -825,11 +822,11 @@ Expected: PASS.
 
 - [ ] **Step 5: Mutation check**
 
-Temporarily skip the signature check; confirm the unsigned-manifest test goes RED; revert. Do the same for the version check.
+Temporarily invert the version comparison in `should_apply`; confirm `refuses_an_older_version` goes RED; revert. (The signature path is the plugin's, not app code — its coverage is the per-platform `.sig` produced by the build matrix and asserted at release assembly, not a local unit test.)
 
 - [ ] **Step 6: Wire the release to publish the manifest**
 
-Update `build-desktop.yml` to emit and sign `latest.json` on tag (private key from a CI secret).
+Update `build-desktop.yml` to **assemble** `latest.json` on tag (the manifest keys are `{os}-{arch}-{bundle_type}`; each platform entry carries the installer `url` + the **per-platform** minisign `signature` produced by the build matrix — there is no top-level signature and no signing step in the release job itself).
 
 - [ ] **Step 7: Commit**
 
@@ -838,7 +835,16 @@ git add apps/desktop/src-tauri/src/commands/updater.rs apps/desktop/src-tauri/ta
 git commit -m "feat(desktop): signed auto-update (ADR-57)"
 ```
 
-**Stop condition:** L5 does not start until the **public** updater key is available to compile in (ADR-57 owner action). The private key + password CI secrets are already set (2026-10-08), so only the public-key hand-off gates Task 11.
+**Stop condition (RESOLVED — shipped):** L5 shipped as `591a53e` (PR #67, squash). The public updater key is compiled in; the private key + password CI secrets were set 2026-10-08. Phase 7 is complete.
+
+> **Correction (Task 11).** Shipped as `591a53e` (PR #67, squash; base `b3d1ce3` = the #68 merge; branch `phase7/task-11-updater`, chain `b0bf020` → `08176da` → `48ef477` → `bd182a5` → `1bada79`). Scope (8 files): `apps/desktop/src-tauri/**` (updater command module + `commands/mod.rs` + `lib.rs`, `tauri.conf.json` updater plugin block, capabilities, Cargo) + `.github/workflows/build-desktop.yml` (manifest assembly). The decisions below are the shipped reality:
+>
+> - **Manifest key format is `{os}-{arch}-{bundle_type}`** (e.g. `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **NOT** Rust target triples. `bundle_type` follows `tauri-plugin-updater`'s `Installer::name`.
+> - **Signature is per-platform** — inside each `platforms[key]` entry as `{ url, signature }` (the minisign signature of that installer binary). **There is no top-level manifest signature**; the plugin reads none for static manifests (it verifies the downloaded bytes against the per-platform signature during `Update::download`).
+> - **`requireSignedVersion: true`** in `plugins.updater` closes the anti-downgrade gap — the plugin default is `false`, which would accept an unsigned/older version.
+> - **`verify_manifest` was removed as dead code** (0 callers): the plugin owns signature verification, so an app-level re-implementation would duplicate it and risk divergence. The surviving app-level policy helper is `should_apply` (strictly-newer → apply).
+> - **Test count: 72 → 70** (within Task 11; base `main` was 69). Two tests — `refuses_an_unsigned_manifest` and `refuses_a_bad_signature` — were removed **because their only subject was the deleted dead function**; this is NOT weakening: no surviving behavior lost (the plugin's own verification is covered by the build-matrix `.sig` + release-assembly assert, not a local unit test). Net: Task 11 added 1 test (`refuses_an_older_version`) over the base.
+> - **Release path is reasoned/CI-unproven at PR time.** The `release` job (manifest assembly + per-platform `.sig`) runs only on tag/non-dry-run dispatch, which creates a public GitHub Release. It was validated by an **independent local harness** (recursive `dist/` walk + fail-fast when a platform resolves to nothing) — but a real tag/dispatch is still required to prove it end-to-end.
 
 ---
 
@@ -849,7 +855,7 @@ git commit -m "feat(desktop): signed auto-update (ADR-57)"
 
 **2. Placeholder scan:** Task 2 Step 2's interface sketch was corrected to the shipped `AgentRuntime`/`RuntimeHandle`/`RuntimeStatus` signatures (no `todo!()`); the earlier stub was replaced by the real API in the "Correction (Task 2)" note. Spike and CI tasks are inherently exploratory and name their concrete artifact/verdict. No "add error handling"/"similar to Task N" placeholders.
 
-**3. Type consistency:** `AgentRuntime::start/stop/status`, `RuntimeConfig`, `RuntimeStatus`, `keychain::set_secret/get_secret/delete_secret`, `probe_server/probe_capture`, `register_device`, `set_autostart/is_autostart_enabled`, `should_apply/verify_manifest` are named once and reused consistently across tasks.
+**3. Type consistency:** `AgentRuntime::start/stop/status`, `RuntimeConfig`, `RuntimeStatus`, `keychain::set_secret/get_secret/delete_secret`, `probe_server/probe_capture`, `register_device`, `set_autostart/is_autostart_enabled`, `should_apply` are named once and reused consistently across tasks. (`verify_manifest` was dropped — removed as dead code in Task 11; the updater plugin owns signature verification.)
 
 **4. Review Focus:** five items, each mapped to an owning-task test: (1) re-registration credential swap → Task 6; (2) input-gate default → Task 5 mutation; (3) secret-to-webview → Tasks 3/4; (4) updater refuse → Task 11 mutation; (5) auto-start entry path → Task 8.
 
