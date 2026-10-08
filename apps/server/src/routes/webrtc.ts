@@ -14,7 +14,7 @@ const router = new Hono<AppContext>().use('*', authMiddleware);
  */
 router.get('/ice-servers', async (c) => {
   const user = c.get('user');
-  return c.json({ iceServers: buildIceServers(user.id) });
+  return c.json({ iceServers: await buildIceServers(user.id) });
 });
 
 export default router;

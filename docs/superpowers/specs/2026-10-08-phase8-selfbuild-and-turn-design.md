@@ -1,6 +1,6 @@
 # Phase 8: Open-Source Self-Build Enablement + Provider-Selectable TURN — Design Spec
 
-- **Status:** Draft (owner-approved design 2026-10-08; spec pending review)
+- **Status:** Approved (owner 2026-10-08); implemented/merged — 8a PR #69 `6a568c0`, 8b PR #70 `1ebda79`; plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`
 - **Phase:** 8 (roadmap continuation after Phase 7; `docs/ARCHITECTURE.md` §8)
 - **Owner decisions (2026-10-08):**
   - Ponter is **open source (MIT)**; third parties can **clone, build, and self-host** it.
@@ -153,7 +153,7 @@ This spec covers both 8a and 8b; the implementation plan will break them into se
 ## 7. Risks and stop conditions
 
 1. **Agent cannot parse Cloudflare's `urls` shape (highest for 8b).** Cloudflare may return `urls` as a bare string and/or `turns:` TLS URLs on port 443/5349; the Rust `IceServerEntry` expects `urls: Vec<String>`. **Mitigation:** ADR-63 normalizes to arrays server-side; the plan must **verify the agent accepts a `turns:` URL** and add a fixture test. **Stop condition:** if the agent cannot consume the Cloudflare output without an agent change, 8b is narrowed to `coturn|none` and Cloudflare is deferred (agent change would be a separate task).
-2. **Cloudflare cost / third-party relay tension.** Cloudflare TURN bills ~$0.05/GB and relays media through a third party — in tension with the self-hosted ethos. **Mitigation:** documented truthfully in the deployment guide; the feature is opt-in and off by default.
+2. **Cloudflare cost / third-party relay tension.** Cloudflare TURN includes a **1,000 GB/month free egress tier** (shared with Cloudflare's SFU/WebSocket adapter) and bills **~$0.05/GB egress beyond it**; it relays media through a third party — in tension with the self-hosted ethos. **Mitigation:** documented truthfully in the deployment guide; the feature is opt-in and off by default.
 3. **Self-build docs drift.** Build commands change as tooling evolves. **Mitigation:** the build-from-source guide is exercised in the plan's verification (a real build of at least server + web; agent + desktop where CI-verifiable).
 4. **Tauri env interpolation misconception.** Tauri v2 does not interpolate env in `tauri.conf.json`. **Mitigation:** ADR-61 uses a `--config` overlay, not interpolation; the spec calls this out explicitly.
 5. **Scope creep into branding/rename.** A "make it generic" instinct would fight the owner's "keep the author" decision. **Mitigation:** ADR-60 is binding; any change that strips author identity is out of scope.

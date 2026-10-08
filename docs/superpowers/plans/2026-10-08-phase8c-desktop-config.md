@@ -261,7 +261,7 @@ pub mod config;
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd apps/desktop/src-tauri && cargo test config:: 2>&1 | tail -30`
-Expected: PASS (11 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Lint + format**
 
@@ -367,6 +367,28 @@ In `commands/wizard.rs`, add tests inside the existing `mod tests`:
         save_config_impl(&state, Some("   "), false, None).expect("save should succeed");
         assert_eq!(*state.server_url.lock().unwrap(), "http://localhost:8787");
         assert!(crate::config::load_config(&path).server_url.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_config_impl_sets_has_server_url_for_same_session_get_config() {
+        // Regression (plan defect): saving a URL in-session must make a
+        // subsequent get_config report hasServerUrl=true — otherwise the
+        // frontend is sent back to ServerSetupView on reload within a session.
+        let dir = std::env::temp_dir().join(format!("ponter-savecfg-has-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let state = crate::state::AppState::with_config(Some(path));
+        assert!(!state.has_server_url);
+
+        save_config_impl(&state, Some("http://new:1"), false, None).expect("save should succeed");
+
+        let persisted = state.persisted.lock().unwrap().clone();
+        assert!(
+            state.has_server_url || persisted.server_url.is_some(),
+            "get_config must report hasServerUrl=true after an in-session save"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 ```
@@ -477,6 +499,14 @@ pub struct ConfigPayload {
 }
 
 /// Read the effective config for the frontend (ADR-64/65).
+///
+/// `has_server_url` is recomputed against the CURRENT persisted value, not only
+/// the startup snapshot: `save_config_impl` updates `persisted.server_url`
+/// without touching the `has_server_url` field (it is a plain bool, set once at
+/// construction), so an in-session save would otherwise leave `get_config`
+/// reporting `false` — two sources of truth drifting apart. `save_config_impl`
+/// never clears the URL (blank is ignored, `None` means unchanged), so the `||`
+/// is monotonic and correct.
 #[tauri::command]
 pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<ConfigPayload, String> {
     let persisted = state
@@ -485,10 +515,10 @@ pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<ConfigPaylo
         .map_err(|e| format!("state lock poisoned: {e}"))?
         .clone();
     Ok(ConfigPayload {
-        server_url: persisted.server_url,
+        server_url: persisted.server_url.clone(),
         allow_input: persisted.allow_input,
         theme: persisted.theme,
-        has_server_url: state.has_server_url,
+        has_server_url: state.has_server_url || persisted.server_url.is_some(),
     })
 }
 
