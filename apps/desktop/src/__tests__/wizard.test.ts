@@ -426,4 +426,30 @@ describe('WizardView', () => {
     await flushPromises();
     expect(store.completed).toBe(true);
   });
+
+  it('entering step 4 loads real auto-start state (is_autostart_enabled)', async () => {
+    mount(WizardView);
+    const store = useWizardStore();
+
+    vi.mocked(invoke).mockResolvedValue(false);
+    store.step = 'autoStart';
+    await nextTick();
+    await flushPromises();
+
+    expect(invoke).toHaveBeenCalledWith('is_autostart_enabled');
+  });
+
+  it('renders the auto-start error element when autoStartError is set', async () => {
+    const wrapper = mount(WizardView);
+    const store = useWizardStore();
+    store.step = 'autoStart';
+    await nextTick();
+
+    store.autoStartError = 'boom: registry write failed';
+    await nextTick();
+
+    const errorEl = wrapper.find('[data-testid="wizard-autostart-error"]');
+    expect(errorEl.exists()).toBe(true);
+    expect(errorEl.text()).toContain('boom: registry write failed');
+  });
 });
