@@ -13,7 +13,7 @@
 //! and would risk diverging from the plugin. The decision helper `should_apply`,
 //! however, is app-level policy (strictly newer → apply) and stays.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Info about an available update, returned to the frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -22,18 +22,6 @@ pub struct UpdateInfo {
     pub version: String,
     pub notes: Option<String>,
     pub date: Option<String>,
-}
-
-/// The decoded updater manifest (shape of `latest.json`). Kept for completeness
-/// of the wire shape; the plugin deserializes the actual manifest internally.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Manifest {
-    pub version: String,
-    pub notes: Option<String>,
-    #[serde(rename = "pub_date")]
-    pub date: Option<String>,
-    pub platforms: serde_json::Value,
-    pub signature: Option<String>,
 }
 
 /// PURE: return Some(UpdateInfo) ONLY when `latest` is strictly newer than

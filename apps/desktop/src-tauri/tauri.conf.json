@@ -27,7 +27,8 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ3QUZGQzFCNTgzRTM1NTEKUldSUk5UNVlHL3l2Unp3cTc0SE1ETWUxTlRPZ3FGUHI1cVoxN2d6a0xzL3J2V2dmOEJvczVaMkIK",
       "endpoints": [
         "https://github.com/ngotuananh101/ponter/releases/latest/download/latest.json"
-      ]
+      ],
+      "requireSignedVersion": true
     }
   },
   "bundle": {
