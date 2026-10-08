@@ -1,0 +1,315 @@
+name: Build Desktop
+
+# Cross-platform build + bundle + release workflow for the `ponter-desktop`
+# Tauri app at `apps/desktop`. ADR-56.
+#
+# - Tag push (v*.*.* / desktop-v*.*.*): builds all platforms, produces native
+#   installers (.deb + .AppImage / .dmg / .msi + .exe), uploads them as
+#   artifacts, and attaches them to a GitHub Release.
+# - workflow_dispatch: identical, plus `dry_run` to build without releasing.
+# - Pull requests and branch pushes to main/develop: builds all platforms,
+#   uploads installer artifacts (no release is created).
+# - Path filter: `apps/desktop/**`, `apps/agent/**`, and this workflow file so
+#   dependency bumps elsewhere don't trigger the 3-OS matrix.
+#
+# NOTE: this workflow is BUILD-ONLY for this phase (ADR-56 / PM decision #1).
+# Signing is deferred — see the commented "macOS signing" and "Windows signing"
+# blocks below where the env vars / secrets would be wired in:
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_ID /
+#   APPLE_APP_SPECIFIC_PASSWORD (for notarization) and
+#   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD (Authenticode).
+# Add these secrets to the repo, then uncomment the signing steps.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'desktop-v*.*.*'
+    branches:
+      - main
+      - develop
+    paths:
+      - 'apps/desktop/**'
+      - 'apps/agent/**'
+      - '.github/workflows/build-desktop.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'apps/desktop/**'
+      - 'apps/agent/**'
+      - '.github/workflows/build-desktop.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to release (e.g. 0.1.0)'
+        required: false
+        type: string
+      prerelease:
+        description: 'Optional prerelease suffix (e.g. beta.1); leave empty for a stable release'
+        type: string
+        default: ''
+      dry_run:
+        description: 'Build and bundle but skip the GitHub Release (for testing the workflow)'
+        type: boolean
+        default: false
+
+# One in-flight run per ref so a re-triggered release cancels the prior one
+# rather than racing on the same tag.
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORKSPACE: apps/desktop
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build + bundle matrix across Linux / macOS / Windows.
+  # Linux system deps are the UNION of the Tauri deps and the agent capture
+  # stack (xcap/x11rb/pipewire/wayland/enigo/openh264), since apps/desktop/src-tauri
+  # path-depends on apps/agent.
+  # ---------------------------------------------------------------------------
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ env.WORKSPACE }}
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+          - os: macos-14
+            runner: macos-14
+          - os: windows-latest
+            runner: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.6.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: '1.98.1'
+
+      # Linux-only: install Tauri deps + agent capture-stack deps.
+      # Missing any of these = Linux job fails to compile.
+      - name: Install Linux system dependencies
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf build-essential libssl-dev \
+            pkg-config libclang-dev libxcb1-dev libxrandr-dev \
+            libpipewire-0.3-dev libspa-0.2-dev libwayland-dev \
+            libegl-dev libgbm-dev libdrm-dev
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ env.WORKSPACE }}/src-tauri -> ${{ env.WORKSPACE }}/src-tauri/target
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      # macOS signing (PM decision #1: build-only this phase).
+      # To enable notarization/signing, add the secrets below and uncomment:
+      # env:
+      #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #   APPLE_ID: ${{ secrets.APPLE_ID }}
+      #   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      - name: Build (Tauri bundle)
+        run: pnpm --filter @ponter/desktop tauri build
+        env:
+          # Set to skip keychain integration tests on headless runners (no
+          # secret-service session bus). Honoured by every keychain test:
+          # the round-trip test (Task 3) and Task 4's two login integration
+          # tests (login_stores_refresh_token_in_keychain,
+          # login_surfaces_server_error).
+          PONTER_KEYCHAIN_SKIP: 1
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-installers-${{ runner.os }}
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
+          retention-days: 7
+
+      # ---------------------------------------------------------------------
+      # Post-build artifact check: assert each expected installer exists and
+      # is non-trivial in size; fail the job otherwise.
+      #
+      # Path note: the job's `defaults.run.working-directory` is already
+      # `apps/desktop`, so CWD inside `run` is `$GITHUB_WORKSPACE/apps/desktop`.
+      # Use relative paths here. (The `actions/upload-artifact` step above uses
+      # `${{ env.WORKSPACE }}/src-tauri/...` which is correct — its `path` input
+      # resolves from the workspace root, not the run CWD.)
+      # ---------------------------------------------------------------------
+      - name: Assert installer artifacts (Linux/macOS)
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          set -e
+          BUNDLE="src-tauri/target/release/bundle"
+          echo "Bundle dir contents:"
+          ls -la "$BUNDLE"
+          # Tauri emits installers in type-specific subdirs (deb/, rpm/, appimage/,
+          # dmg/). Check only those flat installer files; exclude .app bundle
+          # internals (Contents/Info.plist, PkgInfo, _CodeSignature/*) which are
+          # legitimately < 10 KB and would false-positive on macOS.
+          # Use `wc -b` for cross-platform size (GNU/BSD stat differ in flags).
+          find "$BUNDLE" -type f \
+            ! -name '*.sha256' \
+            ! -path '*.app/*' \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \
+               -o -name '*.msi' -o -name '*.exe' -o -name '*.app' \) \
+            -print0 | while IFS= read -r -d '' f; do
+            sz=$(wc -c < "$f")
+            echo "  $f  ($sz bytes)"
+            if [ "$sz" -lt 10240 ]; then
+              echo "::error::File $f is smaller than 10 KB ($sz bytes)"
+              exit 1
+            fi
+          done
+          echo "Installer artifact check PASSED (Linux/macOS)."
+
+      - name: Assert installer artifacts (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          # Relative path: job working-directory is already apps/desktop
+          $bundle = "src-tauri\target\release\bundle"
+          Write-Host "Bundle dir contents:"
+          Get-ChildItem -Recurse -File $bundle | Format-Table FullName, Length
+          $found = Get-ChildItem -Recurse -File $bundle | Where-Object { $_.Extension -match '^(msi|exe)$' -and $_.Length -ge 10240 }
+          if (-not $found) {
+            throw "No installer (.msi/.exe >= 10 KB) found in $bundle"
+          }
+          Write-Host "Installer artifact check PASSED (Windows)."
+
+      # Windows signing (PM decision #1: build-only this phase).
+      # To enable Authenticode signing, add the secret and uncomment:
+      # env:
+      #   WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      #   WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+  # ---------------------------------------------------------------------------
+  # Publish a GitHub Release with all platform installer artifacts.
+  # Runs only on tag push or a non-dry-run manual dispatch.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: |
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Fail fast if no installer made it into dist/. This guard catches a
+      # silent-empty-release class (e.g. a glob mismatch) that would otherwise
+      # leave the GitHub Release empty while the job stays green.
+      - name: Assert release installer assets exist
+        shell: bash
+        run: |
+          set -e
+          echo "Installer files present under dist/:"
+          find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+            -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -print || true
+          count=$(find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+            -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) | wc -l)
+          echo "Installer files found: $count"
+          if [ "$count" -lt 1 ]; then
+            echo "::error::No installer files found under dist/ — the release would be empty"
+            exit 1
+          fi
+
+      - name: Generate consolidated checksums manifest
+        shell: bash
+        run: |
+          # Nesting-safe: upload-artifact preserved per-type subdirs (dist/deb/,
+          # dist/dmg/, dist/msi/, …), so checksums live at dist/<type>/*.sha256.
+          find dist -type f -name '*.sha256' -exec cat {} + > dist/SHA256SUMS.txt 2>/dev/null || true
+          echo "Consolidated checksums:"
+          cat dist/SHA256SUMS.txt 2>/dev/null || echo "(no checksum files)"
+          echo "Release assets:"
+          find dist -type f | sort
+
+      - name: Set version and prerelease flag
+        id: meta
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          PRERELEASE_INPUT: ${{ inputs.prerelease }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            raw="$INPUT_VERSION"
+          else
+            raw="$REF_NAME"
+          fi
+          version="${raw#v}"
+          version="${version#desktop-v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+          # A tag containing a hyphen (v0.1.0-beta.1) or an explicit
+          # prerelease input marks the release as prerelease.
+          IS_PRERELEASE="false"
+          if [[ "${raw}" == *-* ]] || [ -n "${PRERELEASE_INPUT}" ]; then
+            IS_PRERELEASE="true"
+          fi
+          echo "prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', steps.meta.outputs.version) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Ponter Desktop v{0}', steps.meta.outputs.version) }}
+          files: |
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.AppImage
+            dist/**/*.dmg
+            dist/**/*.msi
+            dist/**/*.exe
+            dist/**/*.sha256
+            dist/SHA256SUMS.txt
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          generate_release_notes: true
