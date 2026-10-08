@@ -165,6 +165,16 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     set_autostart_in(&binary, &dir, filename, enabled)
 }
 
+/// The Linux XDG autostart **entry** dir — the config dir plus the `autostart`
+/// subdir. XDG desktop environments only discover `.desktop` entries inside
+/// `autostart/` (ADR-55 / R4: `~/.config/autostart/*.desktop`). `linux_autostart_dir`
+/// keeps its R5 contract (base config dir); the caller appends the subdir here so
+/// the real command writes where the desktop actually looks.
+#[cfg(target_os = "linux")]
+fn linux_autostart_entry_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> PathBuf {
+    linux_autostart_dir(xdg_config_home, home).join("autostart")
+}
+
 /// Resolve the platform-specific autostart directory and filename (R3 — the
 /// entry IS the source of truth; no stored boolean).
 #[cfg(target_os = "linux")]
@@ -172,7 +182,7 @@ fn resolve_autostart_location() -> (PathBuf, &'static str) {
     let home = std::env::var("HOME").ok();
     let xdg = std::env::var("XDG_CONFIG_HOME").ok();
     (
-        linux_autostart_dir(xdg.as_deref(), home.as_deref()),
+        linux_autostart_entry_dir(xdg.as_deref(), home.as_deref()),
         LINUX_ENTRY_FILE,
     )
 }
@@ -329,6 +339,22 @@ mod tests {
     fn linux_autostart_dir_neither() {
         let p = linux_autostart_dir(None, None);
         assert_eq!(p, PathBuf::from(".").join(".config"));
+    }
+
+    // R4 (Linux functional): the entry must live under `autostart/` — XDG desktop
+    // environments only discover `.desktop` files there. Guards the R4/R5
+    // reconciliation (linux_autostart_dir keeps the base dir; the entry dir adds
+    // the subdir).
+    #[test]
+    fn linux_autostart_entry_dir_appends_autostart_subdir() {
+        let p = linux_autostart_entry_dir(Some("/custom/xdg"), Some("/home/user"));
+        assert_eq!(p, PathBuf::from("/custom/xdg").join("autostart"));
+
+        let p = linux_autostart_entry_dir(None, Some("/home/user"));
+        assert_eq!(p, PathBuf::from("/home/user/.config").join("autostart"));
+
+        let p = linux_autostart_entry_dir(None, None);
+        assert_eq!(p, PathBuf::from(".").join(".config").join("autostart"));
     }
 
     // R10 test 2: macos_launch_agents_dir.

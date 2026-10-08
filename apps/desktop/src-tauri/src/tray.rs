@@ -299,7 +299,6 @@ fn build_menu(
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
-    let sep4 = PredefinedMenuItem::separator(app)?;
 
     let menu = Menu::with_id_and_items(
         app,
@@ -314,7 +313,6 @@ fn build_menu(
             &autostart_item,
             &sep3,
             &quit_item,
-            &sep4,
         ],
     )?;
 
