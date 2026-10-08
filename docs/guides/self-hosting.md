@@ -74,3 +74,42 @@ The web client compiles its API URL at build time. Set `VITE_API_URL` (and
 `VITE_BROWSER_WS_SIGNALING=true` if you use WebSocket signaling) before
 `pnpm --filter @ponter/web build`, and set `CORS_ORIGIN` on the server to the
 exact origin that serves the built web app.
+
+### 3.1 Desktop app default server (build-time)
+
+The desktop client resolves its server URL in this order: the runtime
+`PONTER_SERVER_URL` environment variable, then the user's saved value in the
+app config file, then a **build-time default** compiled from
+`PONTER_DEFAULT_SERVER_URL`, then `http://localhost:8787`.
+
+To bake your server into an installer, set the repository variable
+`PONTER_DEFAULT_SERVER_URL` before building (Settings → Secrets and variables →
+Actions → Variables):
+
+```text
+PONTER_DEFAULT_SERVER_URL = https://ponter.example.com
+```
+
+The CI workflow passes it into `tauri build`; when unset it is a no-op and the
+app falls back to the user's saved value or localhost. A source build can set
+it directly:
+
+```bash
+PONTER_DEFAULT_SERVER_URL=https://ponter.example.com \
+  pnpm --filter @ponter/desktop tauri build
+```
+
+End users can still change the server from the app's first screen (or via
+"Change" on the login screen); their choice persists in the app config
+directory, in a `config.json` file:
+
+- Linux: `~/.config/com.ponter.desktop/config.json`
+- macOS: `~/Library/Application Support/com.ponter.desktop/config.json`
+- Windows: `%APPDATA%\com.ponter.desktop\config.json`
+
+This file holds non-secret preferences only — the server URL, the input-gate
+choice, and the theme. The access token lives in the OS keychain, never here.
+
+The desktop app also has a dark-mode toggle in the top-right corner. It
+defaults to the OS `prefers-color-scheme` and stores the user's choice through
+the same `config.json`, so the selection is kept across restarts.
