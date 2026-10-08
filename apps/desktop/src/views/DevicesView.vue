@@ -70,6 +70,7 @@ onMounted(() => {
             <div class="flex flex-col gap-1">
               <div class="flex items-center gap-2">
                 <span data-testid="device-id">{{ device.id }}</span>
+                <span data-testid="device-hostname">{{ device.hostname }}</span>
                 <Badge
                   :variant="device.isOnline ? 'default' : 'secondary'"
                   data-testid="device-platform"
