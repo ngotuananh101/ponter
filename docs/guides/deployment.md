@@ -129,7 +129,7 @@ Server chọn nhà cung cấp TURN qua biến `TURN_PROVIDER`:
 | Giá trị | Mô tả |
 |---|---|
 | `coturn` (mặc định) | Coturn tự host, thông tin xác thực RFC 5766 từ `TURN_SECRET` + `TURN_URL`. Giữ nguyên hành vi các phase trước. |
-| `cloudflare` | Cloudflare Calls TURN (hosted). Cần `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`. Server tự mint credential qua API Cloudflare và cache theo TTL. **Lưu ý:** media đi qua hạ tầng Cloudflare (bên thứ ba). Cloudflare miễn phí **1.000 GB egress/tháng đầu tiên** (dùng chung với các dịch vụ Realtime khác của Cloudflare), sau đó ~$0.05/GB egress; STUN \`stun.cloudflare.com\` miễn phí. Khác với mô hình tự host. |
+| `cloudflare` | Cloudflare Calls TURN (hosted). Cần `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`. Server tự mint credential qua API Cloudflare và cache theo TTL. **Lưu ý:** media đi qua hạ tầng Cloudflare (bên thứ ba). Cloudflare miễn phí **1.000 GB egress/tháng đầu tiên** (dùng chung với các dịch vụ Realtime khác của Cloudflare), sau đó ~$0.05/GB egress; STUN `stun.cloudflare.com` miễn phí. Khác với mô hình tự host. |
 | `none` | Chỉ STUN, không relay. Peer sau symmetric NAT có thể không kết nối được. |
 
 Khi Cloudflare lỗi (thiếu config, non-2xx, lỗi mạng), server tự hạ cấp về STUN-only và ghi warning — kết nối không bị chặn.

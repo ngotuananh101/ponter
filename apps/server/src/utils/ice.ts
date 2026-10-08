@@ -6,8 +6,7 @@ const GOOGLE_STUN = 'stun:stun.l.google.com:19302';
 /** TURN credentials are valid for one day. */
 const TURN_TTL_SECONDS = 86400;
 
-const CLOUDFLARE_API_BASE =
-  'https://rtc.live.cloudflare.com/v1/turn/keys';
+const CLOUDFLARE_API_BASE = 'https://rtc.live.cloudflare.com/v1/turn/keys';
 
 export type TurnProvider = 'coturn' | 'cloudflare' | 'none';
 
@@ -83,8 +82,10 @@ function buildStunOnlyIceServers(): IceServerConfig[] {
  * Cached Cloudflare credentials. Cloudflare mints per-key (not per-user)
  * credentials, so one cached response serves every peer until it expires.
  */
-let cloudflareCache: { iceServers: IceServerConfig[]; expiresAt: number } | null =
-  null;
+let cloudflareCache: {
+  iceServers: IceServerConfig[];
+  expiresAt: number;
+} | null = null;
 
 function normalizeCloudflareServers(
   raw: unknown,
