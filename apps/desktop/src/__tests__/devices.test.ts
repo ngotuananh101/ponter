@@ -153,6 +153,9 @@ describe('DevicesView', () => {
     expect(wrapper.find('[data-testid="device-id"]').text()).toBe(
       sampleDevice.id,
     );
+    expect(wrapper.find('[data-testid="device-hostname"]').text()).toBe(
+      sampleDevice.hostname,
+    );
   });
 
   it('register button calls store.register', async () => {

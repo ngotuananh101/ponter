@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { watch } from 'vue';
 import { useWizardStore } from '@/stores/wizard';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
 
 const store = useWizardStore();
 
@@ -66,10 +69,10 @@ watch(
         Enter your Ponter server URL to verify connectivity.
       </p>
 
-      <label for="wizard-server-url-input">
+      <Label for="wizard-server-url-input">
         <span class="sr-only">Server URL</span>
-      </label>
-      <input
+      </Label>
+      <Input
         id="wizard-server-url-input"
         type="url"
         data-testid="wizard-server-url"
@@ -78,13 +81,13 @@ watch(
         v-model="store.serverUrl"
       />
 
-      <button
+      <Button
         data-testid="wizard-probe-server"
         :disabled="store.loading || !store.serverUrl"
         @click="probeServer"
       >
         {{ store.loading ? 'Probing...' : 'Probe Server' }}
-      </button>
+      </Button>
 
       <p v-if="store.serverProbe" data-testid="wizard-server-message">
         {{ store.serverProbe.message }}
@@ -98,13 +101,13 @@ watch(
         Grant screen-recording permission when prompted, then verify capture.
       </p>
 
-      <button
+      <Button
         data-testid="wizard-probe-capture"
         :disabled="store.loading"
         @click="probeCapture"
       >
         {{ store.loading ? 'Probing...' : 'Probe Capture' }}
-      </button>
+      </Button>
 
       <p v-if="store.captureProbe" data-testid="wizard-capture-message">
         {{ store.captureProbe.message }}
@@ -125,22 +128,22 @@ watch(
         verified peers can send input events.
       </p>
 
-      <label>
+      <Label>
         <input
           type="checkbox"
           data-testid="wizard-input-checkbox"
           v-model="store.allowInput"
         />
         Allow remote input
-      </label>
+      </Label>
 
-      <button
+      <Button
         data-testid="wizard-finish"
         :disabled="store.loading"
         @click="finish"
       >
         {{ store.loading ? 'Saving...' : 'Continue' }}
-      </button>
+      </Button>
     </div>
 
     <!-- Step 4: Auto-start -->
@@ -154,7 +157,7 @@ watch(
         effect at the next login.
       </p>
 
-      <label>
+      <Label>
         <input
           type="checkbox"
           data-testid="wizard-autostart-checkbox"
@@ -162,19 +165,19 @@ watch(
           @change="onAutoStartChange"
         />
         Auto-start the agent on login
-      </label>
+      </Label>
 
       <p v-if="store.autoStartError" data-testid="wizard-autostart-error">
         {{ store.autoStartError }}
       </p>
 
-      <button
+      <Button
         data-testid="wizard-autostart-finish"
         :disabled="store.loading"
         @click="complete"
       >
         {{ store.loading ? 'Saving...' : 'Finish' }}
-      </button>
+      </Button>
     </div>
   </div>
 </template>
