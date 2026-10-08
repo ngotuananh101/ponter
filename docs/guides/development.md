@@ -286,7 +286,14 @@ node apps/server/dist/index.js
 ```
 
 Required environment: `JWT_SECRET`, `REFRESH_TOKEN_SECRET` (each ≥ 32 chars).
-`DATABASE_PATH` defaults to `./data/remote.db`.
+`DATABASE_PATH` defaults to `:memory:` — data is lost on restart. To persist to
+a file, create the directory first (the server does not create it) and point at
+the file:
+
+```bash
+mkdir -p data
+DATABASE_PATH=./data/remote.db node apps/server/dist/index.js
+```
 
 ### 7.2 Web (`apps/web`)
 
@@ -319,7 +326,7 @@ pnpm --filter @ponter/desktop tauri build    # native bundle
 ```
 
 Output: installers under `apps/desktop/src-tauri/target/release/bundle/`
-(`.deb` + `.AppImage` on Linux, `.dmg` on macOS, `.msi` + `.exe` on Windows).
+(`.deb` + `.AppImage` + `.rpm` on Linux, `.dmg` on macOS, `.msi` + `.exe` on Windows).
 Building a signed auto-update bundle requires your own signing key; building
 without one is supported (auto-update simply stays inert). `pnpm tauri build`
 needs the platform's Tauri prerequisites (system webkit/gtk packages on Linux).
