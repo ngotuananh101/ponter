@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { buildIceServers } from '../src/utils/ice.js';
 
 const ENV_KEYS = [
   'TURN_PROVIDER',
@@ -13,7 +14,7 @@ function clearEnv(): void {
   for (const key of ENV_KEYS) delete process.env[key];
 }
 
-async function loadIce(): Promise<typeof import('../src/utils/ice.js')> {
+async function loadIce(): Promise<{ buildIceServers: typeof buildIceServers }> {
   return await import('../src/utils/ice.js');
 }
 
