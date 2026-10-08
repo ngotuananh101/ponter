@@ -74,9 +74,9 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 
 ### ADR-55: Tray icon and auto-start are per-platform, behind one backend API
 
-- **Decision.** A tray icon shows connection state (connected / connecting / disconnected / error) with a menu: Start/Stop agent, Open window, Open at login (toggle), Quit. Auto-start uses the platform-native mechanism — Linux `~/.config/autostart/*.desktop`, macOS `SMAppService`/LaunchAgent, Windows registry `Run` key (or Task Scheduler) — selected in the Rust backend behind a single `set_autostart(bool)` command.
+- **Decision.** A tray icon shows connection state — the runtime's three real states `Stopped` / `Disconnected` / `Connected` (the `RuntimeStatus` enum has exactly these; no `Connecting`/`Error` state is fabricated — Task 7 ships this honestly) — with a menu: Start/Stop agent, Open window, Quit. The "Open at login (toggle)" item is **not** in Task 7's tray; it lands in Task 8, alongside auto-start. Auto-start uses the platform-native mechanism — Linux `~/.config/autostart/*.desktop`, macOS `SMAppService`/LaunchAgent, Windows registry `Run` key (or Task Scheduler) — selected in the Rust backend behind a single `set_autostart(bool)` command.
 - **Why.** A remote-access agent is expected to run without a visible window; tray + auto-start is the standard expectation and the tray is the only UI when the window is closed.
-- **Lifecycle.** Closing the window hides to tray (does not stop the agent); Quit stops the runtime and exits.
+- **Lifecycle.** Closing the window hides to tray (does not stop the agent) — but only when the tray actually built; if it did not, the window closes normally rather than stranding the user. Quit stops the runtime and exits.
 
 ### ADR-56: Packaging produces native installers per platform via Tauri bundler; CI builds all three
 
@@ -149,7 +149,7 @@ The owner asked for the dialog to be **wider horizontally** ("rộng thêm một
 | Agent refactor (L1) | `cargo test` (all existing unit tests) + `cargo clippy -D warnings` + `cargo fmt --check` green; `build-agent.yml` verify gate green; cross-language E2E green (proves the CLI path unchanged). |
 | Tauri backend (L1-L3) | Rust unit tests for pure logic (URL probe result mapping, autostart path selection, updater decision); Tauri command handlers tested where they do not require a display. |
 | Frontend (L1-L3) | Vitest for wizard state machine, login form, device list; the same `@vue/test-utils` setup as the web app. |
-| Shell boot (L0, L3) | Smoke test: the app process starts, the runtime reaches "connecting"/"connected" against a local server under Xvfb (Linux CI); tray presence asserted where headless-testable. |
+| Shell boot (L0, L3) | Smoke test: the app process starts, the runtime reaches "connected" against a local server under Xvfb (Linux CI); tray presence asserted where headless-testable. |
 | Packaging (L4) | `build-desktop.yml` produces the expected installer artifacts on each OS; a post-build check asserts the files exist and are non-trivial size. |
 | Auto-update (L5) | Updater decision unit-tested (newer/older/equal version, signature-verify failure → refuse); an end-to-end update is documented as a manual procedure if it cannot run in CI. |
 | Regression | The full existing suite (Node CI, E2E, Sonar) must stay green throughout; the agent refactor is the highest-risk change and is guarded by `build-agent.yml` + E2E. |
@@ -176,7 +176,7 @@ Per-layer, each gate is independently checkable:
 1. **L0 (gating):** a Tauri shell embedding the agent runtime starts the runtime under Xvfb on Linux and reaches a connected state against a local server; the spike result is written to `docs/spikes/`. **If this fails, ADR-50 is reopened before L1.**
 2. **L1:** `apps/agent` is lib+bin; `build-agent.yml` verify + E2E green; the Tauri app boots, logs in via `POST /api/auth/login`, and stores the refresh token in the OS keychain (verified: no secret in webview storage).
 3. **L2:** the wizard completes all four steps with verification; device registration creates an agent and the credential is in the keychain; the device list/delete view mirrors the web dashboard.
-4. **L3:** the tray icon reflects connection state and controls start/stop; auto-start toggles the platform-native entry.
+4. **L3:** the tray shows connection state (a status menu item reflecting the runtime's real state) and controls start/stop; auto-start toggles the platform-native entry.
 5. **L4:** `build-desktop.yml` produces `.deb` + `.AppImage` (Linux), `.dmg` (macOS), `.msi` (Windows); artifacts attach to a release.
 6. **L5:** the app detects and applies a signed update; the updater refuses an unsigned or older manifest (test-pinned).
 7. **Cross-cutting:** the dialog-width change (§5.1) is shipped and its test green; the full existing CI (Node, E2E, Sonar, agent) stays green.
