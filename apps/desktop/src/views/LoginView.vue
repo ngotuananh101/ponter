@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useAuthStore } from '@/stores/auth';
+import { useConfigStore } from '@/stores/config';
 import {
   Card,
   CardContent,
@@ -14,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
 const store = useAuthStore();
+const config = useConfigStore();
 const username = ref('');
 const password = ref('');
 
@@ -38,6 +40,20 @@ async function handleSubmit() {
         <CardDescription>Sign in to your Ponter account</CardDescription>
       </CardHeader>
       <CardContent>
+        <p
+          class="mb-3 text-xs text-muted-foreground"
+          data-testid="login-server-line"
+        >
+          Server: {{ config.serverUrl || 'not set' }}
+          <button
+            type="button"
+            data-testid="login-change-server"
+            class="ml-1 underline"
+            @click="config.editing = true"
+          >
+            Change
+          </button>
+        </p>
         <form @submit.prevent="handleSubmit" class="space-y-4">
           <div class="space-y-2">
             <Label for="login-username">Username</Label>

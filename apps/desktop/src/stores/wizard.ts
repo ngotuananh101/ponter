@@ -1,8 +1,8 @@
 /**
  * Setup wizard Pinia store (ADR-53).
  *
- * Implements a verified four-step state machine:
- *   server → capture → inputGate → autoStart
+ * Implements a verified three-step state machine:
+ *   capture → inputGate → autoStart
  *
  * Each step verifies real capability via Tauri commands before advancing.
  * `allow_input` defaults to `false` (ADR-42 Gate A) and is only flipped on
@@ -14,6 +14,9 @@
  * marks the wizard complete. This makes step 4 reachable in the real app,
  * since `App.vue` unmounts the wizard when `completed` is true.
  *
+ * The server step moved to `ServerSetupView` before login (ADR-66); it is no
+ * longer part of the wizard state machine.
+ *
  * R12 (honesty): auto-start takes effect at the next login; the toggle
  * reflects the real OS entry. macOS uses a LaunchAgent plist; Windows uses
  * reg.exe. See task-8-brief.md R3/R12.
@@ -22,20 +25,14 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ProbeResult, WizardStep } from '@/types';
+import { useConfigStore } from '@/stores/config';
 
 export const useWizardStore = defineStore('wizard', () => {
   /** Current state-machine step. */
-  const step = ref<WizardStep>('server');
-
-  /** Server URL entered in step 1. */
-  const serverUrl = ref<string>('');
+  const step = ref<WizardStep>('capture');
 
   /** Latest probe result for each step — surfaced in the UI. */
-  const serverProbe = ref<ProbeResult | null>(null);
   const captureProbe = ref<ProbeResult | null>(null);
-
-  /** Input gate preference — default closed (ADR-42). */
-  const allowInput = ref(false);
 
   /** Whether the wizard has completed and settings were saved. */
   const completed = ref(false);
@@ -50,7 +47,7 @@ export const useWizardStore = defineStore('wizard', () => {
   const autoStartError = ref<string | null>(null);
 
   const currentStepIndex = computed(() => {
-    const order: WizardStep[] = ['server', 'capture', 'inputGate', 'autoStart'];
+    const order: WizardStep[] = ['capture', 'inputGate', 'autoStart'];
     return order.indexOf(step.value);
   });
 
@@ -59,28 +56,12 @@ export const useWizardStore = defineStore('wizard', () => {
   );
 
   function reset(): void {
-    step.value = 'server';
-    serverUrl.value = '';
-    serverProbe.value = null;
+    step.value = 'capture';
     captureProbe.value = null;
-    allowInput.value = false;
     autoStart.value = false;
     autoStartError.value = null;
     completed.value = false;
     loading.value = false;
-  }
-
-  async function probeServer(): Promise<ProbeResult> {
-    loading.value = true;
-    try {
-      const result = await invoke<ProbeResult>('probe_server', {
-        url: serverUrl.value,
-      });
-      serverProbe.value = result;
-      return result;
-    } finally {
-      loading.value = false;
-    }
   }
 
   async function probeCapture(): Promise<ProbeResult> {
@@ -95,16 +76,11 @@ export const useWizardStore = defineStore('wizard', () => {
   }
 
   /** Advance to the next step. Enforces the probe gate (R1): advancing past
-   * `server` requires `serverProbe.ok`, and advancing past `capture` requires
-   * `captureProbe.ok`. The `inputGate → autoStart` transition is unconditional
-   * (gate B peer-identity verification happens at admission in Task 7). */
+   * `capture` requires `captureProbe.ok`. The `inputGate → autoStart` transition
+   * is unconditional (gate B peer-identity verification happens at admission in
+   * Task 7). */
   function advance(): void {
-    if (step.value === 'server') {
-      if (serverProbe.value?.ok !== true) {
-        return;
-      }
-      step.value = 'capture';
-    } else if (step.value === 'capture') {
+    if (step.value === 'capture') {
       if (captureProbe.value?.ok !== true) {
         return;
       }
@@ -114,15 +90,13 @@ export const useWizardStore = defineStore('wizard', () => {
     }
   }
 
-  /** Step 3 action: persist verified settings to AppState and advance to
-   * `autoStart`. Does NOT set `completed` — step 4 is the final step (R11). */
+  /** Step 3 action: persist the input-gate preference (the config store owns
+   * `allowInput`) and advance to `autoStart`. Does NOT set `completed` —
+   * step 4 is the final step (R11). */
   async function finish(): Promise<void> {
     loading.value = true;
     try {
-      await invoke('save_wizard_settings', {
-        serverUrl: serverUrl.value,
-        allowInput: allowInput.value,
-      });
+      await useConfigStore().setAllowInput(useConfigStore().allowInput);
       advance();
     } finally {
       loading.value = false;
@@ -170,10 +144,7 @@ export const useWizardStore = defineStore('wizard', () => {
 
   return {
     step,
-    serverUrl,
-    serverProbe,
     captureProbe,
-    allowInput,
     autoStart,
     autoStartError,
     completed,
@@ -181,7 +152,6 @@ export const useWizardStore = defineStore('wizard', () => {
     currentStepIndex,
     canAdvance,
     reset,
-    probeServer,
     probeCapture,
     advance,
     finish,

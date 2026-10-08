@@ -12,8 +12,9 @@ export interface ProbeResult {
   message: string;
 }
 
-/** Wizard step identifiers — the state machine advances server→capture→inputGate→autoStart. */
-export type WizardStep = 'server' | 'capture' | 'inputGate' | 'autoStart';
+/** Wizard step identifiers — the state machine advances capture→inputGate→autoStart.
+ * The server step moved to `ServerSetupView` before login (ADR-66). */
+export type WizardStep = 'capture' | 'inputGate' | 'autoStart';
 
 /**
  * A registered device, mirroring the shared `Agent` projection
@@ -46,4 +47,12 @@ export interface DeviceSummary {
   platform: string | null;
   isOnline: boolean;
   createdAt: string;
+}
+
+/** Persisted desktop config as returned by the `get_config` command. */
+export interface AppConfig {
+  serverUrl: string | null;
+  allowInput: boolean;
+  theme: string | null;
+  hasServerUrl: boolean;
 }
