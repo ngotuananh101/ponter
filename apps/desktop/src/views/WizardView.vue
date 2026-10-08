@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue';
 import { useWizardStore } from '@/stores/wizard';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -9,13 +8,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2 } from '@lucide/vue';
 
 const store = useWizardStore();
-
-async function probeServer() {
-  const result = await store.probeServer();
-  if (result.ok) {
-    store.advance();
-  }
-}
 
 async function probeCapture() {
   const result = await store.probeCapture();
@@ -64,44 +56,8 @@ watch(
 
 <template>
   <div data-testid="wizard-root">
-    <!-- Step 1: Server -->
-    <div v-if="store.step === 'server'" data-testid="wizard-step-server">
-      <h1>Server Connection</h1>
-      <p data-testid="wizard-server-help">
-        Enter your Ponter server URL to verify connectivity.
-      </p>
-
-      <Label for="wizard-server-url-input" class="sr-only">Server URL</Label>
-      <Input
-        id="wizard-server-url-input"
-        type="url"
-        data-testid="wizard-server-url"
-        placeholder="http://localhost:8787"
-        v-model="store.serverUrl"
-      />
-
-      <Button
-        data-testid="wizard-probe-server"
-        :disabled="store.loading || !store.serverUrl"
-        @click="probeServer"
-      >
-        <Loader2 v-if="store.loading" class="mr-2 h-4 w-4 animate-spin" />
-        {{ store.loading ? 'Probing...' : 'Connect' }}
-      </Button>
-
-      <Alert
-        v-if="store.serverProbe && !store.serverProbe.ok"
-        data-testid="wizard-server-message"
-        variant="destructive"
-        role="alert"
-        aria-live="polite"
-      >
-        <AlertDescription>{{ store.serverProbe.message }}</AlertDescription>
-      </Alert>
-    </div>
-
-    <!-- Step 2: Capture -->
-    <div v-else-if="store.step === 'capture'" data-testid="wizard-step-capture">
+    <!-- Step 1: Capture -->
+    <div v-if="store.step === 'capture'" data-testid="wizard-step-capture">
       <h1>Screen Capture</h1>
       <p data-testid="wizard-capture-help">
         Grant screen-recording permission when prompted, then verify capture.
@@ -127,7 +83,7 @@ watch(
       </Alert>
     </div>
 
-    <!-- Step 3: Input Gate -->
+    <!-- Step 2: Input Gate -->
     <div
       v-else-if="store.step === 'inputGate'"
       data-testid="wizard-step-input-gate"
@@ -159,7 +115,7 @@ watch(
       </Button>
     </div>
 
-    <!-- Step 4: Auto-start -->
+    <!-- Step 3: Auto-start -->
     <div
       v-else-if="store.step === 'autoStart'"
       data-testid="wizard-step-auto-start"
