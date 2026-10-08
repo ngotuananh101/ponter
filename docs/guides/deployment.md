@@ -122,6 +122,18 @@ docker compose -f docker-compose.prod.yml up -d
 
 Caddy sẽ tự động yêu cầu chứng chỉ Let's Encrypt cho `DOMAIN`. Máy chủ Coturn sử dụng `TURN_SECRET` làm shared secret RFC 5766; endpoint `GET /api/webrtc/ice-servers` trên server sẽ tạo thông tin xác thực HMAC-SHA1 thời gian giới hạn cho mỗi người dùng.
 
+#### Chọn TURN provider
+
+Server chọn nhà cung cấp TURN qua biến `TURN_PROVIDER`:
+
+| Giá trị | Mô tả |
+|---|---|
+| `coturn` (mặc định) | Coturn tự host, thông tin xác thực RFC 5766 từ `TURN_SECRET` + `TURN_URL`. Giữ nguyên hành vi các phase trước. |
+| `cloudflare` | Cloudflare Calls TURN (hosted). Cần `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`. Server tự mint credential qua API Cloudflare và cache theo TTL. **Lưu ý:** media đi qua hạ tầng Cloudflare (bên thứ ba). Cloudflare miễn phí **1.000 GB egress/tháng đầu tiên** (dùng chung với các dịch vụ Realtime khác của Cloudflare), sau đó ~$0.05/GB egress; STUN `stun.cloudflare.com` miễn phí. Khác với mô hình tự host. |
+| `none` | Chỉ STUN, không relay. Peer sau symmetric NAT có thể không kết nối được. |
+
+Khi Cloudflare lỗi (thiếu config, non-2xx, lỗi mạng), server tự hạ cấp về STUN-only và ghi warning — kết nối không bị chặn.
+
 ---
 
 ## 3.1 Deploy phiên bản mới
@@ -279,6 +291,9 @@ pnpm --filter @ponter/web exec wrangler deploy
 | `TURN_URL` | Prod only | `turn:${DOMAIN}:3478` | TURN URL quảng bá cho clients. Ghi đè trong `.env` để dùng IP thay cho domain. |
 | `STUN_URL` | Prod only | `stun:${DOMAIN}:3478` | STUN URL quảng bá cho clients. Ghi đè trong `.env` để dùng IP thay cho domain. |
 | `DOMAIN` | Prod only | — | Domain công cộng cho Caddy TLS + TURN realm. |
+| `TURN_PROVIDER` | No | `coturn` | Nhà cung cấp TURN: `coturn` \| `cloudflare` \| `none`. |
+| `TURN_KEY_ID` | Cloudflare only | — | Cloudflare Calls TURN key ID. Bắt buộc khi `TURN_PROVIDER=cloudflare`. |
+| `TURN_KEY_API_TOKEN` | Cloudflare only | — | Cloudflare TURN API token (Bearer). Bắt buộc khi `TURN_PROVIDER=cloudflare`. |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
 | `VITE_API_URL` | Web only | `http://localhost:8787` | API URL cho web frontend. |
 | `VITE_BROWSER_WS_SIGNALING` | Web only | `false` | Bật signaling qua WebSocket (`/api/ws/browser`) thay vì REST poll. Build-time — rebuild để đổi. Xem [mục 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts). |
