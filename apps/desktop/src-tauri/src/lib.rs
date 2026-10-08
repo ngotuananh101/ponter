@@ -1,3 +1,4 @@
+pub mod autostart;
 pub mod commands;
 pub mod keychain;
 pub mod state;
@@ -26,6 +27,8 @@ pub fn run() {
             commands::devices::register_device,
             commands::devices::list_devices,
             commands::devices::delete_device,
+            autostart::set_autostart,
+            autostart::is_autostart_enabled,
         ])
         .setup(|app| {
             // The tray must not be able to prevent the window from opening.

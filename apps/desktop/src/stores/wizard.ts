@@ -7,6 +7,16 @@
  * Each step verifies real capability via Tauri commands before advancing.
  * `allow_input` defaults to `false` (ADR-42 Gate A) and is only flipped on
  * explicit user confirmation of the input-gate step.
+ *
+ * R11 (Task 8 flow fix): the `completed` flag is set ONLY in `complete()`
+ * (step 4), NOT in `finish()` (step 3). `finish()` persists settings and
+ * advances to `autoStart`; `complete()` applies the auto-start toggle and then
+ * marks the wizard complete. This makes step 4 reachable in the real app,
+ * since `App.vue` unmounts the wizard when `completed` is true.
+ *
+ * R12 (honesty): auto-start takes effect at the next login; the toggle
+ * reflects the real OS entry. macOS uses a LaunchAgent plist; Windows uses
+ * reg.exe. See task-8-brief.md R3/R12.
  */
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
@@ -33,9 +43,11 @@ export const useWizardStore = defineStore('wizard', () => {
   /** Whether any probe or save operation is in flight. */
   const loading = ref(false);
 
-  /** Informational auto-start preference (R6). State only — no OS side effect;
-   * the actual autostart wiring arrives in Task 8 (ADR-55). */
+  /** Auto-start preference — reflects the real OS entry (R11/R3). */
   const autoStart = ref(false);
+
+  /** Error surfaced from auto-start operations (R11). */
+  const autoStartError = ref<string | null>(null);
 
   const currentStepIndex = computed(() => {
     const order: WizardStep[] = ['server', 'capture', 'inputGate', 'autoStart'];
@@ -53,6 +65,7 @@ export const useWizardStore = defineStore('wizard', () => {
     captureProbe.value = null;
     allowInput.value = false;
     autoStart.value = false;
+    autoStartError.value = null;
     completed.value = false;
     loading.value = false;
   }
@@ -101,7 +114,8 @@ export const useWizardStore = defineStore('wizard', () => {
     }
   }
 
-  /** Persist verified settings to AppState and mark the wizard complete. */
+  /** Step 3 action: persist verified settings to AppState and advance to
+   * `autoStart`. Does NOT set `completed` — step 4 is the final step (R11). */
   async function finish(): Promise<void> {
     loading.value = true;
     try {
@@ -109,10 +123,49 @@ export const useWizardStore = defineStore('wizard', () => {
         serverUrl: serverUrl.value,
         allowInput: allowInput.value,
       });
+      advance();
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  /** Step 4 action: apply the auto-start toggle to the real OS entry, then
+   * mark the wizard complete (R11). */
+  async function complete(): Promise<void> {
+    loading.value = true;
+    autoStartError.value = null;
+    try {
+      await setAutoStart(autoStart.value);
       completed.value = true;
     } finally {
       loading.value = false;
     }
+  }
+
+  /** Apply the auto-start preference to the platform-native entry (R11/R3).
+   * Takes effect at the next login. Errors are surfaced via `autoStartError`
+   * and rethrown — never silently swallowed. The optimistic toggle is reverted
+   * so the checkbox never lies about the real OS state. */
+  async function setAutoStart(enabled: boolean): Promise<void> {
+    autoStart.value = enabled;
+    autoStartError.value = null;
+    try {
+      await invoke('set_autostart', { enabled });
+    } catch (e: unknown) {
+      // Revert the optimistic update so the checkbox reflects reality.
+      autoStart.value = !enabled;
+      const message = e instanceof Error ? e.message : String(e);
+      autoStartError.value =
+        message || 'Failed to update auto-start preference';
+      throw e;
+    }
+  }
+
+  /** Load the real auto-start state from the OS (R11/R3) so the toggle
+   * reflects the actual platform entry on mount. */
+  async function loadAutoStart(): Promise<void> {
+    const enabled = await invoke<boolean>('is_autostart_enabled');
+    autoStart.value = enabled;
   }
 
   return {
@@ -122,6 +175,7 @@ export const useWizardStore = defineStore('wizard', () => {
     captureProbe,
     allowInput,
     autoStart,
+    autoStartError,
     completed,
     loading,
     currentStepIndex,
@@ -131,5 +185,8 @@ export const useWizardStore = defineStore('wizard', () => {
     probeCapture,
     advance,
     finish,
+    complete,
+    setAutoStart,
+    loadAutoStart,
   };
 });
