@@ -80,15 +80,15 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 
 ### ADR-56: Packaging produces native installers per platform via Tauri bundler; CI builds all three
 
-- **Decision.** Tauri bundler produces: Linux `.deb` and `.AppImage`; macOS `.dmg` (universal or per-arch); Windows `.msi` (and/or NSIS `.exe`). A **new** `build-desktop.yml` workflow builds these on a matrix (`ubuntu-latest`, `macos-14`, `windows-latest`) and uploads them as artifacts, attaching them to a GitHub Release on tag.
+- **Decision.** Tauri bundler produces: Linux `.deb`, `.AppImage` (and `.rpm`); macOS `.dmg` (universal or per-arch); Windows `.msi` (and NSIS `.exe`). A **new** `build-desktop.yml` workflow builds these on a matrix (`ubuntu-latest`, `macos-14`, `windows-latest`) and uploads them as artifacts, attaching them to a GitHub Release on tag (or a non-dry-run manual dispatch). Signing is **build-only this phase** (PM decision #1): the macOS/Windows signing hooks are present but commented — installers ship unsigned.
 - **Why.** `build-agent.yml` is path-filtered to `apps/agent/**` and produces raw binaries, not installers; a desktop app needs its own workflow. The installers are the deliverable an operator actually installs.
-- **Note.** The webview assets are built by the existing Node/Vite toolchain; the desktop workflow installs pnpm + Rust + the Tauri system deps per OS.
+- **Note.** The webview assets are built by the existing Node/Vite toolchain; the desktop workflow installs pnpm + Rust + the Tauri system deps per OS. Shipped as `1c82218` (PR #64) — see the plan's "Correction (Task 9/10)" note.
 
 ### ADR-57: Auto-update uses the Tauri updater with a signed manifest on GitHub Releases
 
 - **Decision.** The app checks a Tauri updater endpoint (a static JSON manifest, e.g. `latest.json`, hosted on GitHub Releases) and updates in place when a newer signed version exists. Artifacts are signed with a Tauri updater keypair; the **public** key is compiled into the app, the **private** key is a CI secret used only at release time.
 - **Why.** Tauri's updater is the framework-native, signed, in-place update path; hosting the manifest on GitHub Releases reuses the release pipeline.
-- **Owner action required (blocking for L5):** generate the updater keypair (`tauri signer generate`) and add the private key + password as CI secrets. Without it, L5 cannot ship — this is a named dependency, not an implementation detail.
+- **Owner action (✅ DONE 2026-10-08):** the owner generated the updater keypair (`tauri signer generate`) and set the private key + password as CI secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — verified via `gh secret list`). Only the **public** key hand-off to the Task 11 implementer remains.
 
 ### ADR-58: Layered execution (L0-L5) with a stop-safe boundary at every layer
 
@@ -164,7 +164,7 @@ The owner asked for the dialog to be **wider horizontally** ("rộng thêm một
 2. **Agent refactor regressions.** Splitting a 3000-line `main.rs` can break subtle behaviour. **Mitigation:** move code without logic changes; keep `build-agent.yml` + E2E as the net; do the refactor as the first L1 task with tests green after every step. **Stop condition:** if the E2E or verify gate cannot be made green within the layer, revert the split and reconsider ADR-50.
 3. **macOS/Windows build + test cannot be verified locally.** The dev machine is Linux. **Mitigation:** CI matrix is the verification surface for those platforms; anything not CI-verifiable is documented as such. **Stop condition:** if a platform's build fails on CI and cannot be fixed in-layer, ship that platform as "build-only, not smoke-tested" with the limitation documented, rather than blocking the others.
 4. **Tauri system dependencies on Linux CI.** WebKitGTK/`libsoup` etc. must be installed in CI. **Mitigation:** follow Tauri's documented Linux deps; cache them.
-5. **Updater keypair is an owner dependency.** **Stop condition:** L5 does not start until the owner provides the updater signing key as a CI secret.
+5. **Updater keypair is an owner dependency (✅ resolved 2026-10-08).** The keypair exists and the private key + password are CI secrets. **Stop condition (narrowed):** L5 does not start until the **public** key is available to compile in; the secret side is done.
 6. **Wayland capture limitation is inherited.** The wizard must not promise Wayland capture parity. **Mitigation:** honest status text (ADR-53 step 2), consistent with the project's truthful-disclosure posture.
 
 ---
@@ -177,7 +177,7 @@ Per-layer, each gate is independently checkable:
 2. **L1:** `apps/agent` is lib+bin; `build-agent.yml` verify + E2E green; the Tauri app boots, logs in via `POST /api/auth/login`, and stores the refresh token in the OS keychain (verified: no secret in webview storage).
 3. **L2:** the wizard completes all four steps with verification; device registration creates an agent and the credential is in the keychain; the device list/delete view mirrors the web dashboard.
 4. **L3:** the tray shows connection state (a status menu item reflecting the runtime's real state) and controls start/stop; auto-start toggles the platform-native entry.
-5. **L4:** `build-desktop.yml` produces `.deb` + `.AppImage` (Linux), `.dmg` (macOS), `.msi` (Windows); artifacts attach to a release.
+5. **L4:** `build-desktop.yml` produces `.deb` + `.AppImage` (+ `.rpm`) (Linux), `.dmg` (macOS), `.msi` (+ NSIS `.exe`) (Windows); artifacts attach to a release.
 6. **L5:** the app detects and applies a signed update; the updater refuses an unsigned or older manifest (test-pinned).
 7. **Cross-cutting:** the dialog-width change (§5.1) is shipped and its test green; the full existing CI (Node, E2E, Sonar, agent) stays green.
 
