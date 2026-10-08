@@ -204,7 +204,7 @@ jobs:
           $bundle = "src-tauri\target\release\bundle"
           Write-Host "Bundle dir contents:"
           Get-ChildItem -Recurse -File $bundle | Format-Table FullName, Length
-          $found = Get-ChildItem -Recurse -File $bundle | Where-Object { $_.Extension -match '^(msi|exe)$' -and $_.Length -ge 10240 }
+          $found = Get-ChildItem -Recurse -File $bundle | Where-Object { $_.Extension -in '.msi', '.exe' -and $_.Length -ge 10240 }
           if (-not $found) {
             throw "No installer (.msi/.exe >= 10 KB) found in $bundle"
           }
