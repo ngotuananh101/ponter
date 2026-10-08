@@ -5,6 +5,8 @@
     "jsx": "preserve",
     "types": ["vite/client", "node"],
     "paths": {
+      "@/components/ui/*": ["../../packages/ui-components/src/components/ui/*"],
+      "@/lib/utils": ["../../packages/ui-components/src/lib/utils"],
       "@/*": ["./src/*"]
     }
   },
