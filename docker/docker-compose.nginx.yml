@@ -32,6 +32,9 @@ services:
       # not resolvable from every client network); they fall back to the domain.
       - TURN_URL=${TURN_URL:-turn:${DOMAIN}:3478}
       - STUN_URL=${STUN_URL:-stun:${DOMAIN}:3478}
+      - TURN_PROVIDER=${TURN_PROVIDER:-coturn}
+      - TURN_KEY_ID=${TURN_KEY_ID:-}
+      - TURN_KEY_API_TOKEN=${TURN_KEY_API_TOKEN:-}
     ports:
       # Bound to localhost so only host Nginx reverse proxy can reach it.
       - '127.0.0.1:8787:8787'

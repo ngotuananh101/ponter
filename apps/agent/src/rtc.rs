@@ -996,6 +996,36 @@ mod tests {
     }
 
     #[test]
+    fn cloudflare_style_turns_url_survives_the_mapping() {
+        // Cloudflare TURN returns `turns:` (TLS) URLs alongside `turn:` UDP/TCP.
+        // `is_unusable_turn_tcp` drops only `turn:` + `transport=tcp`, so a
+        // `turns:` URL must survive the mapping — otherwise the agent silently
+        // loses the one transport that works where UDP is blocked.
+        let entries = vec![IceServerEntry {
+            urls: vec![
+                "turn:turn.cloudflare.com:3478?transport=udp".to_string(),
+                "turn:turn.cloudflare.com:3478?transport=tcp".to_string(),
+                "turns:turn.cloudflare.com:5349?transport=tcp".to_string(),
+            ],
+            username: Some("cf-user".to_string()),
+            credential: Some("cf-cred".to_string()),
+        }];
+
+        let servers = ice_servers_from_entries(&entries);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(
+            servers[0].urls,
+            vec![
+                "turn:turn.cloudflare.com:3478?transport=udp".to_string(),
+                "turns:turn.cloudflare.com:5349?transport=tcp".to_string(),
+            ],
+            "TURN/TCP is dropped but the TLS `turns:` URL survives"
+        );
+        assert_eq!(servers[0].username, "cf-user");
+        assert_eq!(servers[0].credential, "cf-cred");
+    }
+
+    #[test]
     fn turn_tcp_urls_are_dropped_but_stun_and_turn_udp_survive() {
         // rtc 0.21's TURN relayer handles only `turn:` over UDP; every other
         // transport hits "Skipping unsupported non-UDP TURN url" and is

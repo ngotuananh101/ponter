@@ -795,7 +795,7 @@ export function createAgentWebSocketServer(): WebSocketServer {
       socket.send(
         JSON.stringify({
           type: 'ice-servers',
-          data: { iceServers: buildIceServers(userId) },
+          data: { iceServers: await buildIceServers(userId) },
         }),
       );
 
