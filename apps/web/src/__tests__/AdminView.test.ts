@@ -62,6 +62,26 @@ async function mountOnUsersTab() {
   return wrapper;
 }
 
+/**
+ * Shared helper for approve/reject tests: sets up the updateUser spy,
+ * mounts on the Users tab, and clicks the given action button.
+ * Returns the spy so each `it()` keeps its own `expect(updateSpy).toHaveBeenCalledWith(...)`.
+ */
+async function triggerUserAction(action: 'approve' | 'reject'): Promise<{
+  updateSpy: ReturnType<typeof vi.spyOn>;
+  wrapper: Awaited<ReturnType<typeof mountOnUsersTab>>;
+}> {
+  const updateSpy = vi.spyOn(apiClient.admin, 'updateUser').mockResolvedValue({
+    user: makeUser({
+      id: 'u1',
+      approvalStatus: action === 'approve' ? 'approved' : 'rejected',
+    }),
+  });
+  const wrapper = await mountOnUsersTab();
+  await wrapper.find(`[data-test="btn-${action}-u1"]`).trigger('click');
+  return { updateSpy, wrapper };
+}
+
 describe('AdminView', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -86,14 +106,7 @@ describe('AdminView', () => {
   });
 
   it('triggers approve user action', async () => {
-    const updateSpy = vi
-      .spyOn(apiClient.admin, 'updateUser')
-      .mockResolvedValue({
-        user: makeUser({ id: 'u1', approvalStatus: 'approved' }),
-      });
-    const wrapper = await mountOnUsersTab();
-
-    await wrapper.find('[data-test="btn-approve-u1"]').trigger('click');
+    const { updateSpy } = await triggerUserAction('approve');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
       approvalStatus: 'approved',
@@ -101,14 +114,7 @@ describe('AdminView', () => {
   });
 
   it('triggers reject user action', async () => {
-    const updateSpy = vi
-      .spyOn(apiClient.admin, 'updateUser')
-      .mockResolvedValue({
-        user: makeUser({ id: 'u1', approvalStatus: 'rejected' }),
-      });
-    const wrapper = await mountOnUsersTab();
-
-    await wrapper.find('[data-test="btn-reject-u1"]').trigger('click');
+    const { updateSpy } = await triggerUserAction('reject');
 
     expect(updateSpy).toHaveBeenCalledWith('u1', {
       approvalStatus: 'rejected',

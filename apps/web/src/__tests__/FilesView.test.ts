@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mount, flushPromises } from '@vue/test-utils';
-import { nextTick } from 'vue';
+import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import FilesView from '@/components/files/FilesView.vue';
 import { useTerminalStore } from '@/stores/terminal';
 import type { TabItem } from '@/stores/terminal';
 import type { RemoteFile } from '@ponter/shared';
 import type { TransferHandle } from '@ponter/file-core';
+import {
+  waitForOpen,
+  domSetValue,
+  domClick,
+  queryDialogAction,
+} from './utils/dialog-helpers';
 
 const entry = (overrides: Partial<RemoteFile> = {}): RemoteFile => ({
   name: 'notes.txt',
@@ -47,35 +52,40 @@ const mountFiles = (overrides: Partial<TabItem> = {}) =>
     attachTo: document.body,
   });
 
-/** Wait for reactivity to settle after opening a dialog. */
-async function waitForOpen(): Promise<void> {
-  for (let i = 0; i < 20; i++) {
-    await flushPromises();
-    await nextTick();
-    await new Promise((r) => setTimeout(r, 10));
+/**
+ * Mount FilesView attached to document.body (dialog content Teleports there),
+ * run `run` with the wrapper, then clean up.
+ */
+async function withDialog(
+  overrides: Partial<TabItem> = {},
+  run: (wrapper: ReturnType<typeof mount>) => Promise<void>,
+): Promise<void> {
+  const wrapper = mount(FilesView, {
+    props: { tab: filesTab(overrides) },
+    attachTo: document.body,
+  });
+  try {
+    await run(wrapper);
+  } finally {
+    wrapper.unmount();
+    document.body.innerHTML = '';
   }
 }
 
-/** Query document.body for dialog content (Teleport renders there by default). */
-function qbody(selector: string): HTMLElement | null {
-  return document.querySelector(selector);
+/**
+ * Fill a dialog input field.
+ * The null-guard lives inside `queryDialogAction`.
+ */
+async function fillDialogInput(selector: string, value: string): Promise<void> {
+  await domSetValue(queryDialogAction<HTMLInputElement>(selector), value);
 }
 
-/** Set value on a raw DOM input and trigger input + change events for v-model sync. */
-async function domSetValue(el: HTMLElement, value: string): Promise<void> {
-  const input = el as HTMLInputElement;
-  input.value = value;
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
-  await nextTick();
-  await new Promise((r) => setTimeout(r, 10));
-}
-
-/** Click a raw DOM element. */
-async function domClick(el: HTMLElement): Promise<void> {
-  el.click();
-  await nextTick();
-  await new Promise((r) => setTimeout(r, 10));
+/**
+ * Click a dialog action button.
+ * The null-guard lives inside `queryDialogAction`.
+ */
+async function clickDialogAction(selector: string): Promise<void> {
+  await domClick(queryDialogAction<HTMLElement>(selector));
 }
 
 describe('FilesView', () => {
@@ -285,91 +295,44 @@ describe('FilesView', () => {
     it('opens the New Folder dialog and confirms via store.filesMkdir', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      // No Teleport stub: content renders to document.body via reka-ui Portal
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-new-folder-btn"]')
           .trigger('click');
         await waitForOpen();
-
-        const input = qbody('[data-test="new-folder-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'NewDir');
-
-        const confirm = qbody(
-          '[data-test="new-folder-confirm"]',
-        ) as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
+        await fillDialogInput('[data-test="new-folder-input"]', 'NewDir');
+        await clickDialogAction('[data-test="new-folder-confirm"]');
         expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     it('attaches to the document body: confirm calls filesMkdir exactly once', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-new-folder-btn"]')
           .trigger('click');
         await waitForOpen();
-
-        const input = qbody('[data-test="new-folder-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'NewDir');
-
-        const confirm = qbody(
-          '[data-test="new-folder-confirm"]',
-        ) as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
+        await fillDialogInput('[data-test="new-folder-input"]', 'NewDir');
+        await clickDialogAction('[data-test="new-folder-confirm"]');
         expect(mkdir).toHaveBeenCalledTimes(1);
         expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     it('attaches to the document body: Cancel does not call filesMkdir', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-new-folder-btn"]')
           .trigger('click');
         await waitForOpen();
-
-        const input = qbody('[data-test="new-folder-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'NewDir');
-
-        const cancel = qbody('[data-test="new-folder-cancel"]') as HTMLElement;
-        expect(cancel).not.toBeNull();
-        await domClick(cancel);
-
+        await fillDialogInput('[data-test="new-folder-input"]', 'NewDir');
+        await clickDialogAction('[data-test="new-folder-cancel"]');
         expect(mkdir).not.toHaveBeenCalled();
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     // --- Rename Dialog tests (no Teleport stub = content on document.body) ---
@@ -377,137 +340,80 @@ describe('FilesView', () => {
     it('opens the Rename dialog from a row action and confirms', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-row-notes.txt"] .rename-action')
           .trigger('click');
         await waitForOpen();
-
-        const input = qbody('[data-test="rename-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'renamed.txt');
-
-        const confirm = qbody('[data-test="rename-confirm"]') as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
+        await fillDialogInput('[data-test="rename-input"]', 'renamed.txt');
+        await clickDialogAction('[data-test="rename-confirm"]');
         expect(rename).toHaveBeenCalledWith(
           'tab-f1',
           'notes.txt',
           'renamed.txt',
         );
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     it('preserves the subdirectory path when renaming a file in a subdirectory', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: {
-          tab: filesTab({
-            filesPath: 'docs/sub',
-            fileList: {
-              path: 'docs/sub',
-              entries: [
-                entry({ name: 'notes.txt', path: 'docs/sub/notes.txt' }),
-              ],
-              truncated: false,
-            },
-          }),
+      await withDialog(
+        {
+          filesPath: 'docs/sub',
+          fileList: {
+            path: 'docs/sub',
+            entries: [entry({ name: 'notes.txt', path: 'docs/sub/notes.txt' })],
+            truncated: false,
+          },
         },
-        attachTo: document.body,
-      });
-      try {
-        await wrapper
-          .find('[data-test="files-row-notes.txt"] .rename-action')
-          .trigger('click');
-        await waitForOpen();
-
-        const input = qbody('[data-test="rename-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'renamed.txt');
-
-        const confirm = qbody('[data-test="rename-confirm"]') as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
-        expect(rename).toHaveBeenCalledWith(
-          'tab-f1',
-          'docs/sub/notes.txt',
-          'docs/sub/renamed.txt',
-        );
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+        async (wrapper) => {
+          await wrapper
+            .find('[data-test="files-row-notes.txt"] .rename-action')
+            .trigger('click');
+          await waitForOpen();
+          await fillDialogInput('[data-test="rename-input"]', 'renamed.txt');
+          await clickDialogAction('[data-test="rename-confirm"]');
+          expect(rename).toHaveBeenCalledWith(
+            'tab-f1',
+            'docs/sub/notes.txt',
+            'docs/sub/renamed.txt',
+          );
+        },
+      );
     });
 
     it('attaches to the document body: Rename confirm calls filesRename exactly once', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-row-notes.txt"] .rename-action')
           .trigger('click');
         await waitForOpen();
-
-        const input = qbody('[data-test="rename-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'renamed.txt');
-
-        const confirm = qbody('[data-test="rename-confirm"]') as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
+        await fillDialogInput('[data-test="rename-input"]', 'renamed.txt');
+        await clickDialogAction('[data-test="rename-confirm"]');
         expect(rename).toHaveBeenCalledTimes(1);
         expect(rename).toHaveBeenCalledWith(
           'tab-f1',
           'notes.txt',
           'renamed.txt',
         );
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     it('attaches to the document body: Rename Cancel does not call filesRename', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-row-notes.txt"] .rename-action')
           .trigger('click');
         await waitForOpen();
-
-        const input = qbody('[data-test="rename-input"]') as HTMLElement;
-        expect(input).not.toBeNull();
-        await domSetValue(input, 'renamed.txt');
-
-        const cancel = qbody('[data-test="rename-cancel"]') as HTMLElement;
-        expect(cancel).not.toBeNull();
-        await domClick(cancel);
-
+        await fillDialogInput('[data-test="rename-input"]', 'renamed.txt');
+        await clickDialogAction('[data-test="rename-cancel"]');
         expect(rename).not.toHaveBeenCalled();
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     // --- Delete Confirm Dialog tests (no Teleport stub = content on document.body) ---
@@ -515,49 +421,27 @@ describe('FilesView', () => {
     it('opens the Delete confirmation dialog from a row action', async () => {
       const store = useTerminalStore();
       const del = vi.spyOn(store, 'filesDelete').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-row-notes.txt"] .delete-action')
           .trigger('click');
         await waitForOpen();
-
-        const confirm = qbody('[data-test="delete-confirm"]') as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
+        await clickDialogAction('[data-test="delete-confirm"]');
         expect(del).toHaveBeenCalledWith('tab-f1', 'notes.txt', false);
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     it('deletes a directory with recursive=true from the confirm dialog', async () => {
       const store = useTerminalStore();
       const del = vi.spyOn(store, 'filesDelete').mockResolvedValue();
-      const wrapper = mount(FilesView, {
-        props: { tab: filesTab() },
-        attachTo: document.body,
-      });
-      try {
+      await withDialog({}, async (wrapper) => {
         await wrapper
           .find('[data-test="files-row-docs"] .delete-action')
           .trigger('click');
         await waitForOpen();
-
-        const confirm = qbody('[data-test="delete-confirm"]') as HTMLElement;
-        expect(confirm).not.toBeNull();
-        await domClick(confirm);
-
+        await clickDialogAction('[data-test="delete-confirm"]');
         expect(del).toHaveBeenCalledWith('tab-f1', 'docs', true);
-      } finally {
-        wrapper.unmount();
-        document.body.innerHTML = '';
-      }
+      });
     });
 
     // --- Transfer Drawer tests (Teleport stubbed = in-place rendering) ---
