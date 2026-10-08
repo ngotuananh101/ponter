@@ -1,6 +1,6 @@
 # Phase 8: Open-Source Self-Build Enablement + Provider-Selectable TURN — Design Spec
 
-- **Status:** Draft (owner-approved design 2026-10-08; spec pending review)
+- **Status:** Approved (owner 2026-10-08); implemented/merged — 8a PR #69 `6a568c0`, 8b PR #70 `1ebda79`; plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`
 - **Phase:** 8 (roadmap continuation after Phase 7; `docs/ARCHITECTURE.md` §8)
 - **Owner decisions (2026-10-08):**
   - Ponter is **open source (MIT)**; third parties can **clone, build, and self-host** it.
