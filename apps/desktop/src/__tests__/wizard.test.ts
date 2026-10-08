@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/core', () => {
 
 import { invoke } from '@tauri-apps/api/core';
 import { useWizardStore } from '@/stores/wizard';
+import { useConfigStore } from '@/stores/config';
 import WizardView from '@/views/WizardView.vue';
 
 const okProbe = { ok: true, message: 'OK' };
@@ -25,9 +26,12 @@ describe('wizard store', () => {
     vi.mocked(invoke).mockReset();
   });
 
-  it('defaults allow_input to false (Gate A)', () => {
+  it('defaults step and completed (Gate A lives in config store)', () => {
     const store = useWizardStore();
-    expect(store.allowInput).toBe(false);
+    const config = useConfigStore();
+    // The wizard store no longer owns allowInput — the config store is the
+    // single source of truth for the ADR-42 Gate A preference.
+    expect(config.allowInput).toBe(false);
     expect(store.step).toBe('capture');
     expect(store.completed).toBe(false);
     expect(store.autoStart).toBe(false);
@@ -70,17 +74,20 @@ describe('wizard store', () => {
 
   it('sets allowInput when toggled on the input-gate step', async () => {
     const store = useWizardStore();
+    const config = useConfigStore();
     // Fast-forward to inputGate with probes.
     store.captureProbe = okProbe;
     store.advance(); // capture → inputGate
 
-    expect(store.allowInput).toBe(false);
+    expect(config.allowInput).toBe(false);
 
+    // The checkbox binds to the config store (single source of truth).
+    config.allowInput = true;
     vi.mocked(invoke).mockResolvedValue(undefined);
     await store.finish();
     expect(invoke).toHaveBeenCalledWith('save_config', {
       serverUrl: null,
-      allowInput: false,
+      allowInput: true,
       theme: null,
     });
     // finish() advances to autoStart but does NOT set completed (R11).
@@ -90,11 +97,12 @@ describe('wizard store', () => {
 
   it('finish() calls save_config and advances to autoStart', async () => {
     const store = useWizardStore();
+    const config = useConfigStore();
     // Fast-forward to inputGate with probes.
     store.captureProbe = okProbe;
     store.advance(); // capture → inputGate
 
-    store.allowInput = true;
+    config.allowInput = true;
 
     vi.mocked(invoke).mockResolvedValue(undefined);
     await store.finish();
@@ -201,7 +209,6 @@ describe('wizard store', () => {
 
   it('reset clears all state including autoStart', () => {
     const store = useWizardStore();
-    store.allowInput = true;
     store.autoStart = true;
     store.captureProbe = okProbe;
     store.advance();
@@ -210,7 +217,6 @@ describe('wizard store', () => {
 
     store.reset();
     expect(store.step).toBe('capture');
-    expect(store.allowInput).toBe(false);
     expect(store.autoStart).toBe(false);
     expect(store.captureProbe).toBeNull();
     expect(store.completed).toBe(false);
@@ -259,9 +265,21 @@ describe('WizardView', () => {
     const wrapper = mount(WizardView);
     const store = useWizardStore();
 
-    vi.mocked(invoke)
-      .mockResolvedValueOnce({ ok: true, message: 'Captured 1920×1080' })
-      .mockResolvedValueOnce(undefined); // save_config
+    // The inputGate watcher now calls config.load() → invoke('get_config'), so
+    // use a command-keyed mockImplementation instead of a positional
+    // mockResolvedValueOnce chain (order-independent).
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'probe_capture')
+        return Promise.resolve({ ok: true, message: 'Captured 1920×1080' });
+      if (cmd === 'get_config')
+        return Promise.resolve({
+          serverUrl: null,
+          allowInput: false,
+          theme: null,
+          hasServerUrl: false,
+        });
+      return Promise.resolve(undefined); // save_config, is_autostart_enabled, …
+    });
 
     await wrapper.find('[data-testid="wizard-probe-capture"]').trigger('click');
     await flushPromises();
@@ -290,6 +308,50 @@ describe('WizardView', () => {
     expect(
       wrapper.find('[data-testid="wizard-autostart-finish"]').exists(),
     ).toBe(true);
+  });
+
+  it('input-gate choice survives a theme toggle (F1 regression)', async () => {
+    const wrapper = mount(WizardView);
+    const store = useWizardStore();
+    const config = useConfigStore();
+
+    // Command-keyed mock so the inputGate watcher's get_config load is order-independent.
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'get_config')
+        return Promise.resolve({
+          serverUrl: null,
+          allowInput: false,
+          theme: null,
+          hasServerUrl: false,
+        });
+      return Promise.resolve(undefined); // save_config, …
+    });
+
+    // Enter the input-gate step; let the seed watcher's load() settle.
+    store.step = 'inputGate';
+    await nextTick();
+    await flushPromises();
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    // The checkbox MUST bind to the config store (single source of truth).
+    await wrapper
+      .find('[data-testid="wizard-input-checkbox"]')
+      .trigger('click');
+    await flushPromises();
+    expect(config.allowInput).toBe(true);
+
+    await wrapper.find('[data-testid="wizard-finish"]').trigger('click');
+    await flushPromises();
+
+    // A later theme toggle re-saves the whole config; it must carry the SAME
+    // allowInput (true) — the gate must not silently close.
+    vi.mocked(invoke).mockClear();
+    await config.setTheme('dark');
+    expect(invoke).toHaveBeenCalledWith('save_config', {
+      serverUrl: null,
+      allowInput: true,
+      theme: 'dark',
+    });
   });
 
   it('autoStart checkbox toggle calls set_autostart', async () => {

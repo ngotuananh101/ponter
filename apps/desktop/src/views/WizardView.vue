@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { watch } from 'vue';
 import { useWizardStore } from '@/stores/wizard';
+import { useConfigStore } from '@/stores/config';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -8,6 +9,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2 } from '@lucide/vue';
 
 const store = useWizardStore();
+const config = useConfigStore();
 
 async function probeCapture() {
   const result = await store.probeCapture();
@@ -47,6 +49,20 @@ watch(
     if (newStep === 'autoStart') {
       store.loadAutoStart().catch(() => {
         /* error surfaced via autoStartError */
+      });
+    }
+  },
+  { immediate: true },
+);
+
+/** Seed the input-gate checkbox from the persisted config when the step
+ * becomes active, so a previously-saved choice survives a restart. */
+watch(
+  () => store.step,
+  (newStep) => {
+    if (newStep === 'inputGate') {
+      config.load().catch(() => {
+        /* ignore — the checkbox keeps its current value */
       });
     }
   },
@@ -101,7 +117,7 @@ watch(
       <Checkbox
         id="wizard-input-checkbox"
         data-testid="wizard-input-checkbox"
-        v-model="store.allowInput"
+        v-model="config.allowInput"
         aria-label="Allow remote input"
       />
 

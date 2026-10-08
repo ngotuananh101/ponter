@@ -25,6 +25,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ProbeResult, WizardStep } from '@/types';
+import { useConfigStore } from '@/stores/config';
 
 export const useWizardStore = defineStore('wizard', () => {
   /** Current state-machine step. */
@@ -32,9 +33,6 @@ export const useWizardStore = defineStore('wizard', () => {
 
   /** Latest probe result for each step — surfaced in the UI. */
   const captureProbe = ref<ProbeResult | null>(null);
-
-  /** Input gate preference — default closed (ADR-42). */
-  const allowInput = ref(false);
 
   /** Whether the wizard has completed and settings were saved. */
   const completed = ref(false);
@@ -60,7 +58,6 @@ export const useWizardStore = defineStore('wizard', () => {
   function reset(): void {
     step.value = 'capture';
     captureProbe.value = null;
-    allowInput.value = false;
     autoStart.value = false;
     autoStartError.value = null;
     completed.value = false;
@@ -93,16 +90,13 @@ export const useWizardStore = defineStore('wizard', () => {
     }
   }
 
-  /** Step 3 action: persist the input-gate preference and advance to
-   * `autoStart`. Does NOT set `completed` — step 4 is the final step (R11). */
+  /** Step 3 action: persist the input-gate preference (the config store owns
+   * `allowInput`) and advance to `autoStart`. Does NOT set `completed` —
+   * step 4 is the final step (R11). */
   async function finish(): Promise<void> {
     loading.value = true;
     try {
-      await invoke('save_config', {
-        serverUrl: null,
-        allowInput: allowInput.value,
-        theme: null,
-      });
+      await useConfigStore().setAllowInput(useConfigStore().allowInput);
       advance();
     } finally {
       loading.value = false;
@@ -151,7 +145,6 @@ export const useWizardStore = defineStore('wizard', () => {
   return {
     step,
     captureProbe,
-    allowInput,
     autoStart,
     autoStartError,
     completed,
