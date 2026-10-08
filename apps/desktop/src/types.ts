@@ -47,3 +47,11 @@ export interface DeviceSummary {
   isOnline: boolean;
   createdAt: string;
 }
+
+/** Persisted desktop config as returned by the `get_config` command. */
+export interface AppConfig {
+  serverUrl: string | null;
+  allowInput: boolean;
+  theme: string | null;
+  hasServerUrl: boolean;
+}
