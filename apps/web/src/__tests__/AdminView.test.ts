@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import AdminView from '@/views/AdminView.vue';
 import { apiClient } from '@/services/client';
@@ -47,7 +48,9 @@ function makeUser(overrides: Partial<User> = {}): User {
 
 /** Mount AdminView with the default mocked admin API and settle initial loads. */
 async function mountAdminView() {
-  const wrapper = mount(AdminView);
+  const wrapper = mount(AdminView, {
+    attachTo: document.body,
+  });
   await flushPromises();
   return wrapper;
 }
@@ -124,8 +127,8 @@ describe('AdminView', () => {
     await flushPromises();
 
     const regInput = wrapper.find('[data-test="settings-allow-registration"]');
-    expect(regInput.element).toBeInstanceOf(HTMLInputElement);
-    await regInput.setValue(false);
+    await regInput.trigger('click');
+    await flushPromises();
 
     await wrapper.find('[data-test="btn-save-settings"]').trigger('click');
     await flushPromises();
@@ -148,13 +151,21 @@ describe('AdminView', () => {
       users: [makeUser({ id: 'u1', role: 'admin' })],
       total: 1,
     });
-    vi.stubGlobal('confirm', () => true);
-
     const wrapper = await mountAdminView();
     await wrapper.find('[data-test="tab-users"]').trigger('click');
     await flushPromises();
 
     await wrapper.find('[data-test="btn-demote-u1"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Confirm the AlertDialog action (content is Teleported to document.body)
+    const confirmBtn = document.querySelector(
+      '[data-slot="alert-dialog-action"]',
+    ) as HTMLElement;
+    expect(confirmBtn).not.toBeNull();
+    await confirmBtn.click();
     await flushPromises();
 
     expect(toast.error).toHaveBeenCalledWith('Cannot demote the last admin');

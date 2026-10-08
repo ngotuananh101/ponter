@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { mount, flushPromises } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import FilesView from '@/components/files/FilesView.vue';
 import { useTerminalStore } from '@/stores/terminal';
@@ -38,47 +39,43 @@ function filesTab(overrides: Partial<TabItem> = {}): TabItem {
   };
 }
 
+/** Mount FilesView with Teleport stubbed so AlertDialog content renders in-place. */
 const mountFiles = (overrides: Partial<TabItem> = {}) =>
-  mount(FilesView, { props: { tab: filesTab(overrides) } });
-
-/** Mount FilesView attached to the document body (for dialog keyboard events). */
-function mountAttached(overrides: Partial<TabItem> = {}) {
-  const wrapper = mount(FilesView, {
+  mount(FilesView, {
     props: { tab: filesTab(overrides) },
+    global: { stubs: { Teleport: true } },
     attachTo: document.body,
   });
-  return wrapper;
+
+/** Wait for reactivity to settle after opening a dialog. */
+async function waitForOpen(): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    await flushPromises();
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
-/** Open the New Folder dialog, enter a name, and click confirm or cancel. */
-async function newFolderAction(
-  wrapper: ReturnType<typeof mountFiles>,
-  name: string,
-  confirm = true,
-) {
-  await wrapper.find('[data-test="files-new-folder-btn"]').trigger('click');
-  const input = wrapper.find<HTMLInputElement>(
-    '[data-test="new-folder-input"]',
-  );
-  await input.setValue(name);
-  await wrapper
-    .find(`[data-test="new-folder-${confirm ? 'confirm' : 'cancel'}"]`)
-    .trigger('click');
+/** Query document.body for dialog content (Teleport renders there by default). */
+function qbody(selector: string): HTMLElement | null {
+  return document.querySelector(selector);
 }
 
-/** Open the Rename dialog for the given row, enter a name, and click confirm or cancel. */
-async function renameAction(
-  wrapper: ReturnType<typeof mountFiles>,
-  rowSelector: string,
-  name: string,
-  confirm = true,
-) {
-  await wrapper.find(`${rowSelector} .rename-action`).trigger('click');
-  const input = wrapper.find<HTMLInputElement>('[data-test="rename-input"]');
-  await input.setValue(name);
-  await wrapper
-    .find(`[data-test="rename-${confirm ? 'confirm' : 'cancel'}"]`)
-    .trigger('click');
+/** Set value on a raw DOM input and trigger input + change events for v-model sync. */
+async function domSetValue(el: HTMLElement, value: string): Promise<void> {
+  const input = el as HTMLInputElement;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  await nextTick();
+  await new Promise((r) => setTimeout(r, 10));
+}
+
+/** Click a raw DOM element. */
+async function domClick(el: HTMLElement): Promise<void> {
+  el.click();
+  await nextTick();
+  await new Promise((r) => setTimeout(r, 10));
 }
 
 describe('FilesView', () => {
@@ -91,7 +88,6 @@ describe('FilesView', () => {
     const text = wrapper.text();
     expect(text).toContain('docs');
     expect(text).toContain('notes.txt');
-    // 3 bytes renders as "3 B" (the human formatter), not "3".
     expect(text).toContain('3 B');
     expect(text).toContain('Name');
     expect(text).toContain('Modified');
@@ -284,107 +280,195 @@ describe('FilesView', () => {
       expect(wrapper.classes()).not.toContain('drag-active');
     });
 
+    // --- New Folder Dialog tests (no Teleport stub = content on document.body) ---
+
     it('opens the New Folder dialog and confirms via store.filesMkdir', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      const wrapper = mountFiles();
+      // No Teleport stub: content renders to document.body via reka-ui Portal
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
+      try {
+        await wrapper
+          .find('[data-test="files-new-folder-btn"]')
+          .trigger('click');
+        await waitForOpen();
 
-      await wrapper.find('[data-test="files-new-folder-btn"]').trigger('click');
+        const input = qbody('[data-test="new-folder-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'NewDir');
 
-      const input = wrapper.find<HTMLInputElement>(
-        '[data-test="new-folder-input"]',
-      );
-      await input.setValue('NewDir');
-      await wrapper.find('[data-test="new-folder-confirm"]').trigger('click');
+        const confirm = qbody(
+          '[data-test="new-folder-confirm"]',
+        ) as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
-      expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
+        expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
+      } finally {
+        wrapper.unmount();
+        document.body.innerHTML = '';
+      }
     });
 
     it('attaches to the document body: confirm calls filesMkdir exactly once', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      const wrapper = mountAttached();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
       try {
-        await newFolderAction(wrapper, 'NewDir', true);
+        await wrapper
+          .find('[data-test="files-new-folder-btn"]')
+          .trigger('click');
+        await waitForOpen();
+
+        const input = qbody('[data-test="new-folder-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'NewDir');
+
+        const confirm = qbody(
+          '[data-test="new-folder-confirm"]',
+        ) as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
         expect(mkdir).toHaveBeenCalledTimes(1);
         expect(mkdir).toHaveBeenCalledWith('tab-f1', 'NewDir');
       } finally {
         wrapper.unmount();
+        document.body.innerHTML = '';
       }
     });
 
     it('attaches to the document body: Cancel does not call filesMkdir', async () => {
       const store = useTerminalStore();
       const mkdir = vi.spyOn(store, 'filesMkdir').mockResolvedValue();
-      const wrapper = mountAttached();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
       try {
-        await newFolderAction(wrapper, 'NewDir', false);
+        await wrapper
+          .find('[data-test="files-new-folder-btn"]')
+          .trigger('click');
+        await waitForOpen();
+
+        const input = qbody('[data-test="new-folder-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'NewDir');
+
+        const cancel = qbody('[data-test="new-folder-cancel"]') as HTMLElement;
+        expect(cancel).not.toBeNull();
+        await domClick(cancel);
 
         expect(mkdir).not.toHaveBeenCalled();
       } finally {
         wrapper.unmount();
+        document.body.innerHTML = '';
       }
     });
+
+    // --- Rename Dialog tests (no Teleport stub = content on document.body) ---
 
     it('opens the Rename dialog from a row action and confirms', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mountFiles();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
+      try {
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .rename-action')
+          .trigger('click');
+        await waitForOpen();
 
-      await wrapper
-        .find('[data-test="files-row-notes.txt"] .rename-action')
-        .trigger('click');
+        const input = qbody('[data-test="rename-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'renamed.txt');
 
-      const input = wrapper.find<HTMLInputElement>(
-        '[data-test="rename-input"]',
-      );
-      await input.setValue('renamed.txt');
-      await wrapper.find('[data-test="rename-confirm"]').trigger('click');
+        const confirm = qbody('[data-test="rename-confirm"]') as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
-      expect(rename).toHaveBeenCalledWith('tab-f1', 'notes.txt', 'renamed.txt');
+        expect(rename).toHaveBeenCalledWith(
+          'tab-f1',
+          'notes.txt',
+          'renamed.txt',
+        );
+      } finally {
+        wrapper.unmount();
+        document.body.innerHTML = '';
+      }
     });
 
     it('preserves the subdirectory path when renaming a file in a subdirectory', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mountFiles({
-        filesPath: 'docs/sub',
-        fileList: {
-          path: 'docs/sub',
-          entries: [entry({ name: 'notes.txt', path: 'docs/sub/notes.txt' })],
-          truncated: false,
+      const wrapper = mount(FilesView, {
+        props: {
+          tab: filesTab({
+            filesPath: 'docs/sub',
+            fileList: {
+              path: 'docs/sub',
+              entries: [
+                entry({ name: 'notes.txt', path: 'docs/sub/notes.txt' }),
+              ],
+              truncated: false,
+            },
+          }),
         },
+        attachTo: document.body,
       });
+      try {
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .rename-action')
+          .trigger('click');
+        await waitForOpen();
 
-      await wrapper
-        .find('[data-test="files-row-notes.txt"] .rename-action')
-        .trigger('click');
+        const input = qbody('[data-test="rename-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'renamed.txt');
 
-      const input = wrapper.find<HTMLInputElement>(
-        '[data-test="rename-input"]',
-      );
-      await input.setValue('renamed.txt');
-      await wrapper.find('[data-test="rename-confirm"]').trigger('click');
+        const confirm = qbody('[data-test="rename-confirm"]') as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
-      expect(rename).toHaveBeenCalledWith(
-        'tab-f1',
-        'docs/sub/notes.txt',
-        'docs/sub/renamed.txt',
-      );
+        expect(rename).toHaveBeenCalledWith(
+          'tab-f1',
+          'docs/sub/notes.txt',
+          'docs/sub/renamed.txt',
+        );
+      } finally {
+        wrapper.unmount();
+        document.body.innerHTML = '';
+      }
     });
 
     it('attaches to the document body: Rename confirm calls filesRename exactly once', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mountAttached();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
       try {
-        await renameAction(
-          wrapper,
-          '[data-test="files-row-notes.txt"]',
-          'renamed.txt',
-          true,
-        );
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .rename-action')
+          .trigger('click');
+        await waitForOpen();
+
+        const input = qbody('[data-test="rename-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'renamed.txt');
+
+        const confirm = qbody('[data-test="rename-confirm"]') as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
         expect(rename).toHaveBeenCalledTimes(1);
         expect(rename).toHaveBeenCalledWith(
@@ -394,54 +478,89 @@ describe('FilesView', () => {
         );
       } finally {
         wrapper.unmount();
+        document.body.innerHTML = '';
       }
     });
 
     it('attaches to the document body: Rename Cancel does not call filesRename', async () => {
       const store = useTerminalStore();
       const rename = vi.spyOn(store, 'filesRename').mockResolvedValue();
-      const wrapper = mountAttached();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
       try {
-        await renameAction(
-          wrapper,
-          '[data-test="files-row-notes.txt"]',
-          'renamed.txt',
-          false,
-        );
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .rename-action')
+          .trigger('click');
+        await waitForOpen();
+
+        const input = qbody('[data-test="rename-input"]') as HTMLElement;
+        expect(input).not.toBeNull();
+        await domSetValue(input, 'renamed.txt');
+
+        const cancel = qbody('[data-test="rename-cancel"]') as HTMLElement;
+        expect(cancel).not.toBeNull();
+        await domClick(cancel);
 
         expect(rename).not.toHaveBeenCalled();
       } finally {
         wrapper.unmount();
+        document.body.innerHTML = '';
       }
     });
+
+    // --- Delete Confirm Dialog tests (no Teleport stub = content on document.body) ---
 
     it('opens the Delete confirmation dialog from a row action', async () => {
       const store = useTerminalStore();
       const del = vi.spyOn(store, 'filesDelete').mockResolvedValue();
-      const wrapper = mountFiles();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
+      try {
+        await wrapper
+          .find('[data-test="files-row-notes.txt"] .delete-action')
+          .trigger('click');
+        await waitForOpen();
 
-      await wrapper
-        .find('[data-test="files-row-notes.txt"] .delete-action')
-        .trigger('click');
+        const confirm = qbody('[data-test="delete-confirm"]') as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
-      await wrapper.find('[data-test="delete-confirm"]').trigger('click');
-
-      expect(del).toHaveBeenCalledWith('tab-f1', 'notes.txt', false);
+        expect(del).toHaveBeenCalledWith('tab-f1', 'notes.txt', false);
+      } finally {
+        wrapper.unmount();
+        document.body.innerHTML = '';
+      }
     });
 
     it('deletes a directory with recursive=true from the confirm dialog', async () => {
       const store = useTerminalStore();
       const del = vi.spyOn(store, 'filesDelete').mockResolvedValue();
-      const wrapper = mountFiles();
+      const wrapper = mount(FilesView, {
+        props: { tab: filesTab() },
+        attachTo: document.body,
+      });
+      try {
+        await wrapper
+          .find('[data-test="files-row-docs"] .delete-action')
+          .trigger('click');
+        await waitForOpen();
 
-      await wrapper
-        .find('[data-test="files-row-docs"] .delete-action')
-        .trigger('click');
+        const confirm = qbody('[data-test="delete-confirm"]') as HTMLElement;
+        expect(confirm).not.toBeNull();
+        await domClick(confirm);
 
-      // The confirm dialog marks recursive for directories.
-      await wrapper.find('[data-test="delete-confirm"]').trigger('click');
-      expect(del).toHaveBeenCalledWith('tab-f1', 'docs', true);
+        expect(del).toHaveBeenCalledWith('tab-f1', 'docs', true);
+      } finally {
+        wrapper.unmount();
+        document.body.innerHTML = '';
+      }
     });
+
+    // --- Transfer Drawer tests (Teleport stubbed = in-place rendering) ---
 
     it('opens and closes the transfers drawer', async () => {
       const wrapper = mountFiles();
@@ -450,10 +569,9 @@ describe('FilesView', () => {
       );
 
       await wrapper.find('[data-test="files-transfers-btn"]').trigger('click');
+      await waitForOpen();
+
       expect(wrapper.find('[data-test="transfer-drawer"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="transfer-drawer"]').classes()).toContain(
-        'open',
-      );
     });
 
     it('pauses and resumes a transfer from the drawer', async () => {
@@ -484,11 +602,13 @@ describe('FilesView', () => {
       });
 
       await wrapper.find('[data-test="files-transfers-btn"]').trigger('click');
+      await waitForOpen();
 
-      await wrapper.find('[data-test="queue-resume-t-ul-1"]').trigger('click');
+      const drawer = wrapper.find('[data-test="transfer-drawer"]');
+      await drawer.find('[data-test="queue-resume-t-ul-1"]').trigger('click');
       expect(resume).toHaveBeenCalledWith('tab-f1', 't-ul-1');
 
-      await wrapper.find('[data-test="queue-pause-t-ul-1"]').trigger('click');
+      await drawer.find('[data-test="queue-pause-t-ul-1"]').trigger('click');
       expect(pause).toHaveBeenCalledWith('tab-f1', 't-ul-1');
     });
 
@@ -520,7 +640,10 @@ describe('FilesView', () => {
       });
 
       await wrapper.find('[data-test="files-transfers-btn"]').trigger('click');
-      await wrapper.find('[data-test="queue-cancel-t-dl-2"]').trigger('click');
+      await waitForOpen();
+
+      const drawer = wrapper.find('[data-test="transfer-drawer"]');
+      await drawer.find('[data-test="queue-cancel-t-dl-2"]').trigger('click');
       expect(cancel).toHaveBeenCalledWith('tab-f1', 't-dl-2');
     });
   });

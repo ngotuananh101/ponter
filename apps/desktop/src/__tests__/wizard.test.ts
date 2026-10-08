@@ -392,7 +392,11 @@ describe('WizardView', () => {
     await nextTick();
 
     // Check the input checkbox and click Continue (finish)
-    await wrapper.find('[data-testid="wizard-input-checkbox"]').setValue(true);
+    await wrapper
+      .find('[data-testid="wizard-input-checkbox"]')
+      .trigger('click');
+    await flushPromises();
+    await nextTick();
     await wrapper.find('[data-testid="wizard-finish"]').trigger('click');
     await flushPromises();
     await nextTick();
@@ -420,8 +424,9 @@ describe('WizardView', () => {
 
     vi.mocked(invoke).mockResolvedValue(undefined);
     const checkbox = wrapper.find('[data-testid="wizard-autostart-checkbox"]');
-    await checkbox.setValue(true);
+    await checkbox.trigger('click');
     await flushPromises();
+    await nextTick();
     expect(invoke).toHaveBeenCalledWith('set_autostart', { enabled: true });
   });
 
