@@ -62,7 +62,7 @@ from a four-level precedence chain:
 4. Fallback `http://localhost:8787`
 
 See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
-for the full precedence table and usage notes.
+for the full precedence order and usage notes.
 
 ## Configuration
 
