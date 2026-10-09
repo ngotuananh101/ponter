@@ -1894,7 +1894,7 @@ git commit -m "test(e2e): pin the input gate (closed = dropped, open = injected 
 ### Task 7: `docs/ARCHITECTURE.md` reconciliation, ADR-18 superseded note, and the recorded demo (D7/D8)
 
 **Files:**
-- Modify: `docs/ARCHITECTURE.md` (§8 roadmap `:949-951`, the "Còn lại (Tuần 9 — Spec B)" block)
+- Modify: `docs/ARCHITECTURE.md` (§8 roadmap `:949-951`, the "Remaining (Week 9 — Spec B)" block)
 - Modify: `docs/superpowers/specs/2026-10-01-phase3-week7-desktop-streaming-design.md` (ADR-18, `:163-170` — superseded note)
 - Create: `docs/superpowers/specs/2026-10-03-phase3-week9-demo.md` (the recorded demo's checklist and results)
 - Modify: (none otherwise — this task runs the gates and records outcomes)
@@ -1903,24 +1903,24 @@ git commit -m "test(e2e): pin the input gate (closed = dropped, open = injected 
 - Consumes: every artifact from Tasks 1–6.
 - Produces: the reconciled `ARCHITECTURE.md`, the ADR-18 superseded note, the demo record, the PR.
 
-> **Language.** `docs/ARCHITECTURE.md` is written in Vietnamese — its section headers (`## 8. Lộ trình Triển khai`) establish the file's convention. The additions below are Vietnamese to match, exactly as the Week 7/8 plans' Task 7 did. This is the one place the plan deviates from the global "repo docs stay English" rule, and it is because the rule defers to a file's own convention.
+> **Language.** Historical note: `docs/ARCHITECTURE.md` section headers were previously in Vietnamese (`## 8. Implementation Roadmap`), but all repository documentation has been standardized to English.
 
-> **The roadmap item is NOT ticked (spec §11.1).** Input ships gated off (ADR-29); the item is annotated **partial**, not done. Verify the current wording before editing: the Week 8 plan (`be8a8c9`) already split the list into a done `##### Tuần 8` block and a `##### Còn lại (Tuần 9 — Spec B)` block (`ARCHITECTURE.md:941-951`). If a later PR re-shaped it, adjust the wording rather than duplicate.
+> **The roadmap item is NOT ticked (spec §11.1).** Input ships gated off (ADR-29); the item is annotated **partial**, not done. Verify the current wording before editing: the Week 8 plan (`be8a8c9`) already split the list into a done `##### Week 8` block and a `##### Remaining (Week 9 — Spec B)` block (`ARCHITECTURE.md:941-951`). If a later PR re-shaped it, adjust the wording rather than duplicate.
 
 - [ ] **Step 1: Annotate the Week 9 roadmap item as partial (not done)**
 
 In `docs/ARCHITECTURE.md:949-951`, the block currently reads:
 
 ```markdown
-##### Còn lại (Tuần 9 — Spec B)
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
+##### Remaining (Week 9 — Spec B)
+- [ ] Mouse & keyboard control (input forwarding) — currently view-only (ADR-18)
 ```
 
 Replace it with (the item stays **unchecked** — it is not usable until WS2/WS3; the ADR-18 reference becomes a supersede + gate pointer):
 
 ```markdown
-##### Tuần 9: Input forwarding (đã có cơ chế, CHƯA dùng được)
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — cơ chế + wire đã xong, nhưng **mặc định TẮT** (ADR-29), chỉ bật bằng `--allow-input` cục bộ; chưa dùng được cho tới khi WS2/WS3 xong. (ADR-18 đã bị ADR-26 thay thế; cổng chặn bởi ADR-29)
+##### Week 9: Input forwarding (mechanism ready, NOT YET usable)
+- [ ] Mouse & keyboard control (input forwarding) — mechanism + wire complete, but **DEFAULT OFF** (ADR-29), enabled only via local `--allow-input`; not usable until WS2/WS3 complete. (ADR-18 superseded by ADR-26; gated by ADR-29)
 ```
 
 - [ ] **Step 2: Mark ADR-18 superseded in the Week 7 spec**
@@ -1939,18 +1939,18 @@ Spec §11.3 records that Week 8's **D8** correction already landed in PR #27 (`b
 grep -n "^| Desktop stream" docs/ARCHITECTURE.md
 ```
 
-Expected: two rows — `Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264)` and `Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt`. No H.265 row. If one is present, that is a Week 8 regression — report it, do not fix it here.
+Expected: two rows — `Desktop stream (Week 8) | 1080p30 (baseline 720p30) | Software H.264 (openh264)` and `Desktop stream (hardware, future) | 60fps | H.264 hardware / AV1 — spike ADR-25, unconfirmed`. No H.265 row. If one is present, that is a Week 8 regression — report it, do not fix it here.
 
 - [ ] **Step 4: Confirm Phase 4's stub is untouched (spec §11)**
 
-Spec §11: Phase 4's stub (`ARCHITECTURE.md:953-955`, `### Phase 4: File Transfer (Tuần 10-11)` + its "Chưa thiết kế" note) is **not** in scope. Confirm the Step 1 edit changed nothing between it and `### Phase 5`.
+Spec §11: Phase 4's stub (`ARCHITECTURE.md:953-955`, `### Phase 4: File Transfer (Weeks 10-11)` + its "Not yet designed" note) is **not** in scope. Confirm the Step 1 edit changed nothing between it and `### Phase 5`.
 
 - [ ] **Step 5: State the security status (spec §11.4)**
 
 Spec §9.3 / §11.4: H3, H2, M7, M8 **remain open** after the Week 9 merge; the gate is a holding pattern until **WS2** (peer identity, closes H3) and **WS3** (enforce `approved`, closes H2). The roadmap's Phase 5 WS1-WS5 list (`ARCHITECTURE.md:961+`) already tracks these — **no new workstream**. Add one line under the Week 9 block so the dependency is explicit:
 
 ```markdown
-> Input chỉ mở được sau **WS2** (định danh peer — đóng H3) và **WS3** (enforce `approved` — đóng H2). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
+> Input can only be opened after **WS2** (peer identity — closes H3) and **WS3** (enforce `approved` — closes H2). See `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
 ```
 
 - [ ] **Step 6: Run the full local verification sweep**

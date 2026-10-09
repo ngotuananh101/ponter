@@ -3838,35 +3838,35 @@ git commit -m "test(e2e): desktop streaming across the real stack; CI capture de
 - Consumes: nothing (documentation only).
 - Produces: nothing (documentation only).
 
-> **Language:** `docs/ARCHITECTURE.md` is written in Vietnamese — its own section headers ("## 8. Lộ trình Triển khai", "### Phase 2: WebRTC & Terminal (Tuần 4-6)") establish the file's convention. The additions below are Vietnamese to match. This is the one place the plan deviates from the global "repo docs stay English" rule, and it is because the rule itself defers to a file's own convention.
+> **Language:** Historical note: `docs/ARCHITECTURE.md` previously used Vietnamese headers ("## 8. Implementation Roadmap", "### Phase 2: WebRTC & Terminal (Weeks 4-6)"), but all repository documentation has been standardized to English.
 
 - [ ] **Step 1: Add the Phase 3 roadmap section**
 
-In `docs/ARCHITECTURE.md` §8, the roadmap currently jumps from `### Phase 2: WebRTC & Terminal (Tuần 4-6)` straight to `### Phase 5: E2EE & Security & Polish (Tuần 12-14)` — Phases 3 and 4 have no section. Insert the Phase 3 section **between** the end of Phase 2 (the last line of its Tuần 6 block, `- [ ] Handle resize events`) and `### Phase 5: ...`:
+In `docs/ARCHITECTURE.md` §8, the roadmap currently jumps from `### Phase 2: WebRTC & Terminal (Weeks 4-6)` straight to `### Phase 5: E2EE & Security & Polish (Weeks 12-14)` — Phases 3 and 4 have no section. Insert the Phase 3 section **between** the end of Phase 2 (the last line of its Week 6 block, `- [ ] Handle resize events`) and `### Phase 5: ...`:
 
 ```markdown
-### Phase 3: Desktop Streaming (Tuần 7-9)
+### Phase 3: Desktop Streaming (Weeks 7-9)
 
-> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8-9 (chất lượng hình ảnh, điều khiển chuột/phím, hardening) là hạng mục sắp tới.
+> **Status:** Week 7 is a completed *thin slice* — view-only viewing, ~720p @ 15fps, software H.264 (openh264). Weeks 8-9 (stream quality, mouse/keyboard input control, hardening) are upcoming items.
 
-#### Tuần 7: Desktop Streaming — lát cắt mỏng (đã xong)
-- [x] `packages/webrtc-core` — seam media tuỳ chọn (`addTransceiver`/`onTrack`) + `media-channel.ts` (đóng ADR-06)
-- [x] `packages/desktop-core` — `DesktopClient` không phụ thuộc DOM
-- [x] Agent Rust — `desktop.rs` (capture → downscale → openh264) + nhánh trả lời desktop trong `rtc.rs`
-- [x] Web — tab desktop trong workspace, độc quyền theo agent (ADR-19)
-- [x] E2E cross-language (`desktop.e2e.test.ts`) + demo thủ công trên Chrome
+#### Week 7: Desktop Streaming — thin slice (completed)
+- [x] `packages/webrtc-core` — optional media seam (`addTransceiver`/`onTrack`) + `media-channel.ts` (closes ADR-06)
+- [x] `packages/desktop-core` — DOM-independent `DesktopClient`
+- [x] Agent Rust — `desktop.rs` (capture → downscale → openh264) + desktop answer branch in `rtc.rs`
+- [x] Web — desktop tab in workspace, agent-exclusive (ADR-19)
+- [x] E2E cross-language (`desktop.e2e.test.ts`) + manual Chrome demo
 
-#### Tuần 8-9: Chất lượng & tương tác (sắp tới)
-- [ ] Tăng chất lượng/khung hình, adaptive bitrate
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
-- [ ] Chọn màn hình/cửa sổ, codec phần cứng
+#### Weeks 8-9: Quality & Interaction (upcoming)
+- [ ] Increase quality/frame rate, adaptive bitrate
+- [ ] Mouse & keyboard control (input forwarding) — currently view-only (ADR-18)
+- [ ] Select display/window, hardware codec
 
-### Phase 4: File Transfer (Tuần 10-11)
+### Phase 4: File Transfer (Weeks 10-11)
 
-> **Chưa thiết kế.** Mục này được giữ chỗ để lộ trình không nhảy cóc từ Phase 3 sang Phase 5; nội dung chi tiết sẽ bổ sung khi có spec riêng.
+> **Not yet designed.** This item is a placeholder so the roadmap does not skip from Phase 3 to Phase 5; detailed contents will be added when a dedicated spec is written.
 ```
 
-> **Decision — the Phase 4 stub:** the spec (§11.1) left this to implementation time. A one-line stub is added rather than leaving the gap, because a roadmap that reads "Phase 3 → Phase 5" is the exact drift this task exists to fix; the stub is explicitly labelled "chưa thiết kế" so it invents no scope. The week range (Tuần 10-11) is the only one not yet stated in the file — it is the slot between Phase 3 (Tuần 7-9) and Phase 5 (Tuần 12-14).
+> **Decision — the Phase 4 stub:** the spec (§11.1) left this to implementation time. A one-line stub is added rather than leaving the gap, because a roadmap that reads "Phase 3 → Phase 5" is the exact drift this task exists to fix; the stub is explicitly labelled "not yet designed" so it invents no scope. The week range (Weeks 10-11) is the only one not yet stated in the file — it is the slot between Phase 3 (Weeks 7-9) and Phase 5 (Weeks 12-14).
 
 - [ ] **Step 2: Split the perf-table row**
 

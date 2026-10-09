@@ -4327,7 +4327,7 @@ git commit -m "test(e2e): control channel, manual bitrate, and refused-selection
 >
 > Verify the drifts are still present before editing (`git log -1 --format=%h docs/ARCHITECTURE.md` and read the two line ranges); if a later PR has already reconciled them, re-check that the wording matches spec §11 and adjust rather than duplicate.
 
-> **Language:** `docs/ARCHITECTURE.md` is written in Vietnamese — its own section headers (`## 8. Lộ trình Triển khai`, `## 11. Performance Targets`) establish the file's convention. The additions below are Vietnamese to match, exactly as the Week 7 plan's Task 7 did. This is the one place the plan deviates from the global "repo docs stay English" rule, and it is because the rule defers to a file's own convention.
+> **Language:** Historical note: `docs/ARCHITECTURE.md` section headers were previously in Vietnamese (`## 8. Implementation Roadmap`, `## 11. Performance Targets`), but all repository documentation has been standardized to English.
 
 - [x] **Step 1: Fix the perf-table row (the H.265 drift)**
 
@@ -4341,8 +4341,8 @@ In `docs/ARCHITECTURE.md` §11 (Performance Targets, `docs/ARCHITECTURE.md:1080-
 The second row names H.265 as an achievable target, which §3.5 establishes is **not viable in WebRTC**. Replace **both** rows with the Week 8 reality plus a clearly spike-gated future row:
 
 ```markdown
-| Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
-| Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt |
+| Desktop stream (Week 8) | 1080p30 (baseline 720p30) | Software H.264 (openh264) |
+| Desktop stream (hardware, future) | 60fps | H.264 hardware / AV1 — spike ADR-25, unconfirmed |
 ```
 
 Rationale for the wording: `1080p30` with `720p30` as the guaranteed floor is ADR-24's conditional target; the hardware row now names the *viable* alternatives (hardware H.264 / AV1) and marks them as the **ADR-25 spike, not committed**, so the file no longer promises a codec WebRTC cannot carry.
@@ -4352,33 +4352,33 @@ Rationale for the wording: `1080p30` with `720p30` as the guaranteed floor is AD
 In `docs/ARCHITECTURE.md:941-944`, the list is currently:
 
 ```markdown
-#### Tuần 8-9: Chất lượng & tương tác (sắp tới)
-- [ ] Tăng chất lượng/khung hình, adaptive bitrate
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
-- [ ] Chọn màn hình/cửa sổ, codec phần cứng
+#### Weeks 8-9: Quality & Interaction (upcoming)
+- [ ] Increase quality/frame rate, adaptive bitrate
+- [ ] Mouse & keyboard control (input forwarding) — currently view-only (ADR-18)
+- [ ] Select display/window, hardware codec
 ```
 
 Split it into a **done Week 8** sub-block and a **still-open** block, so the unchecked items name only what is actually left (input forwarding → Week 9 / Spec B; hardware codec → ADR-25 spike):
 
 ```markdown
-#### Tuần 8-9: Chất lượng & tương tác (sắp tới)
+#### Weeks 8-9: Quality & Interaction (upcoming)
 
-##### Tuần 8: Chất lượng & chọn nguồn (đã xong)
-- [x] Profile chất lượng 1080p30 (nền 720p30), fallback theo sức chịu tải (ADR-24)
-- [x] Điều khiển bitrate thủ công, retarget tại chỗ không cần rebuild (ADR-23)
-- [x] GCC auto-ABR — mục tiêu, đã xác nhận bằng spike §3.7 (không phải tiêu chí nghiệm thu)
-- [x] Chọn màn hình/cửa sổ, đổi nguồn có giới hạn thời gian (ADR-22)
-- [ ] Codec phần cứng (H.264 hardware / AV1) — spike ADR-25, chưa cam kết
+##### Week 8: Quality & Source Selection (completed)
+- [x] Quality profile 1080p30 (baseline 720p30), load-adaptive fallback (ADR-24)
+- [x] Manual bitrate control, in-place retarget without rebuild (ADR-23)
+- [x] GCC auto-ABR — goal, validated by spike §3.7 (not an acceptance criterion)
+- [x] Select display/window, time-bounded source switching (ADR-22)
+- [ ] Hardware codec (H.264 hardware / AV1) — spike ADR-25, uncommitted
 
-##### Còn lại (Tuần 9 — Spec B)
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)
+##### Remaining (Week 9 — Spec B)
+- [ ] Mouse & keyboard control (input forwarding) — currently view-only (ADR-18)
 ```
 
-> The `##### Tuần 8` sub-heading and the split keep the roadmap's `####`/`#####` convention (the file already uses `####` under a `### Phase` block). The input-forwarding item moves under an explicit "Tuần 9 — Spec B" block so it stays unchecked and owned by the Week 9 spec, not silently dropped. The auto-ABR line is ticked **and** annotated as a goal, matching spec §10.2's "not an acceptance criterion".
+> The `##### Week 8` sub-heading and the split keep the roadmap's `####`/`#####` convention (the file already uses `####` under a `### Phase` block). The input-forwarding item moves under an explicit "Week 9 — Spec B" block so it stays unchecked and owned by the Week 9 spec, not silently dropped. The auto-ABR line is ticked **and** annotated as a goal, matching spec §10.2's "not an acceptance criterion".
 
 - [x] **Step 3: Confirm the Phase 4 stub is untouched**
 
-Spec §11: Phase 4's stub (`docs/ARCHITECTURE.md:946-948`, `### Phase 4: File Transfer (Tuần 10-11)` + its "Chưa thiết kế" note) is **not** in scope. Confirm the edit in Steps 1-2 changed nothing between line 946 and `### Phase 5`.
+Spec §11: Phase 4's stub (`docs/ARCHITECTURE.md:946-948`, `### Phase 4: File Transfer (Weeks 10-11)` + its "Not yet designed" note) is **not** in scope. Confirm the edit in Steps 1-2 changed nothing between line 946 and `### Phase 5`.
 
 - [x] **Step 4: Verify the file is still valid Markdown and the table renders**
 

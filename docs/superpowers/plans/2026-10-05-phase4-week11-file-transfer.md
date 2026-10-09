@@ -736,7 +736,7 @@ git commit -m "test(e2e): add Phase 4 Week 11 advanced file transfer e2e test su
 
 - [ ] **Step 1: Update `docs/ARCHITECTURE.md`**
 
-Mark Phase 4 File Transfer as completely finished (`[x]` for Tuần 10 & Tuần 11). Document ADR-36 to ADR-40.
+Mark Phase 4 File Transfer as completely finished (`[x]` for Week 10 & Week 11). Document ADR-36 to ADR-40.
 
 - [ ] **Step 2: Update `docs/guides/agent-setup.md`**
 

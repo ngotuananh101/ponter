@@ -3,7 +3,7 @@
 **Status:** Draft — Ready for review
 **Date:** 2026-10-03
 **Author:** Ngo Tuan Anh & Claude
-**Target:** Phase 3 Week 8 of `docs/ARCHITECTURE.md` (Section 8, "Tuần 8-9: Chất lượng & tương tác"). Week 8 covers **stream quality (resolution/frame-rate/bitrate), adaptive bitrate, and capture-source selection**. Input forwarding (mouse/keyboard) is Week 9 and is out of scope here.
+**Target:** Phase 3 Week 8 of `docs/ARCHITECTURE.md` (Section 8, "Weeks 8-9: Quality & Interaction"). Week 8 covers **stream quality (resolution/frame-rate/bitrate), adaptive bitrate, and capture-source selection**. Input forwarding (mouse/keyboard) is Week 9 and is out of scope here.
 
 ---
 
@@ -11,7 +11,7 @@
 
 Week 7 shipped the desktop thin slice: a view-only, ~720p @ 15 fps, software H.264 stream over SRTP, with the encoder hardcoded (`1280×720`, 15 fps, 2 Mbps) and the capture source fixed to the primary monitor. Week 8 turns that proof into a usable stream: it raises the quality bar, makes quality adjustable, and lets the user choose *what* to stream.
 
-The roadmap item is "Tăng chất lượng/khung hình, adaptive bitrate" and "Chọn màn hình/cửa sổ, codec phần cứng" (`ARCHITECTURE.md:942-944`). This spec delivers the first two; hardware codec is investigated by a timeboxed spike but is **not** committed (§1.2, ADR-25).
+The roadmap item is "Increase quality/frame rate, adaptive bitrate" and "Select display/window, hardware codec" (`ARCHITECTURE.md:942-944`). This spec delivers the first two; hardware codec is investigated by a timeboxed spike but is **not** committed (§1.2, ADR-25).
 
 Two constraints shape the design:
 
@@ -35,7 +35,7 @@ Two constraints shape the design:
 - **Auto-ABR if the spike fails.** Conditional by construction (ADR-23); the spec carries both branches so a failed spike shrinks scope without an edit. **Note: the spike PASSED (§3.7) ⇒ this branch does not apply; auto-ABR ships.**
 - **Automatic mid-session source re-selection.** A user-initiated `desktop-select` switch ships (ADR-22), but there is no automatic re-selection (e.g. following the focused window). Selection is explicit.
 - **Multi-monitor coordinate mapping / input.** The picker exposes geometry, but mapping browser input to source coordinates is Week 9 (input forwarding) and is out of scope here.
-- **File transfer.** Owned by Phase 4 (Tuần 10-11), which remains a stub (`ARCHITECTURE.md:946-948`) and is not touched.
+- **File transfer.** Owned by Phase 4 (Weeks 10-11), which remains a stub (`ARCHITECTURE.md:946-948`) and is not touched.
 - **WebCodecs rendering.** `<video>` + `srcObject` remains the render path; low-latency WebCodecs is a later concern.
 - **macOS/Windows runtime capture verification.** Those targets must compile and pass unit tests; runtime capture stays unverified (no CI hardware).
 - **Server-side changes.** No new endpoints, no schema changes; the control channel is peer-to-peer over the existing DTLS/SCTP transport.
@@ -249,7 +249,7 @@ Manual bitrate control and the fixed-quality profile (ADR-21) ship **regardless 
 
 ### ADR-25: Hardware codec is investigated by a timeboxed spike, not committed
 
-**Context.** The roadmap lists "codec phần cứng". H.265/HEVC is unusable in WebRTC in every browser today (§3.5); AV1 and H.264 hardware encode are the plausible alternatives, but their availability on real agents is unknown.
+**Context.** The roadmap lists "hardware codec". H.265/HEVC is unusable in WebRTC in every browser today (§3.5); AV1 and H.264 hardware encode are the plausible alternatives, but their availability on real agents is unknown.
 
 **Decision.** A half-day spike investigates AV1 / H.264 hardware encode on the agent (library support, availability, licensing, effort). It gates nothing and produces a short written finding; any adoption is a later phase.
 
@@ -504,7 +504,7 @@ A source *switch* is exercised in the manual demo (a real host has multiple moni
 4. Switch to a second monitor or a window → stream changes with a brief blip; stats update.
 5. Move the bitrate control → the stream visibly changes bitrate; `desktop-stats` reflects it.
 6. On a weaker host (or by forcing `AGENT_DESKTOP_PROFILE=1080p30` under load), observe the documented **720p30 fallback** and the stats note.
-7. Record glass-to-glass latency informally (target < 200 ms on LAN; not gated, as in Week 7's "xem được").
+7. Record glass-to-glass latency informally (target < 200 ms on LAN; not gated, as in Week 7's "viewable").
 
 ### 8.5 CI changes
 
@@ -587,7 +587,7 @@ No new workflow changes are required beyond Week 7's apt steps: the control chan
 
 Two drifts are reconciled in the same PR (D8):
 
-1. **Roadmap §8** (`ARCHITECTURE.md:941-944`): the "Tuần 8-9: Chất lượng & tương tác (sắp tới)" list gains a Week 8 sub-entry marked done for this week's items — quality profile + manual bitrate + GCC auto-ABR (spike passed, §3.7), source picker — with input forwarding and hardware codec noted as still open (Week 9 / spike). Week 9's input item is left unchecked (owned by Spec B).
+1. **Roadmap §8** (`ARCHITECTURE.md:941-944`): the "Weeks 8-9: Quality & Interaction (upcoming)" list gains a Week 8 sub-entry marked done for this week's items — quality profile + manual bitrate + GCC auto-ABR (spike passed, §3.7), source picker — with input forwarding and hardware codec noted as still open (Week 9 / spike). Week 9's input item is left unchecked (owned by Spec B).
 2. **Perf table (§11, `ARCHITECTURE.md:1080-1081`)**: the row `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` is corrected — H.265 is not viable in WebRTC (§3.5). Replace with `Desktop stream (Week 8) | 1080p30 (720p30 floor) | Software H.264 (openh264)` and a `Desktop stream (hardware, future) | 60fps | H.264 hardware / AV1 (spike-gated, ADR-25)` row that names the viable alternatives instead of the unusable one.
 
 Phase 4's stub (`ARCHITECTURE.md:946-948`) is **not** touched (Phase 4 is out of scope; §1.2).

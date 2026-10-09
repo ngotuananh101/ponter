@@ -3,7 +3,7 @@
 **Status:** Draft — awaiting review
 **Date:** 2026-09-26
 **Author:** Ngo Tuan Anh & Claude
-**Target:** Phase 2 Week 5 of `docs/ARCHITECTURE.md` (Section 8: "Tuần 5: Desktop Agent - Terminal")
+**Target:** Phase 2 Week 5 of `docs/ARCHITECTURE.md` (Section 8: "Week 5: Desktop Agent - Terminal")
 
 > **Scope note.** Week 5 delivers Phase 2's second half: a real **Rust desktop agent** (`apps/agent`)
 > with a real PTY via `portable-pty`, real P2P WebRTC DataChannel via the `webrtc` crate, in-memory
@@ -26,8 +26,8 @@ in memory.
 
 This is the week the roadmap item *"Implement WebSocket signaling"* (`docs/ARCHITECTURE.md:1195`)
 finally lands, together with the Week 4 security boundary note's obligation: an agent must stop
-authenticating as its owning user. The five roadmap items — *Tạo Rust agent*, *Implement WebSocket
-signaling*, *Tích hợp portable-pty*, *Xử lý terminal I/O*, *Implement session management*
+authenticating as its owning user. The five roadmap items — *Create Rust agent*, *Implement WebSocket
+signaling*, *Integrate portable-pty*, *Handle terminal I/O*, *Implement session management*
 (`docs/ARCHITECTURE.md:1193-1199`) — map one-to-one onto Goals 2-5 and 8 below.
 
 ### Goals
@@ -98,7 +98,7 @@ signaling*, *Tích hợp portable-pty*, *Xử lý terminal I/O*, *Implement sess
   document remains documentation-only. **Read before Phase 5:**
   `docs/security/2026-10-01-e2ee-zero-trust-audit.md` (adversarially verified findings + Phase 5 work list).
 - **TURN provisioning.** No TURN server is deployed; loopback needs neither STUN nor TURN
-  (Week 4 ADR-05). **Owner: release hardening** (chưa xếp phase; từng ghi là "Phase 6" trong bản lộ trình cũ).
+  (Week 4 ADR-05). **Owner: release hardening** (not yet phased; previously listed as "Phase 6" in the old roadmap).
 
 ---
 
@@ -242,7 +242,7 @@ add that second implementation now. But `ARCHITECTURE.md` §2.1 describes a **hy
 reaches the Worker over HTTP (`ARCHITECTURE.md:121`, `A --> D`) and receives signaling by reading
 back through it, while the WebSocket edge is drawn only to the host — `ARCHITECTURE.md:129`,
 `G -.->|WebSocket Signaling| H`, where `H` is the Rust Desktop Agent. The Week 5 roadmap item is
-scoped the same way: `ARCHITECTURE.md:1195` says "Implement WebSocket signaling" under "Tuần 5:
+scoped the same way: `ARCHITECTURE.md:1195` says "Implement WebSocket signaling" under "Week 5:
 Desktop Agent - Terminal". And there is no consumer: `apps/web` does not import
 `@ponter/webrtc-core` at all, the only implementation of the interface is
 `RESTPollingTransport` (`packages/webrtc-core/src/transport.ts:26`), and the agent is Rust, so a
@@ -284,7 +284,7 @@ browser on a path §ADR-01 explicitly calls best-effort).
 **Context.** Week 4 proved a genuine ICE + DTLS + SCTP handshake in CI with two `werift` peers in
 Node (`2026-09-25-phase2-week4-webrtc-core-design.md` §2.2). That is a test harness, not a peer:
 the production answerer is the Rust desktop agent, which this week must actually exist —
-`ARCHITECTURE.md:1194` ("Tạo Rust agent") and `ARCHITECTURE.md:1195` ("Implement WebSocket
+`ARCHITECTURE.md:1194` ("Create Rust agent") and `ARCHITECTURE.md:1195` ("Implement WebSocket
 signaling"). Two ways to get a P2P peer in the loop were on the table. **A1:** the agent
 implements the answerer natively with the `webrtc` crate, the same crate family the architecture
 already lists (`ARCHITECTURE.md:658`, `webrtc = "0.10"`). **A2:** the agent shells out to the
@@ -1175,7 +1175,7 @@ Tasks 1 and 2 have no tests of their own and must land first: 3 depends on 1 (th
 
 ## 5. Application Design: Rust Desktop Agent (`apps/agent`)
 
-**Crate:** `ponter-agent` (edition 2021), binary target `ponter-agent` · **Roadmap:** `docs/ARCHITECTURE.md:1193` — Tuần 5: Desktop Agent - Terminal
+**Crate:** `ponter-agent` (edition 2021), binary target `ponter-agent` · **Roadmap:** `docs/ARCHITECTURE.md:1193` — Week 5: Desktop Agent - Terminal
 
 > **Scope note.** This section designs the **answerer** half of the Week 4 connection. Week 4 delivered
 > `packages/webrtc-core` (browser/Node offerer) and the four `/api/signal/*` REST routes; the agent is
@@ -1205,8 +1205,8 @@ Tasks 1 and 2 have no tests of their own and must land first: 3 depends on 1 (th
 | Deferred | Owned by | Why it is not stubbed |
 |---|---|---|
 | **`media_channel` / screen capture / H.264-H.265** | Phase 3 (`ARCHITECTURE.md:1207-1230`) | Same call as Week 4's ADR-06. No file, no feature flag, no dead code. The `desktop` channel label exists in `WebRTCChannelType` but the agent never requests it. |
-| **File transfer (`files` channel)** | Phase 4 (Tuần 10-11) | Nothing in Week 5's pipeline reads a filesystem path from the peer. |
-| **Terminal resize end-to-end** | Week 6 (Tuần 6: *"Handle resize events"*) | `TerminalResizeMessage` already exists in `packages/shared/src/types/terminal.ts:21`; `pty.rs` exposes `resize()` and the frame decoder accepts `terminal-resize`, but the browser sender is Week 6. See §5.7.4. |
+| **File transfer (`files` channel)** | Phase 4 (Weeks 10-11) | Nothing in Week 5's pipeline reads a filesystem path from the peer. |
+| **Terminal resize end-to-end** | Week 6 (Week 6: *"Handle resize events"*) | `TerminalResizeMessage` already exists in `packages/shared/src/types/terminal.ts:21`; `pty.rs` exposes `resize()` and the frame decoder accepts `terminal-resize`, but the browser sender is Week 6. See §5.7.4. |
 | **Multi-session concurrency** | Week 11+/hardening | Week 5 serves **one active session per agent process**; a second offer is refused with `approved: false` (§5.6.4). |
 | **ICE restart on WS reconnect** | follow-up | Week 5 reconnects the socket and re-joins as a *new* session; an in-place ICE restart is not attempted (§5.5.5). |
 | **Physical approval dialog** | Week 12 (`ARCHITECTURE.md:1255`) | The `approved` flag is a **policy check**, not a human prompt (§5.6.4). |
@@ -2184,7 +2184,7 @@ fn pty_echo_round_trip() {
 }
 ```
 
-This is the Week 5 roadmap line *"Tích hợp portable-pty"* verified end to end: a real shell, a real
+This is the Week 5 roadmap line *"Integrate portable-pty"* verified end to end: a real shell, a real
 PTY, real output. Details that make it a reliable test:
 
 - `#[cfg(unix)]` for the `sh -c` variant, with a `#[cfg(windows)]` twin running

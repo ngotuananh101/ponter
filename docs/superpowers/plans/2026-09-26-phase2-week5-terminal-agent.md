@@ -57,7 +57,7 @@ The spec is a design document written before the code it describes was read line
 | D-11 | §7.3 step 2: "`POST /api/agents` to obtain `credential = ag_<secret>`" | Task 3 changed that response to `{ agent, credential }`. Task 7's harness reads `body.credential` from the envelope and `body.agent.id` for the `--agent-id` flag. §7.3's phrasing describes the pre-Task-3 shape — which is also the shape on `main` today (a bare agent row with no `credential` key at all), so a harness written from the spec would send `Bearer undefined` and be answered `401`. |
 | D-12 | §7.3 step 3: `--server ws://127.0.0.1:8787` | Missing the route path — the same root cause as D-10. Task 4 mounts `/api/ws` with a `/agent` route, so the URL is `ws://127.0.0.1:8787/api/ws/agent`. Task 7's harness passes the full path, which also overrides Task 6's `localhost` default with `127.0.0.1` — the address `wrangler dev` actually binds and prints as `Ready on`. |
 | D-13 | §7.3 step 9: teardown "kill the agent child process" | `ponter-agent` **is** the child process; it has none of its own. Task 7's harness spawns it directly and kills the handle it holds (`child.kill('SIGKILL')`), then awaits its `exit`. No wrapper script, no process group. |
-| D-14 | §8.3's third bullet instructs: "tick the Week 5 items that ship" | **Annotate, do not tick.** `docs/ARCHITECTURE.md` contains **zero** ticked boxes (`grep -c '^- \[x\]'` → 0) across **85** unticked ones, and `git log -S'- [x]' -- docs/ARCHITECTURE.md` is empty — it has never contained one, including for the Phase 1 and Week 4 items that shipped. Ticking only Week 5 would assert that Phase 1 and Week 4 are *not* done while Week 5 is, contradicting the same roadmap. Task 9's Step 4 adds a `Trạng thái:` line and leaves the boxes as `[ ]`. |
+| D-14 | §8.3's third bullet instructs: "tick the Week 5 items that ship" | **Annotate, do not tick.** `docs/ARCHITECTURE.md` contains **zero** ticked boxes (`grep -c '^- \[x\]'` → 0) across **85** unticked ones, and `git log -S'- [x]' -- docs/ARCHITECTURE.md` is empty — it has never contained one, including for the Phase 1 and Week 4 items that shipped. Ticking only Week 5 would assert that Phase 1 and Week 4 are *not* done while Week 5 is, contradicting the same roadmap. Task 9's Step 4 adds a `Status:` line and leaves the boxes as `[ ]`. |
 | D-15 | §8.3's last bullet: "the ledger entries can be marked resolved once the commit lands" | **Recorded in this plan instead.** The ledger is `.superpowers/sdd/2026-09-25-phase2-week4-webrtc-core/progress.md`, and `.superpowers/` is gitignored (`.gitignore:38`) — it is not part of the repository, so an edit there is unreviewable and unshippable. Task 9's Step 11 appends a Global Constraints bullet to this plan, which is the artifact that ships. |
 
 Two further spec statements are corrected rather than implemented:
@@ -4746,7 +4746,7 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn pty_echo_round_trip() {
-        // The Week 5 roadmap line "Tích hợp portable-pty" verified end to end:
+        // The Week 5 roadmap line "Integrate portable-pty" verified end to end:
         // a real shell, a real PTY, real output.
         let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>(64);
         let session = PtySession::spawn("sh", 80, 24, input_rx).unwrap();
@@ -6278,7 +6278,7 @@ This task is where three earlier tasks' promises come due. D-2 says §5.9.1's `h
 **`ARCHITECTURE.md` is at `docs/ARCHITECTURE.md`, not the repository root.** §3.1's own tree prints `ARCHITECTURE.md  # This file` as a root file at `:523` (not `:522`, which is `.gitlab-ci.yml`) and also lists a `docs/` directory at `:492` — the root entry is stale. Do not create or edit a root-level file.
 
 **Files:**
-- Modify: `docs/ARCHITECTURE.md` (§6.2, §6.3, §3.1, §4.2, §8 Tuần 5, §9.3, §9.4)
+- Modify: `docs/ARCHITECTURE.md` (§6.2, §6.3, §3.1, §4.2, §8 Week 5, §9.3, §9.4)
 - Modify: `docs/superpowers/specs/2026-09-26-phase2-week5-terminal-agent-design.md` (§5.5.1, §5.5.5, §5.8.1, §5.8.2, §5.9.1, §5.9.3, §5.11.5, §5.12, §7.5, ADR-12, ADR-13)
 - Modify: `docs/superpowers/plans/2026-09-26-phase2-week5-terminal-agent.md` (Step 11)
 
@@ -6369,22 +6369,22 @@ Replace `docs/ARCHITECTURE.md:955` in full:
 Replace `docs/ARCHITECTURE.md:1193-1198`. The five `- [ ]` lines are kept as `[ ]` and the block gains a status line:
 
 ```markdown
-#### Tuần 5: Desktop Agent - Terminal
+#### Week 5: Desktop Agent - Terminal
 
-**Trạng thái: đã ship (2026-09-26).** Các mục dưới đây giữ nguyên dạng `[ ]` vì toàn bộ roadmap
-trong tài liệu này chưa từng được tick — kể cả Phase 1 và Tuần 4 đã hoàn thành — nên tick riêng
-Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay vì tick.
+**Status: shipped (2026-09-26).** The items below are kept as `[ ]` because the entire roadmap
+in this document has never been ticked — including completed Phase 1 and Week 4 — so ticking only
+Week 5 would make the document self-contradictory. Noted here instead of ticked.
 
-- [ ] Tạo Rust agent — `apps/agent` (crate `ponter-agent`), 4 module phẳng: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
-- [ ] Implement WebSocket signaling — `GET /api/ws/agent` trên `workers/signaling`, xác thực bằng credential `ag_<32 hex>`
-- [ ] Tích hợp portable-pty — `portable-pty 0.9`, PTY thật, 1 session
-- [ ] Xử lý terminal I/O — base64 trong `DataChannelMessage<TerminalDataMessage>`, kênh `terminal`
+- [ ] Create Rust agent — `apps/agent` (`ponter-agent` crate), 4 flat modules: `main.rs`, `signal.rs`, `rtc.rs`, `pty.rs`
+- [ ] Implement WebSocket signaling — `GET /api/ws/agent` on `workers/signaling`, authenticated via `ag_<32 hex>` credential
+- [ ] Integrate portable-pty — `portable-pty 0.9`, real PTY, 1 session
+- [ ] Handle terminal I/O — base64 in `DataChannelMessage<TerminalDataMessage>`, `terminal` channel
 - [ ] Implement session management — state machine `pending → active → terminated`
 
-> **Kiến trúc hybrid có chủ đích:** signaling dùng **REST polling cho browser** (giữ nguyên từ Tuần 4,
-> ADR-03) và **WebSocket chỉ cho agent**. Cụm "Implement WebSocket signaling" ở trên *không* có nghĩa
-> là toàn bộ signaling đã chuyển sang WebSocket — `packages/webrtc-core` không có `WebSocketTransport`
-> nào, và client WebSocket duy nhất là Rust.
+> **Intentional hybrid architecture:** signaling uses **REST polling for the browser** (preserved from Week 4,
+> ADR-03) and **WebSocket for the agent only**. The phrase "Implement WebSocket signaling" above does *not* mean
+> all signaling has moved to WebSocket — `packages/webrtc-core` has no `WebSocketTransport`,
+> and the only WebSocket client is Rust.
 ```
 
 - [ ] **Step 5: Mark the §4.2 Cargo sketch stale and correct the §3.1 agent tree**
@@ -6392,33 +6392,33 @@ Tuần 5 sẽ khiến tài liệu tự mâu thuẫn. Đánh dấu ở đây thay
 Insert a staleness banner between the `### 4.2 Desktop Agent (Rust)` heading at `:647` and the `**File:** apps/agent/Cargo.toml` line at `:649`:
 
 ```markdown
-> **Sketch — không phải nguồn sự thật.** Các phiên bản dưới đây (`webrtc = "0.10"`,
-> `tokio-tungstenite = "0.21"`, `portable-pty = "0.8"`) là bản phác thảo viết trước khi crate được
-> scaffold và đã lệch so với thực tế. Nguồn sự thật là **`apps/agent/Cargo.toml`**, khoá bởi
-> `Cargo.lock` được commit (ADR-08). Dependency thực tế của Tuần 5: `webrtc 0.13`,
+> **Sketch — not source of truth.** The versions below (`webrtc = "0.10"`,
+> `tokio-tungstenite = "0.21"`, `portable-pty = "0.8"`) are draft sketches written before the crate was
+> scaffolded and have diverged from reality. The source of truth is **`apps/agent/Cargo.toml`**, locked by
+> `Cargo.lock` committed (ADR-08). Shipped Week 5 dependencies: `webrtc 0.13`,
 > `tokio-tungstenite 0.26`, `portable-pty 0.9`, `base64 0.23`, `clap 4`, `tokio`, `futures-util`,
-> `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `anyhow`. Phần còn lại của sketch dưới đây —
+> `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `anyhow`. The remainder of the sketch below —
 > `vt100`, `scrap`, `x264`, `openh264`, `notify`, `walkdir`, `ring`, `rustls`, `bincode`, `sysinfo`,
-> `uuid`, `chrono` và các block `[target.'cfg(...)']` — **chưa được dùng ở Tuần 5**; chúng thuộc
+> `uuid`, `chrono` and `[target.'cfg(...)']` blocks — are **not yet used in Week 5**; they belong to
 > Phase 3-4.
 ```
 
 Then replace the §3.1 agent subtree at `:348-384` (from `│   └── agent/` through the `│       └── agent.toml` line). The current tree sketches `config.rs`, a `webrtc/` subdirectory, `terminal/`, `capture/`, `files/`, `security/` and `utils/` — roughly twenty files across five phases, of which four exist:
 
 ```
-│   └── agent/                        # Desktop Agent (Rust) — Tuần 5
+│   └── agent/                        # Desktop Agent (Rust) — Week 5
 │       ├── src/
 │       │   ├── main.rs               # CLI, reconnect loop, session supervision
 │       │   ├── signal.rs             # WS signaling client (tokio-tungstenite)
 │       │   ├── rtc.rs                # WebRTC answerer (webrtc-rs)
 │       │   └── pty.rs                # PTY bridge (portable-pty)
-│       ├── Cargo.toml                # nguồn sự thật cho dependency (§4.2)
+│       ├── Cargo.toml                # source of truth for dependencies (§4.2)
 │       ├── Cargo.lock                # commit — ADR-08
 │       ├── rust-toolchain.toml       # 1.98.1 + rustfmt, clippy
 │       └── .env.example
 │
-│   # Chưa ship (Phase 3-4): config.rs, webrtc/ subdirectory, terminal/,
-│   # capture/, files/, security/, utils/, agent.toml — xem §4.2 và ADR-07.
+│   # Not yet shipped (Phase 3-4): config.rs, webrtc/ subdirectory, terminal/,
+│   # capture/, files/, security/, utils/, agent.toml — see §4.2 and ADR-07.
 ```
 
 The layout is the four flat modules ADR-07 and spec §5.4.1 fix; `config.rs`, the `webrtc/` subdirectory and `agent.toml` are ADR-04's narration of the tree above, which D-7 resolves against. Keeping them in the tree as "not yet shipped" is accurate; presenting them as the plan is not.
