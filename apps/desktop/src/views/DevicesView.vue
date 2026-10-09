@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAuthStore } from '@/stores/auth';
 import { useDevicesStore } from '@/stores/devices';
 import {
@@ -23,7 +25,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Laptop, LogOut, Plus, Info } from '@lucide/vue';
+import {
+  Laptop,
+  LogOut,
+  Plus,
+  Info,
+  Terminal,
+  Monitor,
+  Folder,
+} from '@lucide/vue';
 import ThemeToggle from '@/components/ThemeToggle.vue';
 
 const authStore = useAuthStore();
@@ -32,8 +42,41 @@ const store = useDevicesStore();
 const deleteDialogOpen = ref(false);
 const deleteTarget = ref<string | null>(null);
 
+/** Toggleable capabilities, mirroring the web dialog. */
+const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
+
+/** Default: terminal + desktop (files OFF — runtime has no files_root yet). */
+const selectedCapabilities = ref<string[]>(['terminal', 'desktop']);
+
+function toggleCapability(cap: string) {
+  selectedCapabilities.value = selectedCapabilities.value.includes(cap)
+    ? selectedCapabilities.value.filter((c) => c !== cap)
+    : [...selectedCapabilities.value, cap];
+}
+
+function orderedCapabilities(): string[] {
+  return TOGGLEABLE_CAPABILITIES.filter((c) =>
+    selectedCapabilities.value.includes(c),
+  );
+}
+
+/** Runtime status from the backend: connected | disconnected | stopped | unknown */
+const runtimeStatus = ref<string>('unknown');
+let unlistenRuntime: UnlistenFn | null = null;
+let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+async function probeRuntimeStatus() {
+  try {
+    const status = await invoke<string>('get_runtime_status');
+    runtimeStatus.value = status;
+  } catch {
+    // Do not break the device list; surface a neutral state.
+    runtimeStatus.value = 'unknown';
+  }
+}
+
 async function handleRegister() {
-  await store.register();
+  await store.register(orderedCapabilities());
 }
 
 function handleDelete(deviceId: string) {
@@ -54,8 +97,32 @@ function cancelDelete() {
   deleteTarget.value = null;
 }
 
-onMounted(() => {
+onMounted(async () => {
   void store.refresh();
+  await probeRuntimeStatus();
+  try {
+    unlistenRuntime = await listen<{ status: string }>(
+      'runtime-status',
+      (event) => {
+        runtimeStatus.value = event.payload.status;
+      },
+    );
+  } catch {
+    // Event listener failed — keep neutral status.
+  }
+  // Auto-refresh the device list so online/offline badges stay correct.
+  refreshInterval = setInterval(() => {
+    void store.refresh();
+  }, 5000);
+});
+
+onUnmounted(() => {
+  if (unlistenRuntime) {
+    unlistenRuntime();
+  }
+  if (refreshInterval) {
+    clearInterval(refreshInterval);
+  }
 });
 </script>
 
@@ -97,6 +164,27 @@ onMounted(() => {
           </div>
         </div>
       </CardHeader>
+
+      <div
+        data-testid="runtime-status"
+        :data-status="runtimeStatus"
+        class="px-6 py-2 flex items-center gap-2 text-xs font-mono"
+      >
+        <span
+          class="w-2 h-2 rounded-full"
+          :class="
+            runtimeStatus === 'connected'
+              ? 'bg-emerald-400'
+              : runtimeStatus === 'disconnected'
+                ? 'bg-amber-400'
+                : runtimeStatus === 'stopped'
+                  ? 'bg-red-400'
+                  : 'bg-muted-foreground'
+          "
+        />
+        <span class="text-muted-foreground">Runtime:</span>
+        <span class="text-foreground font-semibold">{{ runtimeStatus }}</span>
+      </div>
 
       <CardContent class="space-y-4">
         <Alert
@@ -183,6 +271,62 @@ onMounted(() => {
       </CardContent>
 
       <CardFooter class="flex flex-col items-stretch gap-2.5 pt-2">
+        <fieldset class="border-0 p-0 m-0 min-w-0">
+          <legend class="text-xs font-semibold text-muted-foreground mb-1.5">
+            Capabilities
+          </legend>
+          <div class="flex gap-1.5 mb-2">
+            <button
+              type="button"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+              :class="
+                selectedCapabilities.includes('terminal')
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+              "
+              :aria-pressed="selectedCapabilities.includes('terminal')"
+              :disabled="store.loading"
+              data-test="register-cap-terminal"
+              @click="toggleCapability('terminal')"
+            >
+              <Terminal class="w-3.5 h-3.5" />
+              Terminal
+            </button>
+            <button
+              type="button"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+              :class="
+                selectedCapabilities.includes('desktop')
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+              "
+              :aria-pressed="selectedCapabilities.includes('desktop')"
+              :disabled="store.loading"
+              data-test="register-cap-desktop"
+              @click="toggleCapability('desktop')"
+            >
+              <Monitor class="w-3.5 h-3.5" />
+              Desktop
+            </button>
+            <button
+              type="button"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+              :class="
+                selectedCapabilities.includes('files')
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+              "
+              :aria-pressed="selectedCapabilities.includes('files')"
+              :disabled="store.loading"
+              data-test="register-cap-files"
+              @click="toggleCapability('files')"
+            >
+              <Folder class="w-3.5 h-3.5" />
+              Files
+            </button>
+          </div>
+        </fieldset>
+
         <Button
           data-testid="devices-register"
           :disabled="store.loading"
