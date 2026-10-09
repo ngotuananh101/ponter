@@ -91,22 +91,12 @@ vi.mock('@/services/token-storage', () => ({
   tokenStorage: { getAccessToken: vi.fn(async () => 'access-123') },
 }));
 
-vi.mock('../stores/auth', () => ({
-  useAuthStore: () => ({
-    user: { id: 'user-e2ee' },
-    identityStatus: 'ready',
-    ensureUserSigningKey: async () => {},
-  }),
-}));
+const { authMock, cryptoMock } = vi.hoisted(() =>
+  require('./helpers/terminal-mocks.ts'),
+);
 
-vi.mock('@ponter/crypto', () => ({
-  loadPrivateKey: vi.fn(async () => null),
-  loadPublicKey: vi.fn(async () => null),
-  loadSigningKey: vi.fn(async () => ({}) as unknown as CryptoKey),
-  importSigningPublicKeyRaw: vi.fn(async () => ({}) as unknown as CryptoKey),
-  signProof: vi.fn(async () => 'sig'),
-  verifyProof: vi.fn(async () => true),
-}));
+vi.mock('../stores/auth', () => authMock());
+vi.mock('@ponter/crypto', () => cryptoMock());
 
 async function emitPeerState(state: string): Promise<void> {
   const mod = (await import('@ponter/webrtc-core')) as unknown as {
