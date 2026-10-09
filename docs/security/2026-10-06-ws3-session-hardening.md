@@ -39,7 +39,7 @@
    live agent to survive a server kill.
 
 4. **`candidate.session_id` validation (M3) — already fixed; now tested.**
-   The guard in `route_inbound` (`apps/agent/src/main.rs`) drops a candidate
+   The guard in `route_inbound` (`apps/agent/src/lib.rs:2568`) drops a candidate
    whose `session_id` is not the live session, and logs it. It landed in
    `2de7a23` (2026-10-01) and is present at the spec baseline `fdead292` — the
    spec's §2 table marks M3 CONFIRMED in error. WS3 adds the regression E2E
