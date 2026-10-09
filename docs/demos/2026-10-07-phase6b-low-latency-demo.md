@@ -102,7 +102,7 @@ Cited from the E2E test `measures the cursor input-echo round-trip and prints a 
 
 (12 moves injected at 80 ms intervals, 9 echoes captured within the 1-second sampling window under a 60 Hz cursor poller, every echo <= 5000 ms, median 80 ms matching the dispatch cadence.)
 
-Format: `[6b echo] n=<count> min=<ms> median=<ms> max=<ms>` — printed by the test to stdout. The test injects 12 distinct `seq` values (one per 80 ms), waits for the echo on `desktop-cursor` frames (`lastInputSeq`), and computes `echoMs = receiveMs − sentAtMs(seq)`. Every echo is asserted ≤ 5000 ms.
+Format: `[6b echo] n=<count> min=<ms> median=<ms> max=<ms>` — printed by the test to stdout. The test injects 12 distinct `seq` values (one per 80 ms), waits for the echo on `desktop-cursor` frames (`lastInputSeq`), and computes `echoMs = receiveMs − sentAtMs(seq)`. Every echo is asserted ≤ 5000 ms. Only pointer-family inputs (`pointer-move`, `pointer-button`, `wheel`) carry a `seq`; `key`/`text` are not measured by this metric.
 
 ### Glass-to-glass (same-host, test-pattern decode protocol)
 
