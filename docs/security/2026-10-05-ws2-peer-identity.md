@@ -14,7 +14,7 @@ This document covers four deliverables. Each fails closed when its gate applies:
    `$XDG_CONFIG_HOME/ponter/agent-identity.pkcs8`, falling back to
    `$HOME/.config/ponter/agent-identity.pkcs8` when `XDG_CONFIG_HOME` is unset,
    and to `./ponter/agent-identity.pkcs8` when neither is set — `resolve_identity_path`,
-   `apps/agent/src/main.rs:153-168`). The public half is uploaded to the server
+   `apps/agent/src/main.rs:119-133`). The public half is uploaded to the server
    over the credential-authenticated agent socket, with a proof-of-possession
    signature over a server nonce so a stolen credential cannot enroll a key it
    does not hold. The proof-of-possession message is the domain-separated string
@@ -30,11 +30,12 @@ This document covers four deliverables. Each fails closed when its gate applies:
 
 3. **User offer proof (M1, H3).** The browser signs its offer SDP fingerprint
    and session id with the user's Ed25519 key, and includes the raw public key
-   (`userSigningPublicKey`) on the offer. On the **terminal** path the agent
-   verifies the proof **before** `rtc::answer_offer` — a missing, malformed, or
-   tampered proof aborts the session before any answer SDP is sent and before
-   any PTY is created. (The gate is terminal-scoped by design; see "Gate scope"
-   below.)
+   (`userSigningPublicKey`) on the offer. The agent verifies the proof
+   **before** `rtc::answer_offer` for **every** session mode (ADR-41 admission
+   gate, see "Gate scope" below) — a missing, malformed, or tampered proof
+   aborts the session before any answer SDP is sent. On the terminal path this
+   also means no PTY is created; on the desktop and files paths it means no
+   capture pipeline or files-root probe is performed.
 
 4. **Server relay enforcement.** The signaling server does not verify
    signatures — it is a pure shape-and-relay. For offers, the server overwrites
@@ -109,14 +110,14 @@ admission gate that runs before the mode dispatch in `run_one_session`, so the
 desktop and files paths now run the same verification the terminal path always ran;
 an offer without a valid proof bails with no answer of any kind. The paragraph below
 describes the state before that change; see `docs/security/2026-10-08-ws1-e2ee-rust.md`
-§"Desktop input" for the sibling WS1 note.
+§"What is NOT encrypted" for the sibling WS1 note.
 
 The definition of `verify_offer_identity` is at `apps/agent/src/lib.rs:876`. Its
 exactly ONE production call site is at `apps/agent/src/lib.rs:1049`, placed
 **before** the `match mode` dispatch (see `apps/agent/src/lib.rs:1039-1048`): the
 in-code comment there states it is "an ADMISSION gate for every session mode, not a
 terminal-only step." Because the call sits upstream of `SessionMode::Desktop`
-(`run_one_session` at `apps/agent/src/lib.rs:1117`) and `SessionMode::Files`,
+(`run_one_session` at `apps/agent/src/lib.rs:965`) and `SessionMode::Files`,
 those arms no longer `return` before the gate — every mode passes through
 `verify_offer_identity` first. Rows 5–7 (browser answer check) are unchanged in
 meaning: the check at `packages/webrtc-core/src/connection.ts:358` (guarded by
@@ -191,8 +192,7 @@ of scope.
 ### Legacy-account key bootstrap
 
 Accounts created before WS2 (pre-PR-#44) carry a `null` signing key
-(`apps/web/src/stores/auth.ts:21`, type `IdentityStatus` at
-`apps/web/src/stores/auth.ts:44`). These legacy accounts obtain a key through a
+(`packages/shared/src/types/user.ts:13`). These legacy accounts obtain a key through a
 dedicated bootstrap path rather than at registration:
 
 - **Endpoint:** `POST /api/auth/signing-key`
