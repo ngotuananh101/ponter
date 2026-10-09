@@ -85,6 +85,7 @@ vi.mock('../services/token-storage', () => ({
 }));
 
 const { authMock, cryptoMock } = vi.hoisted(() =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('./helpers/terminal-mocks.ts'),
 );
 

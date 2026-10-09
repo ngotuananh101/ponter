@@ -51,6 +51,7 @@ vi.mock('@ponter/webrtc-core', async (importOriginal) => {
 });
 
 const { authMock, cryptoMock } = vi.hoisted(() =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('./helpers/terminal-mocks.ts'),
 );
 
