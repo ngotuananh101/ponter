@@ -83,12 +83,21 @@ vi.mock('@/services/client', () => ({
       terminate: vi.fn(async () => ({ success: true })),
     },
     webrtc: { getIceServers: vi.fn(async () => []) },
+    agents: { get: vi.fn(async () => ({ signingPublicKey: 'agent-key' })) },
   },
 }));
 
 vi.mock('@/services/token-storage', () => ({
   tokenStorage: { getAccessToken: vi.fn(async () => 'access-123') },
 }));
+
+const { authMock, cryptoMock } = vi.hoisted(() =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('./helpers/terminal-mocks.ts'),
+);
+
+vi.mock('../stores/auth', () => authMock());
+vi.mock('@ponter/crypto', () => cryptoMock());
 
 async function emitPeerState(state: string): Promise<void> {
   const mod = (await import('@ponter/webrtc-core')) as unknown as {
@@ -199,5 +208,41 @@ describe('terminal store resource cleanup', () => {
     expect(vi.mocked(apiClient.sessions.terminate)).toHaveBeenCalledWith(
       'session-1',
     );
+  });
+
+  it('terminates the server session when getIceServers fails during desktop preamble', async () => {
+    // Regression: openSessionPreamble must hand the session id back to the
+    // caller the instant sessions.create resolves, so a throw in getIceServers
+    // (after create, before the PeerConnection is built) still terminates the
+    // server session. Without the callback, sessionId stays null and the
+    // agent's ADR-14 slot leaks.
+    const store = useTerminalStore();
+    const { apiClient } = await import('@/services/client');
+    vi.mocked(apiClient.webrtc.getIceServers).mockRejectedValueOnce(
+      new Error('ICE servers unavailable'),
+    );
+
+    await store.openDesktopTab('agent-1', 'Host 1');
+
+    expect(vi.mocked(apiClient.sessions.terminate)).toHaveBeenCalledWith(
+      'session-1',
+    );
+    expect(store.tabs[0]?.status).toBe('error');
+  });
+
+  it('terminates the server session when getIceServers fails during files preamble', async () => {
+    // Same regression as the desktop case, for the files path.
+    const store = useTerminalStore();
+    const { apiClient } = await import('@/services/client');
+    vi.mocked(apiClient.webrtc.getIceServers).mockRejectedValueOnce(
+      new Error('ICE servers unavailable'),
+    );
+
+    await store.openFilesTab('agent-1', 'Host 1');
+
+    expect(vi.mocked(apiClient.sessions.terminate)).toHaveBeenCalledWith(
+      'session-1',
+    );
+    expect(store.tabs[0]?.status).toBe('error');
   });
 });

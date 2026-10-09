@@ -50,6 +50,14 @@ vi.mock('@ponter/webrtc-core', async (importOriginal) => {
   };
 });
 
+const { authMock, cryptoMock } = vi.hoisted(() =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('./helpers/terminal-mocks.ts'),
+);
+
+vi.mock('../stores/auth', () => authMock());
+vi.mock('@ponter/crypto', () => cryptoMock());
+
 interface FetchCall {
   url: string;
   auth: string;
@@ -76,6 +84,12 @@ function respond(url: string, auth: string): Response {
   }
   if (url.endsWith('/api/webrtc/ice-servers')) {
     return new Response(JSON.stringify({ iceServers: [] }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  }
+  if (url.match(/\/api\/agents\/[^/]+$/)) {
+    return new Response(JSON.stringify({ signingPublicKey: 'agent-key' }), {
       status: 200,
       headers: JSON_HEADERS,
     });

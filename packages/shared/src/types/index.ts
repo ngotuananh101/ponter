@@ -95,6 +95,8 @@ export {
   canonicalProofMessage,
   normalizeFingerprint,
   parseSdpFingerprint,
+  USER_IDENTITY_PROOF_PREFIX,
+  canonicalUserIdentityMessage,
 } from './identity-proof.js';
 export type { PeerRole, CanonicalProofInput } from './identity-proof.js';
 
