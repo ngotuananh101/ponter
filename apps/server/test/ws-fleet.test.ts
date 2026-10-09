@@ -170,9 +170,8 @@ async function openFleetBrowser(
   await waitOpen(ws);
   const frames = collectFrames(ws);
   await sendFrame(ws, { type: 'subscribe-fleet' });
-  await waitFor(() =>
-    frames.find((f) => f.type === 'fleet-changed') ? undefined : true,
-  );
+  // `subscribe-fleet` has no server ack (ADR-74: it only flips a per-connection
+  // flag), so there is nothing to wait for here — `sendFrame` already settles.
   return { ws, frames };
 }
 
