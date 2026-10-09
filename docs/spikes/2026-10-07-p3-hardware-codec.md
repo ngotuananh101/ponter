@@ -8,7 +8,7 @@ Authoritative home for the decision this informs: ADR-25
 (`docs/superpowers/specs/2026-10-03-phase3-week8-stream-quality-design.md:250-258`)
 carries the row that is still open as of this writing:
 
-> `Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt`
+> `Desktop stream (hardware, future) | 60fps | H.264 hardware / AV1 — spike ADR-25, unconfirmed`
 
 (`docs/ARCHITECTURE.md:1128`, `...-week8-stream-quality.md:4344-4348`).
 

@@ -955,9 +955,9 @@ git commit -m "test(e2e): add Playwright browser smoke (ADR-49 adopt)" -- packag
 - Produces: Reconciled repo architecture documentation and comprehensive Phase 6b demo artifact.
 
 - [ ] **Step 1: Update ARCHITECTURE.md**
-- §8 (heading `## 8. Lộ trình Triển khai`, line ~871): replace the stale Phase 6 blockquote (~line 1001) — remove "6b chưa thiết kế / sẽ có spec riêng" — with 6b complete + ADR-45..49 delivered + links to the 6b spec and demo doc. Do not touch Phase 7 (~1003) or `## 9.` (~1009).
+- §8 (heading `## 8. Implementation Roadmap`, line ~871): replace the stale Phase 6 blockquote (~line 1001) — remove "6b not yet designed / will have its own spec" — with 6b complete + ADR-45..49 delivered + links to the 6b spec and demo doc. Do not touch Phase 7 (~1003) or `## 9.` (~1009).
 - §8 Phase 5 checkboxes (~lines 993–997): flip `- [ ]` → `- [x]` for WS1–WS5 (Phase 5 shipped; PM-2 ruling).
-- §11 (heading `## 11. Performance Targets`, line ~1122; table 3 cols `Metric | Target | Method`): add measured desktop-latency rows — capture→encode, input-echo round-trip, glass-to-glass @ 100/50/0 ms — each with provenance in the Method column (protocol, sample count, test name), phrased as *measured*, not as a promise. Keep the hardware row (~1128) as "chưa chốt" and link the P3 finding only (adoption not committed).
+- §11 (heading `## 11. Performance Targets`, line ~1122; table 3 cols `Metric | Target | Method`): add measured desktop-latency rows — capture→encode, input-echo round-trip, glass-to-glass @ 100/50/0 ms — each with provenance in the Method column (protocol, sample count, test name), phrased as *measured*, not as a promise. Keep the hardware row (~1128) as "unconfirmed" and link the P3 finding only (adoption not committed).
 - Record cursor platform matrix honestly (X11 full, Windows compile-checked, macOS in-frame, Wayland uncommitted).
 
 - [ ] **Step 2: Write demo document**

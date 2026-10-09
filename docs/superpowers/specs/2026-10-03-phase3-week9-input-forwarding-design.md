@@ -3,7 +3,7 @@
 **Status:** Draft — Ready for review
 **Date:** 2026-10-03
 **Author:** Ngo Tuan Anh & Claude
-**Target:** Phase 3 Week 9 of `docs/ARCHITECTURE.md` (Section 8, "Tuần 8-9: Chất lượng & tương tác"). Week 9 adds **input forwarding** (mouse + keyboard) on top of the Week 8 desktop stream. It **supersedes ADR-18** ("View-only desktop in Week 7") but ships the feature **gated off by default** — see §9 and ADR-29.
+**Target:** Phase 3 Week 9 of `docs/ARCHITECTURE.md` (Section 8, "Weeks 8-9: Quality & Interaction"). Week 9 adds **input forwarding** (mouse + keyboard) on top of the Week 8 desktop stream. It **supersedes ADR-18** ("View-only desktop in Week 7") but ships the feature **gated off by default** — see §9 and ADR-29.
 
 ---
 
@@ -11,7 +11,7 @@
 
 Week 8 turned the Week 7 thin slice into a usable stream: a resolved quality profile, a source picker, and a control channel (`['control']`) carrying `desktop-sources` / `desktop-select` / `desktop-bitrate` / `desktop-stats`. Week 9 makes that stream **interactive**: the browser forwards pointer and keyboard events over the same control channel, and the agent injects them into the operating system of the machine it is streaming.
 
-The roadmap item is "Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)" (`ARCHITECTURE.md:951`). This spec delivers the wire, the injection, and the tests — **but behind a hard gate that keeps input inert in production** (ADR-29).
+The roadmap item is "Mouse & keyboard control (input forwarding) — currently view-only (ADR-18)" (`ARCHITECTURE.md:951`). This spec delivers the wire, the injection, and the tests — **but behind a hard gate that keeps input inert in production** (ADR-29).
 
 One constraint shapes the whole design:
 
@@ -542,9 +542,9 @@ The gate is a holding pattern, not a fix. The audit findings behind it:
 
 Reconciled in the same PR (D8):
 
-1. **Roadmap §8** (`ARCHITECTURE.md:941-951`): the "Tuần 8-9" list's input item — "Điều khiển chuột & bàn phím (input forwarding) — hiện chỉ view-only (ADR-18)" — is annotated **partial**: the wire and injection land, but **input is gated off (ADR-29)** and is not usable until WS2/WS3. The item is **not** ticked as done. The `(ADR-18)` reference becomes `(ADR-18 superseded by ADR-26; gated by ADR-29)`.
+1. **Roadmap §8** (`ARCHITECTURE.md:941-951`): the "Weeks 8-9" list's input item — "Mouse & keyboard control (input forwarding) — currently view-only (ADR-18)" — is annotated **partial**: the wire and injection land, but **input is gated off (ADR-29)** and is not usable until WS2/WS3. The item is **not** ticked as done. The `(ADR-18)` reference becomes `(ADR-18 superseded by ADR-26; gated by ADR-29)`.
 2. **ADR-18 superseded.** The Week 7 spec's ADR-18 gains a superseded note pointing at ADR-26 (Week 9 spec), matching the roadmap annotation. The `<video>` is no longer unconditionally view-only — it is view-only *unless the gate is open*.
-3. **Perf table** (`ARCHITECTURE.md:1087-1088`): Week 8's **D8** correction **has landed** — PR #27 (`be8a8c9`) replaced the false `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` row with a Week 8 software row (`Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264)`) and a spike-gated hardware row (`Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — spike ADR-25, chưa chốt`). No H.265 row remains, so no correction is pending here. (This spec originally recorded the row as "still present and still wrong" — that was true when the Week 8 spec merged (PR #24, spec-only) but the Week 8 *implementation* PR has since fixed it.) Week 9's D8 needs no perf-table edit.
+3. **Perf table** (`ARCHITECTURE.md:1087-1088`): Week 8's **D8** correction **has landed** — PR #27 (`be8a8c9`) replaced the false `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` row with a Week 8 software row (`Desktop stream (Week 8) | 1080p30 (baseline 720p30) | Software H.264 (openh264)`) and a spike-gated hardware row (`Desktop stream (hardware, future) | 60fps | H.264 hardware / AV1 — spike ADR-25, unconfirmed`). No H.265 row remains, so no correction is pending here. (This spec originally recorded the row as "still present and still wrong" — that was true when the Week 8 spec merged (PR #24, spec-only) but the Week 8 *implementation* PR has since fixed it.) Week 9's D8 needs no perf-table edit.
 4. **Security status.** The roadmap's Phase 5 workstream list (`ARCHITECTURE.md:961+`) already tracks WS1-WS5. Week 9 adds no new workstream; §9.3 records that **H3, H2, M7, M8 remain open** after the Week 9 merge, and that the gate is a holding pattern — the input feature is closed until **WS2** (peer identity, closes H3) and **WS3** (enforce `approved`, closes H2) land.
 
 Phase 4's stub (`ARCHITECTURE.md:953-955`) is **not** touched (out of scope; §1.2).

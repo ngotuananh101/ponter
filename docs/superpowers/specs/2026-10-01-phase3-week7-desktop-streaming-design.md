@@ -11,7 +11,7 @@
 
 Week 7 opens **Phase 3 (Desktop Streaming)**. Phase 2 (Weeks 4–6) delivered the WebRTC core, the Rust terminal agent, and the terminal workspace UI — all over one `"terminal"` data channel. Week 7 adds the first **media** path: a live video track from the agent host to the browser, over SRTP, rendered in a `<video>` element inside the existing workspace.
 
-The scope was deliberately chosen as a *thin end-to-end slice* rather than a quality milestone: prove capture → encode → WebRTC → render works across the real stack (Rust agent, real server, browser), with a low quality bar ("proof thấp, xem được" — ~720p, 10–20 fps, software H.264). Input control is **not** included; the stream is view-only.
+The scope was deliberately chosen as a *thin end-to-end slice* rather than a quality milestone: prove capture → encode → WebRTC → render works across the real stack (Rust agent, real server, browser), with a low quality bar ("low-bar proof, viewable" — ~720p, 10–20 fps, software H.264). Input control is **not** included; the stream is view-only.
 
 ### 1.1 Core Goals
 
@@ -376,7 +376,7 @@ apps/agent/src/desktop.rs   (NEW)
 
 ```rust
 let config = EncoderConfig::new()
-    .bitrate(BitRate::from_bps(2_000_000))          // 2 Mbps — "xem được"
+    .bitrate(BitRate::from_bps(2_000_000))          // 2 Mbps — "viewable"
     .max_frame_rate(FrameRate::from_hz(15.0))
     .usage_type(UsageType::ScreenContentRealTime)   // screen content tuning
     .rate_control_mode(RateControlMode::Bitrate)
@@ -637,7 +637,7 @@ No changes to `docker.yml`/server workflows. The server Docker image does not co
 | Session teardown + next session | E2E Test 2 |
 | Terminal flow unaffected | Existing terminal E2E suite + Test 3 |
 | macOS/Windows compile | build-agent matrix |
-| 720p/15fps "xem được" | Manual demo observation (informal, not gated) |
+| 720p/15fps "viewable" | Manual demo observation (informal, not gated) |
 
 ---
 
@@ -704,7 +704,7 @@ Per repo convention: `docs(spec)` → `docs(plan)` → `feat`/`test` commits →
 
 Two known drifts are fixed in the same PR (D8):
 
-1. **Roadmap §8** currently ends Phase 2 at Week 6 and jumps to "Phase 5: E2EE & Security & Polish (Tuần 12-14)" — Phases 3 and 4 have no section. Add a "Phase 3: Desktop Streaming (Tuần 7-9)" section with Week 7 checked as the thin slice (view-only, 720p15 software H.264), and note Weeks 8–9 (quality, input, hardening) as upcoming. Leave Phase 4's absence untouched (out of scope) unless a one-line stub is preferred — decision at implementation time, noted here so it is not forgotten.
+1. **Roadmap §8** currently ends Phase 2 at Week 6 and jumps to "Phase 5: E2EE & Security & Polish (Weeks 12-14)" — Phases 3 and 4 have no section. Add a "Phase 3: Desktop Streaming (Weeks 7-9)" section with Week 7 checked as the thin slice (view-only, 720p15 software H.264), and note Weeks 8–9 (quality, input, hardening) as upcoming. Leave Phase 4's absence untouched (out of scope) unless a one-line stub is preferred — decision at implementation time, noted here so it is not forgotten.
 2. **Perf table (§11)** row `Desktop FPS | 60fps | Hardware H.265` is aspirational and now contradicted by shipped scope. Split it into two rows: `Desktop stream (Week 7) | ~720p @ 15fps, view-only | Software H.264 (openh264)` and `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` — the ambition is preserved but labeled as a target, not a status.
 
 The Week 4 ADR-06 note ("Phase 3 will add the module when it has content") gets a one-line follow-up in the Week 7 spec only — ADRs are historical records and are not edited retroactively.

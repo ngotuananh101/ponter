@@ -33,7 +33,7 @@
 4. Switch to a second monitor or a window → stream changes with a brief blip; stats update.
 5. Move the bitrate control → the stream visibly changes bitrate; `desktop-stats` reflects it.
 6. On a weaker host (or by forcing `AGENT_DESKTOP_PROFILE=1080p30` under load), observe the documented **720p30 fallback** and the stats note.
-7. Record glass-to-glass latency informally (target < 200 ms on LAN; not gated, as in Week 7's "xem được").
+7. Record glass-to-glass latency informally (target < 200 ms on LAN; not gated, as in Week 7's "viewable").
 
 ## Observed
 

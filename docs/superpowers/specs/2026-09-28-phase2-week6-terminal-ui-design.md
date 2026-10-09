@@ -3,7 +3,7 @@
 **Status:** Draft — Ready for review  
 **Date:** 2026-09-28  
 **Author:** Ngo Tuan Anh & Claude  
-**Target:** Phase 2 Week 6 of `docs/ARCHITECTURE.md` (Section 8: "Tuần 6: Terminal UI")
+**Target:** Phase 2 Week 6 of `docs/ARCHITECTURE.md` (Section 8: "Week 6: Terminal UI")
 
 ---
 

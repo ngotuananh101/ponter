@@ -312,7 +312,7 @@ exact origin that serves the built web app.
 
 - [ ] **Step 3: Add the self-publish path to `docs/guides/deployment.md`**
 
-Under "## 3.1 Deploy phiên bản mới", after the existing step that points Compose at an image, add a subsection (English prose is fine; the surrounding file mixes Vietnamese — keep the new text clear and consistent with the existing step wording):
+Under "## 3.1 Deploying New Versions", after the existing step that points Compose at an image, add a subsection:
 
 ```markdown
 ### 3.1.1 Publish your own image (fork)
@@ -1457,17 +1457,17 @@ Same three lines, in the server service's `environment:` list after the `STUN_UR
 At the end of "### Scenario 3: Production VPS (Caddy + Coturn)", add:
 
 ```markdown
-#### Chọn TURN provider
+#### Selecting a TURN Provider
 
-Server chọn nhà cung cấp TURN qua biến `TURN_PROVIDER`:
+The server selects the TURN provider via the `TURN_PROVIDER` environment variable:
 
-| Giá trị | Mô tả |
+| Value | Description |
 |---|---|
-| `coturn` (mặc định) | Coturn tự host, thông tin xác thực RFC 5766 từ `TURN_SECRET` + `TURN_URL`. Giữ nguyên hành vi các phase trước. |
-| `cloudflare` | Cloudflare Calls TURN (hosted). Cần `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`. Server tự mint credential qua API Cloudflare và cache theo TTL. **Lưu ý:** media đi qua hạ tầng Cloudflare (bên thứ ba). Cloudflare miễn phí **1.000 GB egress/tháng đầu tiên** (dùng chung với các dịch vụ Realtime khác của Cloudflare), sau đó ~$0.05/GB egress; STUN `stun.cloudflare.com` miễn phí. Khác với mô hình tự host. |
-| `none` | Chỉ STUN, không relay. Peer sau symmetric NAT có thể không kết nối được. |
+| `coturn` (default) | Self-hosted Coturn, RFC 5766 credentials from `TURN_SECRET` + `TURN_URL`. Preserves behavior from previous phases. |
+| `cloudflare` | Cloudflare Calls TURN (hosted). Requires `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`. Server automatically mints credentials via Cloudflare API and caches by TTL. **Note:** media flows through Cloudflare infrastructure (third-party). Cloudflare provides **1,000 GB free egress/month** (shared across other Cloudflare Realtime services), then ~$0.05/GB egress; STUN `stun.cloudflare.com` is free. Differs from the self-hosted model. |
+| `none` | STUN only, no relay. Peers behind symmetric NAT may fail to connect. |
 
-Khi Cloudflare lỗi (thiếu config, non-2xx, lỗi mạng), server tự hạ cấp về STUN-only và ghi warning — kết nối không bị chặn.
+When Cloudflare fails (missing config, non-2xx, network error), the server gracefully degrades to STUN-only and logs a warning — connections are not blocked.
 ```
 
 - [ ] **Step 5: Add the env rows to the `docs/guides/deployment.md` §5 table**
@@ -1475,9 +1475,9 @@ Khi Cloudflare lỗi (thiếu config, non-2xx, lỗi mạng), server tự hạ c
 Add three rows to the environment-variable table:
 
 ```markdown
-| `TURN_PROVIDER` | No | `coturn` | Nhà cung cấp TURN: `coturn` \| `cloudflare` \| `none`. |
-| `TURN_KEY_ID` | Cloudflare only | — | Cloudflare Calls TURN key ID. Bắt buộc khi `TURN_PROVIDER=cloudflare`. |
-| `TURN_KEY_API_TOKEN` | Cloudflare only | — | Cloudflare TURN API token (Bearer). Bắt buộc khi `TURN_PROVIDER=cloudflare`. |
+| `TURN_PROVIDER` | No | `coturn` | TURN provider: `coturn` \| `cloudflare` \| `none`. |
+| `TURN_KEY_ID` | Cloudflare only | — | Cloudflare Calls TURN key ID. Required when `TURN_PROVIDER=cloudflare`. |
+| `TURN_KEY_API_TOKEN` | Cloudflare only | — | Cloudflare TURN API token (Bearer). Required when `TURN_PROVIDER=cloudflare`. |
 ```
 
 - [ ] **Step 6: Add the env rows to the `docker/README.md` table**
@@ -1513,7 +1513,7 @@ git commit -m "docs(docker): document TURN_PROVIDER + Cloudflare credentials (AD
 ## Task 8: Roadmap & docs reconciliation
 
 **Files:**
-- Modify: `docs/ARCHITECTURE.md` (Phase 8 entry; the file has a "### Phase 7: Agent Desktop App (Tuần 19-20)" section around line 1007)
+- Modify: `docs/ARCHITECTURE.md` (Phase 8 entry; the file has a "### Phase 7: Agent Desktop App (Weeks 19-20)" section around line 1007)
 - Modify: `docs/README.md` (index — the self-hosting entry lands in Task 1; this task adds the spec/plan to the design-specs and plans listings if they are enumerated)
 - Modify: `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (status line → approved/executing)
 
@@ -1535,7 +1535,7 @@ Append a "### Phase 8: Open-Source Self-Build + Provider-Selectable TURN" sectio
 ```markdown
 ### Phase 8: Open-Source Self-Build + Provider-Selectable TURN
 
-> **Phase 8 (2026-10-08).** Hai workstream độc lập: **8a** bật self-build/self-host (build-from-source cho cả 4 app, fork & self-host guide, Docker self-publish, community files) — giữ nguyên bản sắc tác giả (ADR-60); **8b** TURN chọn nhà cung cấp qua `TURN_PROVIDER=coturn|cloudflare|none` (mặc định `coturn`, không đổi hành vi hiện hữu — ADR-62/63). Chi tiết: spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`. Merged: 8a `<sha>`, 8b `<sha>`.
+> **Phase 8 (2026-10-08).** Two independent workstreams: **8a** enables self-build/self-host (build-from-source for all 4 apps, fork & self-host guide, Docker self-publish, community files) — preserving author identity (ADR-60); **8b** TURN provider selection via `TURN_PROVIDER=coturn|cloudflare|none` (default `coturn`, no change to existing behavior — ADR-62/63). Details: spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`. Merged: 8a `<sha>`, 8b `<sha>`.
 ```
 
 Fill in the two `<sha>` placeholders with the real merge commits once Tasks 1-7 are merged.

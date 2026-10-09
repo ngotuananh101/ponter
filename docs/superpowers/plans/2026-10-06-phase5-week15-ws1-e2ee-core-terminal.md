@@ -30,7 +30,7 @@ The spec fixes *what* WS1 part 1 must close (§3.4) but not *how*. These are thi
 
 8. **Test vectors are shared with Rust, and their values are verified.** `packages/crypto/test/vectors/e2ee-vectors.json` holds HKDF-SHA256 (RFC 5869 §A.1, L=42), AES-256-GCM (a deterministic known-answer test), and ECDH P-256 (fixed private JWK + fixed peer public key → fixed secret) vectors. Every value in it was reproduced against Web Crypto before this plan was written. Week 16's Rust test consumes the same file, so interoperability is *proven*, not assumed (spec §5, gate G4).
 
-9. **Docs deliverables.** A new `docs/security/2026-10-07-ws1-e2ee.md` (mirroring the WS2 doc), an update to `ARCHITECTURE.md` §7.2 (the class now exists), a roadmap-date reconciliation in `ARCHITECTURE.md` §8.5 (Phase 5 → Tuần 12–16, Phase 6 → 17–18, Phase 7 → 19–20), the new negotiation frames documented in `docs/guides/terminal-protocol.md`, and an extension of the existing G2 guard (`apps/web/src/__tests__/e2ee-claims.test.ts`) to cover the new doc.
+9. **Docs deliverables.** A new `docs/security/2026-10-07-ws1-e2ee.md` (mirroring the WS2 doc), an update to `ARCHITECTURE.md` §7.2 (the class now exists), a roadmap-date reconciliation in `ARCHITECTURE.md` §8.5 (Phase 5 → Weeks 12–16, Phase 6 → Weeks 17–18, Phase 7 → Weeks 19–20), the new negotiation frames documented in `docs/guides/terminal-protocol.md`, and an extension of the existing G2 guard (`apps/web/src/__tests__/e2ee-claims.test.ts`) to cover the new doc.
 
 ## Global Constraints
 
@@ -1088,11 +1088,11 @@ Mirror the structure of `docs/security/2026-10-05-ws2-peer-identity.md`. Cover: 
 
 - [ ] **Step 2: Update `docs/ARCHITECTURE.md` §7.2**
 
-Replace the `⚠️ Trạng thái thực tế (2026-10-01)` warning (line ~813) with a status noting that the browser-side class now exists in `packages/crypto/src/encrypt.ts` (Phase 5 Week 15) and that the Rust equivalent lands Week 16. Keep the link to the audit.
+Replace the `⚠️ Actual status (2026-10-01)` warning (line ~813) with a status noting that the browser-side class now exists in `packages/crypto/src/encrypt.ts` (Phase 5 Week 15) and that the Rust equivalent lands Week 16. Keep the link to the audit.
 
 - [ ] **Step 3: Reconcile the roadmap dates in `docs/ARCHITECTURE.md`**
 
-Change the Phase 5 heading (line ~1030) from `(Tuần 12-14)` to `(Tuần 12-16)`, Phase 6 (line ~1040) from `(Tuần 15-16)` to `(Tuần 17-18)`, Phase 7 (line ~1044) from `(Tuần 17-18)` to `(Tuần 19-20)` — matching the owner-approved 5-week schedule (spec §1). Cite the spec in the section.
+Change the Phase 5 heading (line ~1030) from `(Weeks 12-14)` to `(Weeks 12-16)`, Phase 6 (line ~1040) from `(Weeks 15-16)` to `(Weeks 17-18)`, Phase 7 (line ~1044) from `(Weeks 17-18)` to `(Weeks 19-20)` — matching the owner-approved 5-week schedule (spec §1). Cite the spec in the section.
 
 - [ ] **Step 4: Document the negotiation frames in `docs/guides/terminal-protocol.md`**
 

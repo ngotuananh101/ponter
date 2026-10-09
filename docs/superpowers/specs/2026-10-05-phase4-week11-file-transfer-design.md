@@ -3,7 +3,7 @@
 **Status:** Draft — Ready for review  
 **Date:** 2026-10-05  
 **Author:** Ngo Tuan Anh & Claude  
-**Target:** Phase 4 Week 11 of `docs/ARCHITECTURE.md` (`:1003-1020`, "Phase 4: File Transfer (Tuần 10-11)"). Week 11 completes the full Phase 4 feature set: streaming large files directly to disk, transfer queue with drag & drop, pause & resume protocol with part file lifecycle, basic file operations (`mkdir`, `delete`, `rename`), and WebRTC DataChannel throughput optimization (>10 MB/s) via hybrid binary multiplexing.
+**Target:** Phase 4 Week 11 of `docs/ARCHITECTURE.md` (`:1003-1020`, "Phase 4: File Transfer (Weeks 10-11)"). Week 11 completes the full Phase 4 feature set: streaming large files directly to disk, transfer queue with drag & drop, pause & resume protocol with part file lifecycle, basic file operations (`mkdir`, `delete`, `rename`), and WebRTC DataChannel throughput optimization (>10 MB/s) via hybrid binary multiplexing.
 
 ---
 

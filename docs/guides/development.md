@@ -1,26 +1,26 @@
 # Local Development Guide
 
-Hướng dẫn chi tiết cách thiết lập, chạy, test và phát triển trên toàn bộ monorepo Ponter.
+Detailed guide on setting up, running, testing, and developing across the entire Ponter monorepo.
 
 ---
 
 ## 1. Prerequisites
 
-Cài đặt các công cụ sau:
+Install the following tools:
 
-| Tool | Yêu cầu phi bản | Mục đích |
-|------|-----------------|---------|
+| Tool | Required Version | Purpose |
+|------|------------------|---------|
 | **Node.js** | `>= 24.0.0` (LTS) | JavaScript/TypeScript runtime |
 | **pnpm** | `>= 12.0.0` (`corepack enable pnpm`) | Monorepo package manager |
 | **Rust & Cargo** | Stable (`>= 1.80.0`) | Native agent daemon |
 | **Git** | Modern version | Version control |
-| **Docker** | `>= 25.0.0` | Containerization (optional, cho testing) |
+| **Docker** | `>= 25.0.0` | Containerization (optional, for testing) |
 
-Kiểm tra môi trường:
+Verify your environment:
 
 ```bash
-node -v    # v24.x trở lên
-pnpm -v    # 12.x trở lên
+node -v    # v24.x or higher
+pnpm -v    # 12.x or higher
 cargo -V   # cargo 1.80+ (stable)
 ```
 
@@ -32,35 +32,35 @@ cargo -V   # cargo 1.80+ (stable)
 git clone https://github.com/ngotuananh101/ponter.git
 cd ponter
 
-# Cài đặt dependencies cho toàn bộ workspace
+# Install dependencies across the entire workspace
 pnpm install
 
 # Build native Rust agent (debug mode)
 cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-Binary được đặt tại `apps/agent/target/debug/ponter-agent`.
+The binary is located at `apps/agent/target/debug/ponter-agent`.
 
 ---
 
 ## 3. Running Services Locally
 
-Nền tảng bao gồm ba thành phần chính chạy đồng thời:
+The platform consists of three main components running concurrently:
 1. **Signaling Server & REST API** (`@ponter/server` - Node.js + Hono + SQLite)
 2. **Web Client** (`@ponter/web` - Vue 3 + Vite)
 3. **Native Desktop Agent Daemon** (`apps/agent` - Rust)
 
 ### 3.1 Start the Backend (Node.js + Hono + SQLite)
 
-Trong Terminal 1:
+In Terminal 1:
 
 ```bash
 pnpm --filter @ponter/server dev
 ```
 
 - **URL:** `http://127.0.0.1:8787`
-- Chạy Node.js server với SQLite in-memory (hoặc file local)
-- WebSocket server lắng nghe tại `ws://127.0.0.1:8787/api/ws/agent`
+- Runs Node.js server with SQLite in-memory (or local file)
+- WebSocket server listens at `ws://127.0.0.1:8787/api/ws/agent`
 - Health check:
   ```bash
   curl http://127.0.0.1:8787/health
@@ -69,25 +69,25 @@ pnpm --filter @ponter/server dev
 
 ### 3.2 Start the Web Application
 
-Trong Terminal 2:
+In Terminal 2:
 
 ```bash
 pnpm --filter @ponter/web dev
 ```
 
 - **URL:** `http://127.0.0.1:5173`
-- Khởi động Vite dev server với Hot Module Replacement (HMR)
-- Truy cập trong bất kỳ trình duyệt hiện đại nào
+- Starts Vite dev server with Hot Module Replacement (HMR)
+- Accessible in any modern browser
 
 ### 3.3 Register and Start the Desktop Agent
 
-Để kết nối một agent địa phương:
+To connect a local agent:
 
-1. **Đăng ký tài khoản**:
-   Điều hướng tới `http://127.0.0.1:5173/register` và tạo tài khoản.
+1. **Register an account**:
+   Navigate to `http://127.0.0.1:5173/register` and create an account.
 
-2. **Đăng ký agent**:
-   Trong web dashboard, click **Add Agent** để đăng ký host mới, hoặc dùng REST API:
+2. **Register the agent**:
+   In the web dashboard, click **Add Agent** to register a new host, or use the REST API:
    ```bash
    curl -X POST http://127.0.0.1:8787/api/agents \
      -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>" \
@@ -98,10 +98,10 @@ pnpm --filter @ponter/web dev
        "capabilities": ["terminal"]
      }'
    ```
-   Lưu ý `credential` trả về trong response (ví dụ: `ag_0123456789abcdef...`).
+   Note the `credential` returned in the response (e.g. `ag_0123456789abcdef...`).
 
-3. **Khởi động agent daemon**:
-   Trong Terminal 3:
+3. **Start the agent daemon**:
+   In Terminal 3:
    ```bash
    cargo run --manifest-path apps/agent/Cargo.toml -- \
      --agent-id agent-local-01 \
@@ -109,24 +109,24 @@ pnpm --filter @ponter/web dev
      --credential <AGENT_CREDENTIAL> \
      --stun ""
    ```
-   *(Truyền `--stun ""` giới hạn WebRTC ở candidate loopback cho testing offline).*
+   *(Passing `--stun ""` restricts WebRTC to loopback candidates for offline testing).*
 
-4. **Mở Terminal trong Web UI**:
-   Điều hướng tới `http://127.0.0.1:5173/workspace/agent-local-01` hoặc click **Open Terminal** trên dashboard. Phiên terminal PTY sống sẽ khởi động ngay lập tức qua WebRTC DataChannel.
+4. **Open Terminal in Web UI**:
+   Navigate to `http://127.0.0.1:5173/workspace/agent-local-01` or click **Open Terminal** on the dashboard. A live PTY terminal session starts immediately over the WebRTC DataChannel.
 
 ---
 
 ## 4. Verification & Testing
 
-Monorepo sử dụng Turborepo để cache task và orchestrate tests.
+The monorepo uses Turborepo to cache tasks and orchestrate tests.
 
 ### 4.1 Unit & Component Tests
 
 ```bash
-# Chạy tất cả unit tests trên toàn bộ workspace
+# Run all unit tests across the entire workspace
 pnpm -w test
 
-# Chạy tests cho @ponter/server cụ thể
+# Run tests specifically for @ponter/server
 pnpm --filter @ponter/server test
 
 # Rust unit tests
@@ -139,7 +139,7 @@ cargo test --manifest-path apps/agent/Cargo.toml
 # TypeScript & Vue compiler checks
 pnpm -w typecheck
 
-# ESLint trên web và TypeScript packages
+# ESLint on web and TypeScript packages
 pnpm -w lint
 
 # Rust Clippy (zero warnings)
@@ -158,7 +158,7 @@ cargo fmt --check --manifest-path apps/agent/Cargo.toml
 
 ### 4.4 Automated End-to-End (E2E) Integration Tests
 
-Cross-language E2E test khởi động một Node.js server thực, spawn native Rust agent binary, thực hiện DTLS/SCTP handshake qua `werift`, và xác minh PTY data bidirection:
+The cross-language E2E test spins up a real Node.js server, spawns the native Rust agent binary, performs the DTLS/SCTP handshake via `werift`, and verifies bidirectional PTY data:
 
 ```bash
 pnpm --filter @ponter/webrtc-core test:e2e
@@ -170,43 +170,43 @@ pnpm --filter @ponter/webrtc-core test:e2e
 
 ### 5.1 Database Schema (SQLite)
 
-Database schema được định nghĩa inline trong `apps/server/src/db/client.ts` thông qua hàm `runMigrations()`. Khi thay đổi schema:
+Database schema is defined inline in `apps/server/src/db/client.ts` via the `runMigrations()` function. When modifying schema:
 
-1. Cập nhật định nghĩa bảng trong `apps/server/src/db/client.ts` (hoặc `apps/server/src/db/schema.ts` nếu sử dụng Drizzle ORM).
-2. Chạy migration:
+1. Update the table definition in `apps/server/src/db/client.ts` (or `apps/server/src/db/schema.ts` if using Drizzle ORM).
+2. Generate migration:
    ```bash
    pnpm --filter @ponter/server db:generate
    ```
-3. Áp dụng migration:
+3. Apply migration:
    ```bash
-   # SQLite tự động migrate trên startup nên không cần bước thủ công
-   # Để kiểm tra schema:
+   # SQLite automatically migrates on startup so no manual step is needed
+   # To inspect the schema:
    sqlite3 data/remote.db ".schema"
    ```
 
-### 5.2 Thêm Shared Message Types
+### 5.2 Adding Shared Message Types
 
-Tất cả wire protocol types và data envelope definitions nằm trong `packages/shared/src/types/`:
+All wire protocol types and data envelope definitions reside in `packages/shared/src/types/`:
 - `signaling.ts`: Signal payloads (`offer`, `answer`, `candidate`)
 - `terminal.ts`: Terminal framing (`terminal-create`, `terminal-data`, `terminal-resize`, `terminal-close`, `terminal-exit`)
-- `agent.ts`: Agent status và credential definitions
+- `agent.ts`: Agent status and credential definitions
 
-Sau khi sửa `@ponter/shared`, các packages tự động resolve updated types qua pnpm workspace references. Chạy `pnpm -w typecheck` để kiểm tra độ nhất quán.
+After modifying `@ponter/shared`, consumer packages automatically resolve updated types through pnpm workspace references. Run `pnpm -w typecheck` to verify consistency.
 
 ### 5.3 Server Development Scripts
 
-| Script | Mô tả |
-|--------|-------|
-| `pnpm --filter @ponter/server dev` | Chạy server ở chế độ watch (tsx) |
-| `pnpm --filter @ponter/server build` | Compile TypeScript thành JS (dist/) |
-| `pnpm --filter @ponter/server start` | Chạy server từ dist/ đã build |
-| `pnpm --filter @ponter/server test` | Chạy vitest test suite |
-| `pnpm --filter @ponter/server lint` | ESLint check |
-| `pnpm --filter @ponter/server typecheck` | TypeScript type check |
+| Script | Description |
+|--------|-------------|
+| `pnpm --filter @ponter/server dev` | Run server in watch mode (tsx) |
+| `pnpm --filter @ponter/server build` | Compile TypeScript to JS (dist/) |
+| `pnpm --filter @ponter/server start` | Run server from compiled dist/ |
+| `pnpm --filter @ponter/server test` | Run vitest test suite |
+| `pnpm --filter @ponter/server lint` | Run ESLint check |
+| `pnpm --filter @ponter/server typecheck` | Run TypeScript type check |
 
 ### 5.4 Docker Development
 
-Để chạy server trong container cho testing:
+To run the server in a container for testing:
 
 ```bash
 # Local
@@ -220,43 +220,43 @@ docker compose -f docker-compose.local.yml up --build
 
 ### WebSocket Connection Debug
 
-Sử dụng `wscat` để kiểm tra kết nối WebSocket:
+Use `wscat` to verify WebSocket connectivity:
 
 ```bash
 npx wscat -c ws://127.0.0.1:8787/api/ws/agent
-# Gửi: {"type":"ping"}
-# Nhận: {"type":"pong"}
+# Send: {"type":"ping"}
+# Receive: {"type":"pong"}
 ```
 
 ### SQLite Debug
 
 ```bash
-# Mở database để query trực tiếp
+# Open database for direct querying
 sqlite3 data/remote.db
 
-# Xem bảng agents
+# Inspect agents table
 SELECT id, user_id, is_online, last_ping_at FROM agents;
 
-# Xem sessions
+# Inspect sessions
 SELECT id, user_id, agent_id, status FROM sessions;
 
-# Xem signals
+# Inspect signals
 SELECT session_id, type, created_at FROM signals ORDER BY created_at DESC LIMIT 10;
 
-# Xem revoked tokens
+# Inspect revoked tokens
 SELECT jti, expires_at FROM revoked_tokens;
 ```
 
 ### Server Logs
 
-Server log với độ chi tiết cao:
+Server logs with verbose detail:
 
 ```bash
-# Chạy với DEBUG=1 để xem log chi tiết
+# Run with DEBUG=1 for detailed logs
 DEBUG=1 pnpm --filter @ponter/server dev
 ```
 
-Log bao gồm:
+Logs include:
 - HTTP requests
 - WebSocket upgrade events
 - Signal dispatch (`pushToAgent`)

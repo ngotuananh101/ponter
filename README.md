@@ -97,7 +97,7 @@ cargo build --manifest-path apps/agent/Cargo.toml
 
 ### 3. Start Local Development Services
 
-Chạy từng thành phần trong terminal riêng:
+Run each component in a separate terminal:
 
 ```bash
 # Terminal 1: Start the Backend (Node.js + Hono + SQLite on http://127.0.0.1:8787)
@@ -114,24 +114,24 @@ cargo run --manifest-path apps/agent/Cargo.toml -- \
   --stun ""
 ```
 
-_Để biết chi tiết cách đăng ký agent và lấy credential, xem [Local Development Guide](docs/guides/development.md)._
+_For details on registering an agent and obtaining credentials, see the [Local Development Guide](docs/guides/development.md)._
 
 ### 4. Docker (Alternative)
 
 ```bash
-# Chạy backend trong Docker (local LAN setup — build từ source)
+# Run backend in Docker (local LAN setup — build from source)
 cd docker
 docker compose -f docker-compose.local.yml up --build
 ```
 
-Xem [Deployment Guide](docs/guides/deployment.md) để biết chi tiết về cả ba môi trường Docker Compose.
+See the [Deployment Guide](docs/guides/deployment.md) for details on all three Docker Compose environments.
 
 ---
 
 ## 🧪 Verification & Testing Suite
 
 ```bash
-# Chạy tất cả unit & integration tests
+# Run all unit & integration tests
 pnpm -w test
 
 # Server-specific tests
@@ -180,7 +180,7 @@ pnpm --filter @ponter/webrtc-core test:e2e
 - `terminal-close` — Graceful terminate session
 - `terminal-exit` — Agent notification with exit code
 
-_Xem đầy đủ thông số tại [Terminal Multiplexing & Wire Protocol Guide](docs/guides/terminal-protocol.md)._
+_See complete specifications in the [Terminal Multiplexing & Wire Protocol Guide](docs/guides/terminal-protocol.md)._
 
 ---
 
@@ -189,20 +189,20 @@ _Xem đầy đủ thông số tại [Terminal Multiplexing & Wire Protocol Guide
 ### Self-Hosted Backend (Docker)
 
 ```bash
-# Local LAN (build từ source)
+# Local LAN (build from source)
 cd docker
 docker compose -f docker-compose.local.yml up --build
 
-# Homelab (Cloudflare Tunnel) — pull image đã build sẵn từ Docker Hub
+# Homelab (Cloudflare Tunnel) — pull prebuilt image from Docker Hub
 docker compose -f docker-compose.tunnel.yml pull
 docker compose -f docker-compose.tunnel.yml up -d
 
-# Production VPS (Caddy + Coturn) — pull image đã build sẵn từ Docker Hub
+# Production VPS (Caddy + Coturn) — pull prebuilt image from Docker Hub
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Image `ngotuananh2101/ponter` được build và publish bởi workflow **Docker Publish** (GitHub Actions) cho cả `linux/amd64` lẫn `linux/arm64` — máy deploy chỉ cần `pull`, không build lại. Xem [Deployment Guide](docs/guides/deployment.md#31-deploy-phien-ban-moi).
+The `ngotuananh2101/ponter` image is built and published by the **Docker Publish** workflow (GitHub Actions) for both `linux/amd64` and `linux/arm64` — target machines only need to `pull`, without rebuilding. See the [Deployment Guide](docs/guides/deployment.md#31-deploying-new-versions).
 
 ### Web Frontend (Cloudflare Pages)
 
@@ -211,7 +211,7 @@ pnpm --filter @ponter/web build
 pnpm --filter @ponter/web exec wrangler deploy
 ```
 
-Xem [Deployment Guide](docs/guides/deployment.md) để biết chi tiết.
+See the [Deployment Guide](docs/guides/deployment.md) for full details.
 
 ---
 

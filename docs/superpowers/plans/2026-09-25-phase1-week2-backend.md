@@ -47,9 +47,9 @@
 - Produces: Working `@ponter/signaling` package capable of running `pnpm --filter @ponter/signaling dev`, `pnpm --filter @ponter/signaling test`, and `pnpm --filter @ponter/signaling typecheck`.
 - Produces: Root `pnpm test` orchestrated through Turborepo.
 
-- [ ] **Step 1: Cập nhật `pnpm-workspace.yaml` để cho phép build scripts cho `esbuild` và `workerd`**
+- [ ] **Step 1: Update `pnpm-workspace.yaml` to allow build scripts for `esbuild` and `workerd`**
 
-Cập nhật `pnpm-workspace.yaml`:
+Update `pnpm-workspace.yaml`:
 ```yaml
 packages:
   - 'apps/*'
@@ -61,9 +61,9 @@ allowBuilds:
   workerd: true
 ```
 
-- [ ] **Step 2: Cập nhật `workers/signaling/package.json`**
+- [ ] **Step 2: Update `workers/signaling/package.json`**
 
-Ghi nội dung vào `workers/signaling/package.json`:
+Write content to `workers/signaling/package.json`:
 ```json
 {
   "name": "@ponter/signaling",
@@ -96,7 +96,7 @@ Ghi nội dung vào `workers/signaling/package.json`:
 }
 ```
 
-- [ ] **Step 3: Tạo `workers/signaling/wrangler.toml`**
+- [ ] **Step 3: Create `workers/signaling/wrangler.toml`**
 
 Ghi file `workers/signaling/wrangler.toml`:
 ```toml
@@ -126,7 +126,7 @@ id = "local-cache-binding"
 enabled = true
 ```
 
-- [ ] **Step 4: Tạo `workers/signaling/tsconfig.json`**
+- [ ] **Step 4: Create `workers/signaling/tsconfig.json`**
 
 Ghi file `workers/signaling/tsconfig.json`:
 ```json
@@ -139,7 +139,7 @@ Ghi file `workers/signaling/tsconfig.json`:
 }
 ```
 
-- [ ] **Step 5: Tạo `workers/signaling/drizzle.config.ts`**
+- [ ] **Step 5: Create `workers/signaling/drizzle.config.ts`**
 
 Ghi file `workers/signaling/drizzle.config.ts`:
 ```typescript
@@ -152,7 +152,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 6: Tạo `workers/signaling/vitest.config.ts`**
+- [ ] **Step 6: Create `workers/signaling/vitest.config.ts`**
 
 Ghi file `workers/signaling/vitest.config.ts`:
 ```typescript
@@ -168,9 +168,9 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 7: Cập nhật `turbo.json` và root `package.json`**
+- [ ] **Step 7: Update `turbo.json` and root `package.json`**
 
-Thêm task `test` vào `turbo.json`:
+Add task `test` to `turbo.json`:
 ```json
 {
   "$schema": "https://turbo.build/schema.json",
@@ -184,7 +184,7 @@ Thêm task `test` vào `turbo.json`:
 }
 ```
 
-Thêm script `"test": "turbo run test"` vào root `package.json`:
+Add script `"test": "turbo run test"` to root `package.json`:
 ```json
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
@@ -193,17 +193,17 @@ Thêm script `"test": "turbo run test"` vào root `package.json`:
     "format": "prettier --write ."
 ```
 
-- [ ] **Step 8: Cài đặt dependencies và tái tạo lockfile**
+- [ ] **Step 8: Install dependencies and regenerate lockfile**
 
 Run:
 ```bash
 rm -rf node_modules pnpm-lock.yaml && pnpm install
 ```
-Expected: Cài đặt thành công toàn bộ dependencies cho `@ponter/signaling`, `esbuild` và `workerd` build scripts được approved qua `allowBuilds`.
+Expected: Successfully install all dependencies for `@ponter/signaling`; `esbuild` and `workerd` build scripts approved via `allowBuilds`.
 
-- [ ] **Step 9: Viết test failing đầu tiên cho Health Check (RED)**
+- [ ] **Step 9: Write first failing test for Health Check (RED)**
 
-Tạo file `workers/signaling/test/health.test.ts`:
+Create file `workers/signaling/test/health.test.ts`:
 ```typescript
 import { env } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
@@ -225,15 +225,15 @@ describe('Worker Scaffolding & Health', () => {
 });
 ```
 
-- [ ] **Step 10: Chạy test để xác nhận RED**
+- [ ] **Step 10: Run test to verify RED**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: FAIL vì `src/index.ts` chưa tồn tại hoặc chưa có route `/health`.
+Expected: FAIL because `src/index.ts` does not exist or lacks the `/health` route.
 
-- [ ] **Step 11: Tạo `workers/signaling/src/index.ts` tối thiểu (GREEN)**
+- [ ] **Step 11: Create minimal `workers/signaling/src/index.ts` (GREEN)**
 
 Ghi file `workers/signaling/src/index.ts`:
 ```typescript
@@ -256,7 +256,7 @@ app.get('/health', (c) => c.json({ status: 'ok' }));
 export default app;
 ```
 
-- [ ] **Step 12: Chạy test để xác nhận GREEN**
+- [ ] **Step 12: Run test to verify GREEN**
 
 Run:
 ```bash
@@ -264,13 +264,13 @@ pnpm --filter @ponter/signaling test
 ```
 Expected: `Test Files: 1 passed (1), Tests: 2 passed (2)`, exit code 0.
 
-- [ ] **Step 13: Chạy format, lint và typecheck**
+- [ ] **Step 13: Run format, lint, and typecheck**
 
 Run:
 ```bash
 pnpm format && pnpm lint && pnpm typecheck
 ```
-Expected: Exit code 0, không có lỗi linter/type.
+Expected: Exit code 0, no linter/type errors.
 
 - [ ] **Step 14: Commit**
 
@@ -290,13 +290,13 @@ git commit -m "feat(signaling): scaffold worker package with hono, vitest and cl
 - Generate: `workers/signaling/db/migrations/0000_initial.sql`
 
 **Interfaces:**
-- Produces: Exported Drizzle tables `users`, `devices`, `agents`, `sessions`, `signals`, `auditLogs` từ `workers/signaling/src/db/schema.ts`.
-- Produces: `getDb(d1: D1Database)` client factory từ `workers/signaling/src/db/client.ts`.
+- Produces: Exported Drizzle tables `users`, `devices`, `agents`, `sessions`, `signals`, `auditLogs` from `workers/signaling/src/db/schema.ts`.
+- Produces: `getDb(d1: D1Database)` client factory from `workers/signaling/src/db/client.ts`.
 - Produces: SQL migration file trong `workers/signaling/db/migrations/`.
 
-- [ ] **Step 1: Viết test failing cho Database Schema & Operations (RED)**
+- [ ] **Step 1: Write failing test for Database Schema & Operations (RED)**
 
-Tạo file `workers/signaling/test/db.test.ts`:
+Create file `workers/signaling/test/db.test.ts`:
 ```typescript
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -416,15 +416,15 @@ describe('D1 Database & Schema', () => {
 });
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận RED**
+- [ ] **Step 2: Run test to verify RED**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: FAIL vì `src/db/schema.ts` và `src/db/client.ts` chưa tồn tại.
+Expected: FAIL because `src/db/schema.ts` and `src/db/client.ts` do not exist.
 
-- [ ] **Step 3: Tạo `workers/signaling/src/db/schema.ts`**
+- [ ] **Step 3: Create `workers/signaling/src/db/schema.ts`**
 
 Ghi file `workers/signaling/src/db/schema.ts`:
 ```typescript
@@ -508,7 +508,7 @@ export type AgentSelect = typeof agents.$inferSelect;
 export type SessionSelect = typeof sessions.$inferSelect;
 ```
 
-- [ ] **Step 4: Tạo `workers/signaling/src/db/client.ts`**
+- [ ] **Step 4: Create `workers/signaling/src/db/client.ts`**
 
 Ghi file `workers/signaling/src/db/client.ts`:
 ```typescript
@@ -522,21 +522,21 @@ export function getDb(d1: D1Database) {
 export type Database = ReturnType<typeof getDb>;
 ```
 
-- [ ] **Step 5: Chạy test để xác nhận GREEN**
+- [ ] **Step 5: Run test to verify GREEN**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: Cả 2 test suites `health.test.ts` và `db.test.ts` pass 100%.
+Expected: Both test suites `health.test.ts` and `db.test.ts` pass 100%.
 
-- [ ] **Step 6: Sinh file migration ban đầu qua `drizzle-kit`**
+- [ ] **Step 6: Generate initial migration file via `drizzle-kit`**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling db:generate
 ```
-Expected: File `db/migrations/0000_*.sql` được tạo ra trong `workers/signaling/db/migrations/`.
+Expected: File `db/migrations/0000_*.sql` generated in `workers/signaling/db/migrations/`.
 
 - [ ] **Step 7: Commit**
 
@@ -561,9 +561,9 @@ git commit -m "feat(signaling): add drizzle d1 schema, client and initial migrat
 - Produces: `signRefreshToken(userId: string, secret: string, expiresIn?: number): Promise<{ token: string; jti: string; exp: number }>`
 - Produces: `verifyToken(token: string, secret: string): Promise<TokenPayload>`
 
-- [ ] **Step 1: Viết test failing cho Crypto & JWT (RED)**
+- [ ] **Step 1: Write failing test for Crypto & JWT (RED)**
 
-Tạo file `workers/signaling/test/crypto.test.ts`:
+Create file `workers/signaling/test/crypto.test.ts`:
 ```typescript
 import { describe, it, expect } from 'vitest';
 import { hashPassword, verifyPassword } from '../src/utils/crypto';
@@ -623,15 +623,15 @@ describe('Crypto & JWT Utilities', () => {
 });
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận RED**
+- [ ] **Step 2: Run test to verify RED**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: FAIL vì `src/utils/crypto.ts` và `src/utils/jwt.ts` chưa tồn tại.
+Expected: FAIL because `src/utils/crypto.ts` and `src/utils/jwt.ts` do not exist.
 
-- [ ] **Step 3: Tạo `workers/signaling/src/utils/crypto.ts`**
+- [ ] **Step 3: Create `workers/signaling/src/utils/crypto.ts`**
 
 Ghi file `workers/signaling/src/utils/crypto.ts`:
 ```typescript
@@ -731,7 +731,7 @@ export async function verifyPassword(password: string, serializedHash: string): 
 }
 ```
 
-- [ ] **Step 4: Tạo `workers/signaling/src/utils/jwt.ts`**
+- [ ] **Step 4: Create `workers/signaling/src/utils/jwt.ts`**
 
 Ghi file `workers/signaling/src/utils/jwt.ts`:
 ```typescript
@@ -790,13 +790,13 @@ export async function verifyToken(token: string, secret: string): Promise<TokenP
 }
 ```
 
-- [ ] **Step 5: Chạy test để xác nhận GREEN**
+- [ ] **Step 5: Run test to verify GREEN**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: Tất cả các test trong `crypto.test.ts` pass, exit code 0.
+Expected: All tests in `crypto.test.ts` pass, exit code 0.
 
 - [ ] **Step 6: Commit**
 
@@ -817,11 +817,11 @@ git commit -m "feat(signaling): add pbkdf2 password hashing and jwt token utilit
 - Create: `workers/signaling/test/middleware.test.ts`
 
 **Interfaces:**
-- Produces: `authMiddleware` bảo vệ các route yêu cầu xác thực, inject `user` và `payload` vào Hono Context.
-- Produces: `errorHandler` định dạng phản hồi lỗi chuẩn.
-- Produces: `corsMiddleware` xử lý CORS preflight và headers.
+- Produces: `authMiddleware` protects authenticated routes, injecting `user` and `payload` into Hono Context.
+- Produces: `errorHandler` formats standard error responses.
+- Produces: `corsMiddleware` handles CORS preflight and headers.
 
-- [ ] **Step 1: Tạo `workers/signaling/src/types.ts`**
+- [ ] **Step 1: Create `workers/signaling/src/types.ts`**
 
 Ghi file `workers/signaling/src/types.ts`:
 ```typescript
@@ -849,9 +849,9 @@ export type AppContext = {
 };
 ```
 
-- [ ] **Step 2: Viết test failing cho Middleware & Token Revocation (RED)**
+- [ ] **Step 2: Write failing test for Middleware & Token Revocation (RED)**
 
-Tạo file `workers/signaling/test/middleware.test.ts`:
+Create file `workers/signaling/test/middleware.test.ts`:
 ```typescript
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -942,15 +942,15 @@ describe('Auth Middleware & Token Revocation', () => {
 });
 ```
 
-- [ ] **Step 3: Chạy test để xác nhận RED**
+- [ ] **Step 3: Run test to verify RED**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: FAIL vì `auth.ts`, `error.ts` chưa được tạo.
+Expected: FAIL because `auth.ts` and `error.ts` have not been created.
 
-- [ ] **Step 4: Tạo `workers/signaling/src/middleware/error.ts`**
+- [ ] **Step 4: Create `workers/signaling/src/middleware/error.ts`**
 
 Ghi file `workers/signaling/src/middleware/error.ts`:
 ```typescript
@@ -1004,7 +1004,7 @@ export const errorHandler: ErrorHandler = (err, c) => {
 };
 ```
 
-- [ ] **Step 5: Tạo `workers/signaling/src/middleware/cors.ts`**
+- [ ] **Step 5: Create `workers/signaling/src/middleware/cors.ts`**
 
 Ghi file `workers/signaling/src/middleware/cors.ts`:
 ```typescript
@@ -1018,7 +1018,7 @@ export const corsMiddleware = cors({
 });
 ```
 
-- [ ] **Step 6: Tạo `workers/signaling/src/middleware/auth.ts`**
+- [ ] **Step 6: Create `workers/signaling/src/middleware/auth.ts`**
 
 Ghi file `workers/signaling/src/middleware/auth.ts`:
 ```typescript
@@ -1073,13 +1073,13 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => 
 };
 ```
 
-- [ ] **Step 7: Chạy test để xác nhận GREEN**
+- [ ] **Step 7: Run test to verify GREEN**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: Tất cả 4 test files (`health`, `db`, `crypto`, `middleware`) pass 100%.
+Expected: All 4 test files (`health`, `db`, `crypto`, `middleware`) pass 100%.
 
 - [ ] **Step 8: Commit**
 
@@ -1102,9 +1102,9 @@ git commit -m "feat(signaling): add auth middleware, token revocation check and 
 - Produces: `/api/auth/register`, `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`, `/api/auth/webauthn/*`
 - Produces: `/api/users/me`
 
-- [ ] **Step 1: Viết test failing cho Authentication Flow (RED)**
+- [ ] **Step 1: Write failing test for Authentication Flow (RED)**
 
-Tạo file `workers/signaling/test/auth.test.ts`:
+Create file `workers/signaling/test/auth.test.ts`:
 ```typescript
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -1330,15 +1330,15 @@ describe('Auth & Users REST API', () => {
 });
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận RED**
+- [ ] **Step 2: Run test to verify RED**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: FAIL vì các route `/api/auth/*` và `/api/users/*` chưa được cài đặt.
+Expected: FAIL because routes `/api/auth/*` and `/api/users/*` are not implemented.
 
-- [ ] **Step 3: Tạo `workers/signaling/src/routes/auth.ts`**
+- [ ] **Step 3: Create `workers/signaling/src/routes/auth.ts`**
 
 Ghi file `workers/signaling/src/routes/auth.ts`:
 ```typescript
@@ -1555,7 +1555,7 @@ auth.post('/webauthn/verify', (c) => {
 export default auth;
 ```
 
-- [ ] **Step 4: Tạo `workers/signaling/src/routes/users.ts`**
+- [ ] **Step 4: Create `workers/signaling/src/routes/users.ts`**
 
 Ghi file `workers/signaling/src/routes/users.ts`:
 ```typescript
@@ -1585,7 +1585,7 @@ users.get('/me', (c) => {
 export default users;
 ```
 
-- [ ] **Step 5: Cập nhật `workers/signaling/src/index.ts` để mount sub-routers và global error handler**
+- [ ] **Step 5: Update `workers/signaling/src/index.ts` to mount sub-routers and global error handler**
 
 Ghi file `workers/signaling/src/index.ts`:
 ```typescript
@@ -1609,13 +1609,13 @@ app.route('/api/users', users);
 export default app;
 ```
 
-- [ ] **Step 6: Chạy test để xác nhận GREEN**
+- [ ] **Step 6: Run test to verify GREEN**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: Tất cả 5 test files (`health`, `db`, `crypto`, `middleware`, `auth`) pass 100%.
+Expected: All 5 test files (`health`, `db`, `crypto`, `middleware`, `auth`) pass 100%.
 
 - [ ] **Step 7: Commit**
 
@@ -1640,9 +1640,9 @@ git commit -m "feat(signaling): implement auth routes, profile endpoint and weba
 - Produces: CRUD endpoints cho `/api/devices`, `/api/agents`, `/api/sessions`.
 - Produces: GitHub Actions CI executing `pnpm test` across all workspace projects.
 
-- [ ] **Step 1: Viết test failing cho Resources CRUD (RED)**
+- [ ] **Step 1: Write failing test for Resources CRUD (RED)**
 
-Tạo file `workers/signaling/test/resources.test.ts`:
+Create file `workers/signaling/test/resources.test.ts`:
 ```typescript
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -1874,15 +1874,15 @@ describe('Devices, Agents & Sessions REST API', () => {
 });
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận RED**
+- [ ] **Step 2: Run test to verify RED**
 
 Run:
 ```bash
 pnpm --filter @ponter/signaling test
 ```
-Expected: FAIL vì các route `/api/devices`, `/api/agents`, `/api/sessions` chưa tồn tại.
+Expected: FAIL because routes `/api/devices`, `/api/agents`, `/api/sessions` do not exist.
 
-- [ ] **Step 3: Tạo `workers/signaling/src/routes/devices.ts`**
+- [ ] **Step 3: Create `workers/signaling/src/routes/devices.ts`**
 
 Ghi file `workers/signaling/src/routes/devices.ts`:
 ```typescript
@@ -1953,7 +1953,7 @@ router.delete('/:id', async (c) => {
 export default router;
 ```
 
-- [ ] **Step 4: Tạo `workers/signaling/src/routes/agents.ts`**
+- [ ] **Step 4: Create `workers/signaling/src/routes/agents.ts`**
 
 Ghi file `workers/signaling/src/routes/agents.ts`:
 ```typescript
@@ -2029,7 +2029,7 @@ router.get('/:id', async (c) => {
 export default router;
 ```
 
-- [ ] **Step 5: Tạo `workers/signaling/src/routes/sessions.ts`**
+- [ ] **Step 5: Create `workers/signaling/src/routes/sessions.ts`**
 
 Ghi file `workers/signaling/src/routes/sessions.ts`:
 ```typescript
@@ -2122,7 +2122,7 @@ router.delete('/:id', async (c) => {
 export default router;
 ```
 
-- [ ] **Step 6: Cập nhật `workers/signaling/src/index.ts` để mount đầy đủ sub-routers**
+- [ ] **Step 6: Update `workers/signaling/src/index.ts` to mount all sub-routers**
 
 Ghi file `workers/signaling/src/index.ts`:
 ```typescript
@@ -2152,9 +2152,9 @@ app.route('/api/sessions', sessions);
 export default app;
 ```
 
-- [ ] **Step 7: Cập nhật `.github/workflows/ci.yml` để chạy test suite**
+- [ ] **Step 7: Update `.github/workflows/ci.yml` to run test suite**
 
-Sửa `.github/workflows/ci.yml` thêm bước chạy `pnpm test`:
+Edit `.github/workflows/ci.yml` to add `pnpm test` step:
 ```yaml
       - name: Lint workspace
         run: pnpm lint
@@ -2169,13 +2169,13 @@ Sửa `.github/workflows/ci.yml` thêm bước chạy `pnpm test`:
         run: pnpm test
 ```
 
-- [ ] **Step 8: Chạy toàn bộ chuỗi kiểm tra local**
+- [ ] **Step 8: Run full local verification chain**
 
 Run:
 ```bash
 pnpm format:check && pnpm lint && pnpm typecheck && pnpm test
 ```
-Expected: Cả 4 lệnh đều pass 100% với exit code 0.
+Expected: All 4 commands pass 100% with exit code 0.
 
 - [ ] **Step 9: Commit**
 

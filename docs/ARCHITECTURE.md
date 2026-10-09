@@ -1,42 +1,42 @@
 # ARCHITECTURE.md - Remote Access Platform
 
-## 📋 Mục lục
+## 📋 Table of Contents
 
-1. [Tổng quan](#1-tổng-quan)
-2. [Kiến trúc Hệ thống](#2-kiến-trúc-hệ-thống)
-3. [Cấu trúc Monorepo](#3-cấu-trúc-monorepo)
-4. [Chi tiết Thành phần](#4-chi-tiết-thành-phần)
+1. [Overview](#1-overview)
+2. [System Architecture](#2-system-architecture)
+3. [Monorepo Structure](#3-monorepo-structure)
+4. [Component Details](#4-component-details)
 5. [Database Schema](#5-database-schema)
 6. [API Specification](#6-api-specification)
-7. [Bảo mật](#7-bảo-mật)
-8. [Lộ trình Triển khai](#8-lộ-trình-triển-khai)
+7. [Security](#7-security)
+8. [Implementation Roadmap](#8-implementation-roadmap)
 9. [Development Workflow](#9-development-workflow)
 10. [Deployment](#10-deployment)
 11. [Performance Targets](#11-performance-targets)
 
 ---
 
-## 1. Tổng quan
+## 1. Overview
 
-### 1.1 Mục tiêu
+### 1.1 Objectives
 
-Xây dựng nền tảng remote access toàn diện cung cấp:
-- **Remote Terminal** với độ trễ < 10ms
+Build a comprehensive remote access platform providing:
+- **Remote Terminal** with < 10ms latency
 - **Remote Desktop** streaming 60fps
-- **Remote File Manager** với transfer tốc độ cao
-- **Zero-Trust Security** (xác thực đã có; định danh peer & E2EE tầng ứng dụng — Phase 5)
+- **Remote File Manager** with high-speed transfer
+- **Zero-Trust Security** (auth implemented; peer identity & application-layer E2EE — Phase 5)
 
-### 1.2 Nguyên tắc Thiết kế
+### 1.2 Design Principles
 
-| Nguyên tắc | Mô tả |
+| Principle | Description |
 |-----------|-------|
-| **Speed First** | Tối ưu mọi layer cho độ trễ thấp nhất |
-| **Security by Default** | Zero-trust (auth đã có); định danh peer & E2EE tầng ứng dụng — Phase 5 (không áp dụng cho video/file transfer) |
-| **Cross-Platform** | Web + Desktop + Mobile từ một codebase |
+| **Speed First** | Optimize every layer for minimal latency |
+| **Security by Default** | Zero-trust (auth implemented); peer identity & application-layer E2EE — Phase 5 (does not apply to video/file transfer) |
+| **Cross-Platform** | Web + Desktop + Mobile from a unified codebase |
 | **Scalable** | Self-hosted Node.js, P2P data transfer |
 | **Developer Friendly** | Monorepo, TypeScript-first, clear docs |
 
-### 1.3 Công nghệ Chọn
+### 1.3 Technology Choices
 
 ```mermaid
 mindmap
@@ -91,11 +91,11 @@ mindmap
 
 ---
 
-## 2. Kiến trúc Hệ thống
+## 2. System Architecture
 
-### 2.1 Kiến trúc Tổng thể
+### 2.1 Overall Architecture
 
-Nền tảng Remote Access sử dụng kiến trúc **self-hosted stateful server** với SQLite cục bộ và WebSocket in-memory dispatch. Frontend Vue 3 SPA vẫn được triển khai trên Cloudflare Pages (static hosting only).
+The Remote Access Platform uses a **self-hosted stateful server** architecture with local SQLite and in-memory WebSocket dispatch. The Vue 3 SPA frontend remains deployed on Cloudflare Pages (static hosting only).
 
 ```text
                                ┌────────────────────────────────────────┐
@@ -132,9 +132,9 @@ Nền tảng Remote Access sử dụng kiến trúc **self-hosted stateful serve
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Cơ chế WebSocket In-Memory Dispatch
+### 2.2 In-Memory WebSocket Dispatch Mechanism
 
-Do Node.js chạy như một quá trình duy nhất và bền vững, `agentConnections` trong `apps/server/src/routes/ws.ts` lưu trữ tham chiếu WebSocket hoạt động trực tiếp trong bộ nhớ RAM:
+Because Node.js runs as a single persistent process, `agentConnections` in `apps/server/src/routes/ws.ts` stores active WebSocket references directly in RAM:
 
 ```typescript
 export interface AgentConnection {
@@ -158,41 +158,41 @@ export function pushToAgent(agentId: string, message: SignalMessage): boolean {
 }
 ```
 
-Khi trình duyệt gửi offer (`POST /api/signal/offer`), `pushToAgent` sẽ ngay lập tức gửi tin nhắn tới WebSocket mở mà không cần qua các isolate, Durable Objects, hay giới hạn subrequest. Nếu không có socket nào kết nối, tín hiệu vẫn được lưu trong SQLite và agent có thể lấy thông qua polling.
+When the browser sends an offer (`POST /api/signal/offer`), `pushToAgent` immediately sends the message to the open WebSocket without crossing isolates, Durable Objects, or subrequest limits. If no socket is connected, signals remain stored in SQLite and the agent can retrieve them via polling.
 
-**Reconnect logic**: Khi một agent kết nối mới với credential hợp lệ, kết nối cũ sẽ bị đóng với mã 4409 ("Replaced by new connection"). Bảng `agent_connections` luôn duy trì một entry duy nhất cho mỗi `agentId`. Khi socket đóng, entry bị xóa và trạng thái `is_online` trong database được cập nhật thành `false`.
+**Reconnect logic**: When an agent establishes a new connection with valid credentials, the previous connection is closed with code 4409 ("Replaced by new connection"). The `agent_connections` table maintains a single entry per `agentId`. When the socket closes, the entry is removed and `is_online` status in the database updates to `false`.
 
 ### 2.2.1 Browser Signaling Socket (`/api/ws/browser`)
 
-Chiều ngược lại — server đẩy signal tới browser — cũng dùng WebSocket, thay cho vòng poll `GET /api/signal/poll/:sessionId` (200ms–2000ms). `RESTPollingTransport` vẫn tồn tại và là **fallback** khi WebSocket thất bại.
+In the reverse direction — server pushing signals to the browser — WebSockets are also used, replacing the `GET /api/signal/poll/:sessionId` polling loop (200ms–2000ms). `RESTPollingTransport` remains as a **fallback** if WebSocket fails.
 
-- **Ticket one-time**: browser không set được `Authorization` header cho WebSocket, nên nó mint một ticket qua `POST /api/ws/ticket` (JWT `type: 'access'`, `scope: 'ws-ticket'`, TTL 15s) rồi mở `GET /api/ws/browser?ticket=...`. `jti` được đăng ký trong registry in-memory (`utils/ws-ticket.ts`) và **consume đúng một lần** ở upgrade, nên ticket lộ qua access log không mở được socket thứ hai.
-- **Scope separation hai chiều**: `authMiddleware` từ chối mọi token `scope === 'ws-ticket'` (ticket không dùng được như access token), và `verifyWsTicket` chỉ chấp nhận ticket (access token không dùng được như ticket).
-- **Origin check (CSWSH)**: vì xác thực nằm ở query string, `handleBrowserUpgrade` so `Origin` với `CORS_ORIGIN` — cùng policy với REST. Khi `CORS_ORIGIN='*'` thì bỏ qua allowlist.
-- **Subscribe + replay**: client gửi `subscribe{sessionId, after}`; server replay các signal bỏ lỡ theo `rowid` (cursor trên wire là UUID `id`), giới hạn 200/trang (`hasMore` để phân trang) và chỉ trong 5 phút gần nhất. Trong lúc replay, live push cho session đó được **buffer** rồi flush sau, dedup theo `id` — đảm bảo không trùng/không sai thứ tự.
-- **Liveness**: server `ws.ping()` mỗi 30s (browser tự trả pong ở tầng giao thức, không phụ thuộc JS bị throttle ở tab background); quá 90s không pong → `close(4408)`.
-- **Fan-out**: `browserConnections: Map<userId, Set<BrowserConnection>>`; `pushToBrowser` gửi tới mọi tab đang subscribe session (trừ socket gửi), và `DELETE /api/sessions/:id` đẩy `error{SESSION_TERMINATED}` để tab đang chờ handshake biết dừng.
-- **Close codes**: 4401 (unauthorized), 4408 (pong timeout), 4409 (agent socket bị thay). Trần frame vào 256KB.
-- **Flag build-time**: `VITE_BROWSER_WS_SIGNALING` (`'true'` để bật). WebSocket transport tự reconnect với backoff + jitter và chuyển hẳn sang REST fallback sau `maxRetries`.
-- **Graceful shutdown**: SIGTERM đóng mọi signaling socket bằng close code 1001 rồi drain `server.close`; compose đặt `stop_grace_period: 15s` để Docker không SIGKILL giữa chừng.
+- **Single-use ticket**: The browser cannot set an `Authorization` header on WebSockets, so it mints a ticket via `POST /api/ws/ticket` (JWT `type: 'access'`, `scope: 'ws-ticket'`, TTL 15s) and opens `GET /api/ws/browser?ticket=...`. The `jti` is registered in an in-memory registry (`utils/ws-ticket.ts`) and **consumed exactly once** during upgrade, ensuring tickets leaked in access logs cannot open a second socket.
+- **Bidirectional scope separation**: `authMiddleware` rejects any token with `scope === 'ws-ticket'` (tickets cannot act as access tokens), and `verifyWsTicket` only accepts tickets (access tokens cannot act as tickets).
+- **Origin check (CSWSH)**: Because authentication is in the query string, `handleBrowserUpgrade` compares `Origin` against `CORS_ORIGIN` — same policy as REST. When `CORS_ORIGIN='*'`, allowlist checking is bypassed.
+- **Subscribe + replay**: The client sends `subscribe{sessionId, after}`; the server replays missed signals ordered by `rowid` (wire cursor is UUID `id`), capped at 200/page (`hasMore` for pagination) and limited to the last 5 minutes. During replay, live pushes for that session are **buffered** and flushed afterwards, deduplicated by `id` — ensuring no duplicates or out-of-order delivery.
+- **Liveness**: The server issues `ws.ping()` every 30s (browsers automatically respond with pong at the protocol level, independent of JS background tab throttling); exceeding 90s without pong triggers `close(4408)`.
+- **Fan-out**: `browserConnections: Map<userId, Set<BrowserConnection>>`; `pushToBrowser` broadcasts to all tabs subscribed to the session (except sender), and `DELETE /api/sessions/:id` pushes `error{SESSION_TERMINATED}` so tabs awaiting handshake terminate cleanly.
+- **Close codes**: 4401 (unauthorized), 4408 (pong timeout), 4409 (agent socket replaced). Inbound frame ceiling is 256KB.
+- **Build-time flag**: `VITE_BROWSER_WS_SIGNALING` (`'true'` to enable). WebSocket transport automatically reconnects with backoff + jitter and falls back permanently to REST after `maxRetries`.
+- **Graceful shutdown**: SIGTERM closes all signaling sockets with close code 1001 before draining `server.close`; compose sets `stop_grace_period: 15s` so Docker does not issue premature SIGKILL.
 
-### 2.3 SQLite Persistence với better-sqlite3
+### 2.3 SQLite Persistence with better-sqlite3
 
-- **Đường dẫn database**: Cấu hình qua biến môi trường `DATABASE_PATH` (mặc định `/app/data/remote.db`).
-- **WAL Mode**: `PRAGMA journal_mode = WAL` cho độ trù mật cao và khả năng đọc đồng thời.
-- **Tự động migration**: Sử dụng `drizzle-orm/better-sqlite3` với inline schema creation trong `apps/server/src/db/client.ts`.
-- **Token revocation**: Bảng `revoked_tokens` lưu `jti` (JWT ID) với `expires_at` để thu hẹp danh sách bị thu hồi.
+- **Database path**: Configured via the `DATABASE_PATH` environment variable (default `/app/data/remote.db`).
+- **WAL Mode**: `PRAGMA journal_mode = WAL` for high concurrency and read throughput.
+- **Automatic migrations**: Uses `drizzle-orm/better-sqlite3` with inline schema creation in `apps/server/src/db/client.ts`.
+- **Token revocation**: The `revoked_tokens` table stores `jti` (JWT ID) with `expires_at` to prune revoked records over time.
 
 ### 2.4 Dynamic STUN/TURN Credentials (`GET /api/webrtc/ice-servers`)
 
-Để vượt qua firewall và NAT đối xứng:
-- Trong môi trường production, coturn sử dụng thông tin xác thực RFC 5766 thời gian giới hạn:
+To traverse firewalls and symmetric NAT:
+- In production, coturn uses RFC 5766 time-limited credentials:
   - `username = "<expiry_unix_timestamp>:<user_id>"`
   - `credential = base64(HMAC-SHA1(TURN_SECRET, username))`
-- Endpoint `GET /api/webrtc/ice-servers` trả về cấu hình ICE server động.
-- Trong local mode, trả về STUN công cộng mặc định (`stun:stun.l.google.com:19302`).
+- The `GET /api/webrtc/ice-servers` endpoint returns dynamic ICE server configurations.
+- In local mode, returns default public STUN (`stun:stun.l.google.com:19302`).
 
-### 2.5 Sơ đồ Kết nối
+### 2.5 Connection Flow
 
 ```mermaid
 sequenceDiagram
@@ -240,9 +240,9 @@ sequenceDiagram
     end
 ```
 
-### 2.6 Kiến trúc Bảo mật
+### 2.6 Security Architecture
 
-> **⚠️ Trạng thái thực tế (2026-10-05):** sơ đồ dưới đây là kiến trúc phòng thủ mục tiêu. Các control sau **chưa được hiện thực**: IP whitelisting (B1), geo-blocking (B3), bot detection (B4), certificate pinning (C2), HSTS (C3), device match (E2). Một số control có hiện thực nhưng chỉ một phần: rate limiting (B2/D3) chỉ áp cho endpoint đăng nhập (`/api/auth/login`); TLS (C1) do Caddy/Let's Encrypt kết thúc nhưng không ghim TLS 1.3+. Đã hiện thực: JWT validation (D1), scope check (D2), session validity (E1), concurrent limit (E3).
+> **⚠️ Actual Status (2026-10-05):** The diagram below represents target defense architecture. The following controls are **not yet implemented**: IP whitelisting (B1), geo-blocking (B3), bot detection (B4), certificate pinning (C2), HSTS (C3), device match (E2). Several controls have partial implementation: rate limiting (B2/D3) applies only to login (`/api/auth/login`); TLS (C1) terminates at Caddy/Let's Encrypt but does not pin TLS 1.3+. Implemented: JWT validation (D1), scope check (D2), session validity (E1), concurrent limit (E3).
 
 ```mermaid
 flowchart TD
@@ -284,9 +284,9 @@ flowchart TD
 
 ---
 
-## 3. Cấu trúc Monorepo
+## 3. Monorepo Structure
 
-### 3.1 Tổng quan
+### 3.1 Overview
 
 ```
 ponter/
@@ -354,7 +354,7 @@ allowBuilds:
 
 ---
 
-## 4. Chi tiết Thành phần
+## 4. Component Details
 
 ### 4.1 Web App (VueJS)
 
@@ -416,7 +416,7 @@ allowBuilds:
 }
 ```
 
-**Cấu trúc thư mục:**
+**Directory structure:**
 ```
 apps/server/
 ├── package.json
@@ -451,14 +451,14 @@ apps/server/
 ### 4.3 Docker Packaging (`docker/`)
 
 **Dockerfile.server** — Multi-stage build:
-- **Stage 1 (`base`)**: `node:24-alpine` với Corepack/pnpm
-- **Stage 2 (`builder`)**: Cài đặt dependencies + biên dịch `@ponter/server`
-- **Stage 3 (`runner`)**: Chỉ production deps, `better-sqlite3` native bindings
+- **Stage 1 (`base`)**: `node:24-alpine` with Corepack/pnpm
+- **Stage 2 (`builder`)**: Install dependencies + compile `@ponter/server`
+- **Stage 3 (`runner`)**: Production deps only, `better-sqlite3` native bindings
 
 **Three Compose Setups:**
 1. `docker-compose.local.yml` — Local LAN testing (Google STUN, no TURN)
-2. `docker-compose.tunnel.yml` — Homelab với Cloudflare Tunnel
-3. `docker-compose.prod.yml` — Production VPS với Caddy + Coturn
+2. `docker-compose.tunnel.yml` — Homelab with Cloudflare Tunnel
+3. `docker-compose.prod.yml` — Production VPS with Caddy + Coturn
 
 ### 4.4 Desktop Agent (Rust)
 
@@ -490,7 +490,7 @@ futures-util = "0.7"
 
 ### 5.1 SQLite Schema (`apps/server/src/db/client.ts`)
 
-Database được tạo tự động qua inline SQL trong hàm `runMigrations()`:
+Database is created automatically via inline SQL in the `runMigrations()` function:
 
 ```sql
 -- Users table
@@ -768,11 +768,11 @@ export type BrowserErrorCode =
 
 ---
 
-## 7. Bảo mật
+## 7. Security
 
 ### 7.1 Zero-Trust Implementation
 
-Tự động hóa xác thực thông qua JWT (truy cập 15 phút, làm mới 7 ngày). Bảng `revoked_tokens` trong SQLite thay thế cho Cloudflare KV blacklist:
+Automated authentication via JWT (15-minute access, 7-day refresh). The `revoked_tokens` table in SQLite replaces Cloudflare KV blacklist:
 
 ```typescript
 // apps/server/src/middleware/auth.ts (actual implementation)
@@ -810,7 +810,7 @@ export const authMiddleware: MiddlewareHandler<AppContext> = async (c, next) => 
 
 ### 7.2 E2EE Implementation
 
-> **Trạng thái thực tế (2026-10-08):** Lịch khóa E2EE của WS1 — ECDH P-256 → HKDF-SHA256 → AES-GCM-256, khung `[12-byte IV][ct ‖ 16-byte tag]` — đã được triển khai ở cả hai peer: trình duyệt qua `packages/crypto/src/encrypt.ts` (Tuần 15) và agent Rust qua `ring` trong `apps/agent/src/e2ee.rs` (Tuần 16), dùng chung tệp véc-tơ `packages/crypto/test/vectors/e2ee-vectors.json`. Cả hai peer đều chạy lịch khóa đồng nhất; agent quảng bá và tiêu thụ capability `e2ee`, và hiện tại kênh dữ liệu terminal mang dữ liệu bảo mật end-to-end giữa trình duyệt và một agent đang chạy thực sự. Kể từ Phase 5, frame `desktop-input` cũng đi qua cùng khóa phiên WS1 khi capability `e2ee` được đàm phán (`packages/desktop-core/src/client.ts`); đường inject input vẫn phải qua cổng xác minh danh tính ADR-41 tại admission. Work list đã được audit adversarial xác minh: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md); thiết kế chi tiết `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §3.4/§3.5; ghi chép bảo mật WS1 `docs/security/2026-10-08-ws1-e2ee-rust.md`.
+> **Actual Status (2026-10-08):** WS1 E2EE key schedule — ECDH P-256 → HKDF-SHA256 → AES-GCM-256, frame `[12-byte IV][ct ‖ 16-byte tag]` — is implemented across both peers: browser via `packages/crypto/src/encrypt.ts` (Week 15) and Rust agent via `ring` in `apps/agent/src/e2ee.rs` (Week 16), sharing the vector file `packages/crypto/test/vectors/e2ee-vectors.json`. Both peers execute identical key schedules; agent advertises and consumes the `e2ee` capability, and the terminal data channel carries end-to-end secured data between browser and a live running agent. As of Phase 5, `desktop-input` frames also travel under the same WS1 session key when the `e2ee` capability is negotiated (`packages/desktop-core/src/client.ts`); input injection remains gated by ADR-41 peer identity verification at admission. The work list was verified via adversarial audit: [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md); detailed design in `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §3.4/§3.5; WS1 security notes in `docs/security/2026-10-08-ws1-e2ee-rust.md`.
 
 ```typescript
 // packages/crypto/src/session-key.ts
@@ -835,7 +835,7 @@ export class EncryptionManager {
 
 ### 7.3 Password Hashing
 
-Sử dụng PBKDF2-HMAC-SHA256 với Web Crypto API:
+Uses PBKDF2-HMAC-SHA256 with Web Crypto API:
 
 ```typescript
 // apps/server/src/utils/crypto.ts
@@ -868,9 +868,9 @@ export async function hashPassword(password: string, salt?: string): Promise<str
 
 ---
 
-## 8. Lộ trình Triển khai
+## 8. Implementation Roadmap
 
-### Phase 1: Foundation (Tuần 1-3)
+### Phase 1: Foundation (Weeks 1-3)
 
 ```mermaid
 gantt
@@ -891,132 +891,132 @@ gantt
     Implement login UI      :c3, after c2, 2d
 ```
 
-#### Tuần 1: Monorepo Setup
-- [x] Khởi tạo pnpm workspace
-- [x] Cấu hình Turborepo
-- [x] Tạo cấu trúc folders
+#### Week 1: Monorepo Setup
+- [x] Initialize pnpm workspace
+- [x] Configure Turborepo
+- [x] Create directory structure
 - [x] Setup TypeScript base config
-- [x] Tạo packages/shared với types
+- [x] Create packages/shared with types
 - [x] Setup ESLint + Prettier
-- [x] Tạo GitHub Actions CI
+- [x] Create GitHub Actions CI
 
-#### Tuần 2: Backend Foundation
-- [x] Tạo self-hosted Node.js backend (`apps/server`)
+#### Week 2: Backend Foundation
+- [x] Create self-hosted Node.js backend (`apps/server`)
 - [x] Setup SQLite + migrations (better-sqlite3 + Drizzle ORM)
 - [x] Implement JWT authentication
-- [x] Tạo API endpoints cơ bản
+- [x] Create basic API endpoints
 - [x] Token revocation via SQLite `revoked_tokens` table
-- [x] Viết unit tests
+- [x] Write unit tests
 
-#### Tuần 3: Frontend Foundation
-- [x] Tạo VueJS app với Vite
+#### Week 3: Frontend Foundation
+- [x] Create VueJS app with Vite
 - [x] Setup TailwindCSS + theme
 - [x] Implement routing (vue-router)
-- [x] Tạo auth pages (login/register)
+- [x] Create auth pages (login/register)
 - [x] Setup Pinia stores
 
-### Phase 2: WebRTC & Terminal (Tuần 4-6)
+### Phase 2: WebRTC & Terminal (Weeks 4-6)
 
-#### Tuần 4: WebRTC Core
-- [x] Tạo packages/webrtc-core
+#### Week 4: WebRTC Core
+- [x] Create packages/webrtc-core
 - [x] Implement signaling client
-- [x] Xử lý ICE/STUN/TURN
-- [x] Tạo data channels
-- [x] Test kết nối P2P
+- [x] Handle ICE/STUN/TURN
+- [x] Create data channels
+- [x] Test P2P connection
 
-#### Tuần 5: Desktop Agent - Terminal
-- [x] Tạo Rust agent — `apps/agent` (crate `ponter-agent`)
-- [x] Implement WebSocket signaling — `GET /api/ws/agent` trên `@ponter/server`
-- [x] Tích hợp portable-pty — PTY thật, 1 session
-- [x] Xử lý terminal I/O — kênh `terminal`
+#### Week 5: Desktop Agent - Terminal
+- [x] Create Rust agent — `apps/agent` (crate `ponter-agent`)
+- [x] Implement WebSocket signaling — `GET /api/ws/agent` on `@ponter/server`
+- [x] Integrate portable-pty — real PTY, 1 session
+- [x] Handle terminal I/O — `terminal` channel
 - [x] Implement session management
 
-#### Tuần 6: Terminal UI
-- [x] Tích hợp xterm.js
-- [x] Kết nối data channel với terminal
+#### Week 6: Terminal UI
+- [x] Integrate xterm.js
+- [x] Connect data channel to terminal
 - [x] Implement multi-tab terminal
 - [x] Handle resize events
 
-### Phase 3: Desktop Streaming (Tuần 7-9)
+### Phase 3: Desktop Streaming (Weeks 7-9)
 
-> **Trạng thái:** Tuần 7 là *thin slice* đã hoàn thành — xem view-only, ~720p @ 15fps, H.264 phần mềm (openh264). Tuần 8 đã hoàn thành — profile 1080p30 (nền 720p30), điều khiển bitrate thủ công, chọn nguồn, GCC auto-ABR. Còn lại của Phase 3 là Tuần 9 (điều khiển chuột/phím — Spec B) và codec phần cứng (spike ADR-25, chưa cam kết, dời sang Phase 6).
+> **Status:** Week 7 is a completed *thin slice* — view-only display, ~720p @ 15fps, software H.264 (openh264). Week 8 is completed — 1080p30 profile (720p30 baseline), manual bitrate controls, source selection, GCC auto-ABR. Remainder of Phase 3 is Week 9 (mouse/keyboard input — Spec B) and hardware codec (spike ADR-25, uncommitted, deferred to Phase 6).
 
-#### Tuần 7: Desktop Streaming — lát cắt mỏng (đã xong)
-- [x] `packages/webrtc-core` — seam media tuỳ chọn (`addTransceiver`/`onTrack`) + `media-channel.ts` (đóng ADR-06)
-- [x] `packages/desktop-core` — `DesktopClient` không phụ thuộc DOM
-- [x] Agent Rust — `desktop.rs` (capture → downscale → openh264) + nhánh trả lời desktop trong `rtc.rs`
-- [x] Web — tab desktop trong workspace, độc quyền theo agent (ADR-19)
-- [x] E2E cross-language (`desktop.e2e.test.ts`) + demo thủ công trên Chrome
+#### Week 7: Desktop Streaming — Thin Slice (Completed)
+- [x] `packages/webrtc-core` — optional media seams (`addTransceiver`/`onTrack`) + `media-channel.ts` (closes ADR-06)
+- [x] `packages/desktop-core` — DOM-independent `DesktopClient`
+- [x] Rust agent — `desktop.rs` (capture → downscale → openh264) + desktop answer branch in `rtc.rs`
+- [x] Web — desktop tab in workspace, exclusive per agent (ADR-19)
+- [x] Cross-language E2E (`desktop.e2e.test.ts`) + manual Chrome demo
 
-#### Tuần 8-9: Chất lượng & tương tác (sắp tới)
+#### Weeks 8-9: Quality & Interaction (Upcoming)
 
-##### Tuần 8: Chất lượng & chọn nguồn (đã xong)
-- [x] Profile chất lượng 1080p30 (nền 720p30), fallback theo sức chịu tải (ADR-24)
-- [x] Điều khiển bitrate thủ công, retarget tại chỗ không cần rebuild (ADR-23)
-- [x] GCC auto-ABR — mục tiêu, đã xác nhận bằng spike §3.7 (không phải tiêu chí nghiệm thu)
-- [x] Chọn màn hình/cửa sổ, đổi nguồn có giới hạn thời gian (ADR-22)
-- [ ] Codec phần cứng (H.264 hardware / AV1) — spike ADR-25, chưa cam kết
+##### Week 8: Quality & Source Selection (Completed)
+- [x] 1080p30 quality profile (720p30 baseline), fallback based on capacity (ADR-24)
+- [x] Manual bitrate controls, retargeting without rebuilding (ADR-23)
+- [x] GCC auto-ABR — target, verified via spike §3.7 (not an acceptance criterion)
+- [x] Display/window selection, source swapping with time limit (ADR-22)
+- [ ] Hardware codec (H.264 hardware / AV1) — spike ADR-25, uncommitted
 
-##### Tuần 9: Input forwarding (đã có cơ chế, CHƯA dùng được)
-- [ ] Điều khiển chuột & bàn phím (input forwarding) — cơ chế + wire đã xong, nhưng **mặc định TẮT** (ADR-29), chỉ bật bằng `--allow-input` cục bộ; chưa dùng được cho tới khi WS2/WS3 xong. (ADR-18 đã bị ADR-26 thay thế; cổng chặn bởi ADR-29)
-> Input chỉ mở được sau **WS2** (định danh peer — đóng H3) và **WS3** (enforce `approved` — đóng H2). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
+##### Week 9: Input Forwarding (Mechanism Ready, NOT YET Usable)
+- [ ] Mouse & keyboard control (input forwarding) — mechanism + wire complete, but **DEFAULT OFF** (ADR-29), enabled only via local `--allow-input`; not usable until WS2/WS3 complete. (ADR-18 superseded by ADR-26; gated by ADR-29)
+> Input unlocks only after **WS2** (peer identity — closes H3) and **WS3** (enforce `approved` — closes H2). See `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
 
-### Phase 4: File Transfer (Tuần 10-11)
+### Phase 4: File Transfer (Weeks 10-11)
 
-> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming xuống đĩa, hàng đợi truyền, dừng/tiếp tục, giao thức nhị phân lai tốc độ cao >10 MB/s) **hoàn thành** — streaming nhị phân lai (HDR 25 byte, payload 32 KiB), cửa sổ trượt 64 chunk, SW stream xuống đĩa, hàng đợi 1 up + 1 down với pause/resume `.ponter-part`, và phép toán sandbox `mkdir`/`delete`/`rename`.
+> **Status:** Week 10 is a completed *thin slice* — third session mode `Files` on a `files` data channel, bidirectional upload/download, single-root sandbox, refuse-at-offer gate. Week 11 (large files, disk streaming, transfer queue, pause/resume, high-speed hybrid binary protocol >10 MB/s) is **completed** — hybrid binary streaming (25-byte HDR, 32 KiB payload), 64-chunk sliding window, Service Worker disk streaming, 1 up + 1 down queue with pause/resume `.ponter-part`, and sandbox operations `mkdir`/`delete`/`rename`.
 
-#### Tuần 10: File Transfer — lát cắt mỏng (đã xong)
+#### Week 10: File Transfer — Thin Slice (Completed)
 
-- [x] Chế độ session thứ ba `Files` với channel label `files` — `classify_offer` thứ tự terminal → desktop → files (ADR-31)
-- [x] Cổng từ chối tại offer: không có `--files-root` (hoặc root không dùng được) ⇒ trả lời `approved: false`, đóng peer, không mở session — mặc định TẮT, chỉ mở bằng cờ cục bộ (ADR-32)
-- [x] Sandbox một root canonicalize + prefix check; wire path POSIX-relative; upload qua `{name}.ponter-part` + atomic rename, từ chối ghi đè `FILE_EXISTS` (ADR-33)
-- [x] Giao thức chunk 32 KiB + base64 dưới trần frame 64 KiB; cửa sổ trượt 16 chunk với ack tích luỹ; timeout 30 s; một transfer mỗi chiều (ADR-34)
-- [x] Web — tab `files` (FilesView: breadcrumb, danh sách, tải xuống khi click, upload vào thư mục hiện tại, tiến độ + huỷ, banner lỗi), độc quyền ba chiều theo agent (ADR-14)
-- [x] E2E cross-language (`files.e2e.test.ts`) — list, download byte-equal, upload byte-equal, huỷ giữa chừng, path escape, cổng đóng, ghi đè, upload khai báo quá cỡ
-- [x] Server **không đổi** — không cột, không endpoint, không migration (ADR-35)
+- [x] Third session mode `Files` with channel label `files` — `classify_offer` order: terminal → desktop → files (ADR-31)
+- [x] Refuse-at-offer gate: missing `--files-root` (or unserviceable root) ⇒ answers `approved: false`, closes peer, rejects session — DEFAULT OFF, enabled only via local CLI flag (ADR-32)
+- [x] Single-root sandbox with canonicalize + prefix check; wire path POSIX-relative; upload via `{name}.ponter-part` + atomic rename, rejects overwrite with `FILE_EXISTS` (ADR-33)
+- [x] 32 KiB chunking protocol + base64 under 64 KiB frame ceiling; 16-chunk sliding window with cumulative ack; 30s timeout; one transfer per direction (ADR-34)
+- [x] Web — `files` tab (FilesView: breadcrumb, file list, click-to-download, upload to current folder, progress + cancel, error banner), 3-way exclusivity per agent (ADR-14)
+- [x] Cross-language E2E (`files.e2e.test.ts`) — list, byte-equal download, byte-equal upload, mid-transfer cancel, path escape, closed gate, overwrite rejection, oversized upload
+- [x] Server **unchanged** — no columns, no endpoints, no migrations (ADR-35)
 
-#### Tuần 11: File Transfer — hardening, streaming, hàng đợi, pause/resume (đã xong)
+#### Week 11: File Transfer — Hardening, Streaming, Queue, Pause/Resume (Completed)
 
-- [x] Đa kênh nhị phân lai: text frame = JSON envelope (`files-list`…) + binary frame thô chunk payload, header 25 byte (type 1B + transfer ID 16B + chunk index 8B BE), payload ≤32 KiB — loại bỏ overhead base64 33% (ADR-36)
-- [x] Tốc độ >10 MB/s: cửa sổ trượt 64 chunk (~2 MiB in-flight), ack tích lũy mỗi 16 chunk hoặc 20 ms — đo ~11–14 MB/s loopback (ADR-37)
-- [x] Streaming xuống đĩa qua Service Worker: SW `/sw-files-download.js` bắt `/files-download-stream/:transferId/:filename`, stream `ReadableStream` xuống đích tải xuống của trình duyệt, fallback Blob ≤200 MB khi SW lỗi (ADR-38)
-- [x] Hàng đợi & pause/resume: 1 up + 1 down, `.ponter-part` dành cho upload lưu khi dừng (download read-only không tạo `.part`), resume dựa `fromChunkIndex` + length validation, janitor xóa parts >24 h (86400 s) (ADR-39)
-- [x] Phép toán sandbox: `files-mkdir`/`files-delete`/`files-rename`; root bị từ chối `PERMISSION_DENIED`, delete dir rỗng/phi rỗng cần `recursive`; rename không ghi đè `FILE_EXISTS` (ADR-40)
+- [x] Multiplexed hybrid binary protocol: text frame = JSON envelope (`files-list`…) + raw binary frame chunk payload, 25-byte header (type 1B + transfer ID 16B + chunk index 8B BE), payload ≤32 KiB — eliminates 33% base64 overhead (ADR-36)
+- [x] Speed >10 MB/s: 64-chunk sliding window (~2 MiB in-flight), cumulative ack every 16 chunks or 20 ms — measured ~11–14 MB/s loopback (ADR-37)
+- [x] Disk streaming via Service Worker: SW `/sw-files-download.js` intercepts `/files-download-stream/:transferId/:filename`, streams `ReadableStream` to browser download target, fallback to Blob ≤200 MB on SW failure (ADR-38)
+- [x] Queue & pause/resume: 1 up + 1 down, `.ponter-part` upload state preserved on pause (read-only download never creates `.part`), resume based on `fromChunkIndex` + length validation, janitor purges parts >24 h (86400 s) (ADR-39)
+- [x] Sandbox operations: `files-mkdir`/`files-delete`/`files-rename`; root operations rejected with `PERMISSION_DENIED`, empty/non-empty dir delete requires `recursive`; rename never overwrites `FILE_EXISTS` (ADR-40)
 
 
-> **Cổng files là trạng thái tạm, không phải bản vá bảo mật.** Peer chưa được định danh (H3); `approved` chưa được enforce (H2); traffic file chỉ được bảo vệ bởi DTLS (H11/M7/M8). Cổng giữ *hệ quả* (file access trên peer chưa xác minh) khỏi mặc định, nhưng các finding còn nguyên — đóng bởi **WS1/WS2/WS3** (Phase 5). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md` và spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
+> **Files gate is temporary mitigation, not a security patch.** Peer is unverified (H3); `approved` is unenforced (H2); file traffic is protected only by DTLS (H11/M7/M8). The gate prevents unverified access by default, but findings remain open — closed by **WS1/WS2/WS3** (Phase 5). See `docs/security/2026-10-01-e2ee-zero-trust-audit.md` and spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
 
-### Phase 5: E2EE & Security & Polish (Tuần 12-16)
+### Phase 5: E2EE & Security & Polish (Weeks 12-16)
 
-> **Đọc trước khi bắt đầu Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — audit adversarial E2EE/Zero-Trust (28 findings đã xác minh kèm evidence file:line) và work list chi tiết (WS1-WS5). Lịch tuần nguồn theo spec `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §1 (5 tuần: 12-16, 17-18, 19-20).
+> **Read before starting Phase 5:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](./security/2026-10-01-e2ee-zero-trust-audit.md) — adversarial E2EE/Zero-Trust audit (28 verified findings with file:line evidence) and detailed work list (WS1-WS5). Schedule follows spec `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §1 (5 weeks: 12-16, 17-18, 19-20).
 
-- [x] **WS1 — Application-layer E2EE:** hiện thực `EncryptionManager` (ECDH P-256 + AES-GCM-256), wire vào terminal-core và Rust agent
-- [x] **WS2 — Peer identity & signaling integrity:** xác minh DTLS fingerprint ngoài băng, keypair thật cho agent, chống MITM signaling
-- [x] **WS3 — Agent session hardening:** shell allowlist, enforce cờ `approved`, xử lý WS close code, validate `candidate.session_id`
-- [x] **WS4 — Auth hardening:** login rate-limit, refresh token rotation, JWT secret startup validation, WS revocation, siết `CORS_ORIGIN`
-- [x] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, bỏ default secret
+- [x] **WS1 — Application-layer E2EE:** implement `EncryptionManager` (ECDH P-256 + AES-GCM-256), wire into terminal-core and Rust agent
+- [x] **WS2 — Peer identity & signaling integrity:** out-of-band DTLS fingerprint verification, genuine keypairs for agents, mitigate signaling MITM
+- [x] **WS3 — Agent session hardening:** shell allowlist, enforce `approved` flag, handle WS close codes, validate `candidate.session_id`
+- [x] **WS4 — Auth hardening:** login rate-limiting, refresh token rotation, JWT secret startup validation, WS revocation, tighten `CORS_ORIGIN`
+- [x] **WS5 — Web/ops polish:** CSP + security headers, token storage, coturn hardening, eliminate default secrets
 
-### Phase 6: Low-latency Interaction (Tuần 17-18)
+### Phase 6: Low-latency Interaction (Weeks 17-18)
 
-> **6a đã hoàn thành (2026-10-07; `48edac1`).** **6b Latency đang triển khai** (`feat/phase6b-low-latency`).
+> **6a completed (2026-10-07; `48edac1`).** **6b Latency in progress** (`feat/phase6b-low-latency`).
 >
-> **Phase 6a Interactivity** — đã merged `main` @ `48edac1` (PR #49): ADR-41 (`verify_offer_identity` thành cổng admission cho mọi session mode — terminal, desktop, files, unknown); ADR-42 hai cổng input (`--allow-input` của operator VÀ peer đã xác minh; UI badge "Verified peer" + trạng thái Controlling/View only); ADR-43 rate cap 120 Hz; ADR-44 baseline latency input.
+> **Phase 6a Interactivity** — merged to `main` @ `48edac1` (PR #49): ADR-41 (`verify_offer_identity` hoisted as admission gate for all session modes — terminal, desktop, files, unknown); ADR-42 two-gate input (`--allow-input` from operator AND verified peer; UI badge "Verified peer" + Controlling/View only state); ADR-43 120 Hz rate cap; ADR-44 baseline input latency.
 >
-> **Phase 6b Latency** — ADR-45 cursor stream (position, shape, local echo, extrapolation ≤100ms); ADR-46 browser playout tuning (`jitterBufferTarget`/`playoutDelayHint`, default 100ms); ADR-47 bốn tầng đo latency (capture→encode rolling stats, present-time health, input-echo round-trip, same-host g2g); ADR-48 WebCodecs spike **FAIL + descope** (giữ `<video>` + tuning); ADR-49 Playwright spike **ADOPT**. P3 hardware-codec investigation (ADR-25) — tìm kiếm, không chốt. Chi tiết 6a: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`. Chi tiết 6b: `docs/superpowers/specs/2026-10-07-phase6b-low-latency-design.md`, demo: `docs/demos/2026-10-07-phase6b-low-latency-demo.md`. Spike evidence: `docs/spikes/2026-10-07-p1-playwright-smoke.md` (ADOPT), `docs/spikes/2026-10-07-p2-webcodecs-probe.md` (FAIL+DESCOPE), `docs/spikes/2026-10-07-p3-hardware-codec.md` (investigation).
+> **Phase 6b Latency** — ADR-45 cursor stream (position, shape, local echo, extrapolation ≤100ms); ADR-46 browser playout tuning (`jitterBufferTarget`/`playoutDelayHint`, default 100ms); ADR-47 four-layer latency measurement (capture→encode rolling stats, present-time health, input-echo round-trip, same-host g2g); ADR-48 WebCodecs spike **FAIL + descope** (retain `<video>` + tuning); ADR-49 Playwright spike **ADOPT**. P3 hardware-codec investigation (ADR-25) — exploratory, uncommitted. 6a details: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`. 6b details: `docs/superpowers/specs/2026-10-07-phase6b-low-latency-design.md`, demo: `docs/demos/2026-10-07-phase6b-low-latency-demo.md`. Spike evidence: `docs/spikes/2026-10-07-p1-playwright-smoke.md` (ADOPT), `docs/spikes/2026-10-07-p2-webcodecs-probe.md` (FAIL+DESCOPE), `docs/spikes/2026-10-07-p3-hardware-codec.md` (investigation).
 
-### Phase 7: Agent Desktop App (Tuần 19-20)
+### Phase 7: Agent Desktop App (Weeks 19-20)
 
-> **Phase 7 đã hoàn thành (2026-10-08; `591a53e`).** Đóng gói `ponter-agent` thành ứng dụng desktop: đăng nhập tài khoản, đăng ký/quản lý thiết bị (nối tiếp Admin Management), wizard setup trực quan (server, quyền màn hình, cổng input, auto-start), installer/tray/auto-update. **Framework CHỐT: Tauri v2.** Chi tiết: spec `docs/superpowers/specs/2026-10-07-phase7-agent-desktop-app-design.md` (ADR-50..58), plan `docs/superpowers/plans/2026-10-07-phase7-agent-desktop-app.md`.
+> **Phase 7 completed (2026-10-08; `591a53e`).** Packages `ponter-agent` into a desktop application: account login, device registration/management (following Admin Management), visual setup wizard (server, screen permissions, input gate, auto-start), installer/tray/auto-update. **Framework SELECTED: Tauri v2.** Details: spec `docs/superpowers/specs/2026-10-07-phase7-agent-desktop-app-design.md` (ADR-50..58), plan `docs/superpowers/plans/2026-10-07-phase7-agent-desktop-app.md`.
 >
-> **Đã merged `main`:** Task 0/0b scaffolding (dialog width, PR #52 `9f1efba` + fix #54 `26feeb4`); Task 1 L0 spike nhúng Tauri shell — **GATING PASS** (#53 `6fee3e4`, evidence `docs/spikes/2026-10-07-phase7-tauri-spike.md`); Task 2 tách `ponter-agent` thành lib + CLI mỏng (ADR-50, #55 `e830d28`); Task 3 Tauri backend skeleton + keychain wrapper (ADR-51/52, #56 `3f75487`); Task 4 login tài khoản + lưu token trong keychain (ADR-52, #57 `53846de`); Task 5 wizard setup với probe thật (ADR-53, #58 `85ef040`); Task 6 đăng ký/quản lý thiết bị (ADR-54, #59 `2e1fd5c`); Task 7 tray icon + lifecycle (ADR-55, #60 `a358622`); Task 8 per-platform auto-start (ADR-55, #61 `e607e13`); desktop UI sync sang shadcn-vue (#62 `a5dcc63`); L4 packaging + CI build 3-OS (ADR-56, #64 `1c82218`); frontend design audit Phase B (#65 `4526910`); ui-components shadcn-vue dùng chung (#68 `b3d1ce3`); L5 Task 11 auto-update có ký manifest (ADR-57, #67 `591a53e`).
+> **Merged to `main`:** Task 0/0b scaffolding (dialog width, PR #52 `9f1efba` + fix #54 `26feeb4`); Task 1 L0 spike embedded Tauri shell — **GATING PASS** (#53 `6fee3e4`, evidence `docs/spikes/2026-10-07-phase7-tauri-spike.md`); Task 2 split `ponter-agent` into lib + thin CLI (ADR-50, #55 `e830d28`); Task 3 Tauri backend skeleton + keychain wrapper (ADR-51/52, #56 `3f75487`); Task 4 account login + store tokens in keychain (ADR-52, #57 `53846de`); Task 5 setup wizard with live probes (ADR-53, #58 `85ef040`); Task 6 device registration/management (ADR-54, #59 `2e1fd5c`); Task 7 tray icon + lifecycle (ADR-55, #60 `a358622`); Task 8 per-platform auto-start (ADR-55, #61 `e607e13`); desktop UI sync to shadcn-vue (#62 `a5dcc63`); L4 packaging + CI build 3-OS (ADR-56, #64 `1c82218`); frontend design audit Phase B (#65 `4526910`); shared shadcn-vue ui-components (#68 `b3d1ce3`); L5 Task 11 auto-update with signed manifests (ADR-57, #67 `591a53e`).
 >
-> **Giới hạn:** macOS/Windows code-signing = **build-only phase này** (installer ship unsigned; hook ký đã comment trong `.github/workflows/build-desktop.yml`); release job chỉ chạy khi tag hoặc manual dispatch non-dry-run và **tạo GitHub Release công khai** — đường release (lắp `latest.json` + `.sig` per-platform) là **reasoned/CI-unproven ở PR time**, đã kiểm chứng bằng **harness local độc lập** (duyệt đệ quy `dist/` + fail-fast khi platform rỗng) nhưng vẫn phải xác nhận bằng tag/dispatch thật. Phụ thuộc WS2 (keypair thật cho agent) — đã đóng.
+> **Limitations:** macOS/Windows code-signing = **build-only in this phase** (installer ships unsigned; signing hooks commented in `.github/workflows/build-desktop.yml`); release job runs only on tag or manual dispatch non-dry-run and **creates public GitHub Releases** — release path (assembling `latest.json` + per-platform `.sig`) is **reasoned/CI-unproven at PR time**, verified via **independent local harness** (recursively scanning `dist/` + fail-fast on empty platforms), but still requires confirmation with live tag/dispatch. Dependent on WS2 (authentic keypair for agent) — closed.
 >
-> **ADR-57 correction:** manifest key là `{os}-{arch}-{bundle_type}` (vd `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **KHÔNG phải target triple**; signature nằm **per-platform** (không có signature top-level); `requireSignedVersion: true` đóng lỗ hổng anti-downgrade (plugin mặc định `false`).
+> **ADR-57 correction:** manifest key is `{os}-{arch}-{bundle_type}` (e.g. `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **NOT target triple**; signatures are **per-platform** (no top-level signature); `requireSignedVersion: true` eliminates anti-downgrade vulnerabilities (plugin defaults to `false`).
 
 ### Phase 8: Open-Source Self-Build + Provider-Selectable TURN
 
-> **Phase 8 (2026-10-08).** Hai workstream độc lập: **8a** bật self-build/self-host (build-from-source cho cả 4 app, fork & self-host guide, Docker self-publish, community files) — giữ nguyên bản sắc tác giả (ADR-60); **8b** TURN chọn nhà cung cấp qua `TURN_PROVIDER=coturn|cloudflare|none` (mặc định `coturn`, không đổi hành vi hiện hữu — ADR-62/63). Chi tiết: spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`. Merged: 8a `6a568c0`, 8b `1ebda79`.
+> **Phase 8 (2026-10-08).** Two independent workstreams: **8a** enable self-build/self-host (build-from-source for all 4 apps, fork & self-host guide, Docker self-publish, community files) — preserving author attribution (ADR-60); **8b** TURN provider selection via `TURN_PROVIDER=coturn|cloudflare|none` (default `coturn`, preserving existing behavior — ADR-62/63). Details: spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`. Merged: 8a `6a568c0`, 8b `1ebda79`.
 
 ---
 
@@ -1038,7 +1038,7 @@ cargo build --manifest-path apps/agent/Cargo.toml
 
 ### 9.2 Running Services Locally
 
-Chạy từng thành phần trong terminal riêng:
+Run each component in a separate terminal:
 
 ```bash
 # Terminal 1: Start the Backend (Node.js + Hono + SQLite)
@@ -1100,14 +1100,14 @@ cargo test --manifest-path apps/agent/Cargo.toml
 
 ### 10.1 Self-Hosted Backend (Docker Compose)
 
-Xem [Deployment Guide](guides/deployment.md) để hướng dẫn chi tiết cho ba môi trường:
+See [Deployment Guide](guides/deployment.md) for detailed instructions across three environments:
 - **Local LAN**: `docker-compose.local.yml`
 - **Homelab**: `docker-compose.tunnel.yml` (Cloudflare Tunnel)
 - **Production VPS**: `docker-compose.prod.yml` (Caddy + Coturn)
 
 ### 10.2 Web Frontend (Cloudflare Pages)
 
-Web client (`apps/web`) được triển khai như static assets trên Cloudflare Pages:
+The web client (`apps/web`) is deployed as static assets on Cloudflare Pages:
 
 ```bash
 # Build
@@ -1138,12 +1138,12 @@ cargo build --release --target x86_64-unknown-linux-gnu
 | Metric | Target | Method |
 |--------|--------|--------|
 | Terminal Latency | < 10ms | P2P DataChannel |
-| Desktop stream (Week 8) | 1080p30 (nền 720p30) | Software H.264 (openh264) |
-| Desktop stream (hardware, tương lai) | 60fps | H.264 hardware / AV1 — [spike ADR-25](docs/spikes/2026-10-07-p3-hardware-codec.md), **chưa chốt** |
-| File Transfer | > 10MB/s | Giao thức nhị phân lai cửa sổ trượt 64 chunk (ADR-36/37); đo **~11–14 MB/s cách ly trên loopback** (mẫu 11.16 / 14.12 / 11.08 / 14.28 / 14.19 / 13.82 MB/s; 50 MiB / 1600 chunk; `process.hrtime.bigint()` từ `files-download` đến `files-download-end`; agent built debug qua `cargo build`). Đo bởi E2E suite `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts` (test 3, assertion >10 MB/s). Lưu ý: giảm còn ~7–9 MB/s dưới tải đồng thời. |
-| Desktop Latency (capture → encode) | *(measured, not promised)* | ADR-47: `desktop-stats` rolling ring `captureMsP50` / `encodeMsP50`; đo bởi E2E `publishes rolling frame timing samples in desktop-stats (ADR-47)` trong `packages/webrtc-core/test/e2e/desktop.e2e.test.ts` |
-| Desktop Input-Echo Round-trip | *(measured, not promised)* | ADR-47: browser gửi `seq` → agent inject → agent echo `lastInputSeq` trên `desktop-cursor` → browser tính thời gian. Đo bởi E2E `measures the cursor input-echo round-trip and prints a summary (ADR-47)`; output `[6b echo] n=... min=...ms median=...ms max=...ms` |
-| Desktop Glass-to-Glass (loopback, 100/50/0ms) | *(measured, not promised)* | ADR-47: test-pattern decode — bar_x = (n*8)%1280; browser vẽ frame ra canvas, decode `n`, so sánh với `captureEpochMs(n)` trong `desktop-stats` ring. Cùng host (Date.now() domains align). Đo bởi P1 Playwright smoke ([ADOPT](docs/spikes/2026-10-07-p1-playwright-smoke.md)) hoặc thủ công |
+| Desktop stream (Week 8) | 1080p30 (720p30 baseline) | Software H.264 (openh264) |
+| Desktop stream (hardware, future) | 60fps | H.264 hardware / AV1 — [spike ADR-25](docs/spikes/2026-10-07-p3-hardware-codec.md), **uncommitted** |
+| File Transfer | > 10MB/s | Multiplexed hybrid binary protocol with 64-chunk sliding window (ADR-36/37); measured **~11–14 MB/s isolated on loopback** (samples: 11.16 / 14.12 / 11.08 / 14.28 / 14.19 / 13.82 MB/s; 50 MiB / 1600 chunks; `process.hrtime.bigint()` from `files-download` to `files-download-end`; agent built debug via `cargo build`). Verified by E2E suite `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts` (test 3, assertion >10 MB/s). Note: drops to ~7–9 MB/s under concurrent load. |
+| Desktop Latency (capture → encode) | *(measured, not promised)* | ADR-47: `desktop-stats` rolling ring `captureMsP50` / `encodeMsP50`; measured by E2E test `publishes rolling frame timing samples in desktop-stats (ADR-47)` in `packages/webrtc-core/test/e2e/desktop.e2e.test.ts` |
+| Desktop Input-Echo Round-trip | *(measured, not promised)* | ADR-47: browser sends `seq` → agent injects → agent echoes `lastInputSeq` on `desktop-cursor` → browser calculates elapsed time. Measured by E2E test `measures the cursor input-echo round-trip and prints a summary (ADR-47)`; output `[6b echo] n=... min=...ms median=...ms max=...ms` |
+| Desktop Glass-to-Glass (loopback, 100/50/0ms) | *(measured, not promised)* | ADR-47: test-pattern decode — bar_x = (n*8)%1280; browser renders frame to canvas, decodes `n`, compares against `captureEpochMs(n)` in `desktop-stats` ring. Same host (Date.now() domains aligned). Measured by P1 Playwright smoke ([ADOPT](docs/spikes/2026-10-07-p1-playwright-smoke.md)) or manual run |
 | Connection Time | < 500ms | 0-RTT QUIC |
 | Memory Usage | < 100MB | Optimized agent |
 | Bundle Size | < 5MB | Tree-shaking |
@@ -1152,7 +1152,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
 
 ## 🤝 Contributing
 
-Xem [CONTRIBUTING.md](./CONTRIBUTING.md) để biết hướng dẫn chi tiết.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for detailed guidelines.
 
 ---
 

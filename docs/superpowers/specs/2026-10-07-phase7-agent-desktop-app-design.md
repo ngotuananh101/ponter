@@ -1,7 +1,7 @@
 # Phase 7: Agent Desktop App — Design Spec
 
 - **Status:** Draft (owner-approved design 2026-10-07; spec pending review)
-- **Phase:** 7 — Agent Desktop App (roadmap Tuần 19-20; `docs/ARCHITECTURE.md` §8)
+- **Phase:** 7 — Agent Desktop App (roadmap Weeks 19-20; `docs/ARCHITECTURE.md` §8)
 - **Owner decisions (2026-10-07):** embed runtime (refactor to lib); all three platforms (Linux + macOS + Windows); full scope including installer/tray/auto-update; account login = existing email/password + OS keychain; auto-update = Tauri updater + signed manifest + GitHub Releases.
 - **Related:** `docs/ARCHITECTURE.md` §8 (Phase 7 stub), §3 (tech stack: Tauri 2.0), §7 (security); `apps/agent/src/main.rs` (CLI to refactor); `apps/agent/src/identity.rs` (WS2 Ed25519 identity); `apps/server/src/routes/agents.ts` (device registration, one-time credential); `apps/server/src/routes/auth.ts` (`POST /api/auth/login`); `.github/workflows/build-agent.yml` (existing 6-target agent matrix); `.github/workflows/ci-node.yml` (already path-filtered on `apps/desktop/**`).
 
@@ -139,7 +139,7 @@ The agent's existing platform limitations carry over verbatim: Wayland capture i
 | `apps/web/src/components/security/EncryptionByChannelDialog.vue` | **Edit** — widen the dialog (owner request; see §5.1). |
 
 ### 5.1 Widening the "Encryption by Channel" dialog (owner request, 2026-10-07)
-The owner asked for the dialog to be **wider horizontally** ("rộng thêm một chút"). The width override must use the **same `sm:` variant** as the generated `DialogContent` default: the default is `sm:max-w-md`, and an unprefixed `max-w-*` sits in a different tailwind-merge group, so it does not replace the default and `sm:max-w-md` still wins at ≥640px. The dialog therefore passes `class="sm:max-w-2xl"` on `DialogContent` — tailwind-merge replaces the default, giving an effective width of 42rem (2xl) at ≥640px. The width test pins this merge-replacement (contains `sm:max-w-2xl`; not `sm:max-w-md`; not `max-w-3xl`; keeps the mobile cap `max-w-[calc(100%-2rem)]`). This is a small, independent task and is **not** part of the Phase 7 runtime work — it ships first.
+The owner asked for the dialog to be **wider horizontally** ("a bit wider"). The width override must use the **same `sm:` variant** as the generated `DialogContent` default: the default is `sm:max-w-md`, and an unprefixed `max-w-*` sits in a different tailwind-merge group, so it does not replace the default and `sm:max-w-md` still wins at ≥640px. The dialog therefore passes `class="sm:max-w-2xl"` on `DialogContent` — tailwind-merge replaces the default, giving an effective width of 42rem (2xl) at ≥640px. The width test pins this merge-replacement (contains `sm:max-w-2xl`; not `sm:max-w-md`; not `max-w-3xl`; keeps the mobile cap `max-w-[calc(100%-2rem)]`). This is a small, independent task and is **not** part of the Phase 7 runtime work — it ships first.
 
 ---
 

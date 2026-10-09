@@ -1184,9 +1184,9 @@ git commit -m "test(e2e): measure the input-latency baseline for Phase 6b (ADR-4
 - [ ] **Step 1: ARCHITECTURE §8.** Replace the Phase 6 stub with the split (Vietnamese, matching the file's convention):
 
 ```markdown
-### Phase 6: Low-latency Interaction (Tuần 17-18)
+### Phase 6: Low-latency Interaction (Weeks 17-18)
 
-> **6a đã hoàn thành (2026-10-07), 6b chưa thiết kế.** Phase 6 tách đôi: **6a Interactivity** đóng carry-forward C1 (ADR-41: `verify_offer_identity` thành cổng admission cho mọi session mode — terminal, desktop, files, unknown), mở cổng input ADR-29 theo mô hình hai cổng (ADR-42: `--allow-input` của operator VÀ peer đã xác minh; UI hiển thị badge "Verified peer" + trạng thái Controlling/View only), thêm rate cap 120 Hz phía agent (ADR-43) và đo baseline latency input cho 6b (ADR-44). **6b Latency** (WebCodecs low-latency, `playoutDelayHint`/jitter buffer, cursor prediction, kết quả spike codec phần cứng ADR-25) sẽ có spec riêng. Chi tiết: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`.
+> **6a completed (2026-10-07), 6b not yet designed.** Phase 6 is split: **6a Interactivity** closes carry-forward C1 (ADR-41: `verify_offer_identity` as admission gate for all session modes — terminal, desktop, files, unknown), opens the ADR-29 input gate using a two-gate model (ADR-42: operator `--allow-input` AND peer verified; UI shows "Verified peer" badge + Controlling/View only status), adds a 120 Hz rate cap on the agent (ADR-43), and measures baseline input latency for 6b (ADR-44). **6b Latency** (low-latency WebCodecs, `playoutDelayHint`/jitter buffer, cursor prediction, ADR-25 hardware codec spike findings) will have its own spec. Details: `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md`, demo: `docs/demos/2026-10-07-phase6a-interactive-desktop-demo.md`.
 ```
 
 - [ ] **Step 2: Mark C1 closed in the WS1 Rust doc.** In the `Desktop input: confidentiality-covered, but not identity-bound` block, replace the `**Mandatory carry-forward:**` sentence with:
@@ -1201,18 +1201,18 @@ git commit -m "test(e2e): measure the input-latency baseline for Phase 6b (ADR-4
 
   - in the options table (§3), after the `--files-root` row:
     ```
-          --allow-input              Bật inject chuột/phím từ peer (cổng ADR-29/ADR-42). MẶC ĐỊNH TẮT:
-                                     chỉ khi bật VÀ peer đã xác minh danh tính thì input mới được inject
+          --allow-input              Enable mouse/keyboard injection from peer (ADR-29/ADR-42 gate). DEFAULT OFF:
+                                     only when enabled AND peer identity is verified will input be injected
                                      [env: AGENT_ALLOW_INPUT]
     ```
   - replace the security note under the table with the two-gate statement:
     ```markdown
-    > **Bảo mật:** input injection yêu cầu **hai cổng** (ADR-42): (A) cờ `--allow-input` do operator bật cục bộ — peer từ xa không thể bật; và (B) peer phải vượt qua xác minh danh tính tại admission (ADR-41, Phase 6a). Thiếu một trong hai, mọi frame input bị drop. Agent luôn cho phép chế độ xem-only. Từ Phase 6a, peer của **mọi** session (kể cả files/desktop) đều được xác minh danh tính trước khi agent trả lời offer.
+    > **Security:** input injection requires **two gates** (ADR-42): (A) the `--allow-input` flag enabled locally by the operator — remote peers cannot enable it; and (B) the peer must pass identity verification at admission (ADR-41, Phase 6a). Without both, all input frames are dropped. The agent always allows view-only mode. As of Phase 6a, peers for **all** sessions (including files/desktop) have their identity verified before the agent answers an offer.
     ```
   - in §4.3, after the `AGENT_FILES_ROOT` comment:
     ```env
-    # Tùy chọn: bật inject chuột/phím (mặc định TẮT — cổng A của ADR-42).
-    # Chỉ có hiệu lực khi peer đã xác minh danh tính (cổng B).
+    # Optional: enable mouse/keyboard injection (DEFAULT OFF — gate A of ADR-42).
+    # Only takes effect when peer identity is verified (gate B).
     # AGENT_ALLOW_INPUT=true
     ```
 
