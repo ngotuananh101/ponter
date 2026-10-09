@@ -120,13 +120,19 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-/** Read a CryptoKey from an object store by key, or null if absent. */
-function readKey(
+/**
+ * Read a value from an object store by key, or null if absent.
+ *
+ * Shared by `readKey` (CryptoKey) and `readString` (string): the only
+ * difference is the `isValid` type guard on the resolved result.
+ */
+function readValue<T>(
   db: IDBDatabase,
   storeName: string,
   key: string,
   failureMessage: string,
-): Promise<CryptoKey | null> {
+  isValid: (result: unknown) => result is T,
+): Promise<T | null> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const fail = (reason: DOMException | null) => {
@@ -144,13 +150,25 @@ function readKey(
       settled = true;
       closeQuietly(db);
       const result: unknown = request.result;
-      resolve(result instanceof CryptoKey ? result : null);
+      resolve(isValid(result) ? result : null);
     };
     request.onerror = () => fail(request.error);
     // Without this, a transaction aborted before the request settles would
     // leave the returned promise pending forever.
     tx.onabort = () => fail(tx.error);
   });
+}
+
+/** Read a CryptoKey from an object store by key, or null if absent. */
+function readKey(
+  db: IDBDatabase,
+  storeName: string,
+  key: string,
+  failureMessage: string,
+): Promise<CryptoKey | null> {
+  return readValue(db, storeName, key, failureMessage, (r): r is CryptoKey =>
+    r instanceof CryptoKey,
+  );
 }
 
 /** Generate an ECDH P-256 keypair for a new user identity. */
@@ -379,28 +397,9 @@ function readString(
   key: string,
   failureMessage: string,
 ): Promise<string | null> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = (reason: DOMException | null) => {
-      if (settled) return;
-      settled = true;
-      closeQuietly(db);
-      reject(toError(reason, failureMessage));
-    };
-
-    const tx = db.transaction(storeName, 'readonly');
-    const request = tx.objectStore(storeName).get(key);
-
-    request.onsuccess = () => {
-      if (settled) return;
-      settled = true;
-      closeQuietly(db);
-      const result: unknown = request.result;
-      resolve(typeof result === 'string' ? result : null);
-    };
-    request.onerror = () => fail(request.error);
-    tx.onabort = () => fail(tx.error);
-  });
+  return readValue(db, storeName, key, failureMessage, (r): r is string =>
+    typeof r === 'string',
+  );
 }
 
 /**
