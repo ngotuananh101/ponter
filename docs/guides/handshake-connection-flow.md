@@ -60,7 +60,7 @@ Numbered steps trace the code path for one terminal tab opening against one agen
    - Sets `isOnline=true, lastPingAt=NOW` (`ws.ts:860`).
    - Registers a `message` handler → `handleInboundMessage` (`ws.ts:865`).
 
-10. **Agent receives the offer.** `handleInboundMessage` (`ws.ts:1000`) size-checks the frame (`<=256KB`, `:1011`), JSON-parses, validates the envelope shape, and — for a `signal` frame — calls `parseSignalMessage` (`ws.ts:1143`). It looks up the session by id **and** checks both `userId` and `agentId` match the connection's tenancy (`ws.ts:467`), enforces `pending|active` status (`ws.ts:492`), stores it via `recordSignal`, then echoes it back: `connection.socket.send({ type:'signal', data: message })` (`ws.ts:1106`). The echo is how the agent correlates the persisted row.
+10. **Agent receives the offer.** `handleInboundMessage` (`ws.ts:1000`) size-checks the frame (`<=256KB`, `:1011`), JSON-parses, validates the envelope shape, and — for a `signal` frame — calls `parseSignalMessage` (`ws.ts:1143`). It looks up the session by id **and** checks both `userId` and `agentId` match the connection's tenancy (`ws.ts:1071`), enforces `pending|active` status (`ws.ts:1081`), stores it via `recordSignal`, then echoes it back: `connection.socket.send({ type:'signal', data: message })` (`ws.ts:1106`). The echo is how the agent correlates the persisted row.
 
 11. **Agent sends the answer (with buffering).** The `SignalClient.run()` loop (`signal.rs:401`) reads inbound frames from the socket stream and forwards them to the `supervise_sessions` loop (`lib.rs:784`). When the supervisor sees an `Offer`, it calls `run_one_session` (`lib.rs:965`):
     - Builds the peer from the pushed ICE servers (`rtc::build_peer`, `rtc.rs:405`).
@@ -227,7 +227,7 @@ The `--stun` CLI flag (`main.rs:54`, default `stun:stun.l.google.com:19302`) is 
 
 | # | Failure | Where it happens | Behavior |
 |---|---------|------------------|----------|
-| F1 | ICE candidate arrives before remote description | Both peers | **Browser**: `connection.ts:69` — buffered in `pendingCandidates` (cap 64 at `connection.ts:52`; oldest dropped at `connection.ts:306`). **Agent**: `rtc.rs:863` — `apply_candidate` returns `Ok(false)`, pushes to `pending` (`rtc.rs:865`). Flushed after `setRemoteDescription`. |
+| F1 | ICE candidate arrives before remote description | Both peers | **Browser**: `connection.ts:69` — buffered in `pendingCandidates` (cap 64 at `connection.ts:52`; oldest dropped at `connection.ts:305`). **Agent**: `rtc.rs:852` — `apply_candidate` returns `Ok(false)`, pushes to `pending` (`rtc.rs:865`). Flushed after `setRemoteDescription`. |
 | F2 | Offerer data channel created before offer | Browser | `connection.ts:161` — channel pre-created in constructor, so it is registered before `peer.start()` creates the offer. |
 | F3 | Remote candidate applied before offer | Agent | Same buffer as F1, flushed in `run_one_session` after `answer_offer` (`lib.rs:1123`). |
 | F4 | Empty ICE server config | Agent | `build_peer` (`rtc.rs:405`) — empty pushed list falls back to `--stun`. Empty `--stun` is the air-gapped path. |
