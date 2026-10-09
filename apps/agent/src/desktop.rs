@@ -495,6 +495,154 @@ fn run_capture<R: CaptureRecorder>(
     }
 }
 
+/// The default poll interval (33 ms ≈ 30 Hz) for the `capture_image` fallback
+/// path (Task 3), matching the streaming ticker so `drain_latest` has a fresh
+/// frame each tick.
+#[allow(dead_code)]
+const GDI_DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Parse `AGENT_DESKTOP_POLL_INTERVAL_MS` into a `Duration`; returns the
+/// default on an absent, empty, zero, or unparseable value.
+///
+/// Split from `gdi_poll_interval` so the parsing logic is unit-testable on
+/// every platform without touching the process environment.
+#[allow(dead_code)]
+fn parse_poll_interval(raw: Option<String>) -> Duration {
+    raw.and_then(|s| s.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(GDI_DEFAULT_POLL_INTERVAL)
+}
+
+/// The poll interval for the `capture_image` fallback path (Task 3).
+///
+/// Reads `AGENT_DESKTOP_POLL_INTERVAL_MS`; defaults to 33 ms (~30 Hz) which
+/// matches the streaming ticker so `drain_latest` has a fresh frame each tick.
+/// A value of 0 or an unparseable string is treated as the default.
+#[cfg(windows)]
+fn gdi_poll_interval() -> Duration {
+    parse_poll_interval(std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS").ok())
+}
+
+/// Abstraction over image capture for the polling fallback loop,
+/// enabling unit tests without physical monitors or Windows APIs.
+#[allow(dead_code)]
+pub(crate) trait ImageCapturer {
+    fn capture_image(&mut self) -> std::result::Result<image::RgbaImage, String>;
+}
+
+impl ImageCapturer for xcap::Monitor {
+    fn capture_image(&mut self) -> std::result::Result<image::RgbaImage, String> {
+        (self as &xcap::Monitor)
+            .capture_image()
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The polling loop for the `capture_image` fallback path.
+/// Generic over `ImageCapturer` to permit testing with synthetic capturers.
+#[allow(dead_code)]
+fn run_capture_image_poll_loop<C: ImageCapturer>(
+    mut capturer: C,
+    ready_tx: oneshot::Sender<std::result::Result<(), String>>,
+    frame_tx: std::sync::mpsc::Sender<xcap::Frame>,
+    stop_rx: std::sync::mpsc::Receiver<()>,
+    poll_interval: Duration,
+    first_frame_timeout: Duration,
+) {
+    let poll_start = Instant::now();
+    let mut seq: u64 = 0;
+    // `ready_tx` is wrapped in `Option` because `oneshot::Sender::send`
+    // takes ownership; we only send once (the first-frame handshake).
+    let mut ready_tx = Some(ready_tx);
+
+    loop {
+        match capturer.capture_image() {
+            Ok(image) => {
+                let frame = xcap::Frame::new(image.width(), image.height(), image.into_raw());
+                if seq == 0 {
+                    let elapsed = poll_start.elapsed();
+                    if elapsed > first_frame_timeout {
+                        if let Some(tx) = ready_tx.take() {
+                            let _ = tx.send(Err(format!(
+                                "polling capture produced no frame within {first_frame_timeout:?}"
+                            )));
+                        }
+                        return;
+                    }
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(Ok(()));
+                    }
+                }
+                if frame_tx.send(frame).is_err() {
+                    return; // ScreenSource dropped
+                }
+                seq += 1;
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "polling capture_image failed; will retry");
+                if seq == 0 {
+                    // Still waiting for the first successful frame.
+                    if poll_start.elapsed() > first_frame_timeout {
+                        if let Some(tx) = ready_tx.take() {
+                            let _ = tx.send(Err(format!(
+                                "polling capture produced no frame within {first_frame_timeout:?}: {e}"
+                            )));
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Check for stop before sleeping, so we exit promptly.
+        if matches!(
+            stop_rx.try_recv(),
+            Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ) {
+            return;
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}
+
+/// The fallback capture path: poll `Monitor::capture_image` on a timer when no
+/// hardware-accelerated recorder is available (Task 3).
+///
+/// On Windows, `xcap`'s WGC video recorder can fail to open on hybrid-GPU
+/// laptops (the `ID3D11Device` it creates on the default adapter may not own
+/// the monitor's output — upstream xcap#264). The xcap-level GDI/DXGI fallback
+/// in `dxgi_video_recorder` should cover most of those, but if that also
+/// fails the agent can still stream by polling `capture_image`: it reads the
+/// desktop HDC directly and works on any adapter.
+///
+/// This is a last-resort path — it is CPU-bound and cannot sustain high frame
+/// rates — so it is only reached when the recorder chain returns an error, and
+/// the first frame still must arrive within `FIRST_FRAME_TIMEOUT` to avoid
+/// silently streaming nothing.
+///
+/// `poll_interval` is the time between capture attempts; 33 ms (~30 Hz)
+/// matches the streaming ticker so `drain_latest` has a fresh frame each tick.
+#[cfg(windows)]
+fn run_capture_image_poll(
+    monitor: xcap::Monitor,
+    ready_tx: oneshot::Sender<std::result::Result<(), String>>,
+    frame_tx: std::sync::mpsc::Sender<xcap::Frame>,
+    stop_rx: std::sync::mpsc::Receiver<()>,
+    poll_interval: Duration,
+    first_frame_timeout: Duration,
+) {
+    run_capture_image_poll_loop(
+        monitor,
+        ready_tx,
+        frame_tx,
+        stop_rx,
+        poll_interval,
+        first_frame_timeout,
+    );
+}
+
 impl ScreenSource {
     /// Starts capture of a specific monitor by id (ADR-22 source selection).
     ///
@@ -527,8 +675,33 @@ impl ScreenSource {
                 let recorder = match monitor.video_recorder() {
                     Ok(recorder) => recorder,
                     Err(e) => {
-                        let _ = ready_tx.send(Err(e.to_string()));
-                        return;
+                        // On Windows, WGC and the GDI/DXGI fallback can both
+                        // fail on exotic GPU configs or without the
+                        // graphicsCaptureWithoutBorder capability. When that
+                        // happens, fall back to polling `capture_image`
+                        // (Task 3) rather than refusing the desktop offer: the
+                        // HDC-based read works on any adapter, it is just
+                        // slower.
+                        #[cfg(windows)]
+                        {
+                            tracing::warn!(
+                                "video recorder unavailable ({e}); falling back to image polling"
+                            );
+                            run_capture_image_poll(
+                                monitor,
+                                ready_tx,
+                                frame_tx,
+                                stop_rx,
+                                gdi_poll_interval(),
+                                FIRST_FRAME_TIMEOUT,
+                            );
+                            return;
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = ready_tx.send(Err(e.to_string()));
+                            return;
+                        }
                     }
                 };
                 let (recorder, frames) = recorder;
@@ -3132,5 +3305,216 @@ mod tests {
                 w[1].capture_epoch_ms
             );
         }
+    }
+
+    #[test]
+    fn parse_poll_interval_returns_the_default_for_none() {
+        assert_eq!(parse_poll_interval(None), GDI_DEFAULT_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn parse_poll_interval_returns_the_default_for_empty() {
+        assert_eq!(
+            parse_poll_interval(Some("".to_string())),
+            GDI_DEFAULT_POLL_INTERVAL
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_returns_the_default_for_zero() {
+        assert_eq!(
+            parse_poll_interval(Some("0".to_string())),
+            GDI_DEFAULT_POLL_INTERVAL
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_returns_the_default_for_garbage() {
+        assert_eq!(
+            parse_poll_interval(Some("not-a-number".to_string())),
+            GDI_DEFAULT_POLL_INTERVAL
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_uses_an_explicit_millisecond_value() {
+        assert_eq!(
+            parse_poll_interval(Some("50".to_string())),
+            Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_uses_a_large_millisecond_value() {
+        assert_eq!(
+            parse_poll_interval(Some("16".to_string())),
+            Duration::from_millis(16)
+        );
+    }
+
+    struct FakeCapturer {
+        failures_remaining: usize,
+        width: u32,
+        height: u32,
+    }
+
+    impl ImageCapturer for FakeCapturer {
+        fn capture_image(&mut self) -> std::result::Result<image::RgbaImage, String> {
+            if self.failures_remaining > 0 {
+                self.failures_remaining -= 1;
+                Err("fake capture device error".to_string())
+            } else {
+                let img = image::RgbaImage::from_pixel(
+                    self.width,
+                    self.height,
+                    image::Rgba([120, 140, 160, 255]),
+                );
+                Ok(img)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_image_poll_loop_delivers_first_frame_and_handshakes_ok() {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+
+        let capturer = FakeCapturer {
+            failures_remaining: 0,
+            width: 160,
+            height: 120,
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_capture_image_poll_loop(
+                capturer,
+                ready_tx,
+                frame_tx,
+                stop_rx,
+                Duration::from_millis(5),
+                Duration::from_millis(500),
+            );
+        });
+
+        // 1. Ready handshake resolves to Ok(()) on first frame.
+        let ready_res = ready_rx.await.expect("ready_rx must receive");
+        assert!(ready_res.is_ok(), "handshake should succeed: {ready_res:?}");
+
+        // 2. First frame arrives on frame channel.
+        let frame = frame_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("should receive frame");
+        assert_eq!(frame.width, 160);
+        assert_eq!(frame.height, 120);
+
+        // 3. Stop signal gracefully terminates the loop.
+        stop_tx.send(()).expect("stop_tx send");
+        handle.join().expect("thread should join cleanly");
+    }
+
+    #[tokio::test]
+    async fn capture_image_poll_loop_recovers_after_transient_failures() {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+
+        let capturer = FakeCapturer {
+            failures_remaining: 2, // Fails first 2 attempts, then succeeds
+            width: 80,
+            height: 60,
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_capture_image_poll_loop(
+                capturer,
+                ready_tx,
+                frame_tx,
+                stop_rx,
+                Duration::from_millis(5),
+                Duration::from_millis(500),
+            );
+        });
+
+        let ready_res = ready_rx.await.expect("ready_rx must receive");
+        assert!(ready_res.is_ok(), "should recover after transient failures");
+
+        let frame = frame_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("should receive frame");
+        assert_eq!(frame.width, 80);
+        assert_eq!(frame.height, 60);
+
+        stop_tx.send(()).expect("stop_tx send");
+        handle.join().expect("thread should join cleanly");
+    }
+
+    #[tokio::test]
+    async fn capture_image_poll_loop_times_out_when_capturer_never_delivers() {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (_stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let (frame_tx, _frame_rx) = std::sync::mpsc::channel();
+
+        let capturer = FakeCapturer {
+            failures_remaining: usize::MAX, // Always fails
+            width: 80,
+            height: 60,
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_capture_image_poll_loop(
+                capturer,
+                ready_tx,
+                frame_tx,
+                stop_rx,
+                Duration::from_millis(5),
+                Duration::from_millis(20), // Short timeout
+            );
+        });
+
+        let ready_res = ready_rx.await.expect("ready_rx must receive");
+        let err_msg = ready_res.expect_err("should fail handshake on timeout");
+        assert!(
+            err_msg.contains("polling capture produced no frame"),
+            "unexpected error message: {err_msg}"
+        );
+
+        handle
+            .join()
+            .expect("thread should join cleanly on timeout");
+    }
+
+    #[tokio::test]
+    async fn capture_image_poll_loop_exits_when_frame_receiver_dropped() {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (_stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+
+        let capturer = FakeCapturer {
+            failures_remaining: 0,
+            width: 40,
+            height: 30,
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_capture_image_poll_loop(
+                capturer,
+                ready_tx,
+                frame_tx,
+                stop_rx,
+                Duration::from_millis(5),
+                Duration::from_millis(500),
+            );
+        });
+
+        let ready_res = ready_rx.await.expect("ready_rx must receive");
+        assert!(ready_res.is_ok());
+
+        // Drop the receiver (simulates dropping ScreenSource)
+        drop(frame_rx);
+
+        handle
+            .join()
+            .expect("thread should exit promptly when frame_tx.send fails");
     }
 }

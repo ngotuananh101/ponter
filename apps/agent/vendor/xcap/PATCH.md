@@ -52,6 +52,27 @@ let recorder = Self {
 
 `Arc` is used because the struct derives `Clone`. No other behaviour changes.
 
+## WGC → DXGI / GDI fallback (Windows)
+
+When the `wgc` feature is enabled, `ImplVideoRecorder::new()` now tries
+`WgcVideoRecorder` (Windows.Graphics.Capture) first. On hybrid-GPU laptops,
+WGC can fail because the `ID3D11Device` it creates on the default adapter may
+not own the monitor's output, causing `DuplicateOutput` to return
+`E_INVALIDARG` (upstream xcap#264). When that happens, the recorder falls back
+to `dxgi_video_recorder::ImplVideoRecorder` (DXGI Output Duplication), which
+enumerates adapters to find the one matching the monitor's output and works
+on any GPU configuration.
+
+`dxgi_video_recorder` is now always compiled on Windows (previously gated to
+`not(feature = "wgc")`), and `impl_video_recorder.rs` wraps both implementations
+behind a single `ImplVideoRecorder` enum so the rest of the crate is unchanged.
+
+Furthermore, `gdi` is now always compiled on Windows (`mod gdi;`), and
+`capture_monitor` / `capture_window` in `src/windows/capture.rs` automatically fall
+back to GDI (`gdi::capture_monitor` / `gdi::capture_window`) whenever WGC
+`wgc::capture_monitor` or `wgc::capture_window` fails with an error (e.g.
+`0x80070057` on hybrid-GPU laptops or when Direct3D11 interop is blocked).
+
 ## Removing this vendor directory
 
 Upstream `master` has rewritten this path on top of `ashpd`, which manages the
