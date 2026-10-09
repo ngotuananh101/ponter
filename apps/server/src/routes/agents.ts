@@ -15,7 +15,7 @@ import {
 // rather than keeping a second, never-populated map — is what makes the
 // `socketPresent` flag reflect reality. `ws.ts` does not import this module, so
 // there is no cycle.
-import { agentConnections } from './ws.js';
+import { agentConnections, pushFleetToUser } from './ws.js';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
@@ -110,6 +110,8 @@ router.post('/', async (c) => {
       'INTERNAL_SERVER_ERROR',
     );
   }
+
+  pushFleetToUser(user.id);
 
   // The credential is present exactly once, on this response. It is never
   // recoverable: only its hash is stored and there is no rotation endpoint.
@@ -291,6 +293,8 @@ router.patch('/:id', async (c) => {
     throw new AppError('Agent not found', 404, 'NOT_FOUND');
   }
 
+  pushFleetToUser(user.id);
+
   return c.json(toPublicAgent(updated, agentConnections.has(agentId)));
 });
 
@@ -318,6 +322,8 @@ router.delete('/:id', async (c) => {
   agentConnections.delete(agentId);
 
   await db.delete(agents).where(eq(agents.id, agentId));
+
+  pushFleetToUser(user.id);
 
   return c.json({ success: true });
 });

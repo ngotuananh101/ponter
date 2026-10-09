@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
+import { useFleetStore } from '@/stores/fleet';
 import { apiClient } from '@/services/client';
 import type { Device, Agent } from '@ponter/shared';
 import {
@@ -40,6 +41,7 @@ import EncryptionByChannelDialog from '@/components/security/EncryptionByChannel
 
 const authStore = useAuthStore();
 const router = useRouter();
+const fleetStore = useFleetStore();
 const devices = ref<Device[]>([]);
 const agents = ref<Agent[]>([]);
 const loading = ref(true);
@@ -52,6 +54,7 @@ const deletingAgent = ref<Agent | null>(null);
 const showSecurityDetails = ref(false);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let unsubscribeFleet: (() => void) | null = null;
 
 async function loadDashboardData(isBackground = false) {
   if (!isBackground) {
@@ -124,7 +127,11 @@ onMounted(() => {
   loadDashboardData();
   pollInterval = setInterval(() => {
     void loadDashboardData(true);
-  }, 10000);
+  }, 60000);
+  unsubscribeFleet = fleetStore.subscribe(() => {
+    void loadDashboardData(true);
+  });
+  fleetStore.start();
 });
 
 onUnmounted(() => {
@@ -132,6 +139,8 @@ onUnmounted(() => {
     clearInterval(pollInterval);
     pollInterval = null;
   }
+  unsubscribeFleet?.();
+  fleetStore.stop();
 });
 </script>
 

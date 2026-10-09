@@ -96,7 +96,9 @@ export type BrowserErrorCode =
 export type BrowserMessageInit =
   | { type: 'subscribe'; data: { sessionId: string; after?: string | null } }
   | { type: 'signal'; data: SignalMessage }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | { type: 'subscribe-fleet' }
+  | { type: 'unsubscribe-fleet' };
 
 /** Server -> Client. Same envelope convention as `AgentSocketMessage`. */
 export type BrowserSocketMessage =
@@ -106,6 +108,7 @@ export type BrowserSocketMessage =
       type: 'subscribed';
       data: { sessionId: string; after: string | null; hasMore: boolean };
     }
+  | { type: 'fleet-changed' }
   | { type: 'error'; code: BrowserErrorCode };
 
 /**
@@ -134,6 +137,10 @@ export function parseBrowserMessage(raw: string): BrowserMessageInit | null {
   switch (envelope.type) {
     case 'ping':
       return { type: 'ping' };
+    case 'subscribe-fleet':
+      return { type: 'subscribe-fleet' };
+    case 'unsubscribe-fleet':
+      return { type: 'unsubscribe-fleet' };
     case 'subscribe':
       return parseSubscribe(envelope.data);
     case 'signal': {
