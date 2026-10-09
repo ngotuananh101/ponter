@@ -633,6 +633,7 @@ POST   /api/auth/register          # Register new user
 POST   /api/auth/login             # Login
 POST   /api/auth/refresh           # Refresh token
 POST   /api/auth/logout            # Logout (revoke token in SQLite)
+POST   /api/auth/signing-key       # Bootstrap WS2 signing key (legacy accounts; 409 if already set)
 
 # Agents
 GET    /api/agents                 # List user's agents
