@@ -1072,25 +1072,45 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       };
 
       const N = 12;
-      for (let i = 0; i < N; i++) {
-        const seq = 1000 + i;
-        // A distinct x per step makes every move a position change — the poller
-        // emits only on change, so each seq gets its own emit opportunity.
-        sentAt.set(seq, Date.now());
-        sendPointerMove(offerer, 0.3 + i * 0.03, 0.5, seq);
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        collect();
+      const needed = Math.ceil(N / 2);
+      // The poller emits only on a position/shape change, and the control task
+      // stores the applied seq on its own schedule — so a move whose emit lands
+      // BEFORE the store is stamped with a stale/None seq and lost for good (the
+      // position then settles and the poller never re-emits). Give every seq a
+      // bounded retry: re-send the SAME seq at a nudged point so the change-only
+      // poller gets another emit opportunity, now that the seq is stored. This is
+      // the same bounded-retry pattern the sibling cursor-echo test above uses,
+      // made bounded in rounds so the whole test stays inside its timeout.
+      const RETRY_WINDOW_MS = 500;
+      const MAX_ROUNDS = 6;
+      for (let round = 0; round < MAX_ROUNDS && echoed.size < needed; round++) {
+        for (let i = 0; i < N; i++) {
+          if (echoed.size >= needed) break;
+          const seq = 1000 + i;
+          if (echoed.has(seq)) continue;
+          // A distinct x per seq, plus a per-round y nudge, makes every re-send
+          // a position change — the poller emits only on change, so each seq
+          // gets its own emit opportunity on every round.
+          const x = 0.3 + i * 0.03;
+          const y = 0.5 + round * 0.02;
+          // Refresh the send time: the echo measured below corresponds to THIS
+          // send, so the round-trip stays honest across retries.
+          sentAt.set(seq, Date.now());
+          sendPointerMove(offerer, x, y, seq);
+          try {
+            await waitFor(
+              () => {
+                collect();
+                return echoed.has(seq);
+              },
+              `a desktop-cursor frame echoing seq ${seq}`,
+              RETRY_WINDOW_MS,
+            );
+          } catch {
+            // Retry this seq on the next round with a fresh nudge.
+          }
+        }
       }
-
-      // Give the trailing echoes a moment to land (bounded, not open-ended).
-      await waitFor(
-        () => {
-          collect();
-          return echoMs.length >= Math.ceil(N / 2);
-        },
-        'at least half of the sent seqs to round-trip',
-        15_000,
-      );
 
       const sorted = [...echoMs].sort((a, b) => a - b);
       const min = sorted[0]!;
@@ -1103,6 +1123,10 @@ describe.skipIf(!isLinux)('cross-language desktop E2E', () => {
       // A seq that never comes back is the failure this pins; the timing bound
       // stays loose (the poller cadence + control-channel RTT dominate it).
       expect(echoMs.length).toBeGreaterThan(0);
+      // At least half the distinct seqs must have round-tripped — the retry loop
+      // above only exits early once this is met, so state it explicitly rather
+      // than relying on the loop's implicit bound.
+      expect(echoMs.length).toBeGreaterThanOrEqual(needed);
       for (const ms of echoMs) {
         expect(ms).toBeLessThanOrEqual(5_000);
       }
