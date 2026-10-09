@@ -249,6 +249,8 @@ pub mod platform {
         last_visible: bool,
         /// Last emitted cursor serial.
         last_serial: u32,
+        /// Last emitted input seq (for echo tracking; ADR-47).
+        last_input_seq: Option<u64>,
         /// Whether we have emitted at least once (first-poll special case).
         has_emitted: bool,
     }
@@ -257,8 +259,14 @@ pub mod platform {
         /// Returns true when this sample should produce a payload.
         ///
         /// The FIRST poll always returns true (establishes the baseline). After
-        /// that, true iff `mapped` or `serial` differs from the last emission.
-        fn should_emit(&self, mapped: &CursorSample, serial: u32) -> bool {
+        /// that, true iff `mapped` or `serial` or `last_input_seq` differs from
+        /// the last emission.
+        fn should_emit(
+            &self,
+            mapped: &CursorSample,
+            serial: u32,
+            last_input_seq: Option<u64>,
+        ) -> bool {
             if !self.has_emitted {
                 return true;
             }
@@ -266,15 +274,17 @@ pub mod platform {
                 (mapped.x - self.last_x).abs() > 0.0 || (mapped.y - self.last_y).abs() > 0.0;
             let visible_changed = mapped.visible != self.last_visible;
             let shape_changed = serial != self.last_serial;
-            position_changed || visible_changed || shape_changed
+            let seq_changed = last_input_seq != self.last_input_seq;
+            position_changed || visible_changed || shape_changed || seq_changed
         }
 
         /// Records the emitted state and marks `has_emitted = true`.
-        fn update(&mut self, mapped: &CursorSample, serial: u32) {
+        fn update(&mut self, mapped: &CursorSample, serial: u32, last_input_seq: Option<u64>) {
             self.last_x = mapped.x;
             self.last_y = mapped.y;
             self.last_visible = mapped.visible;
             self.last_serial = serial;
+            self.last_input_seq = last_input_seq;
             self.has_emitted = true;
         }
     }
@@ -310,10 +320,14 @@ pub mod platform {
         /// or shape serial changed since the last emission. The first poll
         /// always emits a baseline.
         ///
-        /// `last_input_seq` is left `None` — Task 12 fills it from the input
-        /// forwarding layer.
+        /// `last_input_seq` is stamped from the observed input seq so an input
+        /// that lands after a position emit still produces a fresh frame (ADR-47
+        /// echo race).
         #[allow(dead_code)]
-        pub fn poll(&mut self) -> Result<Option<DesktopCursorPayload>> {
+        pub fn poll(
+            &mut self,
+            last_input_seq: Option<u64>,
+        ) -> Result<Option<DesktopCursorPayload>> {
             let raw = match self.sampler.sample() {
                 Ok(raw) => raw,
                 Err(e) => {
@@ -325,8 +339,9 @@ pub mod platform {
             let mapped = map_cursor_to_source(raw.root_x, raw.root_y, &self.source);
 
             // Dirty-check: the first poll always emits (F1); every later poll
-            // emits iff position OR visibility OR shape-serial changed (F2).
-            if !self.state.should_emit(&mapped, raw.serial) {
+            // emits iff position OR visibility OR shape-serial OR input-seq
+            // changed (F2).
+            if !self.state.should_emit(&mapped, raw.serial, last_input_seq) {
                 return Ok(None);
             }
 
@@ -351,11 +366,11 @@ pub mod platform {
                 y: mapped.y,
                 visible: mapped.visible,
                 seq: self.seq,
-                last_input_seq: None,
+                last_input_seq,
                 shape,
             };
             self.seq += 1;
-            self.state.update(&mapped, raw.serial);
+            self.state.update(&mapped, raw.serial, last_input_seq);
             Ok(Some(payload))
         }
     }
@@ -373,7 +388,7 @@ pub mod platform {
             let state = CursorDirtyState::default();
             let mapped = sample_at(0.0, 0.0, true);
             assert!(
-                state.should_emit(&mapped, 0),
+                state.should_emit(&mapped, 0, None),
                 "first sample must always emit (F1)"
             );
         }
@@ -382,10 +397,10 @@ pub mod platform {
         fn should_emit_false_after_identical_sample() {
             let mut state = CursorDirtyState::default();
             let mapped = sample_at(0.5, 0.5, true);
-            assert!(state.should_emit(&mapped, 42));
-            state.update(&mapped, 42);
+            assert!(state.should_emit(&mapped, 42, None));
+            state.update(&mapped, 42, None);
             assert!(
-                !state.should_emit(&mapped, 42),
+                !state.should_emit(&mapped, 42, None),
                 "identical sample after emit must not re-emit"
             );
         }
@@ -394,13 +409,13 @@ pub mod platform {
         fn should_emit_true_on_visibility_flip_at_same_position() {
             let mut state = CursorDirtyState::default();
             let visible_sample = sample_at(0.5, 0.5, true);
-            assert!(state.should_emit(&visible_sample, 0));
-            state.update(&visible_sample, 0);
+            assert!(state.should_emit(&visible_sample, 0, None));
+            state.update(&visible_sample, 0, None);
 
             // Same normalized coords but now invisible (cursor left the source).
             let invisible_sample = sample_at(0.5, 0.5, false);
             assert!(
-                state.should_emit(&invisible_sample, 0),
+                state.should_emit(&invisible_sample, 0, None),
                 "visibility flip at identical coords must re-emit (F2)"
             );
         }
@@ -409,12 +424,12 @@ pub mod platform {
         fn should_emit_true_on_position_change() {
             let mut state = CursorDirtyState::default();
             let first = sample_at(0.3, 0.7, true);
-            assert!(state.should_emit(&first, 1));
-            state.update(&first, 1);
+            assert!(state.should_emit(&first, 1, None));
+            state.update(&first, 1, None);
 
             let moved = sample_at(0.4, 0.7, true);
             assert!(
-                state.should_emit(&moved, 1),
+                state.should_emit(&moved, 1, None),
                 "a coordinate change must re-emit"
             );
         }
@@ -423,11 +438,11 @@ pub mod platform {
         fn should_emit_true_on_serial_change() {
             let mut state = CursorDirtyState::default();
             let mapped = sample_at(0.5, 0.5, true);
-            assert!(state.should_emit(&mapped, 1));
-            state.update(&mapped, 1);
+            assert!(state.should_emit(&mapped, 1, None));
+            state.update(&mapped, 1, None);
 
             assert!(
-                state.should_emit(&mapped, 2),
+                state.should_emit(&mapped, 2, None),
                 "a shape-serial change must re-emit even at the same position"
             );
         }
@@ -436,8 +451,33 @@ pub mod platform {
         fn should_emit_false_when_nothing_changes_after_update() {
             let mut state = CursorDirtyState::default();
             let mapped = sample_at(0.5, 0.5, true);
-            state.update(&mapped, 7);
-            assert!(!state.should_emit(&mapped, 7));
+            state.update(&mapped, 7, None);
+            assert!(!state.should_emit(&mapped, 7, None));
+        }
+
+        #[test]
+        fn should_emit_true_on_input_seq_change_at_same_position() {
+            let mut state = CursorDirtyState::default();
+            let mapped = sample_at(0.5, 0.5, true);
+            assert!(state.should_emit(&mapped, 1, None));
+            state.update(&mapped, 1, None);
+
+            assert!(
+                state.should_emit(&mapped, 1, Some(777)),
+                "an input seq change at the same position must re-emit (ADR-47 echo race)"
+            );
+        }
+
+        #[test]
+        fn should_emit_false_when_seq_unchanged_at_same_position() {
+            let mut state = CursorDirtyState::default();
+            let mapped = sample_at(0.5, 0.5, true);
+            assert!(state.should_emit(&mapped, 1, None));
+            state.update(&mapped, 1, Some(777));
+            assert!(
+                !state.should_emit(&mapped, 1, Some(777)),
+                "same seq at the same position must not re-emit (no busy-loop)"
+            );
         }
 
         #[test]
