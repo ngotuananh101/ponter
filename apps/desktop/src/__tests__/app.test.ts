@@ -35,6 +35,11 @@ describe('App flow (ADR-66)', () => {
     });
   });
 
+  it('renders the centered utility window shell', async () => {
+    const wrapper = await mountApp();
+    expect(wrapper.find('[data-testid="app-shell"]').exists()).toBe(true);
+  });
+
   it('shows ServerSetupView when no server is configured', async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="server-setup-root"]').exists()).toBe(

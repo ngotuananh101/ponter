@@ -164,6 +164,29 @@ pub async fn login(
     .await
 }
 
+/// Pure helper: clears the in-memory access token and deletes the refresh
+/// token from the OS keychain. Shared by the `logout` command and unit tests.
+pub fn logout_impl(state: &AppState) -> Result<(), String> {
+    // Clear in-memory access token
+    let mut access_guard = state
+        .access_token
+        .lock()
+        .map_err(|e| format!("state lock poisoned: {e}"))?;
+    *access_guard = None;
+    drop(access_guard);
+
+    // Delete refresh token from OS keychain
+    keychain::delete_secret(KEYCHAIN_SERVICE, KEYCHAIN_REFRESH_ACCOUNT)
+        .map_err(|e| format!("keychain delete failed: {e:?}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn logout(state: tauri::State<'_, AppState>) -> std::result::Result<(), String> {
+    logout_impl(&state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +296,18 @@ mod tests {
 
     fn delete_secret(service: &str, account: &str) -> Result<()> {
         crate::keychain::delete_secret(service, account)
+    }
+
+    #[test]
+    fn logout_impl_clears_token_and_deletes_keychain() {
+        let state = AppState::with_config(None);
+        {
+            let mut token = state.access_token.lock().unwrap();
+            *token = Some("secret-token".into());
+        }
+        assert!(state.access_token.lock().unwrap().is_some());
+        let res = logout_impl(&state);
+        assert!(res.is_ok());
+        assert!(state.access_token.lock().unwrap().is_none());
     }
 }

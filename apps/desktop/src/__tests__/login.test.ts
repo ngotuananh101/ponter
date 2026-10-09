@@ -102,3 +102,22 @@ describe('LoginView', () => {
     expect(storageLength(window, 's')).toBe(0);
   });
 });
+
+describe('authStore', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('logout() clears user, sets status to idle, and invokes logout command', async () => {
+    const store = useAuthStore();
+    store.user = { id: 'u1', username: 'alice', email: null, role: 'user' };
+    store.status = 'authenticated';
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await store.logout();
+    expect(store.user).toBeNull();
+    expect(store.status).toBe('idle');
+    expect(store.isAuthenticated).toBe(false);
+    expect(invoke).toHaveBeenCalledWith('logout');
+  });
+});
