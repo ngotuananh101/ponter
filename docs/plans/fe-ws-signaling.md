@@ -99,6 +99,13 @@ Polling (`RESTPollingTransport` polling 200ms–2000ms) creates signal delivery 
 - **Resolution:** The WS replay query adds `created_at > datetime('now', '-5 minutes')` (matching `SIGNAL_TTL`) — replaying at most the last 5 minutes; if the cursor cannot resolve to a rowid, replay remains time-bounded. Log warning when cursor is stale. Client treats `subscribed.hasMore=false` + absence of older signals as normal.
 - **Rejected Alternative:** Rejecting subscribe on stale cursor — breaks reconnection when most needed; if session is dead, `SESSION_TERMINATED` arrives via live push.
 
+### D14. Fleet Push over the Same Socket (ADR-73..77, shipped PR #87)
+- **Additive topic on the same endpoint.** `/api/ws/browser` now also carries a fleet topic: `subscribe-fleet` / `unsubscribe-fleet` (client→server) and `fleet-changed` (server→client, payload-free invalidation). No existing frame changes; a client or server that does not know the fleet frames keeps working exactly as before.
+- **Why a coarse invalidation, not a snapshot or delta.** `GET /api/agents` already computes `isOnline` from live socket presence and serializes each row; a snapshot payload would duplicate that serialization and create a second source of truth that can drift. The frame carries no state, so duplicate or reordered delivery is harmless.
+- **Emit and fan-out.** `pushFleetToUser(userId)` — best-effort, never throwing, per-connection `try/catch` — is called after the observable fleet changes: agent connect/disconnect (agent WS server) and agent/device create/update/delete (`agents.ts` / `devices.ts`). Fan-out iterates only `browserConnections.get(userId)`, so tenancy is structural.
+- **Consumer and gating.** A dedicated `apps/web/src/services/fleet-socket.ts` + `apps/web/src/stores/fleet.ts` (the session-scoped `WebSocketSignalTransport` is not reused) mints its ticket through the same `POST /api/ws/ticket` flow and reuses the same backoff constants; it is gated by the same `VITE_BROWSER_WS_SIGNALING` flag. The Dashboard refetches on receipt (debounced ≥500 ms) and keeps a 60 s poll as the safety net.
+- **Both parsers in lockstep.** `parseBrowserMessage` (`@ponter/shared`) and the server-local `normalizeBrowserFrame` mirror must be updated together, or a frame is silently dropped on one side.
+
 ## 4. Protocol Specification (Bidirectional JSON Envelope)
 
 ### Frame Size Limit
@@ -111,11 +118,15 @@ Polling (`RESTPollingTransport` polling 200ms–2000ms) creates signal delivery 
 | `subscribe` | `{sessionId: string, after?: string\|null}` | Register subscription. `after` = UUID of last received signal id (null = initial subscribe). |
 | `signal` | `SignalMessage` | Forward signal to agent via `pushToAgent`. |
 | `ping` | — | Client→server heartbeat. |
+| `subscribe-fleet` | — | Mark this connection fleet-subscribed. Idempotent. |
+| `unsubscribe-fleet` | — | Clear the fleet subscription on this connection. Idempotent. |
 
 ```json
 {"type":"subscribe","data":{"sessionId":"sess_123","after":"sig_abc"}}
 {"type":"signal","data":{"type":"offer","data":{"sessionId":"sess_123","sdp":"...","capabilities":["terminal"]}}}
 {"type":"ping"}
+{"type":"subscribe-fleet"}
+{"type":"unsubscribe-fleet"}
 ```
 
 ### Server → Client (BrowserSocketMessage S->C)
@@ -126,12 +137,14 @@ Polling (`RESTPollingTransport` polling 200ms–2000ms) creates signal delivery 
 | `signal` | `{data: SignalMessage, id: string}` | Replayed from DB or live push. `id` = UUID signal id — client stores as cursor (`lastCursor = id`). |
 | `subscribed` | `{sessionId: string, after: string\|null, hasMore: boolean}` | Ack following replay. `hasMore=true` → client sends subsequent `subscribe` with `after` set to last received id. |
 | `error` | `{code: BrowserErrorCode}` | Error indication (auth, not found, terminated, etc.). |
+| `fleet-changed` | — | The user's fleet (agents and/or devices) changed; the Dashboard refetches both lists. |
 
 ```json
 {"type":"pong"}
 {"type":"signal","data":{"type":"offer","data":{"sessionId":"sess_123","sdp":"...","capabilities":["terminal"]}},"id":"sig_abc"}
 {"type":"subscribed","data":{"sessionId":"sess_123","after":"sig_abc","hasMore":false}}
 {"type":"error","code":"SESSION_TERMINATED"}
+{"type":"fleet-changed"}
 ```
 
 **Envelope Notes:** Follows the established `AgentSocketMessage` pattern — `pong`/`error`/`subscribed` place `code`/`data` at the top level (not wrapped in `data`). `signal` retains `{type, data, id}` as in the original design. `rowid` NEVER appears on the wire (used only in internal server SQL).
