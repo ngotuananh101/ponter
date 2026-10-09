@@ -1,106 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useFleetStore } from './fleet';
-
-/**
- * A minimal fake for the browser `WebSocket` API, mirroring the harness in
- * `packages/webrtc-core/test/ws-transport.test.ts:16-109` so the reconnect
- * state machine can be driven deterministically without a real socket.
- */
-class FakeWebSocket {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-
-  static instances: FakeWebSocket[] = [];
-
-  readyState = FakeWebSocket.CONNECTING;
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: ((event: { code: number; reason: string }) => void) | null = null;
-  onerror: (() => void) | null = null;
-
-  readonly url: string;
-  readonly sent: string[] = [];
-  readonly closeCalls: Array<{ code?: number; reason?: string }> = [];
-
-  constructor(url: string) {
-    this.url = url;
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(code?: number, reason?: string): void {
-    this.closeCalls.push({ code, reason });
-    this.readyState = FakeWebSocket.CLOSED;
-  }
-
-  /** Test helper: the socket's `open` event fired. */
-  open(): void {
-    this.readyState = FakeWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  /** Test helper: deliver a frame from the server. */
-  deliver(frame: unknown): void {
-    this.onmessage?.({ data: JSON.stringify(frame) });
-  }
-
-  /** Test helper: deliver a raw string (e.g. malformed JSON). */
-  deliverRaw(raw: string): void {
-    this.onmessage?.({ data: raw });
-  }
-
-  /** Test helper: the server closed the socket. */
-  serverClose(code = 1006, reason = ''): void {
-    this.readyState = FakeWebSocket.CLOSED;
-    this.onclose?.({ code, reason });
-  }
-
-  /** Test helper: frames this socket received, parsed. */
-  sentFrames(): Array<Record<string, unknown>> {
-    return this.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-  }
-}
-
-const ORIGINAL_WEBSOCKET = globalThis.WebSocket;
-
-function installFakeWebSocket(): void {
-  FakeWebSocket.instances = [];
-  (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
-}
-
-function restoreWebSocket(): void {
-  (globalThis as unknown as { WebSocket: unknown }).WebSocket =
-    ORIGINAL_WEBSOCKET;
-}
-
-function lastSocket(): FakeWebSocket {
-  const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-  if (!socket) throw new Error('no WebSocket was opened');
-  return socket;
-}
-
-/**
- * Pin the store's jitter source to a deterministic value.
- *
- * `randomUnit()` reads one `Uint32Array` word and divides by 2**32, so the
- * mocked word is `value * 2**32`. Mocking the CSPRNG keeps the backoff-delay
- * assertions exact without depending on `Math.random`.
- */
-function mockRandomUnit(value: number): void {
-  const word = Math.trunc(value * 2 ** 32);
-  vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(
-    <T extends ArrayBufferView | null>(array: T): T => {
-      if (array) (array as unknown as Uint32Array)[0] = word;
-      return array;
-    },
-  );
-}
+import {
+  FakeWebSocket,
+  installFakeWebSocket,
+  restoreWebSocket,
+  lastSocket,
+  mockRandomUnit,
+} from '@ponter/webrtc-core/test/fake-websocket';
 
 /** Stubbed ticket-mint fetch, mirroring `okTicketFetch` in ws-transport.test.ts. */
 const okTicketFetch = vi.fn(
@@ -153,14 +60,18 @@ describe('useFleetStore', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(FakeWebSocket.instances).toHaveLength(1);
 
-    // reset for the false case
+    // reset for the false case: the first store holds `client`, so a shared
+    // Pinia would make store2 early-return at `if (client) return` — bypassing
+    // the flag gate entirely and making this half vacuous. Give store2 its own
+    // Pinia so start() reaches the flag guard.
+    store.stop();
     FakeWebSocket.instances = [];
     vi.stubEnv('VITE_BROWSER_WS_SIGNALING', 'false');
+    setActivePinia(createPinia());
     const store2 = useFleetStore();
     store2.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(FakeWebSocket.instances).toHaveLength(0);
-    store.stop();
     store2.stop();
   });
 
