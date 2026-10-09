@@ -168,11 +168,81 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Upload installer artifacts
+      # Upload each installer type as its own artifact so a consumer can fetch
+      # just the format it needs (e.g. only the Linux `.rpm`) instead of the
+      # ~220 MB combined Linux bundle. Each step is guarded by `runner.os` so a
+      # runner only uploads the formats it actually produces; a missing guard
+      # would make a foreign glob match nothing and trip `if-no-files-found`.
+      #
+      # Path note: `path` resolves from the workspace ROOT, so it is prefixed
+      # with `${{ env.WORKSPACE }}` (= apps/desktop). Each glob targets a whole
+      # per-type bundle directory (not `*.deb`) so the updater `.sig` the
+      # bundler emits next to each installer rides along in the artifact.
+      - name: Upload Linux deb artifact
+        if: ${{ runner.os == 'Linux' }}
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: ponter-desktop-installers-${{ runner.os }}
-          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/**/*
+          name: ponter-desktop-linux-deb
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/deb/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Linux rpm artifact
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-linux-rpm
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/rpm/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Linux AppImage artifact
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-linux-appimage
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/appimage/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload macOS dmg artifact
+        if: ${{ runner.os == 'macOS' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-macos-dmg
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/dmg/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Windows msi artifact
+        if: ${{ runner.os == 'Windows' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-windows-msi
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/msi/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Windows NSIS artifact
+        if: ${{ runner.os == 'Windows' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-windows-nsis
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+          retention-days: 7
+
+      # Windows portable (no-install) build: the bare release executable, run
+      # directly without an installer. It lives at `target/release/` (NOT under
+      # `bundle/`) and is named after the cargo package (`ponter_desktop.exe`);
+      # tauri.conf.json sets no `mainBinaryName`, so the binary is NOT renamed to
+      # the product name (`PonterDesktop`). Verified against a real CI artifact.
+      - name: Upload Windows portable artifact
+        if: ${{ runner.os == 'Windows' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-windows-portable
+          path: ${{ env.WORKSPACE }}/src-tauri/target/release/ponter_desktop.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -285,8 +355,8 @@ jobs:
       - name: Generate consolidated checksums manifest
         shell: bash
         run: |
-          # Nesting-safe: upload-artifact preserved per-type subdirs (dist/deb/,
-          # dist/dmg/, dist/msi/, …), so checksums live at dist/<type>/*.sha256.
+          # Layout-agnostic: each split upload artifact contributes its own
+          # root, so installers/checksums may sit at any depth under dist/.
           find dist -type f -name '*.sha256' -exec cat {} + > dist/SHA256SUMS.txt 2>/dev/null || true
           echo "Consolidated checksums:"
           cat dist/SHA256SUMS.txt 2>/dev/null || echo "(no checksum files)"
@@ -361,6 +431,12 @@ jobs:
           // bundle_type names per `tauri-plugin-updater::Installer::name`:
           //   appimage | deb | rpm | app | msi | nsis
           const targetFor = (f) => {
+            // Windows portable (no-install) binary — `ponter_desktop.exe`, the
+            // cargo package name (tauri.conf.json sets no `mainBinaryName`, so
+            // the binary is not renamed to the product name). It has no updater
+            // `.sig` and must never be resolved as the `windows-x86_64-nsis`
+            // updater target, which is the NSIS installer. Exclude it first.
+            if (/^ponter_desktop\.exe$/i.test(f)) return null;
             // Order matters: check more specific suffixes first.
             if (/\.AppImage$/.test(f))        return { os: "linux",   arch: "x86_64", bundle: "appimage" };
             if (/\.deb$/.test(f))            return { os: "linux",   arch: "x86_64", bundle: "deb" };
@@ -371,8 +447,8 @@ jobs:
             return null;
           };
           const path = require("path");
-          // Nesting-safe: download-artifact (merge-multiple: true) preserves
-          // per-type subdirs (dist/deb/, dist/dmg/, …). Walk recursively.
+          // Layout-agnostic: merge-multiple: true flattens the split artifacts
+          // into dist/ at arbitrary depth. Walk recursively.
           const walk = (dir) =>
             fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
               const p = path.join(dir, e.name);
