@@ -1,18 +1,18 @@
 # Desktop Agent Setup Guide
 
-Hướng dẫn chi tiết cách build, cấu hình và vận hành native Rust Desktop Agent (`apps/agent`) trên Linux, macOS, và Windows.
+Detailed guide on building, configuring, and operating the native Rust Desktop Agent (`apps/agent`) on Linux, macOS, and Windows.
 
 ---
 
 ## 1. Overview
 
-Desktop agent (`ponter-agent`) là một daemon nhẹ viết bằng Rust chạy trên máy tính mục tiêu bạn muốn truy cập từ xa. Các đặc điểm chính:
+The desktop agent (`ponter-agent`) is a lightweight daemon written in Rust running on the target machine you wish to access remotely. Key highlights:
 
-- **Asynchronous Runtime**: Được hỗ trợ bởi `tokio` cho async I/O low-overhead
-- **WebSocket Signaling**: Duy trì kết nối bền vững với exponential backoff và heartbeat (3 missed pings) tới `ws://<server>:8787/api/ws/agent`
-- **Direct P2P WebRTC**: Hoạt động như answerer qua `webrtc-rs`, thực hiện DTLS handshake và thiết lập SCTP data channels trực tiếp với client
-- **PTY Multiplexing (`PtyManager`)**: Quản lý tới 10 phiên shell đồng thời, được multiplex trên một WebRTC DataChannel (`"terminal"`) duy nhất
-- **Graceful Lifecycle Management**: Reaps exited child processes và dọn dẹp tài nguyên trên EOF hoặc khi client ngắt kết nối
+- **Asynchronous Runtime**: Powered by `tokio` for low-overhead async I/O
+- **WebSocket Signaling**: Maintains a persistent connection with exponential backoff and heartbeats (3 missed pings) to `ws://<server>:8787/api/ws/agent`
+- **Direct P2P WebRTC**: Acts as answerer via `webrtc-rs`, performing DTLS handshake and establishing SCTP data channels directly with clients
+- **PTY Multiplexing (`PtyManager`)**: Manages up to 10 concurrent shell sessions, multiplexed over a single WebRTC DataChannel (`"terminal"`)
+- **Graceful Lifecycle Management**: Reaps exited child processes and cleans up resources on EOF or client disconnection
 
 ---
 
@@ -24,23 +24,23 @@ Desktop agent (`ponter-agent`) là một daemon nhẹ viết bằng Rust chạy 
 cargo build --manifest-path apps/agent/Cargo.toml
 ```
 
-Binary nằm tại: `apps/agent/target/debug/ponter-agent`
+The binary is located at: `apps/agent/target/debug/ponter-agent`
 
 ### 2.2 Release Build (Optimized)
 
-Đối với production deployment:
+For production deployment:
 
 ```bash
 cargo build --release --manifest-path apps/agent/Cargo.toml
 ```
 
-Binary nằm tại: `apps/agent/target/release/ponter-agent`
+The binary is located at: `apps/agent/target/release/ponter-agent`
 
 ---
 
 ## 3. Command-Line Options
 
-Chạy `ponter-agent --help` để xem tất cả tham số:
+Run `ponter-agent --help` to view all parameters:
 
 ```
 Ponter Desktop Agent
@@ -48,46 +48,46 @@ Ponter Desktop Agent
 Usage: ponter-agent [OPTIONS] --agent-id <AGENT_ID> --server <SERVER> --credential <CREDENTIAL>
 
 Options:
-      --agent-id <AGENT_ID>      Unique ID của agent đã đăng ký trên platform
-      --server <SERVER>          WebSocket URL của signaling server (e.g. ws://localhost:8787/api/ws/agent)
+      --agent-id <AGENT_ID>      Unique ID of the agent registered on the platform
+      --server <SERVER>          WebSocket URL of the signaling server (e.g. ws://localhost:8787/api/ws/agent)
       --credential <CREDENTIAL>  Secret credential minted during agent registration (ag_<32 hex>)
-      --stun <STUN>              STUN server URL cho NAT traversal [default: stun:stun.l.google.com:19302]
-      --shell <SHELL>            Shell mặc định để khởi chạy khi nhận session [default: /bin/bash or powershell]
-      --cols <COLS>              Số cột mặc định cho PTY ban đầu [default: 80]
-      --rows <ROWS>              Số hàng mặc định cho PTY ban đầu [default: 24]
-      --files-root <FILES_ROOT>  Thư mục được phục vụ cho các session files. KHÔNG có mặc định:
-                                 bỏ trống = cổng files đóng (offer bị từ chối) [env: AGENT_FILES_ROOT]
-      --allow-input              Bật inject chuột/phím từ peer (cổng ADR-29/ADR-42). MẶC ĐỊNH TẮT:
-                                 chỉ khi bật VÀ peer đã xác minh danh tính thì input mới được inject
+      --stun <STUN>              STUN server URL for NAT traversal [default: stun:stun.l.google.com:19302]
+      --shell <SHELL>            Default shell to launch upon receiving session [default: /bin/bash or powershell]
+      --cols <COLS>              Default column count for initial PTY [default: 80]
+      --rows <ROWS>              Default row count for initial PTY [default: 24]
+      --files-root <FILES_ROOT>  Directory served for files sessions. NO default:
+                                 empty = files gate closed (offer refused) [env: AGENT_FILES_ROOT]
+      --allow-input              Enable mouse/keyboard injection from peer (ADR-29/ADR-42 gate). DEFAULT OFF:
+                                 only when enabled AND peer identity is verified will input be injected
                                  [env: AGENT_ALLOW_INPUT]
-  -h, --help                     In ra help
-  -V, --version                  In ra version
+  -h, --help                     Print help
+  -V, --version                  Print version
 ```
 
-> **Bảo mật:** input injection yêu cầu **hai cổng** (ADR-42): (A) cờ `--allow-input` do operator bật cục bộ — peer từ xa không thể bật; và (B) peer phải vượt qua xác minh danh tính tại admission (ADR-41, Phase 6a). Thiếu một trong hai, mọi frame input bị drop. Agent luôn cho phép chế độ xem-only. Từ Phase 6a, peer của **mọi** session (kể cả files/desktop) đều được xác minh danh tính trước khi agent trả lời offer.
+> **Security:** input injection requires **two gates** (ADR-42): (A) the `--allow-input` flag enabled locally by the operator — remote peers cannot enable it; and (B) the peer must pass identity verification at admission (ADR-41, Phase 6a). Without both, all input frames are dropped. The agent always allows view-only mode. As of Phase 6a, peers for **all** sessions (including files/desktop) have their identity verified before the agent answers an offer.
 
-### 3.1 Vận hành sandbox files (Tuần 11)
+### 3.1 Operating the Files Sandbox (Week 11)
 
-#### 3.1.1 TTL 24 giờ cho file `.ponter-part`
+#### 3.1.1 24-Hour TTL for `.ponter-part` Files
 
-`.ponter-part` là một cơ chế **chỉ áp dụng cho upload** — download phía agent là read-only và không tạo `.part` nào (xem `apps/agent/src/files.rs:1854`). Do đó phần TTL dưới đây không ám chỉ download để lại parts.
+`.ponter-part` is a mechanism **applicable only to uploads** — downloads on the agent side are read-only and never create `.part` files (see `apps/agent/src/files.rs:1854`). Therefore, the TTL section below does not imply that downloads leave parts behind.
 
-Agent chạy một **janitor** (task nền, chạy mỗi giờ và khi khởi động/session init) quét toàn bộ sandbox root tìm các file kết thúc bằng `.ponter-part`:
+The agent runs a **janitor** (background task running every hour and at startup/session init) that scans the entire sandbox root for files ending in `.ponter-part`:
 
-- Nếu `SystemTime::now() - metadata.modified() > 86400 giây` (24 h) → xóa file và ghi log `INFO`.
-- Nếu **`<= 86400 giây`** → giữ lại. Đây là trạng thái mở `resume`; **không được xóa tay** trong lúc transfer đang diễn ra — resume sẽ dựa vào `fromChunkIndex` + length validation để tiếp tục.
-- **Hủy tường minh (explicit cancel)** qua `files-cancel` vẫn **xóa ngay** `.ponter-part` kể cả khi còn trong TTL — hành vi này không chờ janitor.
+- If `SystemTime::now() - metadata.modified() > 86400 seconds` (24 h) → delete file and log `INFO`.
+- If **`<= 86400 seconds`** → keep it. This represents open `resume` state; **do not delete manually** while a transfer is in progress — resume relies on `fromChunkIndex` + length validation to proceed.
+- **Explicit cancellation** via `files-cancel` still **immediately deletes** `.ponter-part` even within the TTL — this action does not wait for the janitor.
 
-Tóm lại: `.ponter-part` trẻ (<24 h) = trạng thái resume, để nguyên; `.ponter-part` già (>24 h) = rác, janitor dọn.
+In summary: young `.ponter-part` (<24 h) = resume state, preserve; old `.ponter-part` (>24 h) = stale garbage, janitor cleans up.
 
-#### 3.1.2 Quyền thao tác thư mục (sandbox root)
+#### 3.1.2 Directory Operation Permissions (Sandbox Root)
 
-Các phép toán `mkdir`, `delete`, `rename` chỉ áp dụng **bên trong sandbox root**:
+`mkdir`, `delete`, and `rename` operations only apply **inside the sandbox root**:
 
-- **Root không thể bị xóa/đổi tên:** yêu cầu `path == ""` (hoặc canonicalize == root) bị từ chối ngay với lỗi **`PERMISSION_DENIED`** — ở cả giai đoạn syntactic và canonicalization.
-- **Delete thư mục rỗng:** được phép nếu là rỗng.
-- **Delete thư mục không rỗng:** yêu cầu `recursive: true` (API) hoặc xác nhận recursive qua UI dialog trước khi thực hiện — nếu không, trả về **`DIR_NOT_EMPTY`**.
-- **Rename:** cả `oldPath` và `newPath` phải nằm trong sandbox root (canonicalize + prefix check). Nếu `newPath` đã tồn tại → từ chối ngay với lỗi **`FILE_EXISTS`** (không ghi đè — rename không bao giờ overwrite).
+- **Root cannot be deleted/renamed:** requests with `path == ""` (or canonicalize == root) are immediately rejected with **`PERMISSION_DENIED`** — at both syntactic and canonicalization stages.
+- **Delete empty directory:** allowed if empty.
+- **Delete non-empty directory:** requires `recursive: true` (API) or recursive confirmation via UI dialog before execution — otherwise returns **`DIR_NOT_EMPTY`**.
+- **Rename:** both `oldPath` and `newPath` must reside inside the sandbox root (canonicalize + prefix check). If `newPath` already exists → immediately rejected with **`FILE_EXISTS`** (no overwriting — rename never overwrites).
 
 ---
 
@@ -96,7 +96,7 @@ Các phép toán `mkdir`, `delete`, `rename` chỉ áp dụng **bên trong sandb
 ### 4.1 Local Development
 
 ```bash
-# Chạy với local server:
+# Run with local server:
 ./apps/agent/target/debug/ponter-agent \
   --agent-id agent-myhost-01 \
   --server ws://localhost:8787/api/ws/agent \
@@ -108,7 +108,7 @@ Các phép toán `mkdir`, `delete`, `rename` chỉ áp dụng **bên trong sandb
 - **Local dev server**: `ws://localhost:8787/api/ws/agent`
 - **Production server**: `wss://your-domain.com/api/ws/agent`
 
-*(Truyền `--stun ""` để giới hạn WebRTC ở candidate loopback cho local testing).*
+*(Pass `--stun ""` to restrict WebRTC to loopback candidates for local testing).*
 
 ### 4.2 Production
 
@@ -120,7 +120,7 @@ Các phép toán `mkdir`, `delete`, `rename` chỉ áp dụng **bên trong sandb
   --stun "stun:stun.l.google.com:19302"
 ```
 
-Để bật debug logs:
+To enable debug logs:
 
 ```bash
 RUST_LOG=debug ./apps/agent/target/release/ponter-agent ...
@@ -128,17 +128,17 @@ RUST_LOG=debug ./apps/agent/target/release/ponter-agent ...
 
 ### 4.3 Environment Variables
 
-Agent hỗ trợ việc chuyển các tham số qua environment variables thông qua file cấu hình `.env` (xem `apps/agent/.env.example`):
+The agent supports passing parameters via environment variables using a `.env` configuration file (see `apps/agent/.env.example`):
 
 ```env
 AGENT_ID=agent-myhost-01
 SERVER=wss://your-domain.com/api/ws/agent
 CREDENTIAL=ag_0123456789abcdef0123456789abcdef
 STUN=stun:stun.l.google.com:19302
-# Tùy chọn: mở cổng files. Bỏ trống = cổng đóng (mặc định an toàn).
+# Optional: open files gate. Empty = gate closed (safe default).
 # AGENT_FILES_ROOT=/srv/ponter-files
-# Tùy chọn: bật inject chuột/phím (mặc định TẮT — cổng A của ADR-42).
-# Chỉ có hiệu lực khi peer đã xác minh danh tính (cổng B).
+# Optional: enable mouse/keyboard injection (DEFAULT OFF — gate A of ADR-42).
+# Only takes effect when peer identity is verified (gate B).
 # AGENT_ALLOW_INPUT=true
 RUST_LOG=info
 ```
@@ -147,18 +147,18 @@ RUST_LOG=info
 
 ## 5. Running as a Background Daemon (Linux Systemd)
 
-Để chạy agent tự động khi khởi động hệ thống trên Linux:
+To run the agent automatically at system boot on Linux:
 
-### Bước 1: Cài đặt binary
+### Step 1: Install Binary
 
 ```bash
 sudo cp apps/agent/target/release/ponter-agent /usr/local/bin/ponter-agent
 sudo chmod +x /usr/local/bin/ponter-agent
 ```
 
-### Bước 2: Tạo file cấu hình môi trường
+### Step 2: Create Environment Configuration File
 
-Tạo file tại `/etc/ponter-ponter-agent.env` (giới hạn root):
+Create file at `/etc/ponter-ponter-agent.env` (restricted to root):
 
 ```bash
 sudo bash -c 'cat > /etc/ponter-ponter-agent.env << EOF
@@ -171,9 +171,9 @@ EOF'
 sudo chmod 600 /etc/ponter-ponter-agent.env
 ```
 
-### Bước 3: Tạo systemd service
+### Step 3: Create Systemd Service
 
-Tạo file service tại `/etc/systemd/system/ponter-ponter-agent.service`:
+Create service file at `/etc/systemd/system/ponter-ponter-agent.service`:
 
 ```ini
 [Unit]
@@ -197,17 +197,17 @@ KillMode=process
 WantedBy=multi-user.target
 ```
 
-### Bước 4: Khởi động service
+### Step 4: Start Service
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable ponter-ponter-agent
 sudo systemctl start ponter-ponter-agent
 
-# Kiểm tra trạng thái
+# Check status
 sudo systemctl status ponter-ponter-agent
 
-# Xem logs
+# View logs
 sudo journalctl -u ponter-ponter-agent -f
 ```
 
@@ -215,13 +215,13 @@ sudo journalctl -u ponter-ponter-agent -f
 
 ## 6. Windows Service (Pending)
 
-Windows service deployment sẽ được hỗ trợ trong Phase 3. Tạm thời sử dụng Task Scheduler hoặc WSL2 để chạy agent.
+Windows service deployment will be supported in Phase 3. Temporarily use Task Scheduler or WSL2 to run the agent.
 
 ---
 
 ## 7. macOS LaunchDaemon (Pending)
 
-macOS daemon deployment sẽ được hỗ trợ trong Phase 3.
+macOS daemon deployment will be supported in Phase 3.
 
 ---
 
@@ -229,7 +229,7 @@ macOS daemon deployment sẽ được hỗ trợ trong Phase 3.
 
 ### Credential Storage
 
-Agent credential (`ag_<32 hex>`) cấp quyền truy cập máy tính cho người dùng đã xác thực. Lưu trữ với quyền hạn chế (`chmod 600`):
+The agent credential (`ag_<32 hex>`) grants machine access to authenticated users. Store with restricted permissions (`chmod 600`):
 
 ```bash
 chmod 600 /etc/ponter-ponter-agent.env
@@ -237,25 +237,25 @@ chmod 600 /etc/ponter-ponter-agent.env
 
 ### Process Isolation
 
-Agent khởi chạy lệnh bằng quyền người dùng chạy process `ponter-agent`. **Không chạy agent với quyền `root`** trừ khi có nhu cầu quản trị hệ thống rõ rệt.
+The agent spawns commands using the privileges of the user running the `ponter-agent` process. **Do not run the agent as `root`** unless there is an explicit system administration requirement.
 
 ### PTY Boundary
 
-Agent ép buộc tối đa 10 phiên PTY đồng thời trên mỗi host để bảo vệ trước connection exhaustion.
+The agent enforces a maximum of 10 concurrent PTY sessions per host to protect against connection exhaustion.
 
 ### Network Isolation
 
-- Agent kết nối ra server qua WebSocket (WSS trong production)
-- WebRTC data channels được mã hoá DTLS 1.2
-- Trong production, sử dụng Coturn TURN server để relay traffic qua symmetric NAT
+- Agent connects outbound to server via WebSocket (WSS in production)
+- WebRTC data channels are encrypted with DTLS 1.2
+- In production, use a Coturn TURN server to relay traffic across symmetric NAT
 
 ### Credential Rotation
 
-Để quay lại credential mới:
-1. Regenerate credential qua `POST /api/agents` trên web dashboard
-2. Dừng agent service
-3. Cập nhật credential trong `.env` hoặc systemd config
-4. Khởi động lại service
+To rotate credentials:
+1. Regenerate credential via `POST /api/agents` on the web dashboard
+2. Stop the agent service
+3. Update the credential in `.env` or systemd config
+4. Restart the service
 
 ---
 
@@ -263,27 +263,27 @@ Agent ép buộc tối đa 10 phiên PTY đồng thời trên mỗi host để b
 
 ### Issue: Agent cannot connect to WebSocket
 
-1. Kiểm tra URL server chính xác: `ws://localhost:8787/api/ws/agent` (local) hoặc `wss://domain.com/api/ws/agent` (production)
-2. Xác nhận credential hợp lệ - đăng nhập và tạo agent mới trong dashboard
-3. Kiểm tra firewall: port 8787 (local) hoặc 443 (WSS) phải mở
-4. Xem log: `RUST_LOG=debug ./ponter-agent ...`
+1. Verify exact server URL: `ws://localhost:8787/api/ws/agent` (local) or `wss://domain.com/api/ws/agent` (production)
+2. Confirm valid credential — log in and create a new agent in the dashboard
+3. Check firewall: port 8787 (local) or 443 (WSS) must be open
+4. View logs: `RUST_LOG=debug ./ponter-agent ...`
 
 ### Issue: WebRTC connection fails
 
-1. Đảm bảo STUN/TURN server đủ tiếp cận
-2. Trong local dev, dùng `--stun ""` để force loopback candidates
-3. Trong production, kiểm tra endpoint ICE servers:
+1. Ensure STUN/TURN server is accessible
+2. In local dev, use `--stun ""` to force loopback candidates
+3. In production, check ICE servers endpoint:
    ```bash
    curl -H "Authorization: Bearer <jwt>" https://domain.com/api/webrtc/ice-servers
    ```
-4. Kiểm tra firewall UDP trên port 3478 (STUN/TURN) và 49152-49200 (TURN relay)
+4. Check UDP firewall on port 3478 (STUN/TURN) and 49152-49200 (TURN relay)
 
 ### Issue: PTY session disconnects immediately
 
-1. Kiểm tra log agent để tìm lỗi shell spawn
-2. Đảm bảo shell mặc định tồn tại trên host (`/bin/bash` hoặc `powershell`)
-3. Kiểm tra quyền: agent cần quyền truy cập PTY
+1. Check agent logs for shell spawn errors
+2. Ensure default shell exists on host (`/bin/bash` or `powershell`)
+3. Check permissions: agent requires access to PTY
 
 ### Issue: Multiple agent connections
 
-Mỗi `agentId` chỉ có một kết nối WebSocket đồng thời. Kết nối mới sẽ tự động thay thế kết nối cũ (mã lỗi 4409 "Replaced by new connection").
+Each `agentId` permits only one concurrent WebSocket connection. A new connection automatically evicts the old one (error code 4409 "Replaced by new connection").

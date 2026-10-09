@@ -3,7 +3,7 @@
 **Status:** Draft — awaiting review
 **Date:** 2026-09-25
 **Author:** Ngo Tuan Anh & Claude
-**Target:** Phase 2 Week 4 of `docs/ARCHITECTURE.md` (Section 8: "Tuần 4: WebRTC Core")
+**Target:** Phase 2 Week 4 of `docs/ARCHITECTURE.md` (Section 8: "Week 4: WebRTC Core")
 
 > **Scope note.** The roadmap item "Implement WebSocket signaling" is assigned to **Week 5**
 > (`docs/ARCHITECTURE.md:1189`), not Week 4. Week 4 therefore delivers the REST signaling

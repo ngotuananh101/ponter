@@ -3,7 +3,7 @@
 - **Date:** 2026-10-06
 - **Status:** Design approved by owner (2026-10-06, 5 decisions locked), pending written review
 - **Baseline:** `main` @ `db71f65` (PR #48 merged)
-- **Schedule:** Tuần 17 — Phase 6 is split in two: **6a Interactivity** (this spec) then **6b Latency** (own spec + plan)
+- **Schedule:** Week 17 — Phase 6 is split in two: **6a Interactivity** (this spec) then **6b Latency** (own spec + plan)
 - **Related:** Phase 5 spec `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` (§3.5, §8); WS1 Rust doc `docs/security/2026-10-08-ws1-e2ee-rust.md` (C1 carry-forward, "Mandatory carry-forward"); Week 9 spec ADR-26..30; `docs/ARCHITECTURE.md` §8 Phase 6 stub
 
 ---

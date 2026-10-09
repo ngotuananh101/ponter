@@ -187,14 +187,14 @@ All routes mounted at `/api/admin/*`, guarded by `authMiddleware` + `adminMiddle
 
 ### 4.2 Admin Cockpit View (`apps/web/src/views/AdminView.vue`)
 
-- **Tab 1: Overview (Thống kê tổng quan)**
+- **Tab 1: Overview (General Statistics)**
   - Stat cards:
     - Total Users (with highlight chip for Pending Approvals).
     - Agents Online / Total (with breakdown badges for Linux, Windows, macOS).
     - Active WebRTC Sessions (Terminal & Desktop).
   - Quick action banner: If `pending > 0`, display alert with button to switch to "Pending Users" tab.
 
-- **Tab 2: User Management (Quản lý người dùng)**
+- **Tab 2: User Management**
   - Search input & status filter pills (`All`, `Pending`, `Approved`, `Rejected`, `Deactivated`).
   - Data table:
     - Avatar, Username, Email, Created At, Last Login.
@@ -205,7 +205,7 @@ All routes mounted at `/api/admin/*`, guarded by `authMiddleware` + `adminMiddle
       - Action menu: Toggle Active/Inactive, Promote to Admin / Demote to User.
       - Self-protection: Current admin's own actions are disabled.
 
-- **Tab 3: Settings (Cài đặt hệ thống)**
+- **Tab 3: Settings (System Settings)**
   - Form cards:
     - `Allow Registration`: Switch toggle with descriptive subtext.
     - `Auto-approve Users`: Switch toggle with descriptive subtext.
@@ -213,7 +213,7 @@ All routes mounted at `/api/admin/*`, guarded by `authMiddleware` + `adminMiddle
     - Save button with toast notification on update.
 
 ### 4.3 Auth Views Polish
-- `RegisterView.vue`: Upon registration, if `requiresApproval` is true, show success alert: *"Đăng ký thành công! Tài khoản đang chờ quản trị viên phê duyệt."*
+- `RegisterView.vue`: Upon registration, if `requiresApproval` is true, show success alert: *"Registration successful! Your account is pending administrator approval."*
 - `LoginView.vue`: Catch `USER_PENDING_APPROVAL` error and present dedicated explanatory card instead of raw generic error.
 
 ---

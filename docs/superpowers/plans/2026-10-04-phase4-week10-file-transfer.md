@@ -6650,30 +6650,30 @@ git commit -m "test(e2e): cross-language files suite with list, download, upload
 > 2. No row may claim E2EE or peer identity. Files cross the wire under DTLS only (H11/M7/M8); the gate is a policy holding pattern closed by WS1/WS2/WS3 (H2/H3).
 > 3. Windows/macOS runtime filesystem behavior is **unverified** (§3.7) — compile + unit tests only.
 > 4. Week 11 is **not started**; the Phase 4 roadmap item stays unchecked.
-> 5. `ARCHITECTURE.md` is a Vietnamese-convention file — the new entry is written in Vietnamese matching the surrounding sections. `agent-setup.md` is also Vietnamese. The demo doc follows the Week 9 doc's English-with-technical-terms convention.
+> 5. Historical note: `ARCHITECTURE.md` and `agent-setup.md` previously used Vietnamese conventions, but all repository documentation has been standardized to English. The demo doc follows the Week 9 doc's English convention.
 
 - [ ] **Step 1: `docs/ARCHITECTURE.md` — replace the Phase 4 stub**
 
-Replace `:1003-1005` (the heading plus the "Chưa thiết kế" blockquote):
+Replace `:1003-1005` (the heading plus the "Not yet designed" blockquote):
 
 ```markdown
-### Phase 4: File Transfer (Tuần 10-11)
+### Phase 4: File Transfer (Weeks 10-11)
 
-> **Trạng thái:** Tuần 10 là *thin slice* đã hoàn thành — chế độ session thứ ba `Files` trên một data channel `files`, tải lên/tải xuống hai chiều, sandbox một root, cổng từ chối tại offer. Tuần 11 (file lớn, streaming, hiệu năng) **chưa bắt đầu**.
+> **Status:** Week 10 is a completed *thin slice* — third session mode `Files` on a single data channel `files`, bidirectional upload/download, single-root sandbox, refusal gate at offer. Week 11 (large files, streaming, performance) **not yet started**.
 
-#### Tuần 10: File Transfer — lát cắt mỏng (đã xong)
+#### Week 10: File Transfer — thin slice (completed)
 
-- [x] Chế độ session thứ ba `Files` với channel label `files` — `classify_offer` thứ tự terminal → desktop → files (ADR-31)
-- [x] Cổng từ chối tại offer: không có `--files-root` (hoặc root không dùng được) ⇒ trả lời `approved: false`, đóng peer, không mở session — mặc định TẮT, chỉ mở bằng cờ cục bộ (ADR-32)
-- [x] Sandbox một root canonicalize + prefix check; wire path POSIX-relative; upload qua `{name}.ponter-part` + atomic rename, từ chối ghi đè `FILE_EXISTS` (ADR-33)
-- [x] Giao thức chunk 32 KiB + base64 dưới trần frame 64 KiB; cửa sổ trượt 16 chunk với ack tích luỹ; timeout 30 s; một transfer mỗi chiều (ADR-34)
-- [x] Web — tab `files` (FilesView: breadcrumb, danh sách, tải xuống khi click, upload vào thư mục hiện tại, tiến độ + huỷ, banner lỗi), độc quyền ba chiều theo agent (ADR-14)
-- [x] E2E cross-language (`files.e2e.test.ts`) — list, download byte-equal, upload byte-equal, huỷ giữa chừng, path escape, cổng đóng, ghi đè, upload khai báo quá cỡ
-- [x] Server **không đổi** — không cột, không endpoint, không migration (ADR-35)
+- [x] Third session mode `Files` with channel label `files` — `classify_offer` order terminal → desktop → files (ADR-31)
+- [x] Refusal gate at offer: missing `--files-root` (or unusable root) ⇒ answer `approved: false`, close peer, do not open session — DEFAULT OFF, enabled only via local flag (ADR-32)
+- [x] Single-root sandbox with canonicalize + prefix check; POSIX-relative wire path; upload via `{name}.ponter-part` + atomic rename, refuse overwrite `FILE_EXISTS` (ADR-33)
+- [x] Chunk protocol 32 KiB + base64 under 64 KiB frame ceiling; 16-chunk sliding window with cumulative ack; 30 s timeout; one transfer per direction (ADR-34)
+- [x] Web — `files` tab (FilesView: breadcrumb, file list, click to download, upload to current folder, progress + cancel, error banner), agent-exclusive across all three modes (ADR-14)
+- [x] Cross-language E2E (`files.e2e.test.ts`) — list, byte-equal download, byte-equal upload, cancel mid-flight, path escape, closed gate, overwrite, oversized upload declaration
+- [x] Server **unchanged** — no columns, no endpoints, no migrations (ADR-35)
 
-> Tuần 11 (file lớn, streaming xuống đĩa, hiệu năng) **chưa bắt đầu** — mục Phase 4 không được đánh dấu hoàn thành.
+> Week 11 (large files, disk streaming, performance) **not yet started** — Phase 4 item is not marked complete.
 
-> **Cổng files là trạng thái tạm, không phải bản vá bảo mật.** Peer chưa được định danh (H3); `approved` chưa được enforce (H2); traffic file chỉ được bảo vệ bởi DTLS (H11/M7/M8). Cổng giữ *hệ quả* (file access trên peer chưa xác minh) khỏi mặc định, nhưng các finding còn nguyên — đóng bởi **WS1/WS2/WS3** (Phase 5). Xem `docs/security/2026-10-01-e2ee-zero-trust-audit.md` và spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
+> **Files gate is a temporary policy holding pattern, not a security patch.** Peer is not yet authenticated (H3); `approved` is not yet enforced (H2); file traffic is protected by DTLS only (H11/M7/M8). The gate prevents the *consequence* (file access on unverified peer) by default, but the findings remain — closed by **WS1/WS2/WS3** (Phase 5). See `docs/security/2026-10-01-e2ee-zero-trust-audit.md` and spec `docs/superpowers/specs/2026-10-04-phase4-week10-file-transfer-design.md`.
 ```
 
 - [ ] **Step 2: `docs/ARCHITECTURE.md` — annotate the perf row**
@@ -6681,7 +6681,7 @@ Replace `:1003-1005` (the heading plus the "Chưa thiết kế" blockquote):
 Replace `:1147`:
 
 ```markdown
-| File Transfer | > 10MB/s | Parallel chunks — **phạm vi Tuần 11, CHƯA đo** (Tuần 10 chỉ chạy đơn luồng tuần tự; số đo stopwatch trong demo là quan sát phi chính thức, không phải tiêu chí nghiệm thu) |
+| File Transfer | > 10MB/s | Parallel chunks — **Week 11 scope, NOT YET measured** (Week 10 runs single-stream sequential only; stopwatch measurements in demo are informal observations, not acceptance criteria) |
 ```
 
 - [ ] **Step 3: `docs/guides/agent-setup.md` — CLI options**
@@ -6689,14 +6689,14 @@ Replace `:1147`:
 In §3 (`:45-60`), inside the options block, after the `--rows` line add:
 
 ```
-      --files-root <FILES_ROOT>  Thư mục được phục vụ cho các session files. KHÔNG có mặc định:
-                                 bỏ trống = cổng files đóng (offer bị từ chối) [env: AGENT_FILES_ROOT]
+      --files-root <FILES_ROOT>  Directory served for files sessions. NO default:
+                                 empty = files gate closed (offer refused) [env: AGENT_FILES_ROOT]
 ```
 
 And after the code block (before the `---` at `:62`), add the one-line security note:
 
 ```markdown
-> **Bảo mật:** `--files-root` mở quyền đọc/ghi file trong đúng thư mục đó cho phiên đã xác thực nhưng **peer chưa được định danh** (H3 — Phase 5). Chỉ trỏ vào thư mục bạn chủ đích chia sẻ; không có mặc định, cổng đóng khi cờ vắng mặt.
+> **Security:** `--files-root` grants read/write permissions within that directory for authenticated sessions, but the **peer identity is not yet verified** (H3 — Phase 5). Only point to directories you intentionally share; there is no default, gate remains closed when flag is absent.
 ```
 
 - [ ] **Step 4: `docs/guides/agent-setup.md` — env vars**
@@ -6704,7 +6704,7 @@ And after the code block (before the `---` at `:62`), add the one-line security 
 In §4.3 (`:103-109`), add to the `.env` block after `STUN`:
 
 ```env
-# Tùy chọn: mở cổng files. Bỏ trống = cổng đóng (mặc định an toàn).
+# Optional: open files gate. Empty = gate closed (safe default).
 # AGENT_FILES_ROOT=/srv/ponter-files
 ```
 

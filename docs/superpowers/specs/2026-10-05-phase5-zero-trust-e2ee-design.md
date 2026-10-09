@@ -3,9 +3,9 @@
 - **Date:** 2026-10-05
 - **Status:** Design approved by owner (2026-10-05), pending written review
 - **Baseline:** `main` @ `fdead292` (PR #41 merged)
-- **Schedule:** Tuần 12–16 (5 tuần, mở rộng từ 3 tuần theo yêu cầu owner)
+- **Schedule:** Weeks 12–16 (5 weeks, extended from 3 weeks per owner request)
 - **Research input:** [`docs/security/2026-10-01-e2ee-zero-trust-audit.md`](../../security/2026-10-01-e2ee-zero-trust-audit.md)
-- **Related:** `docs/ARCHITECTURE.md` §7 (Bảo mật), §8.5 (Phase 5), spec Tuần 9 (ADR-26..30)
+- **Related:** `docs/ARCHITECTURE.md` §7 (Security), §8.5 (Phase 5), Week 9 spec (ADR-26..30)
 
 ---
 
@@ -28,7 +28,7 @@ downstream phases:
 
 **Schedule change.** The roadmap budgeted 3 weeks. The owner extended it to 5 (2026-10-05)
 with the explicit constraint that **security takes priority over feature schedule** — Phases 6
-and 7 shift out by 2 weeks (Phase 6 → Tuần 17–18, Phase 7 → Tuần 19–20). The reasoning: doing
+and 7 shift out by 2 weeks (Phase 6 → Weeks 17–18, Phase 7 → Weeks 19–20). The reasoning: doing
 E2EE badly or partially is *worse* than not doing it, because the UI advertises a guarantee
 that does not exist (see §4.1).
 

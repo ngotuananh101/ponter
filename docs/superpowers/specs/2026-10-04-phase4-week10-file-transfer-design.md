@@ -3,13 +3,13 @@
 **Status:** Draft — Ready for review
 **Date:** 2026-10-04
 **Author:** Ngo Tuan Anh & Claude
-**Target:** Phase 4 Week 10 of `docs/ARCHITECTURE.md` (`:1003`, "Phase 4: File Transfer (Tuần 10-11)"). Week 10 delivers the **thin slice**: a third session mode that lists a sandboxed directory, downloads files, and uploads files — **both directions**, over one `files` data channel — behind an agent-local gate (ADR-32). Week 11 (large files, streaming to disk, hardening) is explicitly out of scope.
+**Target:** Phase 4 Week 10 of `docs/ARCHITECTURE.md` (`:1003`, "Phase 4: File Transfer (Weeks 10-11)"). Week 10 delivers the **thin slice**: a third session mode that lists a sandboxed directory, downloads files, and uploads files — **both directions**, over one `files` data channel — behind an agent-local gate (ADR-32). Week 11 (large files, streaming to disk, hardening) is explicitly out of scope.
 
 ---
 
 ## 1. Overview & Objectives
 
-Phase 3 ended with two session modes: `terminal` (a PTY over a `terminal` channel) and `desktop` (a media track plus a `control` channel). Phase 4 turns Ponter into a remote file manager (`ARCHITECTURE.md:26`, "Remote File Manager với transfer tốc độ cao"). Week 10 ships the **wire, the sandbox, the two directions, and the tests** — not the performance work and not the security workstreams.
+Phase 3 ended with two session modes: `terminal` (a PTY over a `terminal` channel) and `desktop` (a media track plus a `control` channel). Phase 4 turns Ponter into a remote file manager (`ARCHITECTURE.md:26`, "Remote File Manager with high-speed transfer"). Week 10 ships the **wire, the sandbox, the two directions, and the tests** — not the performance work and not the security workstreams.
 
 One constraint shapes the whole design:
 
@@ -764,7 +764,7 @@ This section carries the same weight as Week 9's, because files is a **write sur
 
 Reconciled in the same PR (D7):
 
-1. **Roadmap Phase 4** (`ARCHITECTURE.md:1003-1005`). The current stub reads "**Chưa thiết kế.** Mục này được giữ chỗ để lộ trình không nhảy cóc từ Phase 3 sang Phase 5; nội dung chi tiết sẽ bổ sung khi có spec riêng." Week 10 replaces the "chưa thiết kế" blockquote with a **Week 10 (thin slice)** entry recording: the third session mode and `files` channel (ADR-31), the refuse-at-offer gate (ADR-32), the root sandbox + `.part` upload (ADR-33), the 32 KiB/window/ack protocol (ADR-34), and that the **server is unchanged** (ADR-35). It marks Week 11 (large files, streaming, performance) as **not started** — the Phase 4 item is **not** ticked done.
+1. **Roadmap Phase 4** (`ARCHITECTURE.md:1003-1005`). The current stub reads "**Not yet designed.** This section is a placeholder so the roadmap does not skip from Phase 3 to Phase 5; detailed content will be added when a dedicated spec is written." Week 10 replaces the "not yet designed" blockquote with a **Week 10 (thin slice)** entry recording: the third session mode and `files` channel (ADR-31), the refuse-at-offer gate (ADR-32), the root sandbox + `.part` upload (ADR-33), the 32 KiB/window/ack protocol (ADR-34), and that the **server is unchanged** (ADR-35). It marks Week 11 (large files, streaming, performance) as **not started** — the Phase 4 item is **not** ticked done.
 2. **Perf table** (`ARCHITECTURE.md:1147`, `| File Transfer | > 10MB/s | Parallel chunks |`). The row is annotated as **Week 11 scope, not yet measured**: the demo's informal number is recorded, and the row stays a target, not a claim — mirroring how the Week 8 spec handled the desktop row before the Week 8 implementation corrected it.
 3. **Security status.** §9.2 records that **H11, M7, M8, H3, H2 remain open** after the Week 10 merge, and that the files gate is a holding pattern closed by **WS1/WS2/WS3** (Phase 5). The roadmap's workstream list needs no new entry.
 4. **`docs/guides/agent-setup.md`.** The CLI options section (§3, `:45-60`) and env-vars section (§4.3, `:101-109`) gain `--files-root` / `AGENT_FILES_ROOT`: what it does, the fail-closed behavior, and a one-line security note (the peer is unverified until Phase 5; expose only a directory you intend to share). The section is already stale (it does not list the desktop flags either) — the implementer adds `--files-root` without attempting a full rewrite.

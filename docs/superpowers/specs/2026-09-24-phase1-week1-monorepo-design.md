@@ -1,75 +1,75 @@
-# Phase 1, Tuần 1 — Monorepo Scaffold
+# Phase 1, Week 1 — Monorepo Scaffold
 
-**Ngày:** 2026-09-24
-**Trạng thái:** chờ duyệt
-**Nguồn:** `docs/ARCHITECTURE.md`, mục 8, "Tuần 1: Monorepo Setup"
+**Date:** 2026-09-24
+**Status:** Pending Approval
+**Source:** `docs/ARCHITECTURE.md`, Section 8, "Week 1: Monorepo Setup"
 
-## Mục tiêu
+## Objective
 
-Dựng khung monorepo để các tuần sau cắm code vào, không viết tính năng.
-Thành công khi:
+Scaffold monorepo structure so subsequent weeks can integrate code without writing feature logic.
+Success criteria:
 
-- `pnpm install` chạy xong và tạo lockfile.
-- `pnpm lint`, `pnpm typecheck`, `pnpm format:check` đều xanh ở local và trên GitHub Actions.
-- `@ponter/shared` export được các type contract dùng chung.
+- `pnpm install` completes and generates lockfile.
+- `pnpm lint`, `pnpm typecheck`, and `pnpm format:check` all pass locally and in GitHub Actions.
+- `@ponter/shared` exports shared contract types.
 
-## Ngoài phạm vi
+## Out of Scope
 
-Cloudflare Workers, D1, Vue app, Tailwind, agent Rust, Vitest, script
-deploy, test. Những phần này thuộc tuần 2 trở đi.
+Cloudflare Workers, D1, Vue app, Tailwind, Rust agent, Vitest, deploy scripts,
+tests. These items belong to Week 2 and beyond.
 
-## Quyết định đã chốt
+## Key Decisions
 
-- Scaffold toàn bộ cây thư mục trong tài liệu, kể cả package chưa có code.
-- Dùng bản mới nhất còn tương thích với nhau, không bám version 2024 trong tài liệu.
+- Scaffold the entire directory tree from the architecture doc, including packages without code.
+- Use the latest compatible versions, rather than sticking to legacy 2024 versions in documentation.
 
 ## Toolchain
 
-| Công cụ | Bản | Lý do chọn |
+| Tool | Version | Reason |
 |---|---|---|
-| Node | 24 (máy dev đang chạy 24.21.0) | Current, còn trong vòng hỗ trợ |
-| pnpm | 12.6.0 | Mới nhất |
-| Turborepo | 2.11.3 | Mới nhất |
-| TypeScript | 6.0.3 | Mới nhất mà typescript-eslint nhận (`<6.1.0`). 7.0.2 bị loại |
-| ESLint | 10.11.0 | Mới nhất, flat config |
-| typescript-eslint | 8.70.1 | Mới nhất |
-| Prettier | 3.9.9 | Mới nhất |
-| @types/node | 24.13.6 | Types của đúng Node 24, không lấy bản 26 |
+| Node | 24 (dev machine runs 24.21.0) | Current LTS, fully supported |
+| pnpm | 12.6.0 | Latest |
+| Turborepo | 2.11.3 | Latest |
+| TypeScript | 6.0.3 | Latest supported by typescript-eslint (`<6.1.0`); 7.0.2 excluded |
+| ESLint | 10.11.0 | Latest, flat config |
+| typescript-eslint | 8.70.1 | Latest |
+| Prettier | 3.9.9 | Latest |
+| @types/node | 24.13.6 | Exact Node 24 types, not 26 |
 
-`engines` ở root: `node >= 24`, `pnpm >= 12`. `packageManager`: `pnpm@12.6.0`.
-Root `package.json` có `"type": "module"` để nạp `eslint.config.js` không bị cảnh báo.
+`engines` in root: `node >= 24`, `pnpm >= 12`. `packageManager`: `pnpm@12.6.0`.
+Root `package.json` has `"type": "module"` so `eslint.config.js` loads without warnings.
 
-## Cấu trúc
+## Structure
 
-`pnpm-workspace.yaml` trỏ `apps/*`, `packages/*`, `workers/*`.
+`pnpm-workspace.yaml` points to `apps/*`, `packages/*`, `workers/*`.
 
-Mỗi workspace có `package.json` với `name` theo `@ponter/<tên>`, `private: true`,
-`version: 0.1.0`. Package chưa có code chỉ khai báo script `lint` và `typecheck`
-bằng `echo` (no-op, exit 0) và không có dependency. Format không phải task của
-từng package: Prettier chạy một lần ở root.
+Each workspace contains `package.json` with `name` format `@ponter/<name>`, `private: true`,
+`version: 0.1.0`. Packages without code only declare `lint` and `typecheck` scripts
+using `echo` (no-op, exit 0) and have no dependencies. Formatting is not a per-package task:
+Prettier runs once at root.
 
-Danh sách placeholder, đúng tên trong tài liệu:
+List of placeholders matching architecture docs:
 
 - apps: `web`, `desktop`, `mobile`, `agent`
 - packages: `api-client`, `webrtc-core`, `terminal-core`, `ui-components`, `crypto`
 - workers: `signaling`, `api`
 
-`apps/agent` là Rust nhưng vẫn có `package.json` placeholder để workspace
-đồng nhất; `Cargo.toml` để tuần 5.
+`apps/agent` is Rust but retains a placeholder `package.json` for workspace
+uniformity; `Cargo.toml` is deferred to Week 5.
 
-Thư mục không phải package (`scripts/`, `tests/e2e`, `tests/unit`,
+Non-package directories (`scripts/`, `tests/e2e`, `tests/unit`,
 `tests/integration`, `docs/guides`, `docs/architecture`, `.github/workflows`)
-được tạo kèm `.gitkeep`. Không viết nội dung script hay test.
+are created with `.gitkeep`. No scripts or tests written.
 
 ## `packages/shared`
 
-Package duy nhất có code. `tsconfig.json` kế thừa `tsconfig.base.json`.
+Only package containing code. `tsconfig.json` inherits from `tsconfig.base.json`.
 
 Files:
 
 - `src/types/user.ts` — `User`, `Device`, `Agent`
 - `src/types/session.ts` — `Session`, `SessionStatus`
-- `src/types/webrtc.ts` — `IceServer`, mô tả data/media channel
+- `src/types/webrtc.ts` — `IceServer`, data/media channel descriptors
 - `src/types/terminal.ts` — `TerminalSession`, `TerminalSize`
 - `src/types/files.ts` — `RemoteFile`, `FileTransfer`, `TransferDirection`
 - `src/types/auth.ts` — `LoginRequest`, `LoginResponse`, `RegisterRequest`
@@ -77,59 +77,59 @@ Files:
 - `src/types/index.ts` — re-export
 - `src/index.ts` — re-export `types`
 
-`auth.ts` và `signaling.ts` không có trong checklist tuần 1 nhưng có trong
-mục 6 của tài liệu. Gộp vào đây vì là contract thuần, không kéo theo runtime.
+`auth.ts` and `signaling.ts` are not in Week 1 checklist but appear in
+Section 6 of architecture docs. Included here because they are pure contracts without runtime dependencies.
 
-Chỉ interface và union type. Không có hàm, không có test. `typecheck` chạy
+Only interfaces and union types. No functions, no tests. `typecheck` runs
 `tsc --noEmit`.
 
 ## TypeScript
 
 `tsconfig.base.json`: `strict`, `target` ES2024, `module` "esnext", `moduleResolution`
 "bundler", `verbatimModuleSyntax`, `noUncheckedIndexedAccess`, `skipLibCheck`.
-Không emit (`noEmit`) ở base; package nào build sau này tự bật.
-Chọn `bundler` thay vì `nodenext` vì các package sau này đều bundle (Vite/esbuild)
-và cho phép import không bắt buộc đuôi file.
+`noEmit` in base; packages that build later will enable emit individually.
+Chose `bundler` instead of `nodenext` because all downstream packages bundle (Vite/esbuild)
+and it permits imports without file extensions.
 
-## Lint và format
+## Linting and Formatting
 
-- `eslint.config.js` flat config ở root, dùng `typescript-eslint`, áp cho
-  `packages/**/*.ts`, `apps/**/*.ts`, `workers/**/*.ts`. Bật các rule
-  recommended, không thêm rule phong cách (Prettier lo phần đó).
-- `.prettierrc.json`: mặc định, `singleQuote: true`.
+- `eslint.config.js` flat config at root, using `typescript-eslint`, targeting
+  `packages/**/*.ts`, `apps/**/*.ts`, `workers/**/*.ts`. Enables recommended rules,
+  omits stylistic rules (handled by Prettier).
+- `.prettierrc.json`: default, `singleQuote: true`.
 - `.prettierignore`: `pnpm-lock.yaml`, `dist`, `target`, `.turbo`, `node_modules`, `docs`.
-  Bỏ qua toàn bộ `docs/` theo quyết định của người dùng để không sửa file
-  `docs/ARCHITECTURE.md` có sẵn và không ép spec/plan theo format code.
+  Ignores `docs/` by user decision to avoid modifying existing file
+  `docs/ARCHITECTURE.md` and avoid forcing code formatting onto specs/plans.
 - Root scripts: `lint` = `turbo run lint`, `typecheck` = `turbo run typecheck`,
   `format:check` = `prettier --check .`.
 
 ## Turborepo
 
-`turbo.json` với task `lint` và `typecheck`. Không có `build` hay `dev` vì
-chưa có package nào làm việc đó, và không có `format:check` vì Prettier chạy
-một lần ở root chứ không theo từng package. `typecheck` phụ thuộc
-`^typecheck` để sau này package lá được kiểm tra trước.
+`turbo.json` with tasks `lint` and `typecheck`. No `build` or `dev` because
+no packages build yet, and no `format:check` because Prettier runs
+once at root rather than per-package. `typecheck` depends on
+`^typecheck` so leaf packages are checked first.
 
 ## CI
 
-`.github/workflows/ci.yml`: chạy khi push và pull request vào `main`.
+`.github/workflows/ci.yml`: runs on push and pull request to `main`.
 
-Một job, `ubuntu-latest`, Node 24, pnpm 12.6.0:
+Single job, `ubuntu-latest`, Node 24, pnpm 12.6.0:
 
 1. `pnpm install --frozen-lockfile`
 2. `pnpm lint`
 3. `pnpm typecheck`
 4. `pnpm format:check`
 
-Không có job build hay deploy.
+No build or deploy jobs.
 
 ## `.gitignore`
 
-`node_modules`, `dist`, `.turbo`, `target`, `.env`, file log, file OS,
-cùng `.remember/` và `.claude/settings.local.json` (dữ liệu local của phiên
-làm việc, người dùng chọn bỏ qua). Giữ `pnpm-lock.yaml`.
+`node_modules`, `dist`, `.turbo`, `target`, `.env`, log files, OS files,
+along with `.remember/` and `.claude/settings.local.json` (session local data,
+user opted to ignore). Keeps `pnpm-lock.yaml`.
 
-## Kiểm chứng
+## Verification
 
-Chạy tại chỗ, theo thứ tự: `pnpm install`, `pnpm typecheck`, `pnpm lint`,
-`pnpm format:check`. Cả bốn phải exit 0. Không có test để chạy.
+Run locally in order: `pnpm install`, `pnpm typecheck`, `pnpm lint`,
+`pnpm format:check`. All four must exit 0. No tests to run.

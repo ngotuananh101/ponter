@@ -548,7 +548,7 @@ verifier pass. **Do not regress these while implementing Phase 5.**
 - **Repo constraints relevant to Phase 5:** `apps/agent` (Rust) and
   `packages/webrtc-core/src/connection.ts` were treated as read-only during the audit; Phase 5
   implementation will need to modify both.
-- **Related repo documents:** `docs/ARCHITECTURE.md` §7 (Bảo mật), §8 (roadmap);
+- **Related repo documents:** `docs/ARCHITECTURE.md` §7 (Security), §8 (roadmap);
   `docs/superpowers/specs/2026-09-25-phase1-week3-frontend-design.md` (ADR-02, ADR-06);
   `docs/superpowers/specs/2026-09-25-phase2-week4-webrtc-core-design.md` (§deferred);
   `docs/superpowers/specs/2026-09-26-phase2-week5-terminal-agent-design.md` (§deferred);

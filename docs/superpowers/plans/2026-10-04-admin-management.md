@@ -1128,7 +1128,7 @@ Create `apps/web/src/views/AdminView.vue`:
 
 Update `apps/web/src/views/RegisterView.vue`:
 - Show confirmation message when registration requires approval:
-  *"Đăng ký thành công! Tài khoản của bạn đang chờ Quản trị viên phê duyệt trước khi có thể đăng nhập."*
+  *"Registration successful! Your account is pending administrator approval before you can sign in."*
 
 Update `apps/web/src/views/LoginView.vue`:
 - Check for `err.code === 'USER_PENDING_APPROVAL'` and display an informative alert box guiding the user.

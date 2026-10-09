@@ -1,116 +1,116 @@
-# Kế hoạch triển khai chi tiết — FE WebSocket signaling (repo /mnt/Data/Ponta/remote-platform)
+# Detailed Implementation Plan — FE WebSocket Signaling (repo /mnt/Data/Ponta/remote-platform)
 
-> Bối cảnh code đã kiểm chứng: monorepo pnpm + Turborepo (Node.js 24). Backend self-hosted Docker (`apps/server`, Hono + `ws` + SQLite), FE Vue 3 SPA trên Cloudflare Workers Static Assets (deploy bằng `wrangler deploy`). Agent Rust (`apps/agent`) không được chỉnh sửa. `RESTPollingTransport` + `POST /api/signal/{offer,answer,ice-candidate}` + `GET /api/signal/poll/:sessionId` hiện trạng: `rowid` dùng để sắp xếp nội bộ, cursor trên wire là UUID `id` của signal cuối (server map `id`→`rowid` — cùng semantics REST poll). Đọc `apps/server/src/routes/ws.ts:22` (agentConnections Map), `index.ts:109-118` (chỉ bắt `/api/ws/agent`, destroy phần còn lại), `jwt.ts:38-45` (TokenPayload chưa có `scope`), `auth.ts:52-103` (verifyTokenForUser chỉ check `type`), `app.ts:16-27` (CORS_ORIGIN parsing inline), `signal.ts:231-247` (replay rowid > afterId pattern), `terminal.ts:41-116` (RESTPollingTransport hardcoded, không có flag).
+> Verified code context: pnpm + Turborepo monorepo (Node.js 24). Self-hosted Docker backend (`apps/server`, Hono + `ws` + SQLite), Vue 3 SPA frontend on Cloudflare Workers Static Assets (deployed via `wrangler deploy`). Rust agent (`apps/agent`) unmodified. Current state of `RESTPollingTransport` + `POST /api/signal/{offer,answer,ice-candidate}` + `GET /api/signal/poll/:sessionId`: `rowid` is used for internal ordering, wire cursor is the UUID `id` of the last signal (server maps `id`→`rowid` — matching REST polling semantics). References: `apps/server/src/routes/ws.ts:22` (`agentConnections` Map), `index.ts:109-118` (only matches `/api/ws/agent`, destroys remaining requests), `jwt.ts:38-45` (`TokenPayload` without `scope`), `auth.ts:52-103` (`verifyTokenForUser` only checks `type`), `app.ts:16-27` (inline `CORS_ORIGIN` parsing), `signal.ts:231-247` (`replay rowid > afterId` pattern), `terminal.ts:41-116` (hardcoded `RESTPollingTransport`, no flag).
 
-## MỤC LỤC
+## Table of Contents
 
-1. [Tóm tắt](#1-tóm-tắt)
-2. [Bối cảnh & Mục tiêu](#2-bối-cảnh--mục-tiêu)
-3. [Quyết định thiết kế](#3-quyết-định-thiết-kế)
-4. [Protocol spec (JSON envelope, hai chiều)](#4-protocol-spec-json-envelope-hai-chiều)
-5. [Phases triển khai](#5-phases-triển-khai)
+1. [Summary](#1-summary)
+2. [Context & Objectives](#2-context--objectives)
+3. [Design Decisions](#3-design-decisions)
+4. [Protocol Specification (Bidirectional JSON Envelope)](#4-protocol-specification-bidirectional-json-envelope)
+5. [Implementation Phases](#5-implementation-phases)
    - [P1 — Server: ticket endpoint + browser WS + subscribe/replay + pushToBrowser + notify SESSION_TERMINATED + keepalive + tests](#p1--server)
    - [P2 — Shared: BrowserSocketMessage types + export](#p2--shared)
    - [P3 — FE: WebSocketSignalTransport + reconnect + fallback + flag + unit tests](#p3--fe)
    - [P4 — E2E WS variant + docs + infra](#p4--e2e-ws-variant--docs--infra-proxydocker)
-   - [P5 — Rollout (server trước, flag OFF → global flip → đo lường → quyết định)](#p5--rollout)
-6. [Red-team fixes đã tích hợp](#6-red-team-fixes-đã-tích-hợp-và-đã-được-plan-critic-xác-minh-lại)
-7. [Rủi ro](#7-rủi-ro)
+   - [P5 — Rollout (server first, flag OFF → global flip → measurement → decision)](#p5--rollout)
+6. [Integrated Red-Team Fixes](#6-integrated-red-team-fixes-re-verified-by-plan-critic)
+7. [Risks](#7-risks)
 8. [Rollback](#8-rollback)
-9. [Câu hỏi mở](#9-câu-hỏi-mở)
-10. [Phụ lục: checklist merge / checklist bật flag prod](#10-phụ-lục-checklist-merge--checklist-bật-flag-prod)
+9. [Open Questions](#9-open-questions)
+10. [Appendix: Merge Checklist / Production Flag Activation Checklist](#10-appendix-merge-checklist--production-flag-activation-checklist)
 
-## 1. Tóm tắt
+## 1. Summary
 
-Thay `RESTPollingTransport` (poll 200ms–2000ms) bằng `WebSocketSignalTransport` cho WebRTC signaling browser↔server, sau feature flag `VITE_BROWSER_WS_SIGNALING` (mặc định OFF), giữ REST làm fallback. Server thêm `POST /api/ws/ticket` (ticket one-time TTL 15s) + endpoint `/api/ws/browser` (subscribe/replay/push/keepalive). Agent Rust và `PeerConnection` không đổi. 5 phase: P1 server → P2 shared types → P3 FE transport → P4 E2E + infra → P5 rollout. Kế hoạch đã qua vòng verify 5 vùng code + red-team 3 lăng kính + plan-critic đối chiếu code thật.
+Replace `RESTPollingTransport` (polling 200ms–2000ms) with `WebSocketSignalTransport` for browser↔server WebRTC signaling behind the `VITE_BROWSER_WS_SIGNALING` feature flag (default OFF), retaining REST as fallback. The server adds `POST /api/ws/ticket` (single-use ticket with 15s TTL) + `/api/ws/browser` endpoint (subscribe/replay/push/keepalive). The Rust agent and `PeerConnection` remain unchanged. 5 phases: P1 server → P2 shared types → P3 FE transport → P4 E2E + infra → P5 rollout. The plan has undergone verification across 5 code regions + red-teaming across 3 lenses + plan-critic cross-referencing against real code.
 
-## 2. Bối cảnh & Mục tiêu
+## 2. Context & Objectives
 
-### Tại sao bỏ polling
-Polling (`RESTPollingTransport` poll 200ms–2000ms) tạo latency signal delivery ≥ 200ms, tải server tăng tuyến tính với số session hoạt động. WebSocket cung cấp delivery gần như ngay lập tức (sub-ms push qua `pushToAgent` pattern tương tự) và giảm request volume.
+### Why Eliminate Polling
+Polling (`RESTPollingTransport` polling 200ms–2000ms) creates signal delivery latency ≥ 200ms, and server load scales linearly with the number of active sessions. WebSocket provides near-instantaneous delivery (sub-millisecond push using a pattern similar to `pushToAgent`) and decreases request volume.
 
-### Phạm vi
-- **Làm được:** Server WS browser path, ticket endpoint, transport FE, types shared, tests, rollout.
-- **KHÔNG làm:** Agent Rust (`apps/agent`), `PeerConnection/connection.ts` (giữ nguyên `SignalTransport` interface), REST endpoints (giữ làm fallback chính thức).
+### Scope
+- **In Scope:** Server WS browser path, ticket endpoint, FE transport, shared types, tests, rollout.
+- **Out of Scope:** Rust agent (`apps/agent`), `PeerConnection/connection.ts` (preserves existing `SignalTransport` interface), REST endpoints (retained as formal fallback).
 
-### Giới hạn thiết kế
-- 1 WS connection cho mỗi signaling session (mỗi PeerConnection — tức mỗi `agentId` trong 1 page load). Nhiều tab → mỗi tab có WS riêng cho session của tab đó; server fan-out qua `browserConnections: Map<userId, Set<BrowserConnection>>`.
-- Cursor trên wire = UUID `id` của signal cuối (giống REST poll). `rowid` chỉ dùng trong SQL nội bộ để sắp xếp: `ORDER BY rowid ASC` + `rowid > COALESCE((SELECT rowid FROM signals WHERE id=afterId AND session_id=sessionId), 0)` — copy pattern từ `signal.ts:231-247`.
-- REST polling giữ nguyên hoạt động, chỉ được dùng khi WS fallback.
+### Design Constraints
+- 1 WS connection per signaling session (per `PeerConnection` — i.e. per `agentId` per page load). Multiple tabs → each tab maintains its own WS for its respective session; server fans out via `browserConnections: Map<userId, Set<BrowserConnection>>`.
+- Wire cursor = UUID `id` of the last signal (identical to REST polling). `rowid` is used exclusively in internal SQL ordering: `ORDER BY rowid ASC` + `rowid > COALESCE((SELECT rowid FROM signals WHERE id=afterId AND session_id=sessionId), 0)` — replicated from `signal.ts:231-247`.
+- REST polling remains fully functional and is only engaged when falling back from WS.
 
-## 3. Quyết định thiết kế (decisions)
+## 3. Design Decisions
 
-### D1. 1 WS cho mỗi signaling session (mỗi PeerConnection), không multiplex nhiều session trên 1 socket
-- **Lý do:** `terminal.ts:41` tạo 1 PeerConnection (→ 1 transport) cho mỗi `agentId` per page load; transport giữ 1 `sessionId`. Mỗi tab là một page load riêng → mỗi tab có WS riêng cho session của nó. Server-side fan-out tới nhiều tab qua `Map<userId, Set<BrowserConnection>>`.
-- **Lựa chọn bị loại:** Multiplex nhiều `sessionId` trên 1 WS/tab (kèm BroadcastChannel để chia sẻ giữa tab) — phức tạp hơn nhiều, không cần thiết ở scale hiện tại; giữ mô hình "1 socket ↔ 1 session" khớp với `SignalTransport` interface.
+### D1. 1 WS per Signaling Session (Per PeerConnection), No Multiplexing Across Sessions on One Socket
+- **Rationale:** `terminal.ts:41` creates 1 `PeerConnection` (→ 1 transport) for each `agentId` per page load; the transport maintains 1 `sessionId`. Each tab represents an isolated page load → each tab maintains its own WS for its session. Server-side fan-out across tabs is handled via `Map<userId, Set<BrowserConnection>>`.
+- **Rejected Alternative:** Multiplexing multiple `sessionId`s on 1 WS per tab (with `BroadcastChannel` for tab sharing) — significantly higher complexity, unnecessary at current scale; preserving "1 socket ↔ 1 session" maps directly to the `SignalTransport` interface.
 
-### D2. Ticket one-time, TTL 15s (giảm từ thiết kế gốc 30s)
-- **Lý do:** Browser WebSocket API không set được `Authorization` header → token qua query string. TTL ngắn giảm rủi ro lộ qua access log proxy. One-time (jti registry in-memory) giảm replay window.
-- **Endpoint thực tế:** `POST /api/ws/ticket` — mount một Hono router nhỏ export từ `routes/ws.ts` (`wsTicketRouter`) vào `app.ts` tại `/api/ws`. Lưu ý: KHÔNG đặt trong `routes/auth.ts` vì router đó mount tại `/api/auth` (path sẽ thành `/api/auth/ws/ticket`); giữ đúng path thiết kế bằng router riêng.
-- **One-time registry:** module mới `apps/server/src/utils/ws-ticket.ts` — `registerWsTicket(jti, exp)` gọi lúc mint; `consumeWsTicket(jti): boolean` gọi lúc upgrade (true nếu hợp lệ + đánh dấu đã dùng; false nếu đã dùng/hết hạn/không tồn tại). Lazy cleanup các entry hết hạn mỗi lần register/consume. In-memory — chấp nhận được vì single-replica (xem D1/Risks).
-- **Lựa chọn bị loại:** Cookie-based auth cho WS — không khả thi vì server là self-hosted, cookie cần `Secure; SameSite` phức tạp; query string `?ticket=` là chuẩn W3C WebSocket API. Subprotocol header (`Sec-WebSocket-Protocol`) tránh được access log nhưng thêm phức tạp handleProtocols — để open question.
+### D2. Single-Use Ticket with 15s TTL (Reduced from Original 30s Design)
+- **Rationale:** The browser WebSocket API cannot set an `Authorization` header → token must pass via query string. A short TTL reduces exposure risk in proxy access logs. Single-use enforcement (in-memory `jti` registry) narrows the replay window.
+- **Actual Endpoint:** `POST /api/ws/ticket` — mount a dedicated lightweight Hono router exported from `routes/ws.ts` (`wsTicketRouter`) into `app.ts` at `/api/ws`. Note: DO NOT place inside `routes/auth.ts` because that router is mounted at `/api/auth` (which would result in `/api/auth/ws/ticket`); preserving the designed path requires a dedicated router.
+- **Single-Use Registry:** New module `apps/server/src/utils/ws-ticket.ts` — `registerWsTicket(jti, exp)` called at mint time; `consumeWsTicket(jti): boolean` called at upgrade time (true if valid and marked consumed; false if already used, expired, or non-existent). Lazy cleanup of expired entries on each register/consume call. In-memory storage is acceptable because the architecture is single-replica (see D1/Risks).
+- **Rejected Alternative:** Cookie-based auth for WS — impractical because the server is self-hosted, and cookies require complex `Secure; SameSite` configurations; `?ticket=` in query string conforms to standard W3C WebSocket API practice. Subprotocol header (`Sec-WebSocket-Protocol`) avoids access logs but introduces `handleProtocols` complexity — left as an open question.
 
-### D3. Sắp xếp nội bộ bằng SQLite `rowid`; cursor trên wire = UUID `id`
-- **Lý do:** `signals.id` là `crypto.randomUUID()` (TEXT PK, `signals.ts:92`), không monotonic nên không thể ORDER BY. `rowid` là 64-bit auto-increment, strictly monotonic 1:1 với hàng — dùng để `ORDER BY rowid ASC` và `rowid > COALESCE((SELECT rowid FROM signals WHERE id = ? AND session_id = ?), 0)` (copy nguyên pattern REST poll, `signal.ts:231-247`). Cursor trên wire vẫn là UUID `id` của signal cuối cùng (giống REST poll); server tự map sang `rowid`. `rowid` KHÔNG lên wire.
-- **Lựa chọn bị loại:** Đưa `rowid` lên wire làm cursor — FE phải đổi cách đọc cursor so với REST mà không được lợi gì; `id` giữ nguyên semantics với REST poll.
+### D3. Internal Ordering via SQLite `rowid`; Wire Cursor = UUID `id`
+- **Rationale:** `signals.id` is `crypto.randomUUID()` (TEXT PK, `signals.ts:92`), non-monotonic and unsuitable for `ORDER BY`. `rowid` is a 64-bit auto-increment, strictly monotonic 1:1 per row — used for `ORDER BY rowid ASC` and `rowid > COALESCE((SELECT rowid FROM signals WHERE id = ? AND session_id = ?), 0)` (mirroring the exact REST poll pattern from `signal.ts:231-247`). The wire cursor remains the UUID `id` of the last signal (identical to REST poll); the server maps it to `rowid` internally. `rowid` is NEVER sent on the wire.
+- **Rejected Alternative:** Sending `rowid` over the wire as cursor — forces the frontend to read cursors differently than REST without benefit; `id` preserves consistency with REST polling.
 
-### D4. Replay LIMIT 200 + `hasMore` flag
-- **Lý do:** Tránh WS queue saturation khi browser offline lâu. Trùng với REST max 200 (`signal.ts:210`).
-- **Lựa chọn bị loại:** Không limit — rủi ro memory exhaustion + event loop block.
+### D4. Replay LIMIT 200 + `hasMore` Flag
+- **Rationale:** Prevents WS queue saturation when a browser is offline for an extended duration. Matches REST maximum limit of 200 (`signal.ts:210`).
+- **Rejected Alternative:** No limit — risk of memory exhaustion and event loop blocking.
 
-### D5. Atomic subscribe: state machine `replaying → live` + buffer + dedup theo signal id
-- **Lý do:** Đảm bảo ordering giữa replay và live stream. Trong lúc replay (async DB), live push cho session được **buffer** thay vì gửi ngay; sau replay, flush buffer và **bỏ các frame có `id` đã nằm trong batch replay** (dedup theo UUID id, không cần `rowid` cho live path).
-- **Hệ quả:** KHÔNG cần `lastDeliveredRowid` cho live push, nên KHÔNG cần truy vấn `rowid` của signal vừa insert (`recordSignal().returning()` không có rowid — `SignalSelect` không chứa nó). `rowid` chỉ xuất hiện trong câu SQL replay nội bộ.
-- **Lựa chọn bị loại:** (a) Không có bước này — race replay/live gây out-of-order delivery (WebRTC state machine order-sensitive). (b) Dedup bằng `rowid` cho từng live push — đòi hỏi query `SELECT rowid` mỗi signal và không cần thiết vì set id trong cửa sổ replay là đủ.
+### D5. Atomic Subscribe: `replaying → live` State Machine + Buffer + Dedup by Signal ID
+- **Rationale:** Guarantees delivery ordering between replay and live stream. During replay (async DB execution), live pushes for the session are **buffered** rather than dispatched immediately; after replay, the buffer is flushed, **discarding frames whose `id` already exists in the replay batch** (dedup by UUID `id`, eliminating the need for `rowid` in the live path).
+- **Implication:** NO requirement for `lastDeliveredRowid` on live push, thus NO need to query the `rowid` of newly inserted signals (`recordSignal().returning()` does not include `rowid` — `SignalSelect` does not contain it). `rowid` appears exclusively in internal replay SQL queries.
+- **Rejected Alternative:** (a) Omitting this step — race between replay and live causes out-of-order delivery (WebRTC state machine is order-sensitive). (b) Deduplicating by `rowid` for each live push — requires querying `SELECT rowid` on every signal, which is unnecessary because ID set deduplication across the replay window is sufficient.
 
-### D6. Outbound queue = chỉ signal CHƯA từng gửi; flush sau re-subscribe
-- **Lý do:** `send()` khi WS chưa open (CONNECTING/đang reconnect) → queue. Signal đã `ws.send()` khi socket OPEN thì fire-and-forget (giống hệt REST POST hiện tại) — KHÔNG đưa vào queue, nên không bao giờ re-send → **không thể tạo duplicate phía server**. Queue giữ nguyên qua các lần close (chỉ chứa signal chưa từng gửi) và được flush ngay sau khi gửi lại `subscribe` ở lần reconnect kế tiếp.
-- **Lựa chọn bị loại:** (a) Clear queue on close — làm mất signal client sinh ra trong lúc mất kết nối (server replay không bù được vì chúng chưa từng vào DB). (b) Re-send mọi thứ đã gửi — duplicate server-side (server không có dedup inbound; client phải dựa vào guard phía agent như duplicate-signals.test.ts).
+### D6. Outbound Queue Contains ONLY Unsent Signals; Flushed After Re-subscribe
+- **Rationale:** `send()` while WS is not yet open (CONNECTING or reconnecting) → pushed to queue. Signals already dispatched via `ws.send()` while OPEN are fire-and-forget (identical to current REST POST) — NOT queued, preventing duplicate re-transmission → **cannot generate duplicates server-side**. The queue persists across closures (containing only unsent signals) and is flushed immediately after re-sending `subscribe` on the subsequent reconnect.
+- **Rejected Alternative:** (a) Clearing queue on close — drops client signals generated during disconnection (server replay cannot recover them because they never reached the DB). (b) Re-sending all previously sent signals — duplicates signals server-side (server lacks inbound deduplication; client would rely on agent-side guards like `duplicate-signals.test.ts`).
 
-### D7. Origin check (CSWSH protection)
-- **Lý do:** `?ticket=` trong query string, không có CORS protection WS. Trang web A malicious có thể mở WS tới `/api/ws/browser?ticket=<stolen>`. Origin check so với `CORS_ORIGIN` (parse giống `app.ts:16-27`).
-- **Lựa chọn bị loại:** Không check Origin — red-team: CSWSH risk.
+### D7. Origin Check (CSWSH Protection)
+- **Rationale:** `?ticket=` resides in query string without native CORS protection on WebSockets. A malicious external site could open a WS to `/api/ws/browser?ticket=<stolen>`. Origin check compares against `CORS_ORIGIN` (parsed identically to `app.ts:16-27`).
+- **Rejected Alternative:** Omitting Origin check — red-team flagged as CSWSH vulnerability.
 
-### D8. Liveness = protocol-level `ws.ping()` (30s) + pong watchdog (90s)
-- **Lý do:** Browser **tự động trả pong ở tầng giao thức** (RFC 6455) — không phụ thuộc JS, nên không bị throttle khi tab background (khác với app-level `{type:'ping'}` phải chờ JS xử lý). Server gọi `ws.ping()` mỗi 30s, theo dõi event `'pong'`; quá 90s không pong → `close(4408)`.
-- **Vẫn chấp nhận** frame app-level `{type:'ping'}` từ client (server trả `{type:'pong'}`) — giữ tương thích pattern agent; nhưng KHÔNG cần thiết cho liveness.
-- **Lý do không dùng app-level làm chính:** client phải tự setInterval + trả lời, JS bị throttle ở tab background → false disconnect. `ws` không có `pingInterval` built-in (khác `ws` client) nên phải tự đặt `setInterval` phía server — timer server không bị throttle.
-- **Interval/timeout phải inject được** (factory options) để test nhanh, không chờ 90s thật.
+### D8. Liveness via Protocol-Level `ws.ping()` (30s) + Pong Watchdog (90s)
+- **Rationale:** Browsers **automatically respond with pong at the protocol level** (RFC 6455) — independent of JavaScript execution, avoiding background tab throttling (unlike application-level `{type:'ping'}` which requires JS execution). Server issues `ws.ping()` every 30s, tracking the `'pong'` event; exceeding 90s without pong triggers `close(4408)`.
+- **Application-level frames** `{type:'ping'}` from client are still accepted (server replies `{type:'pong'}`) — preserving compatibility with the agent pattern; however, this is not required for connection liveness.
+- **Why application-level ping is not primary:** Client would need its own `setInterval` + response logic, and browser tab background throttling causes false disconnects. `ws` does not have a built-in `pingInterval` on server, so a server `setInterval` is used — server timers are never throttled.
+- **Injectable intervals/timeouts** (via factory options) enable rapid testing without waiting 90s.
 
-### D9. Graceful shutdown (SIGTERM handler)
-- **Lý do:** `index.ts:166` hiện không có signal handler. Docker stop gửi SIGTERM → process chết đột ngột → mất in-process Map. Graceful shutdown: dừng nhận upgrade mới, close WS 1001, flush DB, exit.
-- **Lựa chọn bị loại:** Không graceful — reconnect storm mạnh, mất SESSION_TERMINATED push.
+### D9. Graceful Shutdown (SIGTERM Handler)
+- **Rationale:** `index.ts:166` currently lacks signal handlers. Docker stop issues SIGTERM → abrupt process termination → loss of in-process Maps. Graceful shutdown: reject new upgrade requests, close existing WebSockets with code 1001, flush DB, and exit.
+- **Rejected Alternative:** Non-graceful shutdown — triggers severe reconnect storms and loses `SESSION_TERMINATED` push notifications.
 
-### D10. Fallback cơ chế
-- **Lý do:** WS không mở được → dùng `RESTPollingTransport` (existing code). `WebSocketSignalTransport` có `fallback?: SignalTransport` option.
-- **Lựa chọn bị loại:** Retry WS vĩnh viễn — UX kém, không có fallback DB-backed.
+### D10. Fallback Mechanism
+- **Rationale:** If WS fails to connect → fall back to `RESTPollingTransport` (existing code). `WebSocketSignalTransport` exposes a `fallback?: SignalTransport` option.
+- **Rejected Alternative:** Infinite WS retry — poor UX, lacks DB-backed fallback.
 
-### D11. Feature flag mặc định OFF
-- **Lý do:** Rollout an toàn. `terminal.ts` chọn transport theo `VITE_BROWSER_WS_SIGNALING`.
-- **Lựa chọn bị loại:** Default ON — rủi ro regression toàn bộ user.
+### D11. Feature Flag Default OFF
+- **Rationale:** Safe rollout. `terminal.ts` selects transport based on `VITE_BROWSER_WS_SIGNALING`.
+- **Rejected Alternative:** Default ON — risk of regression for all users.
 
-### D12. Scope separation: ticket dùng JWT_SECRET nhưng có guard chống REST accept
-- **Lý do:** `TokenPayload` hiện không có `scope` (`jwt.ts:38-45`). Ticket có `type='access'` + `scope='ws-ticket'`. `authMiddleware` reject tokens có `scope='ws-ticket'` (sau `verifyTokenForUser`). `verifyWsTicket` helper kiểm tra scope độc lập.
-- **Bắt buộc cả 2 chiều:** thiếu guard trong `authMiddleware` thì ticket dùng được như access token (leo thang đặc quyền); thiếu check trong `verifyWsTicket` thì access token 15 phút dùng được làm ticket. Đây là implementation step bắt buộc, không phải tùy chọn.
-- **Lựa chọn bị loại:** Ticket dùng secret riêng (`WS_TICKET_SECRET`) — red-team đánh giá option (a) đủ an toàn, tránh thêm env secret mới.
+### D12. Scope Separation: Ticket Uses JWT_SECRET with Guard Preventing REST Acceptance
+- **Rationale:** `TokenPayload` currently lacks `scope` (`jwt.ts:38-45`). Ticket carries `type='access'` + `scope='ws-ticket'`. `authMiddleware` rejects tokens with `scope='ws-ticket'` (after `verifyTokenForUser`). The `verifyWsTicket` helper checks scope independently.
+- **Mandatory Bidirectional Guard:** Missing guard in `authMiddleware` allows ws-tickets to function as access tokens (privilege escalation); missing check in `verifyWsTicket` allows standard 15-minute access tokens to serve as tickets. This is a mandatory implementation step, not optional.
+- **Rejected Alternative:** Dedicated secret for tickets (`WS_TICKET_SECRET`) — red-team determined option (a) is sufficiently secure while avoiding a new environment secret.
 
-### D13. Stale cursor (signal đã bị cleanup xoá) → replay time-bound, KHÔNG replay từ đầu
-- **Lý do:** Cleanup xoá signal hết TTL 5 phút mỗi 15 phút (`cleanup.ts:43-46`). Nếu dùng `COALESCE(...,0)` như REST poll, cursor trỏ vào row đã xoá sẽ replay TOÀN BỘ signal còn lại của session từ đầu. Với REST poll điều này vô hại (client tự bỏ qua signal cũ); với WS replay thì tốn vô ích và có thể lẫn signal cũ vào state machine.
-- **Cách xử lý:** câu replay WS thêm điều kiện `created_at > datetime('now', '-5 minutes')` (đúng bằng SIGNAL_TTL) — replay tối đa 5 phút gần nhất; nếu cursor không resolve được rowid thì vẫn time-bound. Log cảnh báo khi cursor stale. Client coi `subscribed.hasMore=false` + không nhận được signal cũ là bình thường.
-- **Lựa chọn bị loại:** Reject subscribe khi cursor stale — làm hỏng reconnect đúng lúc cần nhất; session chết thì SESSION_TERMINATED sẽ tới qua live push.
+### D13. Stale Cursor (Signal Pruned by Cleanup) → Time-Bound Replay, NOT Replay from Scratch
+- **Rationale:** Cleanup prunes signals past their 5-minute TTL every 15 minutes (`cleanup.ts:43-46`). If using `COALESCE(...,0)` like REST poll, a cursor pointing to a deleted row would replay ALL remaining signals for the session from the beginning. In REST polling this is benign (client discards old signals); in WS replay, this wastes resources and may inject stale signals into the state machine.
+- **Resolution:** The WS replay query adds `created_at > datetime('now', '-5 minutes')` (matching `SIGNAL_TTL`) — replaying at most the last 5 minutes; if the cursor cannot resolve to a rowid, replay remains time-bounded. Log warning when cursor is stale. Client treats `subscribed.hasMore=false` + absence of older signals as normal.
+- **Rejected Alternative:** Rejecting subscribe on stale cursor — breaks reconnection when most needed; if session is dead, `SESSION_TERMINATED` arrives via live push.
 
-## 4. Protocol spec (JSON envelope, hai chiều)
+## 4. Protocol Specification (Bidirectional JSON Envelope)
 
-### Frame size limit
-- 256KB (`MAX_INBOUND_FRAME_BYTES = 256*1024` ở `ws.ts:13`). Apply cả cho browser WS inbound (enforce pre-parse).
+### Frame Size Limit
+- 256KB (`MAX_INBOUND_FRAME_BYTES = 256*1024` in `ws.ts:13`). Applied to browser WS inbound messages (enforced pre-parsing).
 
 ### Client → Server (BrowserSocketMessage C->S)
 
-| Type | Data | Mô tả |
-|------|------|-------|
-| `subscribe` | `{sessionId: string, after?: string\|null}` | Đăng ký subscription. `after` = UUID signal id cuối đã nhận (null = first subscribe). |
-| `signal` | `SignalMessage` | Forward signal tới agent qua `pushToAgent`. |
-| `ping` | — | Heartbeat client→server. |
+| Type | Data | Description |
+|------|------|-------------|
+| `subscribe` | `{sessionId: string, after?: string\|null}` | Register subscription. `after` = UUID of last received signal id (null = initial subscribe). |
+| `signal` | `SignalMessage` | Forward signal to agent via `pushToAgent`. |
+| `ping` | — | Client→server heartbeat. |
 
 ```json
 {"type":"subscribe","data":{"sessionId":"sess_123","after":"sig_abc"}}
@@ -120,12 +120,12 @@ Polling (`RESTPollingTransport` poll 200ms–2000ms) tạo latency signal delive
 
 ### Server → Client (BrowserSocketMessage S->C)
 
-| Type | Data | Mô tả |
-|------|------|-------|
-| `pong` | — | Trả lời client ping (app-level, optional). |
-| `signal` | `{data: SignalMessage, id: string}` | Replay từ DB hoặc live push. `id` = UUID signal — client lưu làm cursor (`lastCursor = id`). |
-| `subscribed` | `{sessionId: string, after: string\|null, hasMore: boolean}` | Ack sau replay. `hasMore=true` → client gửi tiếp `subscribe` với `after` = id cuối vừa nhận. |
-| `error` | `{code: BrowserErrorCode}` | Lỗi (auth, not found, terminated, ...). |
+| Type | Data | Description |
+|------|------|-------------|
+| `pong` | — | Reply to client ping (application-level, optional). |
+| `signal` | `{data: SignalMessage, id: string}` | Replayed from DB or live push. `id` = UUID signal id — client stores as cursor (`lastCursor = id`). |
+| `subscribed` | `{sessionId: string, after: string\|null, hasMore: boolean}` | Ack following replay. `hasMore=true` → client sends subsequent `subscribe` with `after` set to last received id. |
+| `error` | `{code: BrowserErrorCode}` | Error indication (auth, not found, terminated, etc.). |
 
 ```json
 {"type":"pong"}
@@ -134,71 +134,71 @@ Polling (`RESTPollingTransport` poll 200ms–2000ms) tạo latency signal delive
 {"type":"error","code":"SESSION_TERMINATED"}
 ```
 
-**Ghi chú envelope:** giữ đúng pattern `AgentSocketMessage` — `pong`/`error`/`subscribed` có `code`/`data` ở top level (không bọc trong `data`). `signal` giữ `{type, data, id}` như thiết kế gốc. `rowid` KHÔNG xuất hiện trên wire (chỉ dùng trong SQL nội bộ server).
+**Envelope Notes:** Follows the established `AgentSocketMessage` pattern — `pong`/`error`/`subscribed` place `code`/`data` at the top level (not wrapped in `data`). `signal` retains `{type, data, id}` as in the original design. `rowid` NEVER appears on the wire (used only in internal server SQL).
 
 ### BrowserErrorCode
 - `MALFORMED_JSON`, `VALIDATION_ERROR`, `NOT_FOUND`, `UNAUTHORIZED`, `TICKET_EXPIRED`, `SESSION_TERMINATED`, `INTERNAL_SERVER_ERROR`
-- `AgentErrorCode` hiện tại không có `SESSION_TERMINATED` — thêm riêng cho browser.
+- Current `AgentErrorCode` lacks `SESSION_TERMINATED` — added specifically for browser.
 
-### Close codes
+### Close Codes
 - `4401` — Unauthorized (ticket invalid/expired/wrong scope, Origin mismatch).
-- `4408` — Timeout (server ping chưa nhận pong trong 90s).
-- `4409` — Replaced (không dùng cho browser, chỉ agent).
+- `4408` — Timeout (server ping received no pong within 90s).
+- `4409` — Replaced (not used for browser, agent only).
 
-### Subscribe → replay → live flow (sequence)
+### Subscribe → Replay → Live Flow (Sequence)
 ```
-1. Browser gửi subscribe{sessionId, after}
+1. Browser sends subscribe{sessionId, after}
 2. Server: validate session.userId == ticket.sub
-3. Server: registry subscription + set session state = 'replaying'
-   (live push cho session này được BUFFER, không gửi ngay)
+3. Server: register subscription + set session state = 'replaying'
+   (live pushes for this session are BUFFERED, not sent immediately)
 4. Server: replay SQL:
      SELECT id, session_id, type, payload, created_at FROM signals
      WHERE session_id = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
-       AND created_at > datetime('now', '-5 minutes')      -- time-bound, chống stale cursor
+       AND created_at > datetime('now', '-5 minutes')      -- time-bound, prevents stale cursor loop
        AND rowid > COALESCE((SELECT rowid FROM signals WHERE id = ? AND session_id = ?), 0)
      ORDER BY rowid ASC LIMIT 200
-5. Server: gửi từng signal S->C {type:signal, data, id}
-6. Server: flush buffer — gửi các frame buffered có id CHƯA nằm trong batch replay (dedup theo id)
+5. Server: send each signal S->C {type:signal, data, id}
+6. Server: flush buffer — send buffered frames whose id is NOT YET in replay batch (dedup by id)
 7. Server: set session state = 'live'
-8. Server: gửi {type:subscribed, data:{sessionId, after:lastId, hasMore}}
-9. Live push từ đây: pushToBrowser gửi thẳng
+8. Server: send {type:subscribed, data:{sessionId, after:lastId, hasMore}}
+9. Live push from here on: pushToBrowser sends directly
 ```
-Nếu `hasMore=true` (replay chạm LIMIT 200): client gửi tiếp `subscribe` với `after` = id cuối cùng nhận được; server lặp lại bước 3-8 cho trang kế.
+If `hasMore=true` (replay hit LIMIT 200): client sends another `subscribe` with `after` set to the last received id; server repeats steps 3-8 for the next page.
 
-### Reconnect flow
+### Reconnect Flow
 ```
-1. WS đóng (network drop / server restart)
-2. Transport: giữ nguyên outbound queue (chỉ chứa signal chưa từng gửi)
-3. Transport: fetch fresh ticket (401 → refresh once → retry ticket 1 lần)
-4. Transport: mở WS ?ticket=
-5. Transport: gửi subscribe{after: lastCursor} (lastCursor = UUID id cuối nhận được)
-6. Server: replay missed signals (rowid > map(after), time-bound 5 phút) → subscribed ack
-7. Transport: flush outbound queue (signal sinh ra lúc mất kết nối)
+1. WS closes (network drop / server restart)
+2. Transport: retains outbound queue (contains only unsent signals)
+3. Transport: fetch fresh ticket (401 → refresh once → retry ticket once)
+4. Transport: open WS ?ticket=
+5. Transport: send subscribe{after: lastCursor} (lastCursor = UUID of last received signal id)
+6. Server: replay missed signals (rowid > map(after), time-bound 5 min) → subscribed ack
+7. Transport: flush outbound queue (signals created during disconnection)
 8. Transport: resume live push
-Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallback REST.
+Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallback to REST.
 ```
 
-## 5. Phases triển khai
+## 5. Implementation Phases
 
 ### P1 — Server: ticket endpoint + browser WS + subscribe/replay + pushToBrowser + notify SESSION_TERMINATED + keepalive + tests
 
-**Goal:** Server sẵn sàng nhận browser WS, issue ticket, push signal tới browser, notify session terminate.
+**Goal:** Server ready to accept browser WebSockets, issue tickets, push signals to browser, and notify on session termination.
 
 **Files:**
-- `apps/server/src/utils/jwt.ts` — thêm `scope?: string` vào TokenPayload, thêm `signWsTicket()`.
-- `apps/server/src/utils/auth.ts` — thêm `verifyWsTicket()`.
-- `apps/server/src/utils/ws-ticket.ts` (NEW) — one-time registry `registerWsTicket()` / `consumeWsTicket()`.
-- `apps/server/src/utils/env.ts` (NEW) — extract `getJwtSecret()` / `getRefreshSecret()` (hiện là private trong `routes/auth.ts:23-40`).
-- `apps/server/src/middleware/auth.ts` — thêm guard reject `scope === 'ws-ticket'`.
+- `apps/server/src/utils/jwt.ts` — add `scope?: string` to `TokenPayload`, add `signWsTicket()`.
+- `apps/server/src/utils/auth.ts` — add `verifyWsTicket()`.
+- `apps/server/src/utils/ws-ticket.ts` (NEW) — in-memory single-use registry `registerWsTicket()` / `consumeWsTicket()`.
+- `apps/server/src/utils/env.ts` (NEW) — extract `getJwtSecret()` / `getRefreshSecret()` (previously private in `routes/auth.ts:23-40`).
+- `apps/server/src/middleware/auth.ts` — add guard rejecting `scope === 'ws-ticket'`.
 - `apps/server/src/utils/cors.ts` (NEW) — extract `getAllowedOrigins()`.
 - `apps/server/src/routes/ws.ts` — `browserConnections` Map, `BrowserConnection` interface, `wsTicketRouter` (mint endpoint), `handleBrowserUpgrade`, `pushToBrowser`, browser message handler, keepalive.
-- `apps/server/src/app.ts` — mount `wsTicketRouter` tại `/api/ws` (path thật: `POST /api/ws/ticket`).
-- `apps/server/src/routes/auth.ts` — dùng `getJwtSecret` từ `utils/env.ts` (thay bản private).
-- `apps/server/src/index.ts` — thêm upgrade handler `/api/ws/browser`, graceful shutdown.
+- `apps/server/src/app.ts` — mount `wsTicketRouter` at `/api/ws` (effective path: `POST /api/ws/ticket`).
+- `apps/server/src/routes/auth.ts` — import `getJwtSecret` from `utils/env.ts` (replacing private implementation).
+- `apps/server/src/index.ts` — add upgrade handler for `/api/ws/browser`, graceful shutdown.
 - `apps/server/test/ws-browser.test.ts` (NEW) — browser WS tests.
 
 **Steps:**
-1. `jwt.ts:38-45`: thêm `scope?: string` vào `TokenPayload`. Tạo `signWsTicket(userId, username, secret, expiresInSeconds=15)` — mirror shape của `signAccessToken` (trả `{ticket, jti, exp}` để caller đăng ký one-time registry):
+1. `jwt.ts:38-45`: add `scope?: string` to `TokenPayload`. Create `signWsTicket(userId, username, secret, expiresInSeconds=15)` — mirrors shape of `signAccessToken` (returns `{ticket, jti, exp}` so caller can register in single-use registry):
    ```typescript
    export async function signWsTicket(
      userId: string, username: string, secret: string, expiresInSeconds = 15,
@@ -211,8 +211,8 @@ Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallbac
      return { ticket: await sign(payload, secret), jti, exp };
    }
    ```
-2. `utils/env.ts` (NEW): chuyển `getJwtSecret()` + `getRefreshSecret()` từ `routes/auth.ts` sang đây, export; `routes/auth.ts` import lại (không đổi hành vi).
-3. `utils/ws-ticket.ts` (NEW): one-time registry in-memory:
+2. `utils/env.ts` (NEW): move `getJwtSecret()` + `getRefreshSecret()` from `routes/auth.ts` here, export; `routes/auth.ts` re-imports (behavior unchanged).
+3. `utils/ws-ticket.ts` (NEW): in-memory single-use registry:
    ```typescript
    const tickets = new Map<string, number>(); // jti -> expiresAtMs
    export function registerWsTicket(jti: string, ttlMs = 15_000): void {
@@ -227,7 +227,7 @@ Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallbac
      return true;
    }
    ```
-4. `utils/auth.ts`: thêm `verifyWsTicket(rawToken, secret)`:
+4. `utils/auth.ts`: add `verifyWsTicket(rawToken, secret)`:
    ```typescript
    export async function verifyWsTicket(rawToken: string, secret: string): Promise<TokenPayload> {
      const payload = await verifyToken(rawToken, secret);
@@ -237,13 +237,13 @@ Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallbac
      return payload;
    }
    ```
-5. `middleware/auth.ts:22-51`: sau khi `verifyTokenForUser()` trả `{payload, user}`, thêm guard (BẮT BUỘC — nếu thiếu, ws-ticket dùng được như access token):
+5. `middleware/auth.ts:22-51`: after `verifyTokenForUser()` returns `{payload, user}`, add guard (MANDATORY — without this, ws-tickets can act as access tokens):
    ```typescript
    if (payload.scope === 'ws-ticket') {
      throw new AppError('WS ticket rejected by REST', 401, 'UNAUTHORIZED');
    }
    ```
-6. `utils/cors.ts` (NEW): extract logic từ `app.ts:16-27`:
+6. `utils/cors.ts` (NEW): extract logic from `app.ts:16-27`:
    ```typescript
    export function getAllowedOrigins(): string[] | '*' {
      const corsOrigin = process.env.CORS_ORIGIN?.trim();
@@ -251,8 +251,8 @@ Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallbac
      return corsOrigin.split(',').map((o) => o.trim());
    }
    ```
-7. `app.ts`: import `getAllowedOrigins` từ `utils/cors.ts`, dùng trong CORS middleware. Mount ticket router: `app.route('/api/ws', wsTicketRouter)`.
-8. `routes/ws.ts`: `wsTicketRouter` (Hono nhỏ, `new Hono<AppContext>()`):
+7. `app.ts`: import `getAllowedOrigins` from `utils/cors.ts`, use in CORS middleware. Mount ticket router: `app.route('/api/ws', wsTicketRouter)`.
+8. `routes/ws.ts`: `wsTicketRouter` (lightweight Hono instance, `new Hono<AppContext>()`):
    ```typescript
    wsTicketRouter.post('/ticket', authMiddleware, async (c) => {
      const user = c.get('user');
@@ -261,34 +261,34 @@ Backoff: 200ms → 2000ms exponential + jitter ±50ms. Max 5 retries → fallbac
      return c.json({ ticket, expiresIn: 15 });
    });
    ```
-9. `routes/ws.ts`: thêm `browserConnections` Map + `BrowserConnection` + `handleBrowserUpgrade` + `pushToBrowser`:
-   - `BrowserConnection`: `{ userId, socket, send(data: string), subscriptions: Map<string, Subscription>, lastPongAt: number }` với `Subscription = { state: 'replaying' | 'live', replayedIds: Set<string>, buffer: BrowserSocketMessage[] }`.
+9. `routes/ws.ts`: add `browserConnections` Map + `BrowserConnection` + `handleBrowserUpgrade` + `pushToBrowser`:
+   - `BrowserConnection`: `{ userId, socket, send(data: string), subscriptions: Map<string, Subscription>, lastPongAt: number }` with `Subscription = { state: 'replaying' | 'live', replayedIds: Set<string>, buffer: BrowserSocketMessage[] }`.
    - `browserConnections = new Map<string, Set<BrowserConnection>>()`.
-   - `handleBrowserUpgrade(request, socket, head, wss)`: parse `?ticket=` từ `request.url` (dùng `new URL(url, 'http://localhost')`) → `verifyWsTicket(ticket, getJwtSecret())` → `consumeWsTicket(payload.jti)` (false → 401) → Origin check qua `getAllowedOrigins()` (allowlist `'*'` → cho qua; ngược lại yêu cầu `Origin` ∈ allowlist, thiếu/sai → 403) → `wss.handleUpgrade` → đăng ký `browserConnections`. Mọi nhánh lỗi: ghi HTTP response thô + `socket.destroy()` (theo pattern `handleAgentUpgrade`, `ws.ts:52-95`).
-   - `pushToBrowser(userId, sessionId, msg: BrowserSocketMessage): boolean`: iterate `browserConnections.get(userId)`; với mỗi conn có subscription cho sessionId: nếu `state === 'replaying'` → `buffer.push(msg)`; nếu `'live'` → `conn.send(JSON.stringify(msg))`. Best-effort, không throw.
-10. `routes/ws.ts` browser message handler (trên socket browser): size check pre-parse (`MAX_INBOUND_FRAME_BYTES`), JSON.parse, validate envelope:
-    - `subscribe{sessionId, after}`: validate session thuộc `connection.userId` (SELECT id, userId FROM sessions) → tạo/reset subscription `state='replaying'` → chạy replay SQL (time-bound 5 phút + `LIMIT 201`, trim còn 200) → gửi từng frame `{type:'signal', data, id}` + ghi `replayedIds` → flush buffer (bỏ frame signal có `id` ∈ replayedIds; các frame `error` khác đi thẳng) → set `state='live'` (**đồng bộ, không `await` giữa flush và set state** — single-threaded nên đây là điểm atomic) → gửi `{type:'subscribed', data:{sessionId, after:lastId, hasMore}}`.
-    - `signal{data}`: parse bằng `parseSignalMessage` hiện có → validate session thuộc user + `agentId` khớp (như `handleInboundMessage` `ws.ts:245-290`) → `recordSignal` → `pushToAgent` + `pushToBrowser` (bỏ qua echo cho chính conn gửi).
-    - `ping`: trả `{type:'pong'}`.
-    - Frame lỗi → `{type:'error', code:'VALIDATION_ERROR'|'MALFORMED_JSON'|'NOT_FOUND'}`.
-11. `routes/ws.ts:161-183` (agent close handler): đổi update terminate sessions thành `.returning({ id: sessions.id, userId: sessions.userId })`, rồi loop `pushToBrowser(row.userId, row.id, {type:'error', code:'SESSION_TERMINATED'})`.
-12. `routes/sessions.ts:116-143` (DELETE): sau khi terminate, gọi `pushToBrowser(user.id, sessionId, {type:'error', code:'SESSION_TERMINATED'})` — import từ `./ws.js`.
-13. `routes/ws.ts` keepalive (chỉ browser socket): factory nhận `{ pingIntervalMs = 30_000, pongTimeoutMs = 90_000 }` (inject được để test). `setInterval` → `socket.ping()`; event `'pong'` cập nhật `lastPongAt`; watchdog kiểm tra `Date.now() - lastPongAt > pongTimeoutMs` → `close(4408)`. Clear interval trong close handler + xoá khỏi `browserConnections`.
-14. `index.ts:109-118`: thêm nhánh `/api/ws/browser` (with/without query) → `handleBrowserUpgrade(...)`; nhánh còn lại `socket.destroy()` như cũ.
-15. `index.ts:166-190` (`startServer`): thêm `process.on('SIGTERM'|'SIGINT')` — `cleanup.stop()`, đóng mọi browser+agent socket bằng `close(1001, 'Server shutting down')`, `server.close(callback → process.exit(0))`, fallback forced exit sau 10s.
-16. `routes/ws.ts` sau `recordSignal` (dòng ~291): `pushToBrowser(session.userId, message.data.sessionId, {type:'signal', data: message, id: inserted.id})` — KHÔNG cần `rowid` (dedup theo `id`, xem D5).
+   - `handleBrowserUpgrade(request, socket, head, wss)`: parse `?ticket=` from `request.url` (using `new URL(url, 'http://localhost')`) → `verifyWsTicket(ticket, getJwtSecret())` → `consumeWsTicket(payload.jti)` (false → 401) → Origin check via `getAllowedOrigins()` (allowlist `'*'` → allow; otherwise require `Origin` ∈ allowlist, missing/mismatched → 403) → `wss.handleUpgrade` → register in `browserConnections`. All error branches: write raw HTTP response + `socket.destroy()` (matching `handleAgentUpgrade` pattern, `ws.ts:52-95`).
+   - `pushToBrowser(userId, sessionId, msg: BrowserSocketMessage): boolean`: iterate `browserConnections.get(userId)`; for each connection with subscription for sessionId: if `state === 'replaying'` → `buffer.push(msg)`; if `'live'` → `conn.send(JSON.stringify(msg))`. Best-effort, does not throw.
+10. `routes/ws.ts` browser message handler (on browser socket): size check pre-parse (`MAX_INBOUND_FRAME_BYTES`), JSON.parse, validate envelope:
+    - `subscribe{sessionId, after}`: validate session belongs to `connection.userId` (SELECT id, userId FROM sessions) → create/reset subscription `state='replaying'` → run replay SQL (time-bound 5 min + `LIMIT 201`, trimmed to 200) → send each frame `{type:'signal', data, id}` + record `replayedIds` → flush buffer (skip signal frames with `id` ∈ replayedIds; other `error` frames pass directly) → set `state='live'` (**synchronous, no `await` between flush and state change** — single-threaded, establishing an atomic transition point) → send `{type:'subscribed', data:{sessionId, after:lastId, hasMore}}`.
+    - `signal{data}`: parse using existing `parseSignalMessage` → validate session belongs to user + `agentId` matches (identical to `handleInboundMessage` in `ws.ts:245-290`) → `recordSignal` → `pushToAgent` + `pushToBrowser` (skipping echo to sending connection).
+    - `ping`: reply with `{type:'pong'}`.
+    - Error frame → `{type:'error', code:'VALIDATION_ERROR'|'MALFORMED_JSON'|'NOT_FOUND'}`.
+11. `routes/ws.ts:161-183` (agent close handler): update session termination to `.returning({ id: sessions.id, userId: sessions.userId })`, then loop `pushToBrowser(row.userId, row.id, {type:'error', code:'SESSION_TERMINATED'})`.
+12. `routes/sessions.ts:116-143` (DELETE): after termination, call `pushToBrowser(user.id, sessionId, {type:'error', code:'SESSION_TERMINATED'})` — imported from `./ws.js`.
+13. `routes/ws.ts` keepalive (browser socket only): factory accepts `{ pingIntervalMs = 30_000, pongTimeoutMs = 90_000 }` (injectable for testing). `setInterval` → `socket.ping()`; event `'pong'` updates `lastPongAt`; watchdog verifies `Date.now() - lastPongAt > pongTimeoutMs` → `close(4408)`. Clear interval in close handler + remove from `browserConnections`.
+14. `index.ts:109-118`: add branch for `/api/ws/browser` (with/without query) → `handleBrowserUpgrade(...)`; remaining branch executes `socket.destroy()` as before.
+15. `index.ts:166-190` (`startServer`): add `process.on('SIGTERM'|'SIGINT')` — `cleanup.stop()`, close all browser+agent sockets with `close(1001, 'Server shutting down')`, `server.close(callback → process.exit(0))`, fallback forced exit after 10s.
+16. `routes/ws.ts` after `recordSignal` (around line ~291): `pushToBrowser(session.userId, message.data.sessionId, {type:'signal', data: message, id: inserted.id})` — NO requirement for `rowid` (deduplicated by `id`, see D5).
 
 **Tests:**
-- `apps/server/test/ws-browser.test.ts` (theo pattern `startOnEphemeral()` ở `signaling.test.ts:61`):
-  - Ticket: 401 thiếu Bearer; mint OK trả `{ticket, expiresIn:15}`.
-  - Scope separation 2 chiều: REST endpoint reject ws-ticket (401); `handleBrowserUpgrade` reject access token thường (401).
-  - One-time: dùng ticket lần 2 → 401. Ticket hết hạn (inject TTL ngắn) → 401.
-  - Origin: `CORS_ORIGIN` allowlist + Origin sai → 403; Origin đúng → upgrade OK.
-  - Subscribe: ownership (user khác → NOT_FOUND); replay đúng thứ tự rowid; `hasMore` khi > 200; stale cursor (signal đã xoá) → không replay từ đầu (time-bound).
-  - Agent→browser push: agent gửi signal qua agent WS → browser nhận `{type:'signal', id}` ngay (không qua poll).
-  - Buffer/dedup: signal đến trong lúc replay không bị gửi 2 lần.
-  - SESSION_TERMINATED khi agent WS đóng + khi DELETE session.
-  - Keepalive: với `pingIntervalMs`/`pongTimeoutMs` inject ngắn — client không pong → close 4408.
+- `apps/server/test/ws-browser.test.ts` (matching `startOnEphemeral()` pattern from `signaling.test.ts:61`):
+  - Ticket: 401 when Bearer missing; mint succeeds returning `{ticket, expiresIn:15}`.
+  - Bidirectional scope separation: REST endpoint rejects ws-ticket (401); `handleBrowserUpgrade` rejects standard access token (401).
+  - Single-use: consuming ticket second time → 401. Expired ticket (injected short TTL) → 401.
+  - Origin: `CORS_ORIGIN` allowlist + invalid Origin → 403; matching Origin → upgrade succeeds.
+  - Subscribe: ownership check (different user → NOT_FOUND); replay in correct rowid order; `hasMore` when > 200; stale cursor (deleted signal) → avoids replay from scratch (time-bound).
+  - Agent→browser push: agent dispatches signal via agent WS → browser receives `{type:'signal', id}` immediately (no polling).
+  - Buffer/dedup: signal arriving during replay is not delivered twice.
+  - SESSION_TERMINATED on agent WS closure + on DELETE session.
+  - Keepalive: with short injected `pingIntervalMs`/`pongTimeoutMs` — client failing to pong triggers close with code 4408.
 
 **Verification:**
 ```bash
@@ -298,20 +298,20 @@ pnpm --filter @ponter/server typecheck
 pnpm lint
 ```
 
-**Done when:** Tất cả browser WS tests pass, typecheck xanh, không ảnh hưởng agent WS hiện có.
+**Done when:** All browser WS tests pass, typecheck passes, existing agent WS functionality remains intact.
 
 **Commit:** `feat(server): browser WebSocket signaling with ticket auth + replay + push`
 
 ### P2 — Shared: BrowserSocketMessage types + export
 
-**Goal:** Các type cho WS browser message ở shared package, import server + client chung.
+**Goal:** Provide types for browser WS messages in shared package, imported across server and client.
 
 **Files:**
-- `packages/shared/src/types/signaling.ts` — thêm `BrowserSocketMessage`, `BrowserErrorCode`, `parseBrowserMessage`.
-- `packages/shared/src/types/index.ts` — thêm vào block export có sẵn từ `./signaling.js` (file dùng `export type {...}` — các type mới thêm vào block này; `parseBrowserMessage` là function nên export qua `packages/shared/src/index.ts` đã có `export * from './types/index.js'`; **không** dùng `export type` cho function).
+- `packages/shared/src/types/signaling.ts` — add `BrowserSocketMessage`, `BrowserErrorCode`, `parseBrowserMessage`.
+- `packages/shared/src/types/index.ts` — add to existing export block from `./signaling.js` (file uses `export type {...}` — add new types to this block; `parseBrowserMessage` is a function so it is exported via `packages/shared/src/index.ts` which has `export * from './types/index.js'`; do not use `export type` for functions).
 
 **Steps:**
-1. `signaling.ts`: thêm (giữ đúng convention file — type + validator thuần, không import runtime):
+1. `signaling.ts`: add (following file convention — pure types + validators, no runtime imports):
    ```typescript
    export type BrowserErrorCode =
      | 'MALFORMED_JSON' | 'VALIDATION_ERROR' | 'NOT_FOUND'
@@ -323,17 +323,17 @@ pnpm lint
      | { type: 'signal'; data: SignalMessage }
      | { type: 'ping' };
 
-   /** Server -> Client. Envelope theo pattern AgentSocketMessage. */
+   /** Server -> Client. Envelope matches AgentSocketMessage pattern. */
    export type BrowserSocketMessage =
      | { type: 'pong' }
      | { type: 'signal'; data: SignalMessage; id: string }
      | { type: 'subscribed'; data: { sessionId: string; after: string | null; hasMore: boolean } }
      | { type: 'error'; code: BrowserErrorCode };
 
-   export function parseBrowserMessage(raw: string): BrowserMessageInit | null { /* JSON.parse + validate type + data shape, mirror parseSignalMessage hiện có */ }
+   export function parseBrowserMessage(raw: string): BrowserMessageInit | null { /* JSON.parse + validate type + data shape, mirroring existing parseSignalMessage */ }
    ```
-2. `types/index.ts`: thêm `BrowserSocketMessage`, `BrowserErrorCode`, `BrowserMessageInit` vào block `export type {...} from './signaling.js'`.
-3. `packages/shared/src/index.ts` giữ nguyên (`export * from './types/index.js'` — star export re-export cả function lẫn type).
+2. `types/index.ts`: add `BrowserSocketMessage`, `BrowserErrorCode`, `BrowserMessageInit` to `export type {...} from './signaling.js'`.
+3. `packages/shared/src/index.ts` unchanged (`export * from './types/index.js'` — star export re-exports both functions and types).
 
 **Verification:** `pnpm --filter @ponter/shared typecheck`
 
@@ -341,50 +341,50 @@ pnpm lint
 
 ### P3 — FE: WebSocketSignalTransport + reconnect + fallback + flag + unit tests
 
-**Goal:** `WebSocketSignalTransport` implement `SignalTransport`, reconnect với backoff + jitter, fallback REST khi thất bại, chọn transport theo flag.
+**Goal:** Implement `SignalTransport` via `WebSocketSignalTransport`, reconnect with exponential backoff + jitter, fall back to REST upon failure, select transport based on feature flag.
 
 **Files:**
-- `packages/webrtc-core/src/transport.ts` — thêm `WebSocketSignalTransport`.
-- `packages/webrtc-core/src/index.ts` — export (dòng 5 tự động).
-- `apps/web/src/stores/terminal.ts` — chọn transport theo flag.
-- `apps/web/env.d.ts` — thêm `VITE_BROWSER_WS_SIGNALING`.
-- `apps/web/.env.example`, `.env.production.example` — thêm flag.
+- `packages/webrtc-core/src/transport.ts` — add `WebSocketSignalTransport`.
+- `packages/webrtc-core/src/index.ts` — export (line 5 automatic).
+- `apps/web/src/stores/terminal.ts` — select transport based on feature flag.
+- `apps/web/env.d.ts` — add `VITE_BROWSER_WS_SIGNALING`.
+- `apps/web/.env.example`, `.env.production.example` — add flag.
 - `packages/webrtc-core/test/ws-transport.test.ts` (NEW) — unit tests.
 
 **Steps:**
-1. `transport.ts`: thêm class (giữ convention file — không import `import.meta.env`; mọi thứ inject qua options):
+1. `transport.ts`: add class (following file convention — do not import `import.meta.env`; inject configuration via options):
    ```typescript
    export interface WebSocketSignalTransportOptions {
      baseUrl: string;
      sessionId: string;
-     /** Lấy access token hiện tại (để mint ticket). Trả null nếu không có. */
+     /** Retrieve current access token (to mint ticket). Returns null if unavailable. */
      getToken: () => Promise<string | null>;
-     /** Called on 401 khi mint ticket — refresh access token, trả null nếu thất bại. */
+     /** Invoked on 401 when minting ticket — refreshes access token, returns null on failure. */
      onUnauthorized?: () => Promise<string | null>;
-     /** Bật reconnect (mặc định true). false → dùng cho test hoặc fallback-only. */
+     /** Enable reconnection (default true). false → test or fallback-only mode. */
      reconnect?: boolean;
-     /** Chuyển hẳn sang transport này sau khi WS thất bại N lần. */
+     /** Permanently switch to this transport after WS fails N times. */
      fallback?: SignalTransport;
      fetch?: typeof fetch;
      maxRetries?: number; // default 5
    }
    export class WebSocketSignalTransport implements SignalTransport {
      private ws: WebSocket | null = null;
-     private pending: SignalMessage[] = [];   // CHỈ signal chưa từng gửi
+     private pending: SignalMessage[] = [];   // ONLY unsent signals
      private retries = 0;
-     private lastCursor: string | null = null; // UUID id signal cuối
+     private lastCursor: string | null = null; // UUID of last received signal id
      private subscribers: Array<(msg: SignalMessage) => void> = [];
-     private activeTransport: SignalTransport | null = null; // set khi fallback
+     private activeTransport: SignalTransport | null = null; // set upon fallback
      // ...
    }
    ```
-   - `wsUrl()`: `this.opts.baseUrl.replace(/^http/, 'ws')` + `/api/ws/browser?ticket=${encodeURIComponent(ticket)}` — http→ws, https→wss (một biểu thức, không cần option riêng).
-   - `subscribe(handler)`: fetch ticket (`POST ${baseUrl}/api/ws/ticket` với `Authorization: Bearer ${await getToken()}`; 401 → `onUnauthorized()` → retry đúng 1 lần, theo pattern `withTokenRefresh` của `RESTPollingTransport`, `transport.ts:85-97`) → mở WS → on open gửi `subscribe{sessionId, after: lastCursor}` → on message: `signal` → `lastCursor = id`, fan-out handler; `subscribed` → flush `pending`; `error SESSION_TERMINATED` → close + reconnect (hoặc fallback nếu hết retries).
-   - `send(msg)`: WS OPEN → `ws.send(JSON.stringify({type:'signal', data:msg}))` (fire-and-forget, không queue); ngược lại `pending.push(msg)`.
-   - Queue: giữ nguyên qua close; **flush sau khi gửi lại `subscribe`** ở lần reconnect kế tiếp; KHÔNG clear (xem D6).
-   - Reconnect: `delay = Math.min(200 * 2^retries, 2000) + (Math.random() * 100 - 50)` (jitter ±50ms), `retries++`; `retries > maxRetries` → chuyển sang `fallback` (nếu có) bằng cách `activeTransport = fallback; fallback.subscribe(handler); flush pending qua fallback` — từ đó mọi `send`/`subscribe` delegate sang fallback vĩnh viễn cho session này.
-   - `close()`: `ws?.close(1000, 'normal')`, clear timers, `activeTransport?.close()`, không throw.
-2. `terminal.ts:53`: chọn transport:
+   - `wsUrl()`: `this.opts.baseUrl.replace(/^http/, 'ws')` + `/api/ws/browser?ticket=${encodeURIComponent(ticket)}` — http→ws, https→wss (single expression, no separate option required).
+   - `subscribe(handler)`: fetch ticket (`POST ${baseUrl}/api/ws/ticket` with `Authorization: Bearer ${await getToken()}`; 401 → `onUnauthorized()` → retry exactly once, following `withTokenRefresh` pattern from `RESTPollingTransport`, `transport.ts:85-97`) → open WS → on open send `subscribe{sessionId, after: lastCursor}` → on message: `signal` → `lastCursor = id`, fan-out to handlers; `subscribed` → flush `pending`; `error SESSION_TERMINATED` → close + reconnect (or fallback if retries exhausted).
+   - `send(msg)`: WS OPEN → `ws.send(JSON.stringify({type:'signal', data:msg}))` (fire-and-forget, not queued); otherwise `pending.push(msg)`.
+   - Queue: persists across closures; **flushed after re-sending `subscribe`** on next reconnect; NOT cleared (see D6).
+   - Reconnect: `delay = Math.min(200 * 2^retries, 2000) + (Math.random() * 100 - 50)` (jitter ±50ms), `retries++`; `retries > maxRetries` → switch to `fallback` (if provided) via `activeTransport = fallback; fallback.subscribe(handler); flush pending via fallback` — permanently delegating all subsequent `send`/`subscribe` calls to fallback for this session.
+   - `close()`: `ws?.close(1000, 'normal')`, clear timers, `activeTransport?.close()`, does not throw.
+2. `terminal.ts:53`: select transport:
    ```typescript
    const useWs = import.meta.env.VITE_BROWSER_WS_SIGNALING === 'true';
    const restTransport = () =>
@@ -405,17 +405,17 @@ pnpm lint
        })
      : restTransport();
    ```
-3. `env.d.ts`: `readonly VITE_BROWSER_WS_SIGNALING?: string;` (thêm vào `ImportMetaEnv`, giữ `VITE_API_URL?` nguyên trạng).
-4. `apps/web/.env.example` + `.env.production.example`: thêm `VITE_BROWSER_WS_SIGNALING=false`.
+3. `env.d.ts`: `readonly VITE_BROWSER_WS_SIGNALING?: string;` (add to `ImportMetaEnv`, keeping `VITE_API_URL?` intact).
+4. `apps/web/.env.example` + `.env.production.example`: add `VITE_BROWSER_WS_SIGNALING=false`.
 
 **Tests:**
-- `packages/webrtc-core/test/ws-transport.test.ts` (mock `WebSocket` global + mock fetch; có thể dùng `vi.useFakeTimers` như `transport.test.ts`):
-  - Backoff công thức: 200→400→800→1600→2000 (cap), jitter trong ±50ms.
-  - Ticket flow: mint OK; 401 → onUnauthorized → retry 1 lần; refresh fail → fallback (không loop).
-  - Queue: send khi chưa open → không mất; flush sau `subscribed`; signal đã gửi khi OPEN không bao giờ gửi lại (không duplicate).
-  - `lastCursor` cập nhật từ `id` trong frame `signal`; subscribe lần sau gửi đúng `after`.
-  - Fallback sau `maxRetries`: handler chuyển sang fallback transport, `send` delegate.
-  - `close()` idempotent, không throw khi WS chưa mở.
+- `packages/webrtc-core/test/ws-transport.test.ts` (mock global `WebSocket` + mock fetch; use `vi.useFakeTimers` similar to `transport.test.ts`):
+  - Backoff formula: 200→400→800→1600→2000 (cap), jitter within ±50ms.
+  - Ticket flow: mint succeeds; 401 → onUnauthorized → retry once; refresh failure → fallback (no infinite loop).
+  - Queue: send before open → retained without loss; flush after `subscribed`; signals sent while OPEN never re-transmitted (no duplicates).
+  - `lastCursor` updates from `id` in `signal` frame; subsequent subscribe sends matching `after`.
+  - Fallback after `maxRetries`: handler delegates to fallback transport, `send` delegates.
+  - `close()` is idempotent, does not throw when WS is not yet open.
 
 **Verification:**
 ```bash
@@ -429,19 +429,19 @@ pnpm --filter @ponter/web build
 
 ### P4 — E2E WS variant + docs + infra (proxy/docker)
 
-**Goal:** E2E test chạy server thật + browser WS; cấu hình proxy/Docker để WS sống ổn định; cập nhật docs.
+**Goal:** E2E test running real server + browser WS; proxy and Docker configuration for connection stability; update documentation.
 
 **Files:**
-- `packages/webrtc-core/test/e2e/terminal-ws.e2e.test.ts` (NEW) — E2E variant dùng WS transport.
-- `apps/server/src/index.ts` — request log filter `ticket=` → `[REDACTED]` (nếu có log; nếu chưa có request logging thì thêm dòng log tối thiểu ở `handleBrowserUpgrade` nhánh lỗi, không log full URL).
-- `docker/Caddyfile` — thêm WS timeout/keepalive.
-- `docker/docker-compose.prod.yml`, `docker-compose.tunnel.yml`, `docker-compose.local.yml` — thêm `stop_grace_period: 15s` cho service `server` (Docker mặc định 10s rồi SIGKILL — không đủ cho graceful shutdown D9).
-- `docker/docker-compose.tunnel.yml` — cloudflared: mount `config.yml` với `originRequest.maxIdleDuration: 300s` (không set được qua env; `tunnel run --token` bỏ qua per-service env config).
-- `docs/guides/deployment.md` — mục mới: browser WS path, flag, stop_grace_period, tunnel config.
+- `packages/webrtc-core/test/e2e/terminal-ws.e2e.test.ts` (NEW) — E2E variant utilizing WS transport.
+- `apps/server/src/index.ts` — request log filter `ticket=` → `[REDACTED]` (if logging exists; if no request logging exists, add minimal error logging in `handleBrowserUpgrade` error branches omitting full query string).
+- `docker/Caddyfile` — add WS timeout and keepalive configuration.
+- `docker/docker-compose.prod.yml`, `docker-compose.tunnel.yml`, `docker-compose.local.yml` — add `stop_grace_period: 15s` for `server` service (Docker defaults to 10s then SIGKILL — insufficient for graceful shutdown D9).
+- `docker/docker-compose.tunnel.yml` — cloudflared: mount `config.yml` with `originRequest.maxIdleDuration: 300s` (cannot be configured via env; `tunnel run --token` ignores per-service env settings).
+- `docs/guides/deployment.md` — new section: browser WS path, flag, stop_grace_period, tunnel config.
 
 **Steps:**
-1. `terminal-ws.e2e.test.ts` — copy `terminal.e2e.test.ts` (`test/e2e/terminal.e2e.test.ts:349` khởi tạo `RESTPollingTransport`), thay bằng `WebSocketSignalTransport` (không cần flag — E2E chỉ định trực tiếp). Verify: signal qua WS, reconnect sau khi server restart, SESSION_TERMINATED nhận được.
-2. `Caddyfile` — Caddy 2 tự xử lý Upgrade cho mọi path, nhưng cần explicit timeout. Sửa site block:
+1. `terminal-ws.e2e.test.ts` — duplicate `terminal.e2e.test.ts` (`test/e2e/terminal.e2e.test.ts:349` instantiates `RESTPollingTransport`), substitute with `WebSocketSignalTransport` (no flag required — E2E specifies directly). Verify: signaling across WS, reconnect after server restart, `SESSION_TERMINATED` received.
+2. `Caddyfile` — Caddy 2 automatically handles Upgrade for all paths, but requires explicit timeout. Update site block:
    ```
    {$DOMAIN:localhost} {
        @ws path /api/ws/*
@@ -454,44 +454,44 @@ pnpm --filter @ponter/web build
        reverse_proxy server:8787
    }
    ```
-   (Lưu ý: `header_regexp ConnectionUpgrade Upgrade` trong bản nháp cũ SAI cú pháp — dùng `path /api/ws/*` matcher.)
-3. Request log redaction: nếu `index.ts`/`app.ts` không có request logging, chỉ cần đảm bảo `handleBrowserUpgrade` log lỗi KHÔNG chứa `?ticket=` (log `req.url.split('?')[0]`). Nếu có logger, thêm filter `ticket=[^&]*` → `ticket=[REDACTED]`.
-4. Docker compose: thêm `stop_grace_period: 15s` dưới service `server` ở cả 3 file compose.
-5. CF Tunnel: tạo `docker/cloudflared/config.yml`:
+   (Note: `header_regexp ConnectionUpgrade Upgrade` in previous drafts had incorrect syntax — use `path /api/ws/*` matcher.)
+3. Request log redaction: if `index.ts`/`app.ts` does not implement request logging, ensure `handleBrowserUpgrade` error logs omit `?ticket=` (log `req.url.split('?')[0]`). If a logger is present, apply filter `ticket=[^&]*` → `ticket=[REDACTED]`.
+4. Docker compose: add `stop_grace_period: 15s` under `server` service across all 3 compose files.
+5. Cloudflare Tunnel: create `docker/cloudflared/config.yml`:
    ```yaml
    originRequest:
      maxIdleDuration: 300s
    ```
-   và trong compose đổi `command: tunnel run` → `command: tunnel --config /etc/cloudflared/config.yml run`, mount `./cloudflared:/etc/cloudflared:ro`. (TUNNEL_TOKEN vẫn dùng qua env.)
-6. `docs/guides/deployment.md`: thêm mục về `/api/ws/browser`, `VITE_BROWSER_WS_SIGNALING`, `stop_grace_period`, tunnel `maxIdleDuration`.
-7. Graceful shutdown verify thủ công: `docker stop` → log thấy close 1001 + process exit 0 (không bị SIGKILL).
+   and in compose change `command: tunnel run` → `command: tunnel --config /etc/cloudflared/config.yml run`, mount `./cloudflared:/etc/cloudflared:ro`. (`TUNNEL_TOKEN` remains sourced from env.)
+6. `docs/guides/deployment.md`: add section covering `/api/ws/browser`, `VITE_BROWSER_WS_SIGNALING`, `stop_grace_period`, tunnel `maxIdleDuration`.
+7. Manual verification of graceful shutdown: `docker stop` → verify logs show close 1001 and process exit code 0 (no SIGKILL).
 
 **Verification:**
 ```bash
 cd /mnt/Data/Ponta/remote-platform
 pnpm --filter @ponter/webrtc-core run test:e2e
 pnpm --filter @ponter/server typecheck
-# compose files valid
+# verify compose files syntax
 docker compose -f docker/docker-compose.prod.yml config >/dev/null && echo OK
 ```
 
 **Commit:** `test(e2e): add WebSocket signaling E2E variant + proxy/docker WS config`
 
-### P5 — Rollout (server trước, flag OFF → global flip → đo lường → quyết định)
+### P5 — Rollout (server first, flag OFF → global flip → measurement → decision)
 
-**Goal:** Rollout an toàn, zero-downtime, có thể rollback.
+**Goal:** Safe zero-downtime rollout with rollback capability.
 
 **Files:**
-- `.github/workflows/deploy.yml` — thêm `VITE_BROWSER_WS_SIGNALING` env vào bước Build (dòng ~45-47).
-- `apps/web/env.d.ts` + `.env.example` + `.env.production.example` — đã thêm ở P3.
-- `docker/docker-compose.tunnel.yml` — verify single replica (đã có từ P4).
+- `.github/workflows/deploy.yml` — add `VITE_BROWSER_WS_SIGNALING` env to Build step (around lines ~45-47).
+- `apps/web/env.d.ts` + `.env.example` + `.env.production.example` — added in P3.
+- `docker/docker-compose.tunnel.yml` — verify single-replica deployment (from P4).
 
 **Steps:**
-1. Deploy server P1 (flag OFF) — REST hoạt động như cũ; browser WS endpoint tồn tại nhưng không có traffic.
-2. **Global flip (đã chốt — không canary theo %):** `VITE_BROWSER_WS_SIGNALING` là build-time → một bundle chỉ có một giá trị cho toàn bộ user; muốn canary % phải thêm runtime config hoặc CF gradual deployments (2 versions + version affinity + `run_worker_first`) — không tương xứng nhu cầu. Thay vào đó: smoke test trước (E2E P4 + server P1 đã deploy không traffic) → set `VITE_BROWSER_WS_SIGNALING=true` trong bước Build của `.github/workflows/deploy.yml` → CI rebuild + `wrangler deploy` → theo dõi metrics (step 3).
-3. Sau flip, giữ flag ON khi: reconnect rate < 1%, SESSION_TERMINATED không bị mất, WS fallback rate < 0.1%. Không đạt → rollback: set lại `false` + rebuild + redeploy.
-4. Đo lường: latency signal delivery (target < 10ms WS vs 200-2000ms polling), error rate 4408/4401, reconnect count per session.
-5. Quyết định: giữ flag ON nếu metrics tốt, hoặc giữ OFF + cải tiếp nếu có vấn đề.
+1. Deploy server P1 (flag OFF) — REST operates as before; browser WS endpoint exists without incoming traffic.
+2. **Global flip (decided — no canary percentage):** `VITE_BROWSER_WS_SIGNALING` is build-time → a single bundle applies to all users; percentage canary would require runtime config or Cloudflare gradual deployments (2 versions + version affinity + `run_worker_first`) — disproportionate overhead. Instead: smoke test first (E2E P4 + server P1 deployed with zero traffic) → set `VITE_BROWSER_WS_SIGNALING=true` in Build step of `.github/workflows/deploy.yml` → CI rebuild + `wrangler deploy` → monitor metrics (step 3).
+3. Following flip, keep flag ON if: reconnect rate < 1%, SESSION_TERMINATED is not dropped, WS fallback rate < 0.1%. If not met → rollback: reset to `false` + rebuild + redeploy.
+4. Measurements: signal delivery latency (target < 10ms WS vs 200-2000ms polling), error rate 4408/4401, reconnect count per session.
+5. Decision: retain flag ON if metrics are sound, or revert to OFF and iterate if issues arise.
 
 **Verification:**
 ```bash
@@ -502,86 +502,86 @@ grep VITE_BROWSER_WS_SIGNALING .github/workflows/deploy.yml
 
 **Commit:** `ci(deploy): add VITE_BROWSER_WS_SIGNALING to deploy workflow`
 
-## 6. Red-team fixes đã tích hợp (và đã được plan-critic xác minh lại)
+## 6. Integrated Red-Team Fixes (Re-verified by Plan Critic)
 
-Bảng dưới ghi fix → nơi áp dụng trong plan. Cột "Nguồn" đánh dấu phát hiện từ red-team workflow hay từ vòng kiểm tra plan-critic/tự kiểm tra.
+The table below lists each fix and where it is applied in the plan. The "Source" column indicates whether the finding originated from the red-team workflow or from plan-critic / self-inspection.
 
-| Fix | Mức độ | Code change | Nơi xuất hiện | Nguồn |
+| Fix | Severity | Code change | Location | Source |
 |------|--------|-------------|---------------|-------|
-| Token scope separation: `TokenPayload` thêm `scope`, `signWsTicket()`, `authMiddleware` reject `scope='ws-ticket'`, `verifyWsTicket()` | CRITICAL | `jwt.ts`, `utils/auth.ts`, `middleware/auth.ts` | D12 + P1 steps 1,4,5 | red-team + critic |
-| **Ticket endpoint mount đúng path**: router riêng mount tại `/api/ws` → `POST /api/ws/ticket` (KHÔNG đặt trong `routes/auth.ts` vì mount tại `/api/auth` sẽ thành `/api/auth/ws/ticket`) | CRITICAL | `routes/ws.ts` (`wsTicketRouter`) + `app.ts` | D2 + P1 steps 8,9 | tự kiểm tra (critic bỏ sót) |
-| **Không cần `rowid` cho live push**: dedup theo signal `id` + buffer trong lúc replay → `recordSignal().returning()` đủ dùng (SignalSelect không có rowid) | CRITICAL | `pushToBrowser` + subscription state machine | D5 + P1 steps 9,10,16 | critic |
-| **Cursor semantics thống nhất**: wire = UUID `id`; `rowid` chỉ trong SQL nội bộ (map `id`→`rowid` y hệt REST poll) | CRITICAL | protocol spec + replay SQL | D3 + protocol spec | red-team + tự kiểm tra |
-| Origin check cho browser WS upgrade (CSWSH) | HIGH | `handleBrowserUpgrade` (allowlist từ `getAllowedOrigins()`) | D7 + P1 step 9 | red-team |
-| Ticket TTL 15s + one-time (jti registry in-memory) + log redaction | HIGH | `utils/ws-ticket.ts`, `handleBrowserUpgrade`, log filter | D2 + P1 steps 3,9 + P4 step 3 | red-team |
-| Stale cursor (signal đã bị cleanup xoá) → replay time-bound 5 phút, không replay từ đầu | HIGH | replay SQL (`created_at > datetime('now','-5 minutes')`) | D13 + P1 step 10 | red-team + critic |
-| Server-initiated liveness: protocol-level `ws.ping()` 30s + pong watchdog 90s (browser tự trả pong, không bị throttle) | HIGH | keepalive với interval inject được | D8 + P1 step 13 | red-team + critic |
-| Atomic subscribe: state `replaying → live` + buffer + dedup theo `id` | HIGH | subscription state machine | D5 + P1 step 10 | red-team |
-| Outbound queue chỉ chứa signal CHƯA gửi; flush sau re-subscribe (không clear, không re-send) | HIGH | transport queue logic | D6 + P3 step 1 | red-team + critic |
+| Token scope separation: `TokenPayload` adds `scope`, `signWsTicket()`, `authMiddleware` rejects `scope='ws-ticket'`, `verifyWsTicket()` | CRITICAL | `jwt.ts`, `utils/auth.ts`, `middleware/auth.ts` | D12 + P1 steps 1,4,5 | red-team + critic |
+| **Ticket endpoint mounted at correct path**: dedicated router mounted at `/api/ws` → `POST /api/ws/ticket` (NOT placed in `routes/auth.ts` because mounting at `/api/auth` would yield `/api/auth/ws/ticket`) | CRITICAL | `routes/ws.ts` (`wsTicketRouter`) + `app.ts` | D2 + P1 steps 8,9 | self-check (critic missed) |
+| **No `rowid` required for live push**: deduplicated by signal `id` + buffer during replay → `recordSignal().returning()` is sufficient (`SignalSelect` lacks rowid) | CRITICAL | `pushToBrowser` + subscription state machine | D5 + P1 steps 9,10,16 | critic |
+| **Consistent cursor semantics**: wire = UUID `id`; `rowid` used exclusively in internal SQL (mapping `id`→`rowid` identically to REST poll) | CRITICAL | protocol spec + replay SQL | D3 + protocol spec | red-team + self-check |
+| Origin check on browser WS upgrade (CSWSH) | HIGH | `handleBrowserUpgrade` (allowlist from `getAllowedOrigins()`) | D7 + P1 step 9 | red-team |
+| Ticket TTL 15s + single-use (in-memory `jti` registry) + log redaction | HIGH | `utils/ws-ticket.ts`, `handleBrowserUpgrade`, log filter | D2 + P1 steps 3,9 + P4 step 3 | red-team |
+| Stale cursor (signal pruned by cleanup) → time-bound replay (5 minutes), avoiding replay from scratch | HIGH | replay SQL (`created_at > datetime('now','-5 minutes')`) | D13 + P1 step 10 | red-team + critic |
+| Server-initiated liveness: protocol-level `ws.ping()` (30s) + pong watchdog (90s) (browser replies automatically, avoiding tab throttling) | HIGH | keepalive with injectable intervals | D8 + P1 step 13 | red-team + critic |
+| Atomic subscribe: `replaying → live` state machine + buffer + dedup by `id` | HIGH | subscription state machine | D5 + P1 step 10 | red-team |
+| Outbound queue contains ONLY unsent signals; flushed after re-subscribe (never cleared, never re-sent) | HIGH | transport queue logic | D6 + P3 step 1 | red-team + critic |
 | Graceful SIGTERM handler (`cleanup.stop()`, close 1001, `server.close`, forced exit 10s) | HIGH | `index.ts` signal handler | D9 + P1 step 15 | red-team |
-| Docker `stop_grace_period: 15s` (mặc định 10s → SIGKILL giữa graceful shutdown) | HIGH | 3 file compose | P4 step 4 | critic |
+| Docker `stop_grace_period: 15s` (default 10s causes SIGKILL mid-shutdown) | HIGH | 3 compose files | P4 step 4 | critic |
 | Caddy WS timeout (`path /api/ws/*` matcher + `transport http { read_buffer 65536; keepalive 300s }`) | HIGH | `docker/Caddyfile` | P4 step 2 | red-team + critic |
-| CF Tunnel `originRequest.maxIdleDuration: 300s` qua config.yml (không set được bằng env) | HIGH | `docker/cloudflared/config.yml` + compose | P4 step 5 | critic |
-| `getToken()` callback thay vì static token (access token hết hạn giữa session) | MEDIUM | `WebSocketSignalTransportOptions` + `terminal.ts` | P3 steps 1,2 | critic |
-| Replay LIMIT 200 + `hasMore` → client subscribe tiếp (pagination) | HIGH | replay SQL + `subscribed` frame | D4 + P1 step 10 | red-team |
-| SESSION_TERMINATED: `.returning()` ở agent close + push ở DELETE session | MEDIUM | agent close handler + `routes/sessions.ts` | P1 steps 11,12 | red-team |
-| Session ownership check khi subscribe (`session.userId === payload.sub`) | MEDIUM | browser message handler | P1 step 10 | red-team |
-| Feature flag thread đủ: `env.d.ts` + `.env.example` + `.env.production.example` + `deploy.yml` | MEDIUM | 4 file | P3 step 3,4 + P5 | critic |
-| Multi-tab độc lập: mỗi tab 1 WS riêng, server fan-out theo `Map<userId, Set<BrowserConnection>>` | MEDIUM | `browserConnections` | D1 + P1 step 9 | red-team |
-| `agents.ts:26` shadow `agentConnections` Map (latent bug, ngoài phạm vi) | LOW | — | Open question | critic |
+| CF Tunnel `originRequest.maxIdleDuration: 300s` via config.yml (cannot be set via env) | HIGH | `docker/cloudflared/config.yml` + compose | P4 step 5 | critic |
+| `getToken()` callback instead of static token (access token expires during active session) | MEDIUM | `WebSocketSignalTransportOptions` + `terminal.ts` | P3 steps 1,2 | critic |
+| Replay LIMIT 200 + `hasMore` → client requests subsequent page (pagination) | HIGH | replay SQL + `subscribed` frame | D4 + P1 step 10 | red-team |
+| SESSION_TERMINATED: `.returning()` on agent close + push on DELETE session | MEDIUM | agent close handler + `routes/sessions.ts` | P1 steps 11,12 | red-team |
+| Session ownership verification upon subscribe (`session.userId === payload.sub`) | MEDIUM | browser message handler | P1 step 10 | red-team |
+| Feature flag plumbing: `env.d.ts` + `.env.example` + `.env.production.example` + `deploy.yml` | MEDIUM | 4 files | P3 step 3,4 + P5 | critic |
+| Multi-tab isolation: each tab maintains dedicated WS, server fans out via `Map<userId, Set<BrowserConnection>>` | MEDIUM | `browserConnections` | D1 + P1 step 9 | red-team |
+| `agents.ts:26` shadowing `agentConnections` Map (latent bug, out of scope) | LOW | — | Open question | critic |
 
-## 7. Rủi ro
+## 7. Risks
 
-- **Multi-replica break push:** `browserConnections` Map in-process. Nếu deploy nhiều replica, browser A WebSocket tới replica-1 nhưng signal đến replica-2 → không push được. Mitigation: single replica cho P1; REST fallback vẫn multi-replica-safe. Deploy docker-compose hiện tại là single replica.
-- **Reconnect storm:** Server restart → hàng trăm browser đồng thời reconnect. Mitigation: jitter ±50ms + cap backoff 2000ms + max 5 retries + graceful shutdown 1001 (client backoff ngay từ đầu, không đập cửa).
-- **Ticket leak qua query string:** `?ticket=` xuất hiện trong access log proxy. Mitigation: TTL 15s + one-time + log filter redact. (Subprotocol negotiation là alternative nếu cần siết hơn — open question.)
-- **CSWSH:** Page malicious mở WS tới `/api/ws/browser?ticket=<stolen>`. Mitigation: Origin allowlist + ticket one-time 15s.
-- **Replay/live race:** Nếu order sai → signal out-of-order → WebRTC handshake fail. Mitigation: subscription state machine `replaying → live`, buffer + dedup theo id (D5).
-- **Stale cursor sau cleanup:** signal cursor bị xoá (TTL 5 phút) → replay time-bound, không replay từ đầu (D13).
-- **Background tab:** JS bị throttle → không dùng app-level ping làm liveness; dùng protocol-level `ws.ping()`/pong do browser tự trả (D8).
-- **Memory leak:** `browserConnections` không được xoá khi browser đóng WS. Mitigation: close handler cleanup + keepalive watchdog 4408.
-- **Queue unbounded growth:** signal sinh ra trong lúc mất kết nối lâu → queue phình. Mitigation: backoff có trần + max 5 retries → fallback REST (queue flush qua REST, không tích luỹ vô hạn).
-- **Ticket registry rò rỉ (in-memory):** entry hết hạn chỉ bị xoá khi có register/consume mới (lazy). Mitigation: lazy cleanup mỗi lần register; chấp nhận được ở scale hiện tại (vài ticket/giây tối đa).
+- **Multi-replica push breakdown:** `browserConnections` Map is in-process. If deployed across multiple replicas, browser A connected via WebSocket to replica-1 while a signal arrives at replica-2 will fail to push. Mitigation: single replica for P1; REST fallback remains multi-replica safe. Current docker-compose deployment is single replica.
+- **Reconnect storm:** Server restart → hundreds of browsers reconnecting simultaneously. Mitigation: jitter ±50ms + 2000ms backoff ceiling + max 5 retries + graceful shutdown 1001 (client backs off immediately rather than hammering).
+- **Ticket leak via query string:** `?ticket=` appears in proxy access logs. Mitigation: 15s TTL + single-use registry + log filter redaction. (Subprotocol negotiation serves as an alternative if stricter security is needed — open question.)
+- **CSWSH:** Malicious page opening WS to `/api/ws/browser?ticket=<stolen>`. Mitigation: Origin allowlist + 15s single-use ticket.
+- **Replay/live race condition:** Out-of-order delivery causes WebRTC handshake failure. Mitigation: subscription state machine `replaying → live`, buffer + dedup by ID (D5).
+- **Stale cursor following cleanup:** Cursor pointing to pruned signal (5-minute TTL) → time-bound replay, avoiding replay from scratch (D13).
+- **Background tab throttling:** JS throttled → avoid application-level ping for liveness; rely on protocol-level `ws.ping()`/pong handled by the browser engine (D8).
+- **Memory leak:** `browserConnections` not removed when browser disconnects. Mitigation: close handler cleanup + keepalive watchdog 4408.
+- **Unbounded queue growth:** Signals generated during prolonged disconnection → memory bloat. Mitigation: capped backoff + max 5 retries → fallback to REST (queue flushed via REST, preventing unbounded accumulation).
+- **In-memory ticket registry accumulation:** Expired entries removed only on subsequent register/consume calls (lazy). Mitigation: lazy cleanup on each register; acceptable at current scale (few tickets/second maximum).
 
 ## 8. Rollback
 
-1. **Tắt flag:** Set `VITE_BROWSER_WS_SIGNALING=false` (hoặc xoá) trong `deploy.yml` → CI rebuild + `wrangler deploy` → browser dùng `RESTPollingTransport` (existing code path, không đổi). Vì flag là build-time, rollback là all-or-nothing (một lần deploy cho toàn bộ user).
-2. **Server side:** Browser WS endpoint (`/api/ws/browser`) vẫn tồn tại nhưng không có traffic. Không ảnh hưởng agent WS / REST.
-3. **DB:** Không migration schema — chỉ thêm endpoint + helper. Rollback = revert commit P1 (không cần sửa data).
-4. **Thứ tự deploy:** Server P1 (flag OFF) trước → client flag sau. Rollback client trước (tắt flag), server sau (an toàn vì endpoint vô hại khi không ai gọi).
-5. **Quick revert:** Nếu lỗi nghiêm trọng sau flip → tắt flag (hiệu lực sau lần build + deploy kế tiếp, vài phút) + revert commit P1 nếu lỗi phía server.
+1. **Disable flag:** Set `VITE_BROWSER_WS_SIGNALING=false` (or remove) in `deploy.yml` → CI rebuild + `wrangler deploy` → browser uses `RESTPollingTransport` (existing code path, unmodified). Because the flag is build-time, rollback is all-or-nothing (single deploy for all users).
+2. **Server side:** Browser WS endpoint (`/api/ws/browser`) remains active but receives no traffic. No impact on agent WS or REST traffic.
+3. **Database:** No schema migrations — only added endpoint and helpers. Rollback = revert commit P1 (no data remediation required).
+4. **Deployment ordering:** Server P1 (flag OFF) deployed first → client flag deployed second. Rollback client first (disable flag), server second (safe because endpoint is inert without callers).
+5. **Quick revert:** In the event of critical issues post-flip → disable flag (takes effect after subsequent build + deploy, few minutes) + revert commit P1 if server-side defect.
 
-## 9. Câu hỏi mở
+## 9. Open Questions
 
-- **Nhiều replica trong tương lai:** cần Redis Pub/Sub hay sticky session cho `browserConnections`? (Hiện single-instance, đã document.)
-- **Canary theo % user — đã chốt:** không làm canary (Vite env build-time → % canary cần runtime config hoặc CF gradual deployments; không tương xứng). Dùng global flip qua rebuild — xem P5 step 2.
-- **Ticket qua subprotocol:** `Sec-WebSocket-Protocol` tránh được access log hoàn toàn — có đáng đổi không nếu siết bảo mật hơn?
-- **CSP `_headers` trên Cloudflare Workers Static Assets:** thêm `connect-src wss://...` khi bật flag? (Hiện chưa có CSP nào.)
-- **`agents.ts:26` shadow `agentConnections` Map:** latent bug (agents list luôn báo offline) — sửa ngoài phạm vi plan này, nên tạo issue riêng.
-- **Protocol-level ping và agent WS:** agent hiện dùng app-level `{type:'ping'}` — có nên chuyển agent sang `ws.ping()` luôn cho đồng nhất? (Ngoài phạm vi.)
+- **Future multi-replica scaling:** Will Redis Pub/Sub or sticky sessions be required for `browserConnections`? (Currently single-instance, documented.)
+- **Percentage canary rollout — decided:** Skip percentage canary (Vite build-time env → percentage canary requires runtime config or Cloudflare gradual deployments; disproportionate overhead). Use global flip via rebuild — see P5 step 2.
+- **Ticket passing via subprotocol:** `Sec-WebSocket-Protocol` completely avoids access logs — worth switching if tighter security is demanded?
+- **CSP `_headers` on Cloudflare Workers Static Assets:** Add `connect-src wss://...` upon enabling flag? (Currently no CSP configured.)
+- **`agents.ts:26` shadowing `agentConnections` Map:** Latent bug (agent list always reports offline) — out of scope for this plan, separate issue recommended.
+- **Protocol-level ping for agent WS:** Agent currently uses application-level `{type:'ping'}` — should agent migrate to `ws.ping()` for consistency? (Out of scope.)
 
-## 10. Phụ lục: checklist merge / checklist bật flag prod
+## 10. Appendix: Merge Checklist / Production Flag Activation Checklist
 
-### Checklist merge (P1-P5)
-- [ ] `pnpm --filter @ponter/server typecheck` xanh
-- [ ] `pnpm --filter @ponter/server test` xanh (bao gồm `ws-browser.test.ts` mới)
-- [ ] `pnpm --filter @ponter/webrtc-core run test` xanh (bao gồm `ws-transport.test.ts` mới)
-- [ ] `pnpm --filter @ponter/webrtc-core run test:e2e` xanh (P4)
-- [ ] `pnpm --filter @ponter/web build` xanh
-- [ ] `pnpm lint` xanh (toàn repo)
-- [ ] Review signoff: scope separation 2 chiều (authMiddleware guard + verifyWsTicket), Origin allowlist, one-time ticket
+### Merge Checklist (P1-P5)
+- [ ] `pnpm --filter @ponter/server typecheck` passes
+- [ ] `pnpm --filter @ponter/server test` passes (including new `ws-browser.test.ts`)
+- [ ] `pnpm --filter @ponter/webrtc-core run test` passes (including new `ws-transport.test.ts`)
+- [ ] `pnpm --filter @ponter/webrtc-core run test:e2e` passes (P4)
+- [ ] `pnpm --filter @ponter/web build` passes
+- [ ] `pnpm lint` passes (repository-wide)
+- [ ] Review signoff: bidirectional scope separation (`authMiddleware` guard + `verifyWsTicket`), Origin allowlist, single-use ticket
 - [ ] Integration test: agent→browser signal latency < 10ms
-- [ ] No regression REST polling (existing `signaling.test.ts` still pass)
-- [ ] `docker compose config` valid cho cả 3 compose files
-- [ ] Manual: `docker stop` server → graceful (close 1001, exit 0, không SIGKILL)
+- [ ] No regression on REST polling (existing `signaling.test.ts` passes)
+- [ ] `docker compose config` valid across all 3 compose files
+- [ ] Manual: `docker stop` server → graceful (close 1001, exit 0, no SIGKILL)
 
-### Checklist bật flag prod (global flip)
-- [ ] Deploy server P1 (flag OFF) — verify no crash, REST không đổi
-- [ ] Smoke test WS path (E2E P4 + tay: ticket → subscribe → signal) trước khi flip
-- [ ] Set `VITE_BROWSER_WS_SIGNALING=true` trong `deploy.yml` → merge → CI rebuild + deploy
-- [ ] Verify sau flip: reconnect rate < 1%; SESSION_TERMINATED delivery (đóng agent → tab hiện lỗi ngay); error rate 4408/4401 ≈ 0
+### Production Flag Activation Checklist (Global Flip)
+- [ ] Deploy server P1 (flag OFF) — verify stability, REST unchanged
+- [ ] Smoke test WS path (E2E P4 + manual: ticket → subscribe → signal) prior to flip
+- [ ] Set `VITE_BROWSER_WS_SIGNALING=true` in `deploy.yml` → merge → CI rebuild + deploy
+- [ ] Post-flip verification: reconnect rate < 1%; SESSION_TERMINATED delivery verified (closing agent displays error immediately in tab); error rate 4408/4401 ≈ 0
 - [ ] Fallback REST rate < 0.1%
-- [ ] Rollback path sẵn sàng: set lại `false` + rebuild (all-or-nothing)
-- [ ] Khi ổn định: remove flag logic (optional)
+- [ ] Rollback path verified: revert to `false` + rebuild (all-or-nothing)
+- [ ] Once stable: remove flag branching (optional)
 
 <!-- END OF PLAN -->

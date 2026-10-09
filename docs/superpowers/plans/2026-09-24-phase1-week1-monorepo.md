@@ -1,10 +1,10 @@
-# Phase 1 Tuần 1: Monorepo Setup Implementation Plan
+# Phase 1 Week 1: Monorepo Setup Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Khởi tạo monorepo pnpm + Turborepo cho Remote Access Platform, tạo cấu trúc toàn bộ thư mục và package placeholder, định nghĩa type contracts cốt lõi trong `@ponter/shared`, cấu hình ESLint 10 + Prettier + TypeScript 6, và thiết lập GitHub Actions CI.
+**Goal:** Initialize pnpm + Turborepo monorepo for the Remote Access Platform, create complete directory structure and package placeholders, define core type contracts in `@ponter/shared`, configure ESLint 10 + Prettier + TypeScript 6, and establish GitHub Actions CI.
 
-**Architecture:** Monorepo pnpm workspaces kết hợp Turborepo 2. Cấu trúc chia làm 3 nhóm workspace: `apps/*`, `packages/*`, `workers/*`. Tuần 1 chỉ `@ponter/shared` có code thật và typecheck qua TypeScript; các package khác là placeholder với script no-op. Toolchain ở root dùng ESLint 10 flat config và Prettier quét code (loại trừ `docs/`).
+**Architecture:** pnpm workspaces monorepo paired with Turborepo 2. Workspace structure divided into 3 groups: `apps/*`, `packages/*`, `workers/*`. In Week 1, only `@ponter/shared` has functional code and passes TypeScript typecheck; other packages are placeholders with no-op scripts. Root toolchain uses ESLint 10 flat config and Prettier code formatting (ignoring `docs/`).
 
 **Tech Stack:** Node 24, pnpm 12.6.0, Turborepo 2.11.3, TypeScript 6.0.3, ESLint 10.11.0, typescript-eslint 8.70.1, Prettier 3.9.9, @types/node 24.13.6.
 
@@ -12,23 +12,23 @@
 
 ## Global Constraints
 
-- Root `package.json` bắt buộc có `"type": "module"` để `eslint.config.js` không gây cảnh báo runtime.
-- `packageManager` ở root bắt buộc là `pnpm@12.6.0` để Turborepo và pnpm đồng nhất.
-- `engines` ở root bắt buộc là `node: ">=24"`, `pnpm: ">=12"`.
-- TypeScript dùng bản `6.0.3` (không dùng 7.x vì typescript-eslint 8.70.1 chỉ nhận `<6.1.0`).
-- Base tsconfig dùng `module: "esnext"`, `moduleResolution: "bundler"`, `verbatimModuleSyntax: true`, `noUncheckedIndexedAccess: true`.
-- Prettier ignore toàn bộ `docs/` để không làm thay đổi `docs/ARCHITECTURE.md` và các file markdown tài liệu.
-- `.gitignore` phải bỏ qua `.remember/` và `.claude/settings.local.json`.
-- Mọi file TypeScript mới phải tuân thủ `strict`, không dùng `any`, import type dùng `export type` hoặc `import type`.
-- Không tạo các file tính năng (Workers, D1, Vue, agent Rust, Vitest, deploy scripts) trong phạm vi tuần 1.
+- Root `package.json` must specify `"type": "module"` so `eslint.config.js` does not trigger runtime warnings.
+- `packageManager` at root must be `pnpm@12.6.0` to align Turborepo and pnpm.
+- `engines` at root must be `node: ">=24"`, `pnpm: ">=12"`.
+- TypeScript version `6.0.3` (not 7.x because typescript-eslint 8.70.1 only supports `<6.1.0`).
+- Base tsconfig uses `module: "esnext"`, `moduleResolution: "bundler"`, `verbatimModuleSyntax: true`, `noUncheckedIndexedAccess: true`.
+- Prettier ignores all of `docs/` to avoid modifying `docs/ARCHITECTURE.md` and documentation markdown files.
+- `.gitignore` must ignore `.remember/` and `.claude/settings.local.json`.
+- All new TypeScript files must adhere to `strict`, avoid `any`, and import/export types using `export type` or `import type`.
+- Do not create feature files (Workers, D1, Vue, Rust agent, Vitest, deploy scripts) within Week 1 scope.
 
 ## Review Focus
 
-1. **Thừa hoặc thiếu package trong workspace:** Nếu một thư mục trong `apps/`, `packages/`, `workers/` thiếu `package.json`, pnpm hoặc Turborepo có thể bỏ qua hoặc báo lỗi khi chạy glob. *Test ở Task 2 kiểm tra đủ 12 `package.json`.*
-2. **ESLint không quét hoặc quét quá đà:** Nếu flat config định nghĩa sai glob `files`, lint có thể exit 0 giả (không quét file nào) hoặc quét nhầm file config không phải TS. *Test ở Task 4 kiểm tra ESLint thực sự bắt lỗi vi phạm quy tắc.*
-3. **Import giữa các file type trong `@ponter/shared` thiếu đuôi hoặc hỏng với bundler:** Khi các file type import lẫn nhau, cấu hình `verbatimModuleSyntax` bắt buộc phải dùng `import type`. *Test ở Task 3 dùng TypeScript compiler kiểm tra không lỗi cú pháp.*
-4. **Prettier fail trên file markdown hoặc lockfile:** Nếu `.prettierignore` thiếu thư mục, `pnpm format:check` sẽ fail trên `pnpm-lock.yaml`, `.turbo/`, hoặc `docs/ARCHITECTURE.md`. *Test ở Task 4 kiểm tra Prettier pass trên toàn bộ repo.*
-5. **CI trên GitHub Actions không khớp cấu hình local:** Nếu CI dùng version Node hoặc pnpm khác, `--frozen-lockfile` có thể thất bại. *Test ở Task 5 xác nhận CI workflow dùng Node 24 và pnpm 12.6.0.*
+1. **Extraneous or missing packages in workspace:** If a directory in `apps/`, `packages/`, `workers/` lacks `package.json`, pnpm or Turborepo may omit it or error on globs. *Test in Task 2 verifies all 12 `package.json` files exist.*
+2. **ESLint misses or over-scans files:** If flat config specifies incorrect glob `files`, linting could falsely exit 0 (scanning nothing) or mistakenly scan non-TS configs. *Test in Task 4 verifies ESLint actively catches rule violations.*
+3. **Type imports in `@ponter/shared` lack extensions or break bundlers:** When type files import one another, `verbatimModuleSyntax` requires `import type`. *Test in Task 3 uses TypeScript compiler to verify zero syntax errors.*
+4. **Prettier fails on markdown or lockfile:** If `.prettierignore` omits folders, `pnpm format:check` will fail on `pnpm-lock.yaml`, `.turbo/`, or `docs/ARCHITECTURE.md`. *Test in Task 4 verifies Prettier passes across the entire repository.*
+5. **GitHub Actions CI mismatches local configuration:** If CI uses a different Node or pnpm version, `--frozen-lockfile` may fail. *Test in Task 5 confirms CI workflow uses Node 24 and pnpm 12.6.0.*
 
 ---
 
@@ -44,11 +44,11 @@
 - Create: `.prettierignore`
 
 **Interfaces:**
-- Produces: Root pnpm workspace định nghĩa 3 glob `apps/*`, `packages/*`, `workers/*`.
-- Produces: Base TypeScript configuration được kế thừa bởi mọi package.
-- Produces: Base Turborepo tasks cho `lint` và `typecheck`.
+- Produces: Root pnpm workspace defining 3 globs `apps/*`, `packages/*`, `workers/*`.
+- Produces: Base TypeScript configuration inherited by all packages.
+- Produces: Base Turborepo tasks for `lint` and `typecheck`.
 
-- [ ] **Step 1: Tạo `.gitignore`**
+- [ ] **Step 1: Create `.gitignore`**
 
 ```gitignore
 # Dependencies
@@ -91,7 +91,7 @@ Thumbs.db
 .claude/settings.local.json
 ```
 
-- [ ] **Step 2: Tạo `pnpm-workspace.yaml`**
+- [ ] **Step 2: Create `pnpm-workspace.yaml`**
 
 ```yaml
 packages:
@@ -100,7 +100,7 @@ packages:
   - 'workers/*'
 ```
 
-- [ ] **Step 3: Tạo root `package.json`**
+- [ ] **Step 3: Create root `package.json`**
 
 ```json
 {
@@ -130,7 +130,7 @@ packages:
 }
 ```
 
-- [ ] **Step 4: Tạo `turbo.json`**
+- [ ] **Step 4: Create `turbo.json`**
 
 ```json
 {
@@ -144,7 +144,7 @@ packages:
 }
 ```
 
-- [ ] **Step 5: Tạo `tsconfig.base.json`**
+- [ ] **Step 5: Create `tsconfig.base.json`**
 
 ```json
 {
@@ -162,7 +162,7 @@ packages:
 }
 ```
 
-- [ ] **Step 6: Tạo `.prettierrc.json` và `.prettierignore`**
+- [ ] **Step 6: Create `.prettierrc.json` and `.prettierignore`**
 
 `.prettierrc.json`:
 ```json
@@ -184,15 +184,15 @@ docs
 .claude
 ```
 
-- [ ] **Step 7: Cài đặt dependencies ở root**
+- [ ] **Step 7: Install dependencies at root**
 
 Run: `pnpm install`
-Expected: `pnpm-lock.yaml` được tạo ra, exit 0, cài đủ 6 devDependencies.
+Expected: `pnpm-lock.yaml` generated, exit 0, all 6 devDependencies installed.
 
-- [ ] **Step 8: Kiểm tra `.gitignore` hoạt động với `.remember` và `.claude/settings.local.json`**
+- [ ] **Step 8: Verify `.gitignore` rules for `.remember` and `.claude/settings.local.json`**
 
 Run: `git status --short`
-Expected: `.remember` và `.claude/settings.local.json` KHÔNG xuất hiện trong danh sách untracked files. Chỉ thấy các file cấu hình vừa tạo.
+Expected: `.remember` and `.claude/settings.local.json` DO NOT appear in untracked files list. Only newly created configuration files appear.
 
 ---
 
@@ -218,17 +218,17 @@ Expected: `.remember` và `.claude/settings.local.json` KHÔNG xuất hiện tro
 - Create: `docs/architecture/.gitkeep`
 
 **Interfaces:**
-- Produces: 11 package placeholder khai báo đúng `name` namespace `@ponter/*`, `private: true`, `version: 0.1.0`.
-- Produces: Mọi package placeholder có scripts `"lint": "echo ok"` và `"typecheck": "echo ok"` để Turborepo chạy thông suốt.
+- Produces: 11 placeholder packages declaring exact `name` namespace `@ponter/*`, `private: true`, `version: 0.1.0`.
+- Produces: Every placeholder package includes scripts `"lint": "echo ok"` and `"typecheck": "echo ok"` for smooth Turborepo execution.
 
-- [ ] **Step 1: Tạo các thư mục không phải package kèm `.gitkeep`**
+- [ ] **Step 1: Create non-package directories with `.gitkeep`**
 
 ```bash
 mkdir -p scripts tests/e2e tests/unit tests/integration docs/guides docs/architecture
 touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/.gitkeep docs/guides/.gitkeep docs/architecture/.gitkeep
 ```
 
-- [ ] **Step 2: Tạo placeholder `package.json` cho nhóm `apps/`**
+- [ ] **Step 2: Create placeholder `package.json` for `apps/` group**
 
 `apps/web/package.json`:
 ```json
@@ -286,7 +286,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 }
 ```
 
-- [ ] **Step 3: Tạo placeholder `package.json` cho nhóm `packages/` (trừ shared)**
+- [ ] **Step 3: Create placeholder `package.json` for `packages/` group (excluding shared)**
 
 `packages/api-client/package.json`:
 ```json
@@ -358,7 +358,7 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 }
 ```
 
-- [ ] **Step 4: Tạo placeholder `package.json` cho nhóm `workers/`**
+- [ ] **Step 4: Create placeholder `package.json` for `workers/` group**
 
 `workers/signaling/package.json`:
 ```json
@@ -388,30 +388,30 @@ touch scripts/.gitkeep tests/e2e/.gitkeep tests/unit/.gitkeep tests/integration/
 }
 ```
 
-- [ ] **Step 5: Tái tạo lockfile để ghi importer cho 11 package mới**
+- [ ] **Step 5: Regenerate lockfile to record importers for 11 new packages**
 
-Lưu ý: `pnpm install` thường in "Already up to date" và KHÔNG ghi importer entry cho
-package không có dependency. Vì vậy phải tái tạo từ đầu:
+Note: `pnpm install` often prints "Already up to date" and DOES NOT record importer entries for
+packages without dependencies. Therefore, regenerate from scratch:
 
 ```bash
 rm -rf node_modules pnpm-lock.yaml
 pnpm install
 ```
 
-Expected: `pnpm-lock.yaml` mới có 11 dòng importer dạng `apps/agent: {}`,
-`packages/api-client: {}`, `workers/api: {}`... Kiểm tra bằng:
+Expected: New `pnpm-lock.yaml` contains 11 importer entries like `apps/agent: {}`,
+`packages/api-client: {}`, `workers/api: {}`... Verify via:
 
 ```bash
 grep -cE "^  (apps|packages|workers)/" pnpm-lock.yaml
 ```
 
-Kết quả mong đợi: `11`. Nếu là `0`, lockfile chưa được ghi đúng và
-`pnpm install --frozen-lockfile` sẽ fail với `ERR_PNPM_PACKAGE_MANAGER_NO_IMPORTER`.
+Expected result: `11`. If `0`, lockfile was not written correctly and
+`pnpm install --frozen-lockfile` will fail with `ERR_PNPM_PACKAGE_MANAGER_NO_IMPORTER`.
 
-- [ ] **Step 6: Kiểm tra Turborepo nhận diện đủ 11 package**
+- [ ] **Step 6: Verify Turborepo detects all 11 packages**
 
 Run: `npx turbo run lint --dry=json`
-Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `packages`.
+Expected: Output JSON contains list of 11 newly created packages in `packages` field.
 
 ---
 
@@ -431,7 +431,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
 - Create: `packages/shared/src/index.ts`
 
 **Interfaces:**
-- Produces: Package `@ponter/shared` export đầy đủ các interfaces và types cốt lõi:
+- Produces: Package `@ponter/shared` exports full core interfaces and types:
   - `User`, `Device`, `Agent`, `DeviceType`
   - `Session`, `SessionStatus`
   - `IceServerConfig`, `WebRTCChannelType`, `DataChannelMessage`
@@ -440,7 +440,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
   - `LoginRequest`, `LoginResponse`, `RegisterRequest`, `AuthTokens`
   - `SignalOffer`, `SignalAnswer`, `IceCandidateSignal`, `SignalMessage`
 
-- [ ] **Step 1: Tạo `packages/shared/package.json`**
+- [ ] **Step 1: Create `packages/shared/package.json`**
 
 ```json
 {
@@ -460,7 +460,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
 }
 ```
 
-- [ ] **Step 2: Tạo `packages/shared/tsconfig.json`**
+- [ ] **Step 2: Create `packages/shared/tsconfig.json`**
 
 ```json
 {
@@ -469,7 +469,7 @@ Expected: Output JSON chứa danh sách 11 package vừa tạo trong trường `
 }
 ```
 
-- [ ] **Step 3: Tạo `packages/shared/src/types/user.ts`**
+- [ ] **Step 3: Create `packages/shared/src/types/user.ts`**
 
 ```typescript
 export type DeviceType = 'desktop' | 'mobile' | 'web';
@@ -516,7 +516,7 @@ export interface Agent {
 }
 ```
 
-- [ ] **Step 4: Tạo `packages/shared/src/types/session.ts`**
+- [ ] **Step 4: Create `packages/shared/src/types/session.ts`**
 
 ```typescript
 export type SessionStatus =
@@ -541,7 +541,7 @@ export interface Session {
 }
 ```
 
-- [ ] **Step 5: Tạo `packages/shared/src/types/webrtc.ts`**
+- [ ] **Step 5: Create `packages/shared/src/types/webrtc.ts`**
 
 ```typescript
 export interface IceServerConfig {
@@ -560,7 +560,7 @@ export interface DataChannelMessage<T = unknown> {
 }
 ```
 
-- [ ] **Step 6: Tạo `packages/shared/src/types/terminal.ts`**
+- [ ] **Step 6: Create `packages/shared/src/types/terminal.ts`**
 
 ```typescript
 export interface TerminalSize {
@@ -590,7 +590,7 @@ export interface TerminalResizeMessage {
 }
 ```
 
-- [ ] **Step 7: Tạo `packages/shared/src/types/files.ts`**
+- [ ] **Step 7: Create `packages/shared/src/types/files.ts`**
 
 ```typescript
 export type TransferDirection = 'upload' | 'download';
@@ -633,7 +633,7 @@ export interface FileChunkMessage {
 }
 ```
 
-- [ ] **Step 8: Tạo `packages/shared/src/types/auth.ts`**
+- [ ] **Step 8: Create `packages/shared/src/types/auth.ts`**
 
 ```typescript
 import type { User } from './user';
@@ -664,7 +664,7 @@ export interface RegisterRequest {
 }
 ```
 
-- [ ] **Step 9: Tạo `packages/shared/src/types/signaling.ts`**
+- [ ] **Step 9: Create `packages/shared/src/types/signaling.ts`**
 
 ```typescript
 export interface SignalOffer {
@@ -692,7 +692,7 @@ export type SignalMessage =
   | { type: 'ice-candidate'; data: IceCandidateSignal };
 ```
 
-- [ ] **Step 10: Tạo `packages/shared/src/types/index.ts`**
+- [ ] **Step 10: Create `packages/shared/src/types/index.ts`**
 
 ```typescript
 export type {
@@ -743,16 +743,16 @@ export type {
 } from './signaling';
 ```
 
-- [ ] **Step 11: Tạo `packages/shared/src/index.ts`**
+- [ ] **Step 11: Create `packages/shared/src/index.ts`**
 
 ```typescript
 export * from './types/index';
 ```
 
-- [ ] **Step 12: Cập nhật workspace và chạy typecheck cho `@ponter/shared`**
+- [ ] **Step 12: Update workspace and run typecheck for `@ponter/shared`**
 
 Run: `rm -rf node_modules pnpm-lock.yaml && pnpm install && npx tsc -p packages/shared --noEmit`
-Expected: exit 0, không có lỗi typecheck nào. Lockfile mới có 12 dòng importer
+Expected: exit 0, zero typecheck errors. New lockfile contains 12 importer entries
 (`grep -cE "^  (apps|packages|workers)/" pnpm-lock.yaml` → `12`).
 
 ---
@@ -761,13 +761,13 @@ Expected: exit 0, không có lỗi typecheck nào. Lockfile mới có 12 dòng i
 
 **Files:**
 - Create: `eslint.config.js`
-- Modify: `.prettierignore` (nếu cần điều chỉnh)
+- Modify: `.prettierignore` (if adjustments needed)
 
 **Interfaces:**
-- Produces: ESLint 10 flat config kiểm tra các file TypeScript trong `packages/**`, `apps/**`, `workers/**`.
-- Produces: `pnpm lint`, `pnpm typecheck`, `pnpm format:check` đều chạy được từ root qua Turborepo và Prettier.
+- Produces: ESLint 10 flat config validating TypeScript files across `packages/**`, `apps/**`, `workers/**`.
+- Produces: `pnpm lint`, `pnpm typecheck`, `pnpm format:check` all executable from root via Turborepo and Prettier.
 
-- [ ] **Step 1: Tạo `eslint.config.js` ở root**
+- [ ] **Step 1: Create `eslint.config.js` at root**
 
 ```javascript
 import tseslint from 'typescript-eslint';
@@ -799,39 +799,39 @@ export default tseslint.config(
 );
 ```
 
-- [ ] **Step 2: Viết một test kiểm chứng ESLint thực sự bắt lỗi**
+- [ ] **Step 2: Write a verification test proving ESLint catches violations**
 
-Tạo tạm file vi phạm:
+Create temporary violation file:
 ```bash
 node -e "fs.writeFileSync('packages/shared/src/test-violation.ts', 'export const bad: any = 1;\n')"
 ```
-Chạy: `npx eslint packages/shared/src/test-violation.ts`
-Expected: FAIL với lỗi `@typescript-eslint/no-explicit-any`. Exit code != 0.
+Run: `npx eslint packages/shared/src/test-violation.ts`
+Expected: FAIL with `@typescript-eslint/no-explicit-any` error. Exit code != 0.
 
-Xóa file tạm:
+Remove temporary file:
 ```bash
 rm packages/shared/src/test-violation.ts
 ```
 
-- [ ] **Step 3: Chạy Prettier format trên các file cấu hình và code đã tạo**
+- [ ] **Step 3: Run Prettier formatting on created configuration and code files**
 
 Run: `pnpm format`
-Expected: Định dạng toàn bộ file `.ts`, `.json`, `.yaml`, `.js`. Không đụng vào `docs/ARCHITECTURE.md`.
+Expected: Format all `.ts`, `.json`, `.yaml`, `.js` files. Does not touch `docs/ARCHITECTURE.md`.
 
-- [ ] **Step 4: Kiểm tra `pnpm format:check`**
+- [ ] **Step 4: Verify `pnpm format:check`**
 
 Run: `pnpm format:check`
 Expected: "All matched files use Prettier code style!", exit 0.
 
-- [ ] **Step 5: Kiểm tra `pnpm lint` qua Turborepo**
+- [ ] **Step 5: Verify `pnpm lint` via Turborepo**
 
 Run: `pnpm lint`
-Expected: Turbo chạy task `lint` cho `@ponter/shared` và các placeholder packages, exit 0, không có warning hoặc error.
+Expected: Turbo runs `lint` task for `@ponter/shared` and placeholder packages, exit 0, zero warnings or errors.
 
-- [ ] **Step 6: Kiểm tra `pnpm typecheck` qua Turborepo**
+- [ ] **Step 6: Verify `pnpm typecheck` via Turborepo**
 
 Run: `pnpm typecheck`
-Expected: Turbo chạy task `typecheck` cho toàn bộ workspace, exit 0.
+Expected: Turbo runs `typecheck` task across entire workspace, exit 0.
 
 ---
 
@@ -841,15 +841,15 @@ Expected: Turbo chạy task `typecheck` cho toàn bộ workspace, exit 0.
 - Create: `.github/workflows/ci.yml`
 
 **Interfaces:**
-- Produces: CI pipeline tự động chạy `lint`, `typecheck`, và `format:check` trên GitHub khi có push/PR vào `main` và `develop`.
+- Produces: CI pipeline automatically running `lint`, `typecheck`, and `format:check` on GitHub upon push/PR to `main` and `develop`.
 
-- [ ] **Step 1: Tạo thư mục `.github/workflows` nếu chưa có**
+- [ ] **Step 1: Create `.github/workflows` directory if missing**
 
 ```bash
 mkdir -p .github/workflows
 ```
 
-- [ ] **Step 2: Tạo `.github/workflows/ci.yml`**
+- [ ] **Step 2: Create `.github/workflows/ci.yml`**
 
 ```yaml
 name: CI
@@ -892,17 +892,17 @@ jobs:
         run: pnpm typecheck
 ```
 
-- [ ] **Step 3: Chạy toàn bộ bộ kiểm tra local theo đúng thứ tự của CI**
+- [ ] **Step 3: Run full local test suite in exact CI order**
 
 Run:
 ```bash
 pnpm install --frozen-lockfile && pnpm format:check && pnpm lint && pnpm typecheck
 ```
-Expected: Cả 4 lệnh hoàn thành với exit code 0.
+Expected: All 4 commands complete with exit code 0.
 
-- [ ] **Step 4: Kiểm tra trạng thái git trước khi bàn giao**
+- [ ] **Step 4: Inspect git status before handover**
 
 Run: `git status`
 Expected:
-- Không có file rác trong untracked (không có `.remember/`, không có `.claude/settings.local.json`, không có thư mục tạm).
-- Chỉ có các file thuộc kế hoạch: `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `turbo.json`, `tsconfig.base.json`, `eslint.config.js`, `.gitignore`, `.prettierrc.json`, `.prettierignore`, `.github/workflows/ci.yml`, `docs/superpowers/**`, các package placeholder và `packages/shared/**`.
+- No unwanted files in untracked (no `.remember/`, no `.claude/settings.local.json`, no temporary folders).
+- Only planned files present: `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `turbo.json`, `tsconfig.base.json`, `eslint.config.js`, `.gitignore`, `.prettierrc.json`, `.prettierignore`, `.github/workflows/ci.yml`, `docs/superpowers/**`, placeholder packages, and `packages/shared/**`.
