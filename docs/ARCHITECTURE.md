@@ -635,8 +635,10 @@ POST   /api/auth/logout            # Logout (revoke token in SQLite)
 
 # Agents
 GET    /api/agents                 # List user's agents
-POST   /api/agents                 # Register new agent (mints ag_ credential)
+POST   /api/agents                 # Register new agent (mints ag_ credential; body may include capabilities[])
 GET    /api/agents/:id             # Get agent details
+PATCH  /api/agents/:id             # Update hostname/platform/osVersion/agentVersion/capabilities
+DELETE /api/agents/:id             # Delete agent
 
 # Sessions
 POST   /api/sessions               # Create new session
@@ -1013,6 +1015,8 @@ gantt
 > **Limitations:** macOS/Windows code-signing = **build-only in this phase** (installer ships unsigned; signing hooks commented in `.github/workflows/build-desktop.yml`); release job runs only on tag or manual dispatch non-dry-run and **creates public GitHub Releases** — release path (assembling `latest.json` + per-platform `.sig`) is **reasoned/CI-unproven at PR time**, verified via **independent local harness** (recursively scanning `dist/` + fail-fast on empty platforms), but still requires confirmation with live tag/dispatch. Dependent on WS2 (authentic keypair for agent) — closed.
 >
 > **ADR-57 correction:** manifest key is `{os}-{arch}-{bundle_type}` (e.g. `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **NOT target triple**; signatures are **per-platform** (no top-level signature); `requireSignedVersion: true` eliminates anti-downgrade vulnerabilities (plugin defaults to `false`).
+>
+> **Post-Phase-7 additions (PR #83).** (1) **Capability selection at registration:** the operator picks `terminal` / `desktop` / `files` when registering a device; the web `RegisterAgentDialog` defaults to all three (prior behavior), the desktop app defaults to `terminal` + `desktop` (its embedded runtime has no `files_root`), and the desktop `register_device` now forwards the selection in the `POST /api/agents` body. (2) **Live runtime status in the window:** a `get_runtime_status` command returns the same `connected` / `disconnected` / `stopped` keys as the tray, and a `runtime-status` event drives a live indicator in the Devices view (which also refreshes the list every 5 s). (3) **Single-instance guard:** `tauri-plugin-single-instance` is registered first, so a second launch focuses the existing window instead of starting a second agent runtime.
 
 ### Phase 8: Open-Source Self-Build + Provider-Selectable TURN
 
