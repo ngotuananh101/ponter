@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
 import { devices, sessions } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
+import { pushFleetToUser } from './ws.js';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
@@ -76,6 +77,8 @@ router.post('/', async (c) => {
     })
     .returning();
 
+  pushFleetToUser(user.id);
+
   return c.json(created, 201);
 });
 
@@ -104,6 +107,9 @@ router.delete('/:id', async (c) => {
     .where(eq(sessions.deviceId, deviceId));
 
   await db.delete(devices).where(eq(devices.id, deviceId));
+
+  pushFleetToUser(user.id);
+
   return c.json({ success: true });
 });
 
