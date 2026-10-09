@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import type { AppContext } from '../types.js';
 import { users, revokedTokens } from '../db/schema.js';
 import { eq, or, count } from 'drizzle-orm';
+import { webcrypto } from 'node:crypto';
+import { canonicalUserIdentityMessage } from '@ponter/shared';
 import { hashPassword, verifyPassword } from '../utils/crypto.js';
 import { getSystemSettings } from '../utils/settings.js';
 import {
@@ -311,6 +313,78 @@ auth.post('/login', async (c) => {
     refreshToken: refresh.token,
     expiresIn: exp - Math.floor(Date.now() / 1000),
   });
+});
+
+auth.post('/signing-key', authMiddleware, async (c) => {
+  const body = await c.req
+    .json<{ signingPublicKey?: unknown; signature?: unknown }>()
+    .catch(() => null);
+
+  // 1. Validate: both fields must be non-empty strings.
+  if (
+    typeof body?.signingPublicKey !== 'string' ||
+    !body.signingPublicKey.trim() ||
+    typeof body?.signature !== 'string' ||
+    !body.signature.trim()
+  ) {
+    throw new AppError(
+      'signingPublicKey and signature are required',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  const user = c.get('user');
+
+  // 2. Verify the Ed25519 signature over the canonical user-identity message.
+  //    Fail closed: any import/verify error, or a false result, is a 400 and
+  //    nothing is stored.
+  const message = canonicalUserIdentityMessage(user.id);
+  let valid = false;
+  try {
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      Buffer.from(body.signingPublicKey, 'base64'),
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+    valid = await webcrypto.subtle.verify(
+      'Ed25519',
+      key,
+      Buffer.from(body.signature, 'base64'),
+      new TextEncoder().encode(message),
+    );
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
+    throw new AppError('Invalid signing key proof', 400, 'VALIDATION_ERROR');
+  }
+
+  // 3. Bootstrap-only: an account that already has a signing key may not
+  //    re-key through this endpoint.
+  if (user.signingPublicKey) {
+    throw new AppError(
+      'Signing key already set',
+      409,
+      'SIGNING_KEY_ALREADY_SET',
+    );
+  }
+
+  // 4. Persist and return the updated projection.
+  const db = c.get('db');
+  const [updated] = await db
+    .update(users)
+    .set({ signingPublicKey: body.signingPublicKey })
+    .where(eq(users.id, user.id))
+    .returning();
+
+  if (!updated) {
+    throw new AppError('User not found', 404, 'NOT_FOUND');
+  }
+
+  return c.json({ user: toPublicUser(updated) });
 });
 
 auth.post('/refresh', async (c) => {
