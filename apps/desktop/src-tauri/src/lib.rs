@@ -21,6 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::login::login,
+            commands::login::logout,
             commands::wizard::probe_server,
             #[cfg(not(target_env = "musl"))]
             commands::wizard::probe_capture,

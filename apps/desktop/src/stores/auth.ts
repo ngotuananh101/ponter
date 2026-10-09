@@ -32,11 +32,22 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function logout(): Promise<void> {
+    try {
+      await invoke('logout');
+    } finally {
+      user.value = null;
+      status.value = 'idle';
+      error.value = null;
+    }
+  }
+
   return {
     user,
     status,
     error,
     isAuthenticated,
     login,
+    logout,
   };
 });
