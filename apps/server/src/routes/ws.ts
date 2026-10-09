@@ -99,6 +99,7 @@ export interface BrowserConnection {
   socket: WebSocket;
   send: (data: string) => void;
   subscriptions: Map<string, BrowserSubscription>;
+  fleetSubscribed: boolean;
   lastPongAt: number;
 }
 
@@ -164,6 +165,27 @@ export function pushToBrowser(
       delivered = true;
     } catch {
       // Best-effort: a failing socket must not break the other subscribers.
+    }
+  }
+  return delivered;
+}
+
+/**
+ * Best-effort fleet invalidation to every fleet-subscribed browser socket of
+ * a user. Never throws — a browser mid-disconnect is an ordinary outcome, and
+ * the fleet is still correct via the REST poll.
+ */
+export function pushFleetToUser(userId: string): number {
+  const set = browserConnections.get(userId);
+  if (!set) return 0;
+  let delivered = 0;
+  for (const connection of set) {
+    if (!connection.fleetSubscribed) continue;
+    try {
+      connection.send(JSON.stringify({ type: 'fleet-changed' }));
+      delivered += 1;
+    } catch {
+      // Best-effort: a failing socket must not break the others.
     }
   }
   return delivered;
@@ -329,6 +351,14 @@ function normalizeBrowserFrame(frame: unknown): BrowserMessageInit | null {
     return { type: 'ping' };
   }
 
+  if (envelope.type === 'subscribe-fleet') {
+    return { type: 'subscribe-fleet' };
+  }
+
+  if (envelope.type === 'unsubscribe-fleet') {
+    return { type: 'unsubscribe-fleet' };
+  }
+
   if (envelope.type === 'subscribe') {
     const data = envelope.data as Record<string, unknown> | undefined;
     if (!data || typeof data.sessionId !== 'string' || !data.sessionId) {
@@ -412,6 +442,16 @@ async function handleBrowserMessage(
 
     if (frame.type === 'ping') {
       connection.send(JSON.stringify({ type: 'pong' }));
+      return;
+    }
+
+    if (frame.type === 'subscribe-fleet') {
+      connection.fleetSubscribed = true;
+      return;
+    }
+
+    if (frame.type === 'unsubscribe-fleet') {
+      connection.fleetSubscribed = false;
       return;
     }
 
@@ -690,6 +730,7 @@ export function createBrowserWebSocketServer(
           }
         },
         subscriptions: new Map(),
+        fleetSubscribed: false,
         lastPongAt: Date.now(),
       };
 
@@ -819,6 +860,8 @@ export function createAgentWebSocketServer(): WebSocketServer {
         .set({ isOnline: true, lastPingAt: NOW_SQL })
         .where(eq(agents.id, agentId));
 
+      pushFleetToUser(userId);
+
       socket.on('message', (rawMsg: unknown) => {
         void handleInboundMessage(rawMsg, connection, db);
       });
@@ -834,6 +877,8 @@ export function createAgentWebSocketServer(): WebSocketServer {
           .update(agents)
           .set({ isOnline: false })
           .where(eq(agents.id, agentId));
+
+        pushFleetToUser(userId);
 
         // End sessions bound to this agent that are still active, and tell
         // each browser waiting on one that the handshake can no longer
