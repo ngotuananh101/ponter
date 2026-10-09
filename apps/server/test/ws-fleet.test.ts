@@ -201,7 +201,11 @@ describe('fleet push over browser WebSocket', () => {
     await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
     ({ token, userId } = await registerUser(app, 'tester'));
-    ({ agentId, credential } = await registerAgent(app, token, 'agent_fleet_1'));
+    ({ agentId, credential } = await registerAgent(
+      app,
+      token,
+      'agent_fleet_1',
+    ));
   });
 
   afterEach(resetConnectionState);
@@ -245,7 +249,10 @@ describe('fleet push over browser WebSocket', () => {
     await app.fetch(
       new Request('http://localhost/api/agents', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           id: 'agent_new',
           hostname: 'new-host',
@@ -265,7 +272,10 @@ describe('fleet push over browser WebSocket', () => {
     await app.fetch(
       new Request(`http://localhost/api/agents/${agentId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ capabilities: ['terminal'] }),
       }),
     );
@@ -296,7 +306,10 @@ describe('fleet push over browser WebSocket', () => {
     await app.fetch(
       new Request('http://localhost/api/devices', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           fingerprint: 'fp_test_device_1',
           deviceName: 'Test Device',
@@ -316,7 +329,10 @@ describe('fleet push over browser WebSocket', () => {
     const devCreate = await app.fetch(
       new Request('http://localhost/api/devices', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           fingerprint: 'fp_to_delete',
           deviceName: 'ToDelete',
@@ -503,7 +519,10 @@ describe('fleet push over browser WebSocket', () => {
     const res = await app.fetch(
       new Request('http://localhost/api/agents', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           id: 'agent_throws',
           hostname: 'throw-host',
