@@ -78,6 +78,22 @@ keychain (ADR-52).
 See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
 for config location details.
 
+## Behavior notes
+
+- **Capabilities at registration.** When you register this device, you pick the
+  capabilities to advertise (`terminal`, `desktop`, `files`). The desktop app
+  defaults to **`terminal` + `desktop`** — `files` is off because the embedded
+  runtime has no `files_root` configured. The selection is sent to
+  `POST /api/agents`; the web dashboard's Register Agent dialog defaults to all
+  three for parity with its previous behavior.
+- **Live runtime status.** The Devices view shows the runtime state
+  (`Connected` / `Disconnected` / `Stopped`) — the same three states as the tray
+  icon — and refreshes the device list every 5 seconds. A `runtime-status` event
+  updates the indicator the moment the state changes.
+- **One instance at a time.** Launching the app a second time does **not** start
+  a second agent runtime; the existing window is focused instead. Only one agent
+  runtime runs per install.
+
 ## Source layout
 
 - `src/` — Vue 3 application (Pinia stores, views, shadcn-vue components).
