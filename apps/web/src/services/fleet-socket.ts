@@ -11,7 +11,9 @@
  * 696-714): `WS_INITIAL_BACKOFF_MS = 200`, `WS_MAX_BACKOFF_MS = 2000`.
  */
 
-/** Trần của backoff — trùng với `WebSocketSignalTransport`. */
+import type { BrowserMessageInit, BrowserSocketMessage } from '@ponter/shared';
+
+/** Backoff ceiling — identical to `WebSocketSignalTransport`. */
 const WS_MAX_BACKOFF_MS = 2000;
 const WS_INITIAL_BACKOFF_MS = 200;
 
@@ -26,6 +28,23 @@ function randomUnit(): number {
   const buffer = new Uint32Array(1);
   crypto.getRandomValues(buffer);
   return (buffer[0] ?? 0) / 2 ** 32;
+}
+
+/**
+ * Narrow an inbound frame to the fleet invalidation.
+ *
+ * The literal is written against the shared `BrowserSocketMessage` union
+ * (ADR-77) so it cannot drift from the wire contract, and the guard keeps the
+ * access safe for non-object JSON (`null`, numbers, arrays).
+ */
+function isFleetChanged(
+  frame: unknown,
+): frame is Extract<BrowserSocketMessage, { type: 'fleet-changed' }> {
+  return (
+    typeof frame === 'object' &&
+    frame !== null &&
+    (frame as { type?: unknown }).type === 'fleet-changed'
+  );
 }
 
 export interface FleetSocketOptions {
@@ -74,7 +93,8 @@ export class FleetSocket {
     }
     if (this.ws) {
       try {
-        this.ws.send(JSON.stringify({ type: 'unsubscribe-fleet' }));
+        const frame: BrowserMessageInit = { type: 'unsubscribe-fleet' };
+        this.ws.send(JSON.stringify(frame));
       } catch {
         // Socket may already be closing; best-effort only (ADR-74).
       }
@@ -115,7 +135,8 @@ export class FleetSocket {
     this.retries = 0;
     socket.onopen = () => {
       if (this.stopped || socket !== this.ws) return;
-      socket.send(JSON.stringify({ type: 'subscribe-fleet' }));
+      const frame: BrowserMessageInit = { type: 'subscribe-fleet' };
+      socket.send(JSON.stringify(frame));
     };
     socket.onmessage = (event: MessageEvent) => {
       this.handleMessage(socket, event.data as string);
@@ -170,14 +191,14 @@ export class FleetSocket {
 
   private handleMessage(_socket: WebSocket, raw: string): void {
     if (this.stopped) return;
-    let frame: Record<string, unknown>;
+    let frame: unknown;
     try {
-      frame = JSON.parse(raw) as Record<string, unknown>;
+      frame = JSON.parse(raw);
     } catch {
       // Malformed JSON: swallow.
       return;
     }
-    if (frame.type === 'fleet-changed') {
+    if (isFleetChanged(frame)) {
       this.onFleetChanged();
     }
     // Unknown frames: ignore.
