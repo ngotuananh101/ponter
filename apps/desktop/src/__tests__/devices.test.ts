@@ -43,6 +43,32 @@ const sampleDevice = {
   createdAt: '2026-10-08T00:00:00Z',
 };
 
+/**
+ * Route the mocked Tauri `invoke` bridge by command name. A command with no
+ * handler resolves to `undefined`; a handler that throws simulates a backend
+ * failure. Replaces the repeated `mockImplementation` blocks across the view
+ * tests (Sonar new-code duplication).
+ */
+function mockInvoke(handlers: Record<string, () => unknown> = {}): void {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    const handler = handlers[cmd];
+    return handler ? handler() : undefined;
+  });
+}
+
+/** Mount DevicesView, settle onMounted's async work, and return the wrapper. */
+async function mountView(options: { stubTeleport?: boolean } = {}) {
+  const wrapper = mount(
+    DevicesView,
+    options.stubTeleport
+      ? { global: { stubs: { Teleport: { template: '<slot />' } } } }
+      : undefined,
+  );
+  await flushPromises();
+  await nextTick();
+  return wrapper;
+}
+
 describe('devices store', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -80,9 +106,10 @@ describe('devices store', () => {
   });
 
   it('register() calls invoke and marks registered', async () => {
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(sampleDevice) // register_device
-      .mockResolvedValueOnce([sampleDevice]); // list_devices (refresh)
+    mockInvoke({
+      register_device: () => sampleDevice,
+      list_devices: () => [sampleDevice],
+    });
 
     const store = useDevicesStore();
     const result = await store.register();
@@ -108,9 +135,10 @@ describe('devices store', () => {
   });
 
   it("register(['terminal', 'desktop']) forwards exact capabilities array", async () => {
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(sampleDevice) // register_device
-      .mockResolvedValueOnce([sampleDevice]); // list_devices (refresh)
+    mockInvoke({
+      register_device: () => sampleDevice,
+      list_devices: () => [sampleDevice],
+    });
 
     const store = useDevicesStore();
     const result = await store.register(['terminal', 'desktop']);
@@ -160,11 +188,9 @@ describe('DevicesView', () => {
   });
 
   it('renders empty state when no devices', async () => {
-    vi.mocked(invoke).mockResolvedValue([]);
+    mockInvoke({ list_devices: () => [] });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     const empty = wrapper.find('[data-testid="devices-empty"]');
     expect(empty.exists()).toBe(true);
@@ -172,11 +198,9 @@ describe('DevicesView', () => {
   });
 
   it('renders device rows after refresh', async () => {
-    vi.mocked(invoke).mockResolvedValue([sampleDevice]);
+    mockInvoke({ list_devices: () => [sampleDevice] });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     const rows = wrapper.findAll('[data-testid="device-row"]');
     expect(rows).toHaveLength(1);
@@ -189,15 +213,12 @@ describe('DevicesView', () => {
   });
 
   it('register button calls store.register', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'register_device') return sampleDevice;
-      if (cmd === 'list_devices') return [];
-      return undefined;
+    mockInvoke({
+      register_device: () => sampleDevice,
+      list_devices: () => [],
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     await wrapper.find('[data-testid="devices-register"]').trigger('click');
     await flushPromises();
@@ -208,15 +229,9 @@ describe('DevicesView', () => {
   });
 
   it('capabilities selector defaults to terminal+desktop (files off)', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'stopped';
-      return undefined;
-    });
+    mockInvoke({ list_devices: () => [], get_runtime_status: () => 'stopped' });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     expect(
       wrapper
@@ -236,16 +251,13 @@ describe('DevicesView', () => {
   });
 
   it('register with files toggled sends files capability', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'register_device') return sampleDevice;
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'stopped';
-      return undefined;
+    mockInvoke({
+      register_device: () => sampleDevice,
+      list_devices: () => [],
+      get_runtime_status: () => 'stopped',
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     // Toggle files ON
     await wrapper.find('[data-test="register-cap-files"]').trigger('click');
@@ -260,16 +272,13 @@ describe('DevicesView', () => {
   });
 
   it('register with files and terminal toggled off sends only desktop', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'register_device') return sampleDevice;
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'stopped';
-      return undefined;
+    mockInvoke({
+      register_device: () => sampleDevice,
+      list_devices: () => [],
+      get_runtime_status: () => 'stopped',
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     // Toggle terminal OFF
     await wrapper.find('[data-test="register-cap-terminal"]').trigger('click');
@@ -286,30 +295,21 @@ describe('DevicesView', () => {
   });
 
   it('runtime status indicator reflects get_runtime_status value', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'connected';
-      return undefined;
+    mockInvoke({
+      list_devices: () => [],
+      get_runtime_status: () => 'connected',
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     const statusEl = wrapper.find('[data-testid="runtime-status"]');
     expect(statusEl.attributes('data-status')).toBe('connected');
   });
 
   it('runtime-status event updates the indicator', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'stopped';
-      return undefined;
-    });
+    mockInvoke({ list_devices: () => [], get_runtime_status: () => 'stopped' });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     const statusEl = wrapper.find('[data-testid="runtime-status"]');
     expect(statusEl.attributes('data-status')).toBe('stopped');
@@ -333,40 +333,46 @@ describe('DevicesView', () => {
   });
 
   it('runtime status handles get_runtime_status failure gracefully', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') {
+    mockInvoke({
+      list_devices: () => [],
+      get_runtime_status: () => {
         throw new Error('Tauri not available');
-      }
-      return undefined;
+      },
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     const statusEl = wrapper.find('[data-testid="runtime-status"]');
     expect(statusEl.attributes('data-status')).toBe('unknown');
   });
 
   it('auto-refresh calls list_devices on interval', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'connected';
-      return undefined;
+    mockInvoke({
+      list_devices: () => [],
+      get_runtime_status: () => 'connected',
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     // Initially list_devices called once from onMounted
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2); // list_devices + get_runtime_status
+
+    // Capture the count from onMounted — a count-delta assertion ensures the
+    // interval actually fires a SECOND time (vacuous: toHaveBeenCalledWith alone
+    // is already satisfied by onMounted).
+    const listDevicesCountBefore = vi
+      .mocked(invoke)
+      .mock.calls.filter((call) => call[0] === 'list_devices').length;
 
     // Advance past the 5000ms interval
     vi.advanceTimersByTime(5000);
     await flushPromises();
 
+    const listDevicesCountAfter = vi
+      .mocked(invoke)
+      .mock.calls.filter((call) => call[0] === 'list_devices').length;
+
+    expect(listDevicesCountAfter).toBeGreaterThan(listDevicesCountBefore);
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('list_devices');
     wrapper.unmount();
   });
@@ -374,15 +380,12 @@ describe('DevicesView', () => {
   it('unmount stops auto-refresh and unlistens', async () => {
     const mockUnlisten = vi.fn();
     vi.mocked(listen).mockResolvedValue(mockUnlisten);
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'connected';
-      return undefined;
+    mockInvoke({
+      list_devices: () => [],
+      get_runtime_status: () => 'connected',
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     // Verify listen was called (we get the unlisten fn back)
     await flushPromises(); // wait for listen to resolve
@@ -409,22 +412,13 @@ describe('DevicesView', () => {
   });
 
   it('delete button calls store.remove with confirmation', async () => {
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'list_devices') return [sampleDevice];
-      if (cmd === 'delete_device') return true;
-      if (cmd === 'get_runtime_status') return 'stopped';
-      return undefined;
+    mockInvoke({
+      list_devices: () => [sampleDevice],
+      delete_device: () => true,
+      get_runtime_status: () => 'stopped',
     });
 
-    const wrapper = mount(DevicesView, {
-      global: {
-        stubs: {
-          Teleport: { template: '<slot />' },
-        },
-      },
-    });
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView({ stubTeleport: true });
 
     const store = useDevicesStore();
     const removeSpy = vi.spyOn(store, 'remove');
@@ -448,16 +442,13 @@ describe('DevicesView', () => {
 
   it('never writes a credential or secret to webview storage', async () => {
     // Mock per-command-name to avoid call-order coupling with onMounted.
-    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === 'register_device') return sampleDevice;
-      if (cmd === 'list_devices') return [];
-      if (cmd === 'get_runtime_status') return 'stopped';
-      return undefined;
+    mockInvoke({
+      register_device: () => sampleDevice,
+      list_devices: () => [],
+      get_runtime_status: () => 'stopped',
     });
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     await wrapper.find('[data-testid="devices-register"]').trigger('click');
     await flushPromises();
@@ -473,16 +464,14 @@ describe('DevicesView', () => {
   });
 
   it('logout button triggers authStore.logout', async () => {
-    vi.mocked(invoke).mockResolvedValue([]);
+    mockInvoke({ list_devices: () => [] });
 
     const authStore = useAuthStore();
     const logoutSpy = vi
       .spyOn(authStore, 'logout')
       .mockResolvedValue(undefined);
 
-    const wrapper = mount(DevicesView);
-    await flushPromises();
-    await nextTick();
+    const wrapper = await mountView();
 
     const logoutBtn = wrapper.find('[data-testid="devices-logout"]');
     expect(logoutBtn.exists()).toBe(true);
