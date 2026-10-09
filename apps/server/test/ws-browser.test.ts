@@ -3,7 +3,6 @@ import {
   createSignalingServer,
   closeAllSignalingSockets,
 } from '../src/index.js';
-import type { SignalingServerOptions } from '../src/index.js';
 import { getDb, closeDb } from '../src/db/client.js';
 import { updateSystemSettings } from '../src/utils/settings.js';
 import {
@@ -21,110 +20,28 @@ import { signals } from '../src/db/schema.js';
 import type { Database } from '../src/db/client.js';
 import type { SignalMessage } from '@ponter/shared';
 import { WebSocket } from 'ws';
-import type { AddressInfo } from 'node:net';
-import type { Server } from 'node:http';
+import {
+  wait,
+  waitFor,
+  startOnEphemeral,
+  registerUser,
+  registerAgent,
+  mintTicket,
+  resetConnectionState,
+  collectFrames,
+  connectBrowser,
+  connectAgent,
+  waitOpen,
+  waitClosed,
+  sendFrame,
+  type AnyFrame,
+} from './helpers.js';
 
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 const REFRESH_TOKEN_SECRET = 'test-refresh-secret-at-least-32-characters';
 
 process.env.JWT_SECRET = JWT_SECRET;
 process.env.REFRESH_TOKEN_SECRET = REFRESH_TOKEN_SECRET;
-
-type AuthResponse = {
-  user: { id: string; username: string };
-  token: string;
-  refreshToken: string;
-};
-
-/** Loose view of a frame as parsed from the wire. */
-type AnyFrame = {
-  type?: string;
-  code?: string;
-  id?: string;
-  data?: {
-    type?: string;
-    data?: { sessionId?: string; sdp?: string; candidate?: string };
-    sessionId?: string;
-    after?: string | null;
-    hasMore?: boolean;
-  };
-};
-
-function wait(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitFor<T>(
-  fn: () => T | undefined,
-  timeoutMs = 3000,
-): Promise<T> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const result = fn();
-    if (result !== undefined) return result;
-    await wait(10);
-  }
-  throw new Error('Timed out waiting for condition');
-}
-
-async function startOnEphemeral(opts?: SignalingServerOptions): Promise<{
-  port: number;
-  server: Server;
-  app: ReturnType<typeof createSignalingServer>['app'];
-}> {
-  const { app, server } = createSignalingServer(opts);
-  await new Promise<void>((resolve, reject) => {
-    server.listen(0, '127.0.0.1', () => resolve());
-    server.on('error', reject);
-  });
-  const addr = server.address() as AddressInfo;
-  return { port: addr.port, server, app };
-}
-
-async function registerUser(
-  app: ReturnType<typeof createSignalingServer>['app'],
-  username: string,
-): Promise<{ token: string; userId: string }> {
-  const res = await app.fetch(
-    new Request('http://localhost/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username,
-        password: 'Password123!',
-        publicKey: `pk_${username}`,
-      }),
-    }),
-  );
-  const data = (await res.json()) as AuthResponse;
-  return { token: data.token, userId: data.user.id };
-}
-
-async function registerAgent(
-  app: ReturnType<typeof createSignalingServer>['app'],
-  token: string,
-  id: string,
-): Promise<{ agentId: string; credential: string }> {
-  const res = await app.fetch(
-    new Request('http://localhost/api/agents', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        id,
-        hostname: 'test-host',
-        publicKey: 'pk_agent',
-      }),
-    }),
-  );
-  const data = (await res.json()) as {
-    agent: { id: string };
-    credential: string;
-  };
-  return { agentId: data.agent.id, credential: data.credential };
-}
 
 async function createSession(
   app: ReturnType<typeof createSignalingServer>['app'],
@@ -143,64 +60,6 @@ async function createSession(
   );
   const data = (await res.json()) as { id: string };
   return data.id;
-}
-
-async function mintTicket(
-  app: ReturnType<typeof createSignalingServer>['app'],
-  token: string,
-): Promise<string> {
-  const res = await app.fetch(
-    new Request('http://localhost/api/ws/ticket', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    }),
-  );
-  const data = (await res.json()) as { ticket: string; expiresIn: number };
-  return data.ticket;
-}
-
-/** Clear per-test server state. */
-function resetConnectionState(): void {
-  agentConnections.clear();
-  browserConnections.clear();
-  closeDb();
-}
-
-function collectFrames(ws: WebSocket): AnyFrame[] {
-  const frames: AnyFrame[] = [];
-  ws.on('message', (data: Buffer) => {
-    try {
-      frames.push(JSON.parse(data.toString()) as AnyFrame);
-    } catch {
-      // ignore non-JSON
-    }
-  });
-  return frames;
-}
-
-function connectBrowser(
-  port: number,
-  ticket: string,
-  origin?: string,
-): WebSocket {
-  const url = `ws://127.0.0.1:${port}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
-  return new WebSocket(url, origin ? { origin } : {});
-}
-
-function connectAgent(port: number, credential: string): WebSocket {
-  return new WebSocket(`ws://127.0.0.1:${port}/api/ws/agent`, {
-    headers: { Authorization: `Bearer ${credential}` },
-  });
-}
-
-async function waitOpen(ws: WebSocket): Promise<void> {
-  await waitFor(() => (ws.readyState === WebSocket.OPEN ? true : undefined));
-}
-
-async function waitClosed(ws: WebSocket): Promise<{ code: number }> {
-  return new Promise((resolve) => {
-    ws.on('close', (code: number) => resolve({ code }));
-  });
 }
 
 /** Attempt an upgrade and resolve with the HTTP status, or 200 on success. */
@@ -224,11 +83,6 @@ async function attemptUpgrade(
     });
     ws.on('error', () => resolve(-1));
   });
-}
-
-async function sendFrame(ws: WebSocket, frame: unknown): Promise<void> {
-  ws.send(JSON.stringify(frame));
-  await wait(30);
 }
 
 /** Open a browser socket and start collecting its frames. */
