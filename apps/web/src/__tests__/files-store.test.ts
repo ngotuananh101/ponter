@@ -47,7 +47,28 @@ vi.mock('@/services/client', () => ({
     },
     webrtc: { getIceServers: vi.fn(async () => []) },
     http: { baseUrl: 'http://localhost', refreshAccessToken: vi.fn() },
+    agents: {
+      get: vi.fn(async () => ({ signingPublicKey: 'agent-signing-pubkey' })),
+    },
   },
+}));
+
+vi.mock('../stores/auth', () => ({
+  useAuthStore: () => ({
+    user: { id: 'user-e2ee' },
+    identityStatus: 'ready',
+    ensureUserSigningKey: async () => {},
+  }),
+}));
+
+vi.mock('@ponter/crypto', () => ({
+  loadPrivateKey: vi.fn(async () => null),
+  loadPublicKey: vi.fn(async () => null),
+  loadSigningKey: vi.fn(async () => ({}) as unknown as CryptoKey),
+  loadSigningPublicKey: vi.fn(async () => null),
+  importSigningPublicKeyRaw: vi.fn(async () => ({}) as unknown as CryptoKey),
+  signProof: vi.fn(async () => 'sig'),
+  verifyProof: vi.fn(async () => true),
 }));
 
 const peerOptions: Array<Record<string, unknown>> = [];

@@ -365,5 +365,78 @@ export async function loadSigningKey(
   return readKey(db, SIGNING_STORE, userId, 'Failed to load signing key');
 }
 
+/**
+ * Read a raw string value from an object store by key, or null if absent.
+ *
+ * `readKey` returns a `CryptoKey`; reusing it for the signing public-raw (a
+ * base64 string) would require an unsafe cast and could silently return a
+ * stale/wrong shape. A dedicated reader keeps the IndexedDB value type
+ * checked and is covered by tests (see `saveSigningPublicKey`/`loadSigningPublicKey`).
+ */
+function readString(
+  db: IDBDatabase,
+  storeName: string,
+  key: string,
+  failureMessage: string,
+): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (reason: DOMException | null) => {
+      if (settled) return;
+      settled = true;
+      closeQuietly(db);
+      reject(toError(reason, failureMessage));
+    };
+
+    const tx = db.transaction(storeName, 'readonly');
+    const request = tx.objectStore(storeName).get(key);
+
+    request.onsuccess = () => {
+      if (settled) return;
+      settled = true;
+      closeQuietly(db);
+      const result: unknown = request.result;
+      resolve(typeof result === 'string' ? result : null);
+    };
+    request.onerror = () => fail(request.error);
+    tx.onabort = () => fail(tx.error);
+  });
+}
+
+/**
+ * Persist a user's Ed25519 signing PUBLIC key (raw 32-byte base64) locally.
+ *
+ * Stored under `${userId}:pub` in the existing `SIGNING_STORE` — the same
+ * suffix convention as the ECDH public key, keeping the public raw next to the
+ * private key without overwriting it.
+ */
+export async function saveSigningPublicKey(
+  userId: string,
+  rawBase64: string,
+): Promise<void> {
+  const db = await openDatabase();
+  return runWriteTransaction(
+    db,
+    SIGNING_STORE,
+    'Failed to save signing public key',
+    (store) => {
+      store.put(rawBase64, `${userId}:pub`);
+    },
+  );
+}
+
+/** Load a user's Ed25519 signing public key raw base64, or null if absent. */
+export async function loadSigningPublicKey(
+  userId: string,
+): Promise<string | null> {
+  const db = await openDatabase();
+  return readString(
+    db,
+    SIGNING_STORE,
+    `${userId}:pub`,
+    'Failed to load signing public key',
+  );
+}
+
 export * from './encrypt';
 export * from './session-key';

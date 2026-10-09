@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 import { watch, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTerminalStore } from '../stores/terminal';
+import { useAuthStore } from '../stores/auth';
 import type { TerminalSession } from '@ponter/terminal-core';
 import type {
   DesktopStats,
@@ -14,6 +15,8 @@ import {
   loadPublicKey,
   loadSigningKey,
   importSigningPublicKeyRaw,
+  signProof,
+  verifyProof,
 } from '@ponter/crypto';
 
 // The store builds a DesktopClient for every desktop tab. Mock the module so
@@ -149,9 +152,11 @@ vi.mock('@/services/token-storage', () => ({
 }));
 
 vi.mock('../stores/auth', () => ({
-  useAuthStore: () => ({
+  useAuthStore: vi.fn(() => ({
     user: { id: 'user-e2ee' },
-  }),
+    identityStatus: 'ready',
+    ensureUserSigningKey: async () => {},
+  })),
 }));
 
 // T5-F: capture TerminalClient constructor args so the E2EE test can assert
@@ -194,10 +199,12 @@ vi.mock('@ponter/crypto', () => ({
   loadPrivateKey: vi.fn(),
   loadPublicKey: vi.fn(),
   loadSigningKey: vi.fn(),
+  loadSigningPublicKey: vi.fn(),
   importSigningPublicKeyRaw: vi.fn(),
   importPublicKeySpki: vi.fn(),
   generateSigningKeyPair: vi.fn(),
   saveSigningKey: vi.fn(),
+  saveSigningPublicKey: vi.fn(),
   signProof: vi.fn(),
   verifyProof: vi.fn(),
 }));
@@ -221,6 +228,10 @@ describe('useTerminalStore', () => {
     desktopOnSourcesOff.mockReset();
     desktopOnStatsOff.mockReset();
     desktopOnCursorOff.mockReset();
+    // Provide a valid WS2 identity so non-identity tests exercise the same
+    // successful connect path as before the throwing change.
+    vi.mocked(loadSigningKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(importSigningPublicKeyRaw).mockResolvedValue({} as CryptoKey);
   });
 
   /** Push a `desktop-sources` payload through the mock client's handler. */
@@ -925,5 +936,62 @@ describe('useTerminalStore desktop E2EE negotiation', () => {
     });
     const lastClient = desktopClientCalls.at(-1);
     expect(lastClient?.e2ee).toBeUndefined();
+  });
+});
+
+/**
+ * resolvePeerIdentity now throws PeerIdentityUnavailableError instead of
+ * returning undefined (the agent is a fail-closed gate). These tests verify:
+ * - identity unavailable → tab lands on 'error' with the actionable message,
+ *   and no PeerConnection is constructed.
+ * - identity ready (valid mocks) → PeerConnection IS constructed (sanity).
+ */
+describe('useTerminalStore — resolvePeerIdentity throwing behavior', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    peerOptions.length = 0;
+    remoteCapabilities = [];
+    // Restore the default auth mock (ready identity) that the main describe sets.
+    vi.mocked(useAuthStore).mockReturnValue({
+      user: { id: 'user-e2ee' },
+      identityStatus: 'ready',
+      ensureUserSigningKey: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useAuthStore>);
+    vi.mocked(loadSigningKey).mockResolvedValue({} as CryptoKey);
+    vi.mocked(importSigningPublicKeyRaw).mockResolvedValue({} as CryptoKey);
+    vi.mocked(signProof).mockResolvedValue('sig');
+    vi.mocked(verifyProof).mockResolvedValue(true);
+  });
+
+  it('throws PeerIdentityUnavailableError when identity is unavailable — tab lands on error', async () => {
+    // Override the auth mock: identity is unrecoverable (cell 3/4), ensure
+    // is a no-op that leaves identityStatus as 'unavailable'.
+    const { useAuthStore } = await import('../stores/auth');
+    vi.mocked(useAuthStore).mockReturnValue({
+      user: { id: 'user-e2ee', signingPublicKey: null },
+      identityStatus: 'unavailable' as const,
+      ensureUserSigningKey: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useAuthStore>);
+
+    const store = useTerminalStore();
+    const tabId = await store.openTab('ag-throw', 'Throw Host');
+
+    const tab = store.tabs.find((t) => t.id === tabId);
+    expect(tab?.status).toBe('error');
+    expect(tab?.error).toMatch(/peer identity unavailable/i);
+    // No PeerConnection should have been constructed.
+    expect(peerOptions).toHaveLength(0);
+  });
+
+  it('with identity ready and all keys present, PeerConnection is constructed with an identity', async () => {
+    // The beforeEach above restores the default ready-identity mock.
+    const store = useTerminalStore();
+    await store.openTab('ag-ok', 'OK Host');
+
+    expect(peerOptions).toHaveLength(1);
+    expect(peerOptions[0]).toMatchObject({
+      capabilities: ['terminal'],
+      identity: { role: 'offerer' },
+    });
   });
 });

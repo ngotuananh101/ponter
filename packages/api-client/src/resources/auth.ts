@@ -1,5 +1,5 @@
 import type { HttpClient } from '../client';
-import type { LoginResponse, RegisterResponse } from '@ponter/shared';
+import type { LoginResponse, RegisterResponse, User } from '@ponter/shared';
 
 export interface RegisterInput {
   username: string;
@@ -45,6 +45,32 @@ export class AuthResource {
       refreshToken: res.refreshToken,
     });
     return res;
+  }
+
+  /**
+   * Bootstrap a WS2 Ed25519 signing key for a legacy account (created before
+   * PR #44, where `users.signing_public_key` is NULL).
+   *
+   * The browser generates a signing keypair, persists the private half locally,
+   * persists the public raw alongside it (for re-registration after a server
+   * 409), and POSTs `{ signingPublicKey, signature }` where `signature` is an
+   * Ed25519 proof over `canonicalUserIdentityMessage(user.id)`.
+   *
+   * The server verifies the proof, rejects 400 on a bad proof, and 409 if a key
+   * is already set (idempotent re-bootstrap). Auth is required (Bearer token).
+   */
+  async registerSigningKey(input: {
+    signingPublicKey: string;
+    signature: string;
+  }): Promise<{ user: User }> {
+    return await this.http.request<{ user: User }>(
+      'POST',
+      '/api/auth/signing-key',
+      {
+        body: input,
+        auth: true,
+      },
+    );
   }
 
   async logout(refreshToken?: string): Promise<{ success: boolean }> {

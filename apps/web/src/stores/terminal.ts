@@ -145,33 +145,71 @@ function runUnsubscribers(unsubscribers: readonly Unsubscribe[]): void {
 }
 
 /**
+ * Typed error thrown when a WS2 peer-identity proof cannot be produced for an
+ * offer. The agent now treats a proof-less offer as a fail-closed admission
+ * rejection, so the failure must be explicit (and landable in the tab error
+ * surface) instead of silently degrading to a plaintext offer.
+ */
+export class PeerIdentityUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PeerIdentityUnavailableError';
+  }
+}
+
+/**
  * Resolve the WS2 peer-identity config for connecting to `agentId`.
  *
- * Best-effort: any failure (no user, no local signing key, agent has no
- * `signingPublicKey`, network error) returns `undefined` so the connection
- * proceeds without peer identity verification — identical to the pre-WS2
- * behavior. This keeps tests that mock `@/services/client` and environments
- * without IndexedDB working.
+ * Reuses the auth store's `ensureUserSigningKey` to bootstrap a missing signing
+ * key (legacy accounts) rather than duplicating key logic here. After the
+ * ensure pass, all four keys must be present — otherwise this throws a typed
+ * `PeerIdentityUnavailableError` (caught by the open-tab flow → tab `error`).
+ *
+ * `userSigningPublicKey` is intentionally NOT set by the browser: the server
+ * injects it from the DB (`apps/server/src/routes/signal.ts` / `ws.ts`).
  */
 async function resolvePeerIdentity(
   agentId: string,
-): Promise<PeerConnectionOptions['identity'] | undefined> {
-  try {
-    const userId = useAuthStore().user?.id;
-    if (!userId) return undefined;
-    const signingKey = await loadSigningKey(userId);
-    if (!signingKey) return undefined;
-    const agent = await apiClient.agents.get(agentId);
-    if (!agent.signingPublicKey) return undefined;
-    const agentKey = await importSigningPublicKeyRaw(agent.signingPublicKey);
-    return {
-      role: 'offerer',
-      sign: (m) => signProof(signingKey, m),
-      verifyPeer: (m, s) => verifyProof(agentKey, m, s),
-    };
-  } catch {
-    return undefined;
+): Promise<PeerConnectionOptions['identity']> {
+  const auth = useAuthStore();
+  const user = auth.user;
+  if (!user) {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable: no authenticated user.',
+    );
   }
+
+  // Best-effort bootstrap (never throws). If it could not reach `ready`,
+  // identity is unrecoverable and we must not offer a proof-less connection.
+  if (auth.identityStatus !== 'ready') {
+    await auth.ensureUserSigningKey(user);
+  }
+  if (auth.identityStatus !== 'ready') {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable on this device — re-register this account or clear and re-add its identity key.',
+    );
+  }
+
+  const signingKey = await loadSigningKey(user.id);
+  if (!signingKey) {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable: no local signing key.',
+    );
+  }
+
+  const agent = await apiClient.agents.get(agentId);
+  if (!agent.signingPublicKey) {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable: the agent has no signing key.',
+    );
+  }
+
+  const agentKey = await importSigningPublicKeyRaw(agent.signingPublicKey);
+  return {
+    role: 'offerer',
+    sign: (m) => signProof(signingKey, m),
+    verifyPeer: (m, s) => verifyProof(agentKey, m, s),
+  };
 }
 
 /**

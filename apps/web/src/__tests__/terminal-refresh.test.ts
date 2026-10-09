@@ -50,6 +50,23 @@ vi.mock('@ponter/webrtc-core', async (importOriginal) => {
   };
 });
 
+vi.mock('../stores/auth', () => ({
+  useAuthStore: () => ({
+    user: { id: 'user-e2ee' },
+    identityStatus: 'ready',
+    ensureUserSigningKey: async () => {},
+  }),
+}));
+
+vi.mock('@ponter/crypto', () => ({
+  loadPrivateKey: vi.fn(async () => null),
+  loadPublicKey: vi.fn(async () => null),
+  loadSigningKey: vi.fn(async () => ({}) as unknown as CryptoKey),
+  importSigningPublicKeyRaw: vi.fn(async () => ({}) as unknown as CryptoKey),
+  signProof: vi.fn(async () => 'sig'),
+  verifyProof: vi.fn(async () => true),
+}));
+
 interface FetchCall {
   url: string;
   auth: string;
@@ -76,6 +93,12 @@ function respond(url: string, auth: string): Response {
   }
   if (url.endsWith('/api/webrtc/ice-servers')) {
     return new Response(JSON.stringify({ iceServers: [] }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  }
+  if (url.match(/\/api\/agents\/[^/]+$/)) {
+    return new Response(JSON.stringify({ signingPublicKey: 'agent-key' }), {
       status: 200,
       headers: JSON_HEADERS,
     });

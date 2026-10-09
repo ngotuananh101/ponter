@@ -83,11 +83,29 @@ vi.mock('@/services/client', () => ({
       terminate: vi.fn(async () => ({ success: true })),
     },
     webrtc: { getIceServers: vi.fn(async () => []) },
+    agents: { get: vi.fn(async () => ({ signingPublicKey: 'agent-key' })) },
   },
 }));
 
 vi.mock('@/services/token-storage', () => ({
   tokenStorage: { getAccessToken: vi.fn(async () => 'access-123') },
+}));
+
+vi.mock('../stores/auth', () => ({
+  useAuthStore: () => ({
+    user: { id: 'user-e2ee' },
+    identityStatus: 'ready',
+    ensureUserSigningKey: async () => {},
+  }),
+}));
+
+vi.mock('@ponter/crypto', () => ({
+  loadPrivateKey: vi.fn(async () => null),
+  loadPublicKey: vi.fn(async () => null),
+  loadSigningKey: vi.fn(async () => ({}) as unknown as CryptoKey),
+  importSigningPublicKeyRaw: vi.fn(async () => ({}) as unknown as CryptoKey),
+  signProof: vi.fn(async () => 'sig'),
+  verifyProof: vi.fn(async () => true),
 }));
 
 async function emitPeerState(state: string): Promise<void> {
