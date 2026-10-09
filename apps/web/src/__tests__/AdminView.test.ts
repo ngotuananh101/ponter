@@ -36,6 +36,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     username: 'pending_user',
     email: 'pending@example.com',
     publicKey: 'pk',
+    signingPublicKey: null,
     role: 'user',
     approvalStatus: 'pending',
     isActive: true,

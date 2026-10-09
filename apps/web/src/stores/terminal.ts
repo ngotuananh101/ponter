@@ -13,6 +13,7 @@ import {
   RESTPollingTransport,
   WebSocketSignalTransport,
   type PeerConnectionOptions,
+  type RTCPeerConnectionLike,
 } from '@ponter/webrtc-core';
 import {
   loadPrivateKey,
@@ -145,33 +146,71 @@ function runUnsubscribers(unsubscribers: readonly Unsubscribe[]): void {
 }
 
 /**
+ * Typed error thrown when a WS2 peer-identity proof cannot be produced for an
+ * offer. The agent now treats a proof-less offer as a fail-closed admission
+ * rejection, so the failure must be explicit (and landable in the tab error
+ * surface) instead of silently degrading to a plaintext offer.
+ */
+export class PeerIdentityUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PeerIdentityUnavailableError';
+  }
+}
+
+/**
  * Resolve the WS2 peer-identity config for connecting to `agentId`.
  *
- * Best-effort: any failure (no user, no local signing key, agent has no
- * `signingPublicKey`, network error) returns `undefined` so the connection
- * proceeds without peer identity verification — identical to the pre-WS2
- * behavior. This keeps tests that mock `@/services/client` and environments
- * without IndexedDB working.
+ * Reuses the auth store's `ensureUserSigningKey` to bootstrap a missing signing
+ * key (legacy accounts) rather than duplicating key logic here. After the
+ * ensure pass, all four keys must be present — otherwise this throws a typed
+ * `PeerIdentityUnavailableError` (caught by the open-tab flow → tab `error`).
+ *
+ * `userSigningPublicKey` is intentionally NOT set by the browser: the server
+ * injects it from the DB (`apps/server/src/routes/signal.ts` / `ws.ts`).
  */
 async function resolvePeerIdentity(
   agentId: string,
-): Promise<PeerConnectionOptions['identity'] | undefined> {
-  try {
-    const userId = useAuthStore().user?.id;
-    if (!userId) return undefined;
-    const signingKey = await loadSigningKey(userId);
-    if (!signingKey) return undefined;
-    const agent = await apiClient.agents.get(agentId);
-    if (!agent.signingPublicKey) return undefined;
-    const agentKey = await importSigningPublicKeyRaw(agent.signingPublicKey);
-    return {
-      role: 'offerer',
-      sign: (m) => signProof(signingKey, m),
-      verifyPeer: (m, s) => verifyProof(agentKey, m, s),
-    };
-  } catch {
-    return undefined;
+): Promise<PeerConnectionOptions['identity']> {
+  const auth = useAuthStore();
+  const user = auth.user;
+  if (!user) {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable: no authenticated user.',
+    );
   }
+
+  // Best-effort bootstrap (never throws). If it could not reach `ready`,
+  // identity is unrecoverable and we must not offer a proof-less connection.
+  if (auth.identityStatus !== 'ready') {
+    await auth.ensureUserSigningKey(user);
+  }
+  if (auth.identityStatus !== 'ready') {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable on this device — re-register this account or clear and re-add its identity key.',
+    );
+  }
+
+  const signingKey = await loadSigningKey(user.id);
+  if (!signingKey) {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable: no local signing key.',
+    );
+  }
+
+  const agent = await apiClient.agents.get(agentId);
+  if (!agent.signingPublicKey) {
+    throw new PeerIdentityUnavailableError(
+      'Peer identity unavailable: the agent has no signing key.',
+    );
+  }
+
+  const agentKey = await importSigningPublicKeyRaw(agent.signingPublicKey);
+  return {
+    role: 'offerer',
+    sign: (m) => signProof(signingKey, m),
+    verifyPeer: (m, s) => verifyProof(agentKey, m, s),
+  };
 }
 
 /**
@@ -359,6 +398,107 @@ export const useTerminalStore = defineStore('terminal', () => {
           fallback: restTransport(),
         })
       : restTransport();
+  }
+
+  /**
+   * Run the shared WS2 handshake preamble up to the point just before the
+   * PeerConnection is constructed: session create → signaling transport →
+   * ICE servers → browser adapter. Returns the session id, transport, and
+   * rtcPeer so callers build their kind-specific PeerConnectionOptions.
+   *
+   * `onSessionCreated` is invoked the instant `sessions.create` resolves so
+   * the caller can capture the id before the fallible steps that follow
+   * (`createSignalingTransport`, `getIceServers`); if either throws the
+   * caller's catch block can still terminate the server session (ADR-14).
+   *
+   * Extracted from `openDesktopTab` / `openFilesTab` to eliminate the
+   * handshake preamble dedup (SonarCloud PR #90 site 5).
+   */
+  async function openSessionPreamble(
+    agentId: string,
+    live: TabItem | undefined,
+    onSessionCreated: (sessionId: string) => void,
+  ): Promise<{
+    sessionId: string;
+    transport: WebSocketSignalTransport | RESTPollingTransport;
+    rtcPeer: RTCPeerConnectionLike;
+  }> {
+    const sessionResp = await apiClient.sessions.create({ agentId });
+    onSessionCreated(sessionResp.id);
+    const transport = await createSignalingTransport(sessionResp.id);
+    if (live) live.initStep = 'ice';
+    const iceServers = await apiClient.webrtc.getIceServers();
+    const rtcPeer = createBrowserAdapter({ iceServers });
+    return { sessionId: sessionResp.id, transport, rtcPeer };
+  }
+
+  /**
+   * Attach the shared onServerError hook to the signaling transport.
+   *
+   * On SESSION_TERMINATED or NOT_FOUND it marks matching per-kind tabs as
+   * errored and calls `discard()` to drop the connection. Extracted from
+   * `openDesktopTab` / `openFilesTab` (SonarCloud PR #90 site 5).
+   */
+  function attachServerErrorHook(
+    transport: WebSocketSignalTransport | RESTPollingTransport,
+    unsubscribers: Unsubscribe[],
+    agentId: string,
+    kind: 'desktop' | 'files',
+    discard: () => void,
+  ): void {
+    if (!(transport instanceof WebSocketSignalTransport)) return;
+    unsubscribers.push(
+      transport.onServerError((code) => {
+        if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
+        const message =
+          code === 'SESSION_TERMINATED'
+            ? 'Session terminated: the agent disconnected or the session was closed.'
+            : 'Session not found on the server.';
+        markTabsFailed(agentId, kind, message);
+        discard();
+      }),
+    );
+  }
+
+  /**
+   * Attach the shared onConnectionStateChange hook to a peer. On ICE 'failed'
+   * it marks matching per-kind tabs as errored and calls `discard()`.
+   * Extracted from `openDesktopTab` / `openFilesTab` (SonarCloud PR #90 site 5).
+   */
+  function attachIceFailureHook(
+    peer: PeerConnection,
+    unsubscribers: Unsubscribe[],
+    agentId: string,
+    kind: 'desktop' | 'files',
+    discard: () => void,
+  ): void {
+    const iceMessage =
+      'Connection failed: no direct route to the agent (ICE). Check that ' +
+      'TURN is reachable, or that the agent is not behind a blocking NAT.';
+    unsubscribers.push(
+      peer.onConnectionStateChange((state) => {
+        if (state !== 'failed') return;
+        markTabsFailed(agentId, kind, iceMessage);
+        discard();
+      }),
+    );
+  }
+
+  /**
+   * Mark every still-connecting tab for `agentId` of `kind` as errored with
+   * the given message. Shared by the server-error and ICE-failure hooks.
+   */
+  function markTabsFailed(
+    agentId: string,
+    kind: 'desktop' | 'files',
+    message: string,
+  ): void {
+    for (const tab of tabs.value) {
+      if (tab.agentId !== agentId || tab.kind !== kind) continue;
+      tab.status = 'error';
+      tab.error = message;
+      tab.initStep = undefined;
+    }
   }
 
   async function getOrConnectAgent(agentId: string): Promise<TerminalClient> {
@@ -771,12 +911,17 @@ export const useTerminalStore = defineStore('terminal', () => {
     let sessionId: string | null = null;
 
     try {
-      const sessionResp = await apiClient.sessions.create({ agentId });
-      sessionId = sessionResp.id;
-      const transport = await createSignalingTransport(sessionResp.id);
-      if (live) live.initStep = 'ice';
-      const iceServers = await apiClient.webrtc.getIceServers();
-      const rtcPeer = createBrowserAdapter({ iceServers });
+      const {
+        sessionId: sid,
+        transport,
+        rtcPeer,
+      } = await openSessionPreamble(
+        agentId,
+        live as TabItem | undefined,
+        (id) => {
+          sessionId = id;
+        },
+      );
 
       // A control channel carries the source picker, bitrate, and stats. The
       // media path is unchanged; the label rides the existing manager (spec §5.2).
@@ -785,52 +930,24 @@ export const useTerminalStore = defineStore('terminal', () => {
       // passed unconditionally; negotiateE2ee() is dormant until the agent acks,
       // so a legacy agent (no e2ee in its answer) stays plaintext — backward
       // compatible, byte-identical to today.
-      const e2eeContext = await buildE2eeContext(agentId, sessionResp.id);
+      const e2eeContext = await buildE2eeContext(agentId, sid);
       const capabilities = e2eeContext ? ['desktop', 'e2ee'] : ['desktop'];
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
         channelLabels: ['control'],
         capabilities,
         media: { video: true },
-        sessionId: sessionResp.id,
+        sessionId: sid,
         identity,
       });
 
       const unsubscribers: Unsubscribe[] = [];
 
-      if (transport instanceof WebSocketSignalTransport) {
-        unsubscribers.push(
-          transport.onServerError((code) => {
-            if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
-            const message =
-              code === 'SESSION_TERMINATED'
-                ? 'Session terminated: the agent disconnected or the session was closed.'
-                : 'Session not found on the server.';
-            for (const tab of tabs.value) {
-              if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
-              tab.status = 'error';
-              tab.error = message;
-              tab.initStep = undefined;
-            }
-            discardDesktopConnection(agentId);
-          }),
-        );
-      }
-
-      unsubscribers.push(
-        peer.onConnectionStateChange((state) => {
-          if (state !== 'failed') return;
-          const message =
-            'Connection failed: no direct route to the agent (ICE). Check that ' +
-            'TURN is reachable, or that the agent is not behind a blocking NAT.';
-          for (const tab of tabs.value) {
-            if (tab.agentId !== agentId || tab.kind !== 'desktop') continue;
-            tab.status = 'error';
-            tab.error = message;
-            tab.initStep = undefined;
-          }
-          discardDesktopConnection(agentId);
-        }),
+      attachServerErrorHook(transport, unsubscribers, agentId, 'desktop', () =>
+        discardDesktopConnection(agentId),
+      );
+      attachIceFailureHook(peer, unsubscribers, agentId, 'desktop', () =>
+        discardDesktopConnection(agentId),
       );
 
       const client = new DesktopClient(
@@ -843,7 +960,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       desktopConnections.set(agentId, {
         peer,
         client,
-        sessionId: sessionResp.id,
+        sessionId: sid,
         unsubscribers,
         inputSentTimes,
       });
@@ -856,7 +973,7 @@ export const useTerminalStore = defineStore('terminal', () => {
         void peer.close();
         runUnsubscribers(unsubscribers);
         desktopConnections.delete(agentId);
-        void apiClient.sessions.terminate(sessionResp.id).catch(() => {});
+        void apiClient.sessions.terminate(sid).catch(() => {});
         return tabId;
       }
 
@@ -991,57 +1108,34 @@ export const useTerminalStore = defineStore('terminal', () => {
     let sessionId: string | null = null;
 
     try {
-      const sessionResp = await apiClient.sessions.create({ agentId });
-      sessionId = sessionResp.id;
-      const transport = await createSignalingTransport(sessionResp.id);
-      if (live) live.initStep = 'ice';
-      const iceServers = await apiClient.webrtc.getIceServers();
-      const rtcPeer = createBrowserAdapter({ iceServers });
+      const {
+        sessionId: sid,
+        transport,
+        rtcPeer,
+      } = await openSessionPreamble(
+        agentId,
+        live as TabItem | undefined,
+        (id) => {
+          sessionId = id;
+        },
+      );
 
       const identity = await resolvePeerIdentity(agentId);
       const peer = new PeerConnection(rtcPeer, transport, {
         role: 'offerer',
         channelLabels: ['files'],
         capabilities: ['files'],
-        sessionId: sessionResp.id,
+        sessionId: sid,
         identity,
       });
 
       const unsubscribers: Unsubscribe[] = [];
 
-      if (transport instanceof WebSocketSignalTransport) {
-        unsubscribers.push(
-          transport.onServerError((code) => {
-            if (code !== 'SESSION_TERMINATED' && code !== 'NOT_FOUND') return;
-            const message =
-              code === 'SESSION_TERMINATED'
-                ? 'Session terminated: the agent disconnected or the session was closed.'
-                : 'Session not found on the server.';
-            for (const tab of tabs.value) {
-              if (tab.agentId !== agentId || tab.kind !== 'files') continue;
-              tab.status = 'error';
-              tab.error = message;
-              tab.initStep = undefined;
-            }
-            discardFilesConnection(agentId);
-          }),
-        );
-      }
-
-      unsubscribers.push(
-        peer.onConnectionStateChange((state) => {
-          if (state !== 'failed') return;
-          const message =
-            'Connection failed: no direct route to the agent (ICE). Check that ' +
-            'TURN is reachable, or that the agent is not behind a blocking NAT.';
-          for (const tab of tabs.value) {
-            if (tab.agentId !== agentId || tab.kind !== 'files') continue;
-            tab.status = 'error';
-            tab.error = message;
-            tab.initStep = undefined;
-          }
-          discardFilesConnection(agentId);
-        }),
+      attachServerErrorHook(transport, unsubscribers, agentId, 'files', () =>
+        discardFilesConnection(agentId),
+      );
+      attachIceFailureHook(peer, unsubscribers, agentId, 'files', () =>
+        discardFilesConnection(agentId),
       );
 
       await peer.start();
@@ -1063,7 +1157,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       fileConnections.set(agentId, {
         peer,
         client,
-        sessionId: sessionResp.id,
+        sessionId: sid,
         unsubscribers,
       });
 
@@ -1074,7 +1168,7 @@ export const useTerminalStore = defineStore('terminal', () => {
         void peer.close();
         runUnsubscribers(unsubscribers);
         fileConnections.delete(agentId);
-        void apiClient.sessions.terminate(sessionResp.id).catch(() => {});
+        void apiClient.sessions.terminate(sid).catch(() => {});
         return tabId;
       }
 

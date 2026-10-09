@@ -64,6 +64,7 @@ describe('RegisterView.vue', () => {
       username: 'newuser',
       email: null,
       publicKey: 'pk',
+      signingPublicKey: null,
       role: 'user',
       approvalStatus: 'approved',
       isActive: true,

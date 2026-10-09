@@ -4,6 +4,8 @@ import {
   canonicalProofMessage,
   normalizeFingerprint,
   parseSdpFingerprint,
+  USER_IDENTITY_PROOF_PREFIX,
+  canonicalUserIdentityMessage,
 } from '../src/types/identity-proof';
 
 const FP =
@@ -107,5 +109,25 @@ describe('parseSdpFingerprint', () => {
 
   it('throws when the SDP carries no fingerprint', () => {
     expect(() => parseSdpFingerprint('v=0\r\n')).toThrow();
+  });
+});
+
+describe('canonicalUserIdentityMessage', () => {
+  it('starts with the prefix and binds the userId on its own line', () => {
+    expect(canonicalUserIdentityMessage('u1')).toBe(
+      `${USER_IDENTITY_PROOF_PREFIX}\nuserId=u1`,
+    );
+  });
+
+  it('is byte-stable for identical ids (two calls are identical)', () => {
+    const a = canonicalUserIdentityMessage('u1');
+    const b = canonicalUserIdentityMessage('u1');
+    expect(a).toBe(b);
+  });
+
+  it('differs for different ids so a proof cannot be replayed onto another account', () => {
+    const a = canonicalUserIdentityMessage('u1');
+    const b = canonicalUserIdentityMessage('u2');
+    expect(a).not.toBe(b);
   });
 });
