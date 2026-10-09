@@ -20,7 +20,7 @@ use ponter_agent::{
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 use crate::autostart;
@@ -69,6 +69,15 @@ pub fn tray_label(status: &RuntimeStatus) -> &'static str {
 /// The status menu item's text (R3 pure-fn).
 pub fn status_text(status: &RuntimeStatus) -> String {
     format!("Status: {}", tray_label(status))
+}
+
+/// Wire key for the runtime status (R3 pure-fn) — the frozen frontend contract.
+pub fn status_key(status: &RuntimeStatus) -> &'static str {
+    match status {
+        RuntimeStatus::Connected => "connected",
+        RuntimeStatus::Disconnected => "disconnected",
+        RuntimeStatus::Stopped => "stopped",
+    }
 }
 
 /// What a menu id means (R3 pure-fn).
@@ -253,7 +262,7 @@ impl TrayState {
     }
 
     /// Snapshot the current status for the poll loop to read.
-    fn current_status(&self) -> RuntimeStatus {
+    pub fn current_status(&self) -> RuntimeStatus {
         let guard = match self.runtime.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -269,6 +278,12 @@ impl Default for TrayState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Tauri command: the current runtime status as a wire key (frozen contract).
+#[tauri::command]
+pub fn get_runtime_status(state: tauri::State<'_, TrayState>) -> String {
+    status_key(&state.current_status()).to_string()
 }
 
 /// Build the tray menu: Status (disabled) / separator / Start / Stop / separator
@@ -598,6 +613,10 @@ fn spawn_status_poll(app: AppHandle) {
                         tray_log!("could not update tray status text (will retry next tick): {e}");
                     }
                 }
+                let _ = app.emit(
+                    "runtime-status",
+                    serde_json::json!({ "status": status_key(&status) }),
+                );
                 last = Some(text);
             }
         }
@@ -615,6 +634,14 @@ mod tests {
         assert_eq!(tray_label(&RuntimeStatus::Connected), "Connected");
         assert_eq!(tray_label(&RuntimeStatus::Disconnected), "Disconnected");
         assert_eq!(tray_label(&RuntimeStatus::Stopped), "Stopped");
+    }
+
+    // R3 pure-fn: status_key maps all variants to the frozen wire keys.
+    #[test]
+    fn status_key_maps_all_variants() {
+        assert_eq!(status_key(&RuntimeStatus::Connected), "connected");
+        assert_eq!(status_key(&RuntimeStatus::Disconnected), "disconnected");
+        assert_eq!(status_key(&RuntimeStatus::Stopped), "stopped");
     }
 
     // R3/RL test 2: status_text exact strings.

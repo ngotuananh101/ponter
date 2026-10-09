@@ -60,6 +60,86 @@ pub fn spawn_stub(canned_status: u16, canned_body: String) -> String {
     format!("http://{addr}")
 }
 
+/// Like `spawn_stub_capturing` but reads the FULL request: the header block
+/// plus the body (Content-Length bytes), so a test can assert on the JSON
+/// payload. Returns `(base_url, receiver)`.
+pub fn spawn_stub_capturing_body(
+    canned_status: u16,
+    canned_body: String,
+) -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break, // client closed
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // Parse Content-Length (case-insensitive) from the header block
+            // and keep reading until we have the full body.
+            let header_end = buf
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| p + 4)
+                .unwrap_or(buf.len());
+            let header_text = String::from_utf8_lossy(&buf[..header_end]);
+            let content_length = header_text
+                .lines()
+                .filter_map(|line| {
+                    let lower = line.to_lowercase();
+                    if lower.starts_with("content-length:") {
+                        lower
+                            .trim_start_matches("content-length:")
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                    } else {
+                        None
+                    }
+                })
+                .next();
+
+            if let Some(cl) = content_length {
+                while buf.len() < header_end + cl {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break, // client closed
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        Err(_) => break,
+                    }
+                }
+            }
+
+            let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+
+            let body = canned_body.clone();
+            let resp = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+                status = canned_status,
+                len = body.len(),
+                body = body,
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (format!("http://{addr}"), rx)
+}
+
 /// Like `spawn_stub` but also captures the full raw request header block and
 /// hands it back via a channel receiver, so a test can assert on the request
 /// line and headers. Returns `(base_url, receiver)`.

@@ -18,6 +18,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(tray::TrayState::new())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::login::login,
@@ -30,6 +36,7 @@ pub fn run() {
             commands::devices::register_device,
             commands::devices::list_devices,
             commands::devices::delete_device,
+            tray::get_runtime_status,
             commands::updater::check_update,
             commands::updater::apply_update,
             autostart::set_autostart,
