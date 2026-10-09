@@ -126,9 +126,14 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
-   * POST a signing key to the bootstrap endpoint. On a 409 (key already set on
-   * the server) treat as success and refresh the user; any other failure is
-   * swallowed by `ensureUserSigningKey`'s catch.
+   * POST a signing key to the bootstrap endpoint.
+   *
+   * A 409 means the server already holds a key; because the key we are
+   * registering here is freshly generated (or a stored one) and cannot be
+   * assumed to match the server's, a 409 leaves `identityStatus` `unavailable`
+   * — never throws, surfaced honestly. The next login/restore re-reads `/me`
+   * and resolves the state. Any other failure is swallowed by
+   * `ensureUserSigningKey`'s catch.
    */
   async function postSigningKey(
     userId: string,

@@ -382,11 +382,12 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     await store.ensureUserSigningKey(makeUser('server-key'));
 
     expect(cryptoPkg.generateSigningKeyPair).not.toHaveBeenCalled();
+    expect(cryptoPkg.signProof).not.toHaveBeenCalled();
     expect(registerSpy).not.toHaveBeenCalled();
     expect(store.identityStatus).toBe('ready');
   });
 
-  it('409 on POST is treated as ready (key already set) and user is refreshed', async () => {
+  it('409 on POST leaves identity unavailable (server key already set) and never throws', async () => {
     const store = useAuthStore();
     store.user = makeUser(null);
 
@@ -401,8 +402,9 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     vi.mocked(cryptoPkg.signProof).mockResolvedValue('sig');
 
     // The 409 path: registerSigningKey throws, but ensureUserSigningKey must not
-    // rethrow. identityStatus should still reach 'ready' via the catch path
-    // being handled gracefully — the server already has the key.
+    // rethrow. A 409 means the server already has a key — because the key we
+    // are registering is freshly generated (or stored) and cannot be assumed
+    // to match the server's, identityStatus stays 'unavailable' honestly.
     const { ApiError } = await import('@ponter/api-client');
     vi.spyOn(apiClient.auth, 'registerSigningKey').mockRejectedValue(
       new ApiError('already set', 409, 'SIGNING_KEY_ALREADY_SET'),

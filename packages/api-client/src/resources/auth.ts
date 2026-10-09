@@ -56,8 +56,9 @@ export class AuthResource {
    * 409), and POSTs `{ signingPublicKey, signature }` where `signature` is an
    * Ed25519 proof over `canonicalUserIdentityMessage(user.id)`.
    *
-   * The server verifies the proof, rejects 400 on a bad proof, and 409 if a key
-   * is already set (idempotent re-bootstrap). Auth is required (Bearer token).
+   * The server verifies the proof, rejects 400 on a bad proof, and returns 409
+   * if a key is already set on the server. The caller decides how to treat a
+   * 409. Auth is required (Bearer token).
    */
   async registerSigningKey(input: {
     signingPublicKey: string;
