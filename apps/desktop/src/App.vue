@@ -3,7 +3,6 @@ import { onMounted } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { useWizardStore } from '@/stores/wizard';
 import { useConfigStore } from '@/stores/config';
-import ThemeToggle from '@/components/ThemeToggle.vue';
 import ServerSetupView from '@/views/ServerSetupView.vue';
 import LoginView from '@/views/LoginView.vue';
 import WizardView from '@/views/WizardView.vue';
@@ -20,9 +19,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <ThemeToggle class="fixed right-3 top-3 z-50" />
-  <ServerSetupView v-if="!configStore.hasServerUrl || configStore.editing" />
-  <LoginView v-else-if="!authStore.isAuthenticated" />
-  <WizardView v-else-if="!wizardStore.completed" />
-  <DevicesView v-else />
+  <div
+    data-testid="app-shell"
+    class="min-h-screen flex items-center justify-center p-4 sm:p-6 bg-gradient-to-b from-background via-background to-muted/20 select-none text-foreground"
+  >
+    <ServerSetupView v-if="!configStore.hasServerUrl || configStore.editing" />
+    <LoginView v-else-if="!authStore.isAuthenticated" />
+    <WizardView v-else-if="!wizardStore.completed" />
+    <DevicesView v-else />
+  </div>
 </template>
