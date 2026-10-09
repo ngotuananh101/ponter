@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createSignalingServer } from '../src/index.js';
 import { getDb, closeDb } from '../src/db/client.js';
 import { updateSystemSettings } from '../src/utils/settings.js';
@@ -191,6 +191,7 @@ function resetConnectionState(): void {
 describe('fleet push over browser WebSocket', () => {
   let db: Database;
   let token: string;
+  let userId: string;
   let agentId: string;
   let credential: string;
 
@@ -199,7 +200,7 @@ describe('fleet push over browser WebSocket', () => {
     db = getDb(':memory:');
     await updateSystemSettings(db, { autoApproveUsers: true });
     const { app } = createSignalingServer();
-    ({ token } = await registerUser(app, 'tester'));
+    ({ token, userId } = await registerUser(app, 'tester'));
     ({ agentId, credential } = await registerAgent(app, token, 'agent_fleet_1'));
   });
 
@@ -430,21 +431,7 @@ describe('fleet push over browser WebSocket', () => {
   it('pushFleetToUser never throws: one throwing socket does not block others', async () => {
     const { port, app } = await startOnEphemeral();
 
-    // Socket 1: subscribed, will throw on send.
-    const t1 = await mintTicket(app, token);
-    const ws1 = connectBrowser(port, t1);
-    await waitOpen(ws1);
-    const f1 = collectFrames(ws1);
-    await sendFrame(ws1, { type: 'subscribe-fleet' });
-    await wait(50);
-    f1.length = 0;
-
-    // Make ws1 throw on send by monkey-patching its send.
-    vi.spyOn(ws1, 'send').mockImplementation(() => {
-      throw new Error('socket closed');
-    });
-
-    // Socket 2: subscribed, healthy.
+    // A real, healthy subscribed browser socket — it must still receive the frame.
     const t2 = await mintTicket(app, token);
     const ws2 = connectBrowser(port, t2);
     await waitOpen(ws2);
@@ -452,16 +439,83 @@ describe('fleet push over browser WebSocket', () => {
     await sendFrame(ws2, { type: 'subscribe-fleet' });
     await wait(50);
 
-    // Trigger a fleet change.
-    const agent = connectAgent(port, credential);
-    await waitOpen(agent);
+    // A fake server-side BrowserConnection whose `send` throws. This exercises
+    // the SERVER-side send path (connection.send, not the client ws.send),
+    // proving the try/catch in pushFleetToUser isolates the failure.
+    const { pushFleetToUser } = await import('../src/routes/ws.js');
+    const throwingConn = {
+      userId,
+      socket: {} as unknown as WebSocket,
+      send: () => {
+        throw new Error('server-side send failure');
+      },
+      subscriptions: new Map(),
+      fleetSubscribed: true,
+      lastPongAt: 0,
+    };
 
-    // ws2 should still receive fleet-changed (proving ws1's throw didn't abort the loop).
+    const set = browserConnections.get(userId);
+    if (set) set.add(throwingConn);
+    else browserConnections.set(userId, new Set([throwingConn]));
+
+    // Direct call must not throw.
+    let delivered: number;
+    expect(() => {
+      delivered = pushFleetToUser(userId);
+    }).not.toThrow();
+
+    // The healthy real socket still received fleet-changed.
+    await waitFor(() => f2.find((f) => f.type === 'fleet-changed'));
+    // The throwing fake socket was skipped, so only the real socket was delivered to.
+    expect(delivered).toBeGreaterThan(0);
+
+    ws2.close();
+  });
+
+  it('pushFleetToUser never throws via route emit: throwing socket does not block others', async () => {
+    const { port, app } = await startOnEphemeral();
+
+    // Real healthy subscribed browser.
+    const t2 = await mintTicket(app, token);
+    const ws2 = connectBrowser(port, t2);
+    await waitOpen(ws2);
+    const f2 = collectFrames(ws2);
+    await sendFrame(ws2, { type: 'subscribe-fleet' });
+    await wait(50);
+
+    // Fake server-side throwing connection.
+    const throwingConn = {
+      userId,
+      socket: {} as unknown as WebSocket,
+      send: () => {
+        throw new Error('server-side send failure');
+      },
+      subscriptions: new Map(),
+      fleetSubscribed: true,
+      lastPongAt: 0,
+    };
+    const set = browserConnections.get(userId);
+    if (set) set.add(throwingConn);
+    else browserConnections.set(userId, new Set([throwingConn]));
+
+    // Trigger a fleet change via a real REST route (POST /api/agents) and assert
+    // the route still returns 201 and the healthy socket receives fleet-changed.
+    const res = await app.fetch(
+      new Request('http://localhost/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          id: 'agent_throws',
+          hostname: 'throw-host',
+          publicKey: 'pk_throw',
+        }),
+      }),
+    );
+    expect(res.status).toBe(201);
+
     await waitFor(() => f2.find((f) => f.type === 'fleet-changed'));
 
-    ws1.close();
     ws2.close();
-    agent.close();
   });
 
   it('agent connect emit preserves ordering: isOnline is true after emit', async () => {
