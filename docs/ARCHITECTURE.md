@@ -172,6 +172,7 @@ In the reverse direction — server pushing signals to the browser — WebSocket
 - **Subscribe + replay**: The client sends `subscribe{sessionId, after}`; the server replays missed signals ordered by `rowid` (wire cursor is UUID `id`), capped at 200/page (`hasMore` for pagination) and limited to the last 5 minutes. During replay, live pushes for that session are **buffered** and flushed afterwards, deduplicated by `id` — ensuring no duplicates or out-of-order delivery.
 - **Liveness**: The server issues `ws.ping()` every 30s (browsers automatically respond with pong at the protocol level, independent of JS background tab throttling); exceeding 90s without pong triggers `close(4408)`.
 - **Fan-out**: `browserConnections: Map<userId, Set<BrowserConnection>>`; `pushToBrowser` broadcasts to all tabs subscribed to the session (except sender), and `DELETE /api/sessions/:id` pushes `error{SESSION_TERMINATED}` so tabs awaiting handshake terminate cleanly.
+- **Fleet push (ADR-73..77)**: The same socket also carries a coarse `{type:'fleet-changed'}` invalidation so the Dashboard stops polling. A connection opts in with `{type:'subscribe-fleet'}` / `{type:'unsubscribe-fleet'}` (per-connection `fleetSubscribed` flag); `pushFleetToUser(userId)` fans the frame out best-effort — never throwing, per-connection `try/catch` — to the user's subscribed sockets whenever the *observable* fleet changes: agent connect/disconnect (agent WS server) and agent/device create/update/delete (`agents.ts` / `devices.ts`). Tenancy is structural: the fan-out iterates only `browserConnections.get(userId)`. On receipt the Dashboard refetches `GET /api/devices` + `GET /api/agents` (debounced ≥500 ms) and keeps a 60 s poll as the safety net. The consumer is a dedicated `apps/web/src/services/fleet-socket.ts` + `apps/web/src/stores/fleet.ts` (the session-scoped transport is not reused), gated by the same `VITE_BROWSER_WS_SIGNALING` flag.
 - **Close codes**: 4401 (unauthorized), 4408 (pong timeout), 4409 (agent socket replaced). Inbound frame ceiling is 256KB.
 - **Build-time flag**: `VITE_BROWSER_WS_SIGNALING` (`'true'` to enable). WebSocket transport automatically reconnects with backoff + jitter and falls back permanently to REST after `maxRetries`.
 - **Graceful shutdown**: SIGTERM closes all signaling sockets with close code 1001 before draining `server.close`; compose sets `stop_grace_period: 15s` so Docker does not issue premature SIGKILL.
@@ -745,13 +746,16 @@ export type AgentErrorCode =
 export type BrowserMessageInit =
   | { type: 'subscribe'; data: { sessionId: string; after?: string | null } }
   | { type: 'signal'; data: SignalMessage }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | { type: 'subscribe-fleet' }
+  | { type: 'unsubscribe-fleet' };
 
 // Server -> Client
 export type BrowserSocketMessage =
   | { type: 'pong' }
   | { type: 'signal'; data: SignalMessage; id: string }
   | { type: 'subscribed'; data: { sessionId: string; after: string | null; hasMore: boolean } }
+  | { type: 'fleet-changed' }
   | { type: 'error'; code: BrowserErrorCode };
 
 export type BrowserErrorCode =
@@ -767,6 +771,7 @@ export type BrowserErrorCode =
 4. Browser sends `signal` frames; server persists + `pushToAgent`, and fans out to the user's other subscribed sockets
 5. Server pushes `signal` frames to the tab as the agent produces them — no poll loop
 6. `error{SESSION_TERMINATED}` is pushed when the session ends (e.g. `DELETE /api/sessions/:id`)
+7. A connection may send `subscribe-fleet`; the server then pushes `fleet-changed` (payload-free invalidation) whenever the user's agents or devices change, and the Dashboard refetches both lists (ADR-73..77).
 
 ---
 
