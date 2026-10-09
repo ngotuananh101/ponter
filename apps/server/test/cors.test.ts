@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getAllowedOrigins } from '../src/utils/cors';
 import { validateEnv } from '../src/utils/validate-env';
+import { createApp } from '../src/app';
 
 const JWT = 'a'.repeat(40);
 const REFRESH = 'b'.repeat(40);
@@ -59,5 +60,20 @@ describe('validateEnv — CORS in production', () => {
         CORS_ORIGIN: 'https://app.example.com',
       }),
     ).not.toThrow();
+  });
+});
+
+describe('CORS preflight — agent update (PATCH)', () => {
+  it('allows PATCH in Access-Control-Allow-Methods', async () => {
+    const app = createApp();
+    const res = await app.request('/api/agents/x', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://app.test',
+        'Access-Control-Request-Method': 'PATCH',
+      },
+    });
+    const allowed = res.headers.get('access-control-allow-methods') ?? '';
+    expect(allowed).toContain('PATCH');
   });
 });
