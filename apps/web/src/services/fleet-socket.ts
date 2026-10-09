@@ -132,9 +132,9 @@ export class FleetSocket {
 
     const socket = new WebSocket(this.wsUrl(ticket));
     this.ws = socket;
-    this.retries = 0;
     socket.onopen = () => {
       if (this.stopped || socket !== this.ws) return;
+      this.retries = 0;
       const frame: BrowserMessageInit = { type: 'subscribe-fleet' };
       socket.send(JSON.stringify(frame));
     };
