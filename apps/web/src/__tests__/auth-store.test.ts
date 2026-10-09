@@ -276,10 +276,17 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
   const makeUser = (signingPublicKey: string | null): User =>
     ({ id: 'user-bootstrap', signingPublicKey }) as unknown as User;
 
-  it('cell 1: local private absent + server NULL → generates, saves both keys, POSTs the new public raw', async () => {
-    const store = useAuthStore();
+  /**
+   * Shared mock setup for the fresh-key scenarios (cell 1 and the 409 test):
+   * local private absent + server NULL + generateSigningKeyPair + signProof.
+   * Returns the signPair and the registerSigningKey spy so each test can
+   * assert its distinct outcome.
+   */
+  function setupFreshKeyScenario(store: ReturnType<typeof useAuthStore>): {
+    signPair: { publicKeyRawBase64: string; privateKey: CryptoKey; publicKey: CryptoKey };
+    registerSpy: ReturnType<typeof vi.spyOn>;
+  } {
     store.user = makeUser(null);
-
     vi.mocked(cryptoPkg.loadSigningKey).mockResolvedValue(null);
     vi.mocked(cryptoPkg.loadSigningPublicKey).mockResolvedValue(null);
     const signPair = {
@@ -292,6 +299,12 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     const registerSpy = vi
       .spyOn(apiClient.auth, 'registerSigningKey')
       .mockResolvedValue({ user: makeUser('new-pub-raw') });
+    return { signPair, registerSpy };
+  }
+
+  it('cell 1: local private absent + server NULL → generates, saves both keys, POSTs the new public raw', async () => {
+    const store = useAuthStore();
+    const { signPair, registerSpy } = setupFreshKeyScenario(store);
 
     await store.ensureUserSigningKey(makeUser(null));
 
@@ -389,17 +402,7 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
 
   it('409 on POST leaves identity unavailable (server key already set) and never throws', async () => {
     const store = useAuthStore();
-    store.user = makeUser(null);
-
-    vi.mocked(cryptoPkg.loadSigningKey).mockResolvedValue(null);
-    vi.mocked(cryptoPkg.loadSigningPublicKey).mockResolvedValue(null);
-    const signPair = {
-      publicKeyRawBase64: 'new-pub-raw',
-      privateKey: {} as CryptoKey,
-      publicKey: {} as CryptoKey,
-    };
-    vi.mocked(cryptoPkg.generateSigningKeyPair).mockResolvedValue(signPair);
-    vi.mocked(cryptoPkg.signProof).mockResolvedValue('sig');
+    setupFreshKeyScenario(store);
 
     // The 409 path: registerSigningKey throws, but ensureUserSigningKey must not
     // rethrow. A 409 means the server already has a key — because the key we
