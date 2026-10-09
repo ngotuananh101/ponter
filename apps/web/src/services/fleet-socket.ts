@@ -12,6 +12,7 @@
  */
 
 import type { BrowserMessageInit, BrowserSocketMessage } from '@ponter/shared';
+import { buildBrowserWsUrl, mintWsTicket } from '@ponter/webrtc-core';
 
 /** Backoff ceiling — identical to `WebSocketSignalTransport`. */
 const WS_MAX_BACKOFF_MS = 2000;
@@ -151,8 +152,7 @@ export class FleetSocket {
   }
 
   private wsUrl(ticket: string): string {
-    const wsBase = this.baseUrl.replace(/^http/, 'ws');
-    return `${wsBase}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
+    return buildBrowserWsUrl(this.baseUrl, ticket);
   }
 
   /**
@@ -163,30 +163,12 @@ export class FleetSocket {
    * failure, 5xx) — the caller treats it as transient.
    */
   private async mintTicket(): Promise<string | null> {
-    const token = await this.getToken();
-    if (!token) return null;
-
-    const attempt = async (t: string): Promise<Response> =>
-      this.customFetch(`${this.baseUrl}/api/ws/ticket`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${t}` },
-      });
-
-    let res = await attempt(token);
-    if (res.status === 401 && this.onUnauthorized) {
-      const fresh = await this.onUnauthorized();
-      if (!fresh) return null;
-      res = await attempt(fresh);
-    }
-    if (res.status >= 500) {
-      // The server is up but broken (or a proxy answered for a restarting
-      // upstream): same class as a dropped socket.
-      throw new Error(`ticket endpoint answered HTTP ${res.status}`);
-    }
-    if (!res.ok) return null;
-
-    const body = (await res.json()) as { ticket?: string };
-    return body.ticket ?? null;
+    return mintWsTicket({
+      baseUrl: this.baseUrl,
+      getToken: this.getToken,
+      onUnauthorized: this.onUnauthorized,
+      fetch: this.customFetch,
+    });
   }
 
   private handleMessage(_socket: WebSocket, raw: string): void {

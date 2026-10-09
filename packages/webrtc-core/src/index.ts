@@ -6,3 +6,4 @@ export * from './signal-handler';
 export * from './transport';
 export * from './data-channel';
 export * from './connection';
+export * from './ws-ticket';

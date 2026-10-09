@@ -260,6 +260,43 @@ describe('WebSocketSignalTransport', () => {
 
       transport.close();
     });
+
+    it('retries a 5xx mint failure as transient instead of falling back', async () => {
+      mockRandomUnit(0.5);
+      let failing = true;
+      const fetchSpy = vi.fn(async () => {
+        if (failing) {
+          return new Response('{}', { status: 503 });
+        }
+        return new Response(JSON.stringify({ ticket: 'tkt_503' }), {
+          status: 200,
+        });
+      });
+      const fallback = makeFallback();
+
+      const transport = new WebSocketSignalTransport({
+        baseUrl: 'http://test',
+        sessionId: 'sess_1',
+        getToken: async () => 'access_1',
+        fallback,
+        fetch: fetchSpy as unknown as typeof fetch,
+      });
+
+      transport.subscribe(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+
+      // A 5xx is a transient failure like a dropped socket: no fallback and no
+      // socket opened yet, same as the network-error retry path.
+      expect(fallback.subscribe).not.toHaveBeenCalled();
+      expect(FakeWebSocket.instances).toHaveLength(0);
+
+      failing = false;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      expect(lastSocket().url).toContain('ticket=tkt_503');
+
+      transport.close();
+    });
   });
 
   describe('subscribe and queue', () => {
