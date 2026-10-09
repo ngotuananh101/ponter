@@ -21,7 +21,7 @@ This document covers four deliverables. Each fails closed when its gate applies:
    `ponter-ws2-agent-identity-v1\nnonce=<nonce>` (no trailing newline), signed
    with the agent's Ed25519 key — server constant `WS2_IDENTITY_PROOF_PREFIX`
    (`apps/server/src/routes/ws.ts:31`), agent builder `build_agent_identity_frame`
-   (`apps/agent/src/signal.rs:260-266`).
+   (`apps/agent/src/signal.rs:263`).
 
 2. **Agent answer proof (C3).** The agent signs its DTLS-fingerprint proof and
    sends it on the answer signal. The browser verifies the signature against the
@@ -62,6 +62,23 @@ The reference implementation lives in two places and must be byte-identical:
 `packages/shared/src/types/identity-proof.ts` (TypeScript) and
 `apps/agent/src/identity.rs` (Rust).
 
+A **second** domain-separated string is used for the user-identity proof that is
+not bound to a session, role, or SDP:
+
+```
+ponter-ws2-user-identity-v1
+userId=<userId>
+```
+
+The exact builder is `canonicalUserIdentityMessage(userId)`
+(`packages/shared/src/types/identity-proof.ts:76`) using the prefix constant
+`USER_IDENTITY_PROOF_PREFIX = 'ponter-ws2-user-identity-v1'`
+(`packages/shared/src/types/identity-proof.ts:70`). The message uses a single
+`\n` separator and **no trailing newline**. Unlike the per-session proof above,
+this string is browser-signed and **server-only verified** (both sides use
+`packages/shared`), so there is no second parser to keep in lockstep (contrast
+ADR-77).
+
 ## Fail-closed points
 
 | # | Point | When the check fails |
@@ -74,33 +91,37 @@ The reference implementation lives in two places and must be byte-identical:
 | 6 | Browser: answer fingerprint ≠ SDP fingerprint | Same as above |
 | 7 | Browser: answer signature does not verify | Same as above |
 
-Rows 1–4 are the agent-side (H3) gate; they apply to the **terminal** path only
-(see "Gate scope" below). Rows 5–7 are the browser-side (C3) answer check, which
-runs for every session type whenever `identity` is present.
+Rows 1–4 are the agent-side (H3) gate; they apply to **every** session mode
+(terminal, desktop, files, and unknown-capability offers), since ADR-41 hoisted
+`verify_offer_identity` before the `SessionMode` dispatch so that Desktop, Files,
+Terminal, and None all pass through it. Rows 5–7 are the browser-side (C3) answer
+check, which runs for every session type whenever `identity` is present.
 
 The agent's gate is `verify_offer_identity`, called **before** `rtc::answer_offer`.
-Both PTY spawn sites (the dispatcher task and the implicit spawn-on-demand) are
-downstream of the poll task, which is only spawned after the answer is accepted —
-so on the **terminal** path, gating the answer gates every downstream path.
+All mode-dispatch paths downstream of the gate are therefore fail-closed together:
+an offer without a valid proof bails out of `run_one_session` with NO answer of any
+kind — not even `approved: false` — so no PTY is spawned, no desktop capture
+pipeline is armed, and no files-root probe is performed.
 
-**Gate scope — terminal only.** `verify_offer_identity` has exactly one call site,
-`apps/agent/src/main.rs:956`, inside the `SessionMode::Terminal` arm. The
-`SessionMode::Desktop` (`main.rs:902`) and `SessionMode::Files` (`main.rs:922`)
-arms `return` **before** it and reach `rtc::send_desktop_answer` /
-`rtc::send_approved_answer` without verifying the user's offer proof. This is by
-design: spec §3.2 defines H3 as "verify the client's key/fingerprint **before
-spawning a PTY**", and desktop/files sessions spawn no PTY. The asymmetry is
-deliberate and one-directional:
+**Gate scope — admission gate for every mode.**
+**`C1 closed (Phase 6a, 2026-10-07):** ADR-41 hoisted `verify_offer_identity` to a single
+admission gate that runs before the mode dispatch in `run_one_session`, so the
+desktop and files paths now run the same verification the terminal path always ran;
+an offer without a valid proof bails with no answer of any kind. The paragraph below
+describes the state before that change; see `docs/security/2026-10-08-ws1-e2ee-rust.md`
+§"Desktop input" for the sibling WS1 note.
 
-- **Browser-side (C3) verifies the agent for every session type** — the answer
-  check at `connection.ts:341-353` runs whenever `identity` is present,
-  regardless of mode.
-- **Agent-side (H3) verifies the browser only for terminal** — the PTY path is
-  the one that unblocks input forwarding, so it is the path H3 gates.
-
-Desktop input remains separately held closed by ADR-29 (`--allow-input`, default
-off); file transfer is out of application-layer scope (spec §4.3). Extending
-agent-side offer verification to desktop/files is **out of scope for WS2**.
+The definition of `verify_offer_identity` is at `apps/agent/src/lib.rs:876`. Its
+exactly ONE production call site is at `apps/agent/src/lib.rs:1049`, placed
+**before** the `match mode` dispatch (see `apps/agent/src/lib.rs:1039-1048`): the
+in-code comment there states it is "an ADMISSION gate for every session mode, not a
+terminal-only step." Because the call sits upstream of `SessionMode::Desktop`
+(`run_one_session` at `apps/agent/src/lib.rs:1117`) and `SessionMode::Files`,
+those arms no longer `return` before the gate — every mode passes through
+`verify_offer_identity` first. Rows 5–7 (browser answer check) are unchanged in
+meaning: the check at `packages/webrtc-core/src/connection.ts:358` (guarded by
+`if (this.options.identity)`, then `verifyRemoteProof(...)`) runs whenever `identity`
+is present, regardless of mode.
 
 ## TOFU trust boundary (residual risk)
 
@@ -111,8 +132,9 @@ WS2 uses **Trust on First Use (TOFU)**, not PKI. The trust model is:
   A signaling server that substitutes SDP or fingerprint lines **cannot** forge
   the agent's signature, because it does not hold the agent's private key.
 - **Agent → user key:** The agent learns the user's public key from the server,
-  which stored it at user registration. The server **overwrites** any
-  client-supplied key, so a browser cannot inject a key it does not control.
+  which stored it at user registration or bootstrapped it later (see "Legacy-account
+  key bootstrap" below). The server **overwrites** any client-supplied key, so a
+  browser cannot inject a key it does not control.
 
 **Residual risk:** The trust boundary does **not** defend against a
 signaling server that swaps the identity keys themselves. If the server were
@@ -129,35 +151,83 @@ rather than confidentiality. The server may simply **omit** the agent's
 `signingPublicKey` from `GET /api/agents` (or the browser may fail to load its
 local copy of the key). The effect chain is:
 
-- `apps/web/src/stores/terminal.ts:143-162` — `resolvePeerIdentity` returns
-  `undefined` when `!agent.signingPublicKey` (line 152) or when the local
-  signing key fails to load. The doc-comment there already notes this fallback
-  is "identical to the pre-WS2 behavior."
-- With no `identity`, the caller connects with `identity: undefined`. The
-  browser therefore builds no `IdentityProof` and sends no
-  `userSigningPublicKey` on the offer, and — because the answer check at
-  `connection.ts:341` is guarded by `if (this.options.identity)` — it also does
-  not verify the agent's answer proof.
+- `apps/web/src/stores/terminal.ts:154` defines the typed error class
+  `PeerIdentityUnavailableError`; `apps/web/src/stores/terminal.ts:172` defines
+  `resolvePeerIdentity`, which **throws** `PeerIdentityUnavailableError` when
+  identity is not `'ready'` (the key is genuinely unrecoverable — see "Legacy-account
+  key bootstrap" below). It never returns `undefined` and never sends a
+  proof-less offer. The doc-comment there notes this fail-closed behavior.
+- With no usable `identity`, the connect path surfaces a typed tab `error` and
+  **no offer is sent at all**. The browser therefore builds no `IdentityProof`
+  and sends no `userSigningPublicKey` on the offer. Even if an offer were
+  constructed, the answer check at `packages/webrtc-core/src/connection.ts:358`
+  is guarded by `if (this.options.identity)` and so would not verify the agent's
+  answer proof.
 
-**Terminal path (fail-closed).** `apps/agent/src/main.rs:765-796`
-(`verify_offer_identity`) rejects the offer ("offer carries no identity proof" /
-"offer carries no user signing key") **before** `rtc::answer_offer`
-(main.rs:956→958). The answer is never produced, so no answer SDP is sent and no
-PTY is spawned: a **denial of service** (the session cannot open), **not** a
-confidentiality break — it cannot cause an unverified session to run.
+**Every mode (fail-closed).** Because ADR-41 hoisted the admission gate
+(`verify_offer_identity`) before the `SessionMode` dispatch, all mode arms —
+terminal, desktop, and files — now fail closed under an omission attack. The
+agent-side definition is at `apps/agent/src/lib.rs:876` (error strings "offer
+carries no identity proof" / "offer carries no user signing key" at
+`apps/agent/src/lib.rs:883` / `:887`); `rtc::answer_offer` is defined in
+`apps/agent/src/rtc.rs:758` and called at `apps/agent/src/lib.rs:1117`, only
+after the gate has passed. A proof-less offer is rejected with no answer of any
+kind — not even `approved: false` — so no answer SDP is sent, no PTY is spawned,
+no desktop capture pipeline is armed, and no files-root probe is performed: a
+**denial of service** (the session cannot open), **not** a confidentiality break
+— it cannot cause an unverified session to run.
 
-**Desktop/files paths (fail-open, by design).** These arms are not H3-gated (see
-"Gate scope" above). Under the same omission attack the session still opens with
-no peer-identity verification on either side. This is the intended WS2 boundary,
-not a regression: H3 is PTY-specific (spec §3.2), desktop input stays closed by
-ADR-29 (`--allow-input` default off), and file transfer is out of
-application-layer scope (spec §4.3). Extending agent-side offer verification to
-these arms is **out of scope for WS2**.
+A proof-less offer can only occur when the user signing key is genuinely
+unrecoverable. After PR #90 the browser no longer self-degrades to a
+proof-less offer on a missing key: it attempts a best-effort bootstrap on login
+and restore, and only the unrecoverable cases below leave `identityStatus` as
+`'unavailable'` → `resolvePeerIdentity` throws → the tab surfaces a typed error.
 
 Accepted at WS2 by design: Phase 5's WS2 is a TOFU/bootstrap layer (spec §8).
 Server-side key attestation / full PKI is **not** delivered by any Phase 5
 workstream — spec §8 places certificate-based agent provisioning explicitly out
 of scope.
+
+### Legacy-account key bootstrap
+
+Accounts created before WS2 (pre-PR-#44) carry a `null` signing key
+(`apps/web/src/stores/auth.ts:21`, type `IdentityStatus` at
+`apps/web/src/stores/auth.ts:44`). These legacy accounts obtain a key through a
+dedicated bootstrap path rather than at registration:
+
+- **Endpoint:** `POST /api/auth/signing-key`
+  (`apps/server/src/routes/auth.ts:318`), Bearer-authenticated and
+  **bootstrap-only** — it does not rotate an existing key.
+- **Proof:** the browser proves possession of the private key by signing the
+  canonical string `ponter-ws2-user-identity-v1\nuserId=<id>`
+  (prefix `USER_IDENTITY_PROOF_PREFIX = 'ponter-ws2-user-identity-v1'` at
+  `packages/shared/src/types/identity-proof.ts:70`; builder
+  `canonicalUserIdentityMessage(userId)` at `packages/shared/src/types/identity-proof.ts:76`).
+  The server verifies the signature over
+  `canonicalUserIdentityMessage(user.id)` (`apps/server/src/routes/auth.ts:342`).
+  Because both sides use `packages/shared`, there is no second parser to keep
+  in lockstep (contrast ADR-77).
+- **No rotation:** if the user already has a key the server returns **409**
+  `SIGNING_KEY_ALREADY_SET` (`apps/server/src/routes/auth.ts:371`) and never
+  rotates. A bad proof is **400** `VALIDATION_ERROR`
+  (`apps/server/src/routes/auth.ts:362`).
+- **Client flow:** `ensureUserSigningKey` (`apps/web/src/stores/auth.ts:69`)
+  runs on login (`apps/web/src/stores/auth.ts:198`) and restore
+  (`apps/web/src/stores/auth.ts:179`); it is best-effort and **never throws**.
+  It sets `identityStatus` (`apps/web/src/stores/auth.ts:44`, type `IdentityStatus`
+  at `apps/web/src/stores/auth.ts:21`) to `'ready'` or `'unavailable'`.
+- **Fail-closed on the connect path:** `resolvePeerIdentity`
+  (`apps/web/src/stores/terminal.ts:172`) throws
+  `PeerIdentityUnavailableError` (`apps/web/src/stores/terminal.ts:154`) when
+  identity is not `'ready'`, so the session surfaces a typed tab `error` and
+  **no proof-less offer is ever sent**.
+- **Unrecoverable cases (never fabricate a key):** a second device (local
+  private absent + server key present) and a pre-existing account whose
+  non-extractable private key cannot yield its public raw (local private present
+  + server null + no stored public raw). In both, `identityStatus` stays
+  `'unavailable'` and the connect path fails closed with the typed error — it
+  does **not** generate a mismatched key and does **not** degrade to a
+  proof-less offer.
 
 ## What WS2 does NOT do
 
