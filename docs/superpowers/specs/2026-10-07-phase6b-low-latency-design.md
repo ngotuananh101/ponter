@@ -168,6 +168,11 @@ Four layers, cheapest-to-most-honest:
    control loop's honest number and it works **in the werift E2E harness too** (the harness plays the
    browser role). E2E asserts the echo arrives with the right seq and prints a summary
    (`[6b echo] n=<count> min=<ms> median=<ms> max=<ms>`); DesktopView surfaces the latest `echoMs` in the footer.
+
+   **Echo scope:** only inputs carrying a `seq` are measured — the pointer family (`pointer-move`,
+   `pointer-button`, `wheel`). `key` and `text` carry no `seq` by design, so `desktopEchoMs` excludes
+   keyboard/text latency.
+
 4. **Glass-to-glass, same-host (Playwright or manual, P1-dependent).** The test-pattern bar position
    encodes frame counter `n` (`bar_x = (n*8) % 1280`, 160-frame period). A real browser draws the
    presented frame to a canvas, decodes `n` from pixels, waits (≤ ~1 s) for a `desktop-stats` whose
