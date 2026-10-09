@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/core', () => {
 
 import { invoke } from '@tauri-apps/api/core';
 import { useDevicesStore } from '@/stores/devices';
+import { useAuthStore } from '@/stores/auth';
 import DevicesView from '@/views/DevicesView.vue';
 
 /** Storage gate: no webview storage in production frontend code. */
@@ -235,5 +236,24 @@ describe('DevicesView', () => {
     const store = useDevicesStore();
     expect(store.registered).toBe(true);
     expect(store.devices).toHaveLength(0);
+  });
+
+  it('logout button triggers authStore.logout', async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+
+    const authStore = useAuthStore();
+    const logoutSpy = vi
+      .spyOn(authStore, 'logout')
+      .mockResolvedValue(undefined);
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    const logoutBtn = wrapper.find('[data-testid="devices-logout"]');
+    expect(logoutBtn.exists()).toBe(true);
+    await logoutBtn.trigger('click');
+
+    expect(logoutSpy).toHaveBeenCalled();
   });
 });

@@ -23,6 +23,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Laptop, LogOut, Plus, Info } from '@lucide/vue';
+import ThemeToggle from '@/components/ThemeToggle.vue';
 
 const authStore = useAuthStore();
 const store = useDevicesStore();
@@ -58,15 +60,38 @@ onMounted(() => {
 </script>
 
 <template>
-  <div data-testid="devices-root">
-    <Card>
-      <CardHeader>
-        <CardTitle>Devices</CardTitle>
-        <CardDescription data-testid="devices-username">
-          Signed in as {{ authStore.user?.username }}
-        </CardDescription>
+  <div data-testid="devices-root" class="w-full max-w-xl">
+    <Card class="border-border/80 bg-card/95 shadow-xl backdrop-blur-sm">
+      <CardHeader class="space-y-3 pb-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+              <Laptop class="w-4 h-4" />
+            </div>
+            <div>
+              <CardTitle class="text-xl font-bold tracking-tight">Devices</CardTitle>
+              <CardDescription data-testid="devices-username" class="text-xs text-muted-foreground font-mono">
+                Signed in as {{ authStore.user?.username }}
+              </CardDescription>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <ThemeToggle />
+            <Button
+              data-testid="devices-logout"
+              variant="ghost"
+              size="sm"
+              class="text-xs text-muted-foreground hover:text-destructive flex items-center gap-1.5"
+              @click="authStore.logout"
+            >
+              <LogOut class="w-3.5 h-3.5" />
+              <span>Log out</span>
+            </Button>
+          </div>
+        </div>
       </CardHeader>
-      <CardContent>
+
+      <CardContent class="space-y-4">
         <Alert
           v-if="store.error"
           data-testid="devices-error"
@@ -75,43 +100,58 @@ onMounted(() => {
           <AlertDescription>{{ store.error }}</AlertDescription>
         </Alert>
 
-        <div v-if="store.loading" data-testid="devices-loading">
+        <div v-if="store.loading" data-testid="devices-loading" class="py-8 text-center text-sm text-muted-foreground font-mono">
           Loading devices...
         </div>
 
-        <p v-else-if="store.devices.length === 0" data-testid="devices-empty">
+        <div v-else-if="store.devices.length === 0" data-testid="devices-empty" class="py-8 text-center text-sm text-muted-foreground">
           No devices registered yet
-        </p>
+        </div>
 
-        <ul v-else data-testid="devices-list" class="space-y-2">
+        <ul v-else data-testid="devices-list" class="space-y-2.5">
           <li
             v-for="device in store.devices"
             :key="device.id"
             data-testid="device-row"
-            class="flex items-center justify-between"
+            class="p-3.5 rounded-lg border border-border/60 bg-muted/20 hover:bg-muted/30 transition-colors flex items-center justify-between gap-4"
           >
-            <div class="flex flex-col gap-1">
-              <div class="flex items-center gap-2">
-                <span data-testid="device-id">{{ device.id }}</span>
-                <span data-testid="device-hostname">{{ device.hostname }}</span>
+            <div class="flex flex-col gap-1.5 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span data-testid="device-hostname" class="font-semibold text-sm text-foreground">
+                  {{ device.hostname }}
+                </span>
+                <!-- Clean sibling badges (NO nesting defect) -->
                 <Badge
-                  :variant="device.isOnline ? 'default' : 'secondary'"
+                  variant="outline"
                   data-testid="device-platform"
+                  class="text-[11px] font-mono px-1.5 py-0"
                 >
                   {{ device.platform ?? 'unknown' }}
-                  <Badge
-                    data-testid="device-online"
-                    :variant="device.isOnline ? 'default' : 'secondary'"
-                  >
-                    {{ device.isOnline ? 'online' : 'offline' }}
-                  </Badge>
+                </Badge>
+                <Badge
+                  data-testid="device-online"
+                  :variant="device.isOnline ? 'default' : 'secondary'"
+                  class="text-[11px] font-mono px-1.5 py-0 flex items-center gap-1"
+                >
+                  <span
+                    v-if="device.isOnline"
+                    class="w-1.5 h-1.5 rounded-full bg-emerald-400 motion-safe:animate-pulse"
+                  />
+                  {{ device.isOnline ? 'online' : 'offline' }}
                 </Badge>
               </div>
-              <span data-testid="device-created">{{ device.createdAt }}</span>
+              <div class="flex items-center gap-2 text-xs text-muted-foreground font-mono">
+                <span data-testid="device-id" class="truncate">{{ device.id }}</span>
+                <span>·</span>
+                <span data-testid="device-created">{{ device.createdAt }}</span>
+              </div>
             </div>
+
             <Button
               data-testid="device-delete"
               variant="destructive"
+              size="sm"
+              class="shrink-0"
               @click="handleDelete(device.id)"
             >
               Delete
@@ -119,16 +159,20 @@ onMounted(() => {
           </li>
         </ul>
       </CardContent>
-      <CardFooter class="flex flex-col items-stretch gap-2">
+
+      <CardFooter class="flex flex-col items-stretch gap-2.5 pt-2">
         <Button
           data-testid="devices-register"
           :disabled="store.loading"
+          class="w-full font-medium"
           @click="handleRegister"
         >
+          <Plus class="w-4 h-4 mr-1.5" />
           {{ store.loading ? 'Registering...' : 'Register Device' }}
         </Button>
-        <p v-if="!store.registered" data-testid="devices-register-hint">
-          The agent runtime runs from the system tray.
+        <p v-if="!store.registered" data-testid="devices-register-hint" class="text-xs text-muted-foreground text-center flex items-center justify-center gap-1.5">
+          <Info class="w-3.5 h-3.5 text-primary shrink-0" />
+          <span>The agent runtime runs from the system tray.</span>
         </p>
       </CardFooter>
 
