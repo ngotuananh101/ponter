@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { nextTick } from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -12,7 +12,13 @@ vi.mock('@tauri-apps/api/core', () => {
   };
 });
 
+vi.mock('@tauri-apps/api/event', () => ({
+  __esModule: true,
+  listen: vi.fn().mockResolvedValue(vi.fn()),
+}));
+
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useDevicesStore } from '@/stores/devices';
 import { useAuthStore } from '@/stores/auth';
 import DevicesView from '@/views/DevicesView.vue';
@@ -85,7 +91,9 @@ describe('devices store', () => {
     expect(store.registered).toBe(true);
     // The register result must never carry a credential field.
     expect(result).not.toHaveProperty('credential');
-    expect(invoke).toHaveBeenCalledWith('register_device');
+    expect(invoke).toHaveBeenCalledWith('register_device', {
+      capabilities: ['terminal', 'desktop', 'files'],
+    });
   });
 
   it('register() surfaces error without marking registered', async () => {
@@ -97,6 +105,20 @@ describe('devices store', () => {
     expect(result).toBeNull();
     expect(store.registered).toBe(false);
     expect(store.error).toBe('AGENT_LIMIT_REACHED');
+  });
+
+  it("register(['terminal', 'desktop']) forwards exact capabilities array", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(sampleDevice) // register_device
+      .mockResolvedValueOnce([sampleDevice]); // list_devices (refresh)
+
+    const store = useDevicesStore();
+    const result = await store.register(['terminal', 'desktop']);
+
+    expect(result).toEqual(sampleDevice);
+    expect(invoke).toHaveBeenCalledWith('register_device', {
+      capabilities: ['terminal', 'desktop'],
+    });
   });
 
   it('remove() deletes and removes the row', async () => {
@@ -128,6 +150,13 @@ describe('DevicesView', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.mocked(invoke).mockReset();
+    vi.clearAllTimers();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('renders empty state when no devices', async () => {
@@ -173,13 +202,217 @@ describe('DevicesView', () => {
     await wrapper.find('[data-testid="devices-register"]').trigger('click');
     await flushPromises();
 
-    expect(invoke).toHaveBeenCalledWith('register_device');
+    expect(invoke).toHaveBeenCalledWith('register_device', {
+      capabilities: ['terminal', 'desktop'],
+    });
+  });
+
+  it('capabilities selector defaults to terminal+desktop (files off)', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'stopped';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    expect(
+      wrapper
+        .find('[data-test="register-cap-terminal"]')
+        .attributes('aria-pressed'),
+    ).toBe('true');
+    expect(
+      wrapper
+        .find('[data-test="register-cap-desktop"]')
+        .attributes('aria-pressed'),
+    ).toBe('true');
+    expect(
+      wrapper
+        .find('[data-test="register-cap-files"]')
+        .attributes('aria-pressed'),
+    ).toBe('false');
+  });
+
+  it('register with files toggled sends files capability', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'register_device') return sampleDevice;
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'stopped';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    // Toggle files ON
+    await wrapper.find('[data-test="register-cap-files"]').trigger('click');
+    await nextTick();
+
+    await wrapper.find('[data-testid="devices-register"]').trigger('click');
+    await flushPromises();
+
+    expect(invoke).toHaveBeenCalledWith('register_device', {
+      capabilities: ['terminal', 'desktop', 'files'],
+    });
+  });
+
+  it('register with files and terminal toggled off sends only desktop', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'register_device') return sampleDevice;
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'stopped';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    // Toggle terminal OFF
+    await wrapper.find('[data-test="register-cap-terminal"]').trigger('click');
+    // Toggle files ON
+    await wrapper.find('[data-test="register-cap-files"]').trigger('click');
+    await nextTick();
+
+    await wrapper.find('[data-testid="devices-register"]').trigger('click');
+    await flushPromises();
+
+    expect(invoke).toHaveBeenCalledWith('register_device', {
+      capabilities: ['desktop', 'files'],
+    });
+  });
+
+  it('runtime status indicator reflects get_runtime_status value', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'connected';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    const statusEl = wrapper.find('[data-testid="runtime-status"]');
+    expect(statusEl.attributes('data-status')).toBe('connected');
+  });
+
+  it('runtime-status event updates the indicator', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'stopped';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    const statusEl = wrapper.find('[data-testid="runtime-status"]');
+    expect(statusEl.attributes('data-status')).toBe('stopped');
+
+    // Get the listen handler that was registered — onMounted is async, so
+    // flushPromises ensures listen(...) has been called by the time we check.
+    const listenSpy = vi.mocked(listen);
+    expect(listenSpy).toHaveBeenCalledWith(
+      'runtime-status',
+      expect.any(Function),
+    );
+
+    // Extract the handler from the mock and invoke it
+    const handler = listenSpy.mock.calls[0][1] as (event: {
+      payload: { status: string };
+    }) => void;
+    handler({ payload: { status: 'connected' } });
+    await nextTick();
+
+    expect(statusEl.attributes('data-status')).toBe('connected');
+  });
+
+  it('runtime status handles get_runtime_status failure gracefully', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') {
+        throw new Error('Tauri not available');
+      }
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    const statusEl = wrapper.find('[data-testid="runtime-status"]');
+    expect(statusEl.attributes('data-status')).toBe('unknown');
+  });
+
+  it('auto-refresh calls list_devices on interval', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'connected';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    // Initially list_devices called once from onMounted
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2); // list_devices + get_runtime_status
+
+    // Advance past the 5000ms interval
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('list_devices');
+    wrapper.unmount();
+  });
+
+  it('unmount stops auto-refresh and unlistens', async () => {
+    const mockUnlisten = vi.fn();
+    vi.mocked(listen).mockResolvedValue(mockUnlisten);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'connected';
+      return undefined;
+    });
+
+    const wrapper = mount(DevicesView);
+    await flushPromises();
+    await nextTick();
+
+    // Verify listen was called (we get the unlisten fn back)
+    await flushPromises(); // wait for listen to resolve
+    expect(mockUnlisten).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+
+    // The unlisten fn should have been called on unmount
+    expect(mockUnlisten).toHaveBeenCalled();
+
+    // Advancing timers after unmount should NOT trigger another refresh
+    const listDevicesCountBefore = vi
+      .mocked(invoke)
+      .mock.calls.filter((call) => call[0] === 'list_devices').length;
+
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+
+    const listDevicesCountAfter = vi
+      .mocked(invoke)
+      .mock.calls.filter((call) => call[0] === 'list_devices').length;
+
+    expect(listDevicesCountAfter).toBe(listDevicesCountBefore);
   });
 
   it('delete button calls store.remove with confirmation', async () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'list_devices') return [sampleDevice];
       if (cmd === 'delete_device') return true;
+      if (cmd === 'get_runtime_status') return 'stopped';
       return undefined;
     });
 
@@ -218,6 +451,7 @@ describe('DevicesView', () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === 'register_device') return sampleDevice;
       if (cmd === 'list_devices') return [];
+      if (cmd === 'get_runtime_status') return 'stopped';
       return undefined;
     });
 
