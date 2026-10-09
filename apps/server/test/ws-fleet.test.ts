@@ -406,8 +406,11 @@ describe('fleet push over browser WebSocket', () => {
   });
 
   /**
-   * isOnline is read from the in-memory agentConnections map, so this pins that the emit fires
-   * AFTER agentConnections.set — the invariant a browser's GET /api/agents refetch depends on.
+   * On the wire, isOnline comes from the persisted `agents.isOnline` column plus
+   * lastPingAt recency (isAgentOnline in utils/agent.ts) — NOT from the in-memory
+   * agentConnections map. This pins that the connect emit fires AFTER the DB
+   * `isOnline: true` update, the invariant a browser's GET /api/agents refetch
+   * depends on. Mutation proof: deleting that DB update turns this test RED.
    */
   it('agent connect emit preserves ordering: isOnline is true after emit', async () => {
     const { port, app } = await startOnEphemeral();
@@ -429,8 +432,10 @@ describe('fleet push over browser WebSocket', () => {
   });
 
   /**
-   * isOnline is read from the in-memory agentConnections map, so this pins that the emit fires
-   * AFTER agentConnections.delete — the invariant a browser's GET /api/agents refetch depends on.
+   * Same contract on the disconnect path: the emit fires AFTER the DB
+   * `isOnline: false` update. It also transitively requires the connect path to
+   * have run agentConnections.set — the close handler's stale-socket guard needs
+   * the map entry to find and clean up the connection.
    */
   it('agent disconnect emit preserves ordering: isOnline is false after emit', async () => {
     const { port, app } = await startOnEphemeral();
