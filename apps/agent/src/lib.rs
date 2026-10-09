@@ -30,6 +30,90 @@ mod rtc;
 mod shell_policy;
 mod signal;
 
+/// Mark this process as per-monitor-DPI-aware on Windows so xcap's capture paths
+/// return the real per-monitor scale factor and coordinates.
+///
+/// Safe to call on all platforms: a no-op on non-Windows.
+/// On Windows, probes `SetProcessDpiAwarenessContext(-4)` (Win 10 1703+) via
+/// dynamic lookup, falling back to `SetProcessDpiAwareness(2)` (Win 8.1+) or
+/// `SetProcessDPIAware()` (Vista+).
+pub fn enable_dpi_awareness() {
+    #[cfg(windows)]
+    dpi::enable_dpi_awareness();
+}
+
+#[cfg(windows)]
+mod dpi {
+    type SetProcessDpiAwarenessContextFn = unsafe extern "system" fn(isize) -> i32;
+    type SetProcessDpiAwarenessFn = unsafe extern "system" fn(i32) -> i32;
+    type SetProcessDpiAwareFn = unsafe extern "system" fn() -> i32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryA(lp_lib_file_name: *const u8) -> *mut std::ffi::c_void;
+        fn GetProcAddress(
+            h_module: *mut std::ffi::c_void,
+            lp_proc_name: *const u8,
+        ) -> *mut std::ffi::c_void;
+        fn FreeLibrary(h_lib_module: *mut std::ffi::c_void) -> i32;
+    }
+
+    pub fn enable_dpi_awareness() {
+        unsafe {
+            // 1. Try SetProcessDpiAwarenessContext(-4) from user32.dll (Win10 1703+)
+            // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+            let user32 = LoadLibraryA(b"user32.dll\0".as_ptr());
+            if !user32.is_null() {
+                let func_ptr = GetProcAddress(user32, b"SetProcessDpiAwarenessContext\0".as_ptr());
+                if !func_ptr.is_null() {
+                    let set_context: SetProcessDpiAwarenessContextFn =
+                        std::mem::transmute(func_ptr);
+                    if set_context(-4) != 0 {
+                        tracing::debug!("DPI awareness set to Per-Monitor V2 via user32.dll");
+                        FreeLibrary(user32);
+                        return;
+                    }
+                }
+                FreeLibrary(user32);
+            }
+
+            // 2. Try SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE = 2) from shcore.dll (Win 8.1+)
+            let shcore = LoadLibraryA(b"shcore.dll\0".as_ptr());
+            if !shcore.is_null() {
+                let func_ptr = GetProcAddress(shcore, b"SetProcessDpiAwareness\0".as_ptr());
+                if !func_ptr.is_null() {
+                    let set_aware: SetProcessDpiAwarenessFn = std::mem::transmute(func_ptr);
+                    // S_OK = 0
+                    if set_aware(2) == 0 {
+                        tracing::debug!("DPI awareness set to Per-Monitor via shcore.dll");
+                        FreeLibrary(shcore);
+                        return;
+                    }
+                }
+                FreeLibrary(shcore);
+            }
+
+            // 3. Fall back to SetProcessDPIAware() from user32.dll (Vista+)
+            let user32 = LoadLibraryA(b"user32.dll\0".as_ptr());
+            if !user32.is_null() {
+                let func_ptr = GetProcAddress(user32, b"SetProcessDPIAware\0".as_ptr());
+                if !func_ptr.is_null() {
+                    let set_aware: SetProcessDpiAwareFn = std::mem::transmute(func_ptr);
+                    if set_aware() != 0 {
+                        tracing::debug!("DPI awareness set to System DPI aware via user32.dll");
+                        FreeLibrary(user32);
+                        return;
+                    }
+                }
+                FreeLibrary(user32);
+            }
+        }
+        tracing::debug!(
+            "could not set Windows DPI awareness context; proceeding with system default"
+        );
+    }
+}
+
 // ADR-53: the desktop setup wizard probes a real capture frame through the same
 // `desktop` code path the agent uses. The `desktop` module is private at crate
 // root; re-export its public surface so the Tauri backend can call it without
@@ -246,6 +330,7 @@ impl AgentRuntime {
     /// task. Logging is **not** initialised here — the caller owns
     /// `logging::init()`, so an embedder can choose its own subscriber.
     pub async fn start(config: RuntimeConfig) -> anyhow::Result<RuntimeHandle> {
+        enable_dpi_awareness();
         let status = Arc::new(AtomicU8::new(STATUS_DISCONNECTED));
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
 
@@ -2786,6 +2871,13 @@ impl PtyManager {
 mod tests {
     use super::*;
     use ring::signature::KeyPair;
+
+    #[test]
+    fn enable_dpi_awareness_is_safe_to_call() {
+        // Safe to call unconditionally on all platforms, and idempotent.
+        enable_dpi_awareness();
+        enable_dpi_awareness();
+    }
 
     /// Verify probe_capture runs end-to-end under a real display (Xvfb).
     /// Requires the `DISPLAY` env var to be set. Skipped otherwise.

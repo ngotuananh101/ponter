@@ -78,6 +78,16 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Windows-only dependencies, and on Linux/macOS the default backend is used.
 [target.'cfg(all(not(target_env = "musl"), target_os = "windows"))'.dependencies]
 xcap = { version = "0.9.8", features = ["wgc"] }
+# Direct Windows API access for DPI awareness (Task 1) and GDI fallback
+# (Task 2). Only linked on Windows; on Linux/macOS these code paths are
+# cfg-gated out.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+] }
 
 # `xcap` 0.9.8 drops the portal ScreenCast session at the end of
 # `WaylandVideoRecorder::new()`, which tears the session down before PipeWire

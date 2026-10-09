@@ -34,14 +34,41 @@ pub(super) fn capture_monitor(
     width: Option<u32>,
     height: Option<u32>,
 ) -> XCapResult<RgbaImage> {
-    use super::wgc;
-    if let (Some(x), Some(y), Some(width), Some(height)) = (x, y, width, height) {
+    use super::{gdi, wgc};
+    let wgc_result = if let (Some(x), Some(y), Some(width), Some(height)) = (x, y, width, height) {
         let monitor_width = monitor.width()?;
         let monitor_height = monitor.height()?;
         check_capture_region(x, y, width, height, monitor_width, monitor_height)?;
         wgc::capture_monitor(monitor.h_monitor, x, y, width, height)
     } else {
         wgc::capture_monitor(monitor.h_monitor, 0, 0, monitor.width()?, monitor.height()?)
+    };
+
+    match wgc_result {
+        Ok(image) => Ok(image),
+        Err(err) => {
+            log::warn!("WGC capture_monitor failed: {err}; falling back to GDI capture");
+            let monitor_x = monitor.x()?;
+            let monitor_y = monitor.y()?;
+            let monitor_width = monitor.width()?;
+            let monitor_height = monitor.height()?;
+
+            if let (Some(x), Some(y), Some(width), Some(height)) = (x, y, width, height) {
+                check_capture_region(x, y, width, height, monitor_width, monitor_height)?;
+
+                let abs_x = monitor_x + x as i32;
+                let abs_y = monitor_y + y as i32;
+
+                gdi::capture_monitor(abs_x, abs_y, width as i32, height as i32)
+            } else {
+                gdi::capture_monitor(
+                    monitor_x,
+                    monitor_y,
+                    monitor_width as i32,
+                    monitor_height as i32,
+                )
+            }
+        }
     }
 }
 
@@ -83,6 +110,7 @@ pub(super) fn capture_window(window: &ImplWindow) -> XCapResult<RgbaImage> {
     use windows::Win32::System::Threading::{GetCurrentProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     use super::{
+        gdi,
         utils::{get_process_is_dpi_awareness, open_process},
         wgc,
     };
@@ -101,7 +129,13 @@ pub(super) fn capture_window(window: &ImplWindow) -> XCapResult<RgbaImage> {
     };
     let width = (window.width()? as f32 * scale_factor).ceil() as u32;
     let height = (window.height()? as f32 * scale_factor).ceil() as u32;
-    wgc::capture_window(window.hwnd, 0, 0, width, height)
+    match wgc::capture_window(window.hwnd, 0, 0, width, height) {
+        Ok(image) => Ok(image),
+        Err(err) => {
+            log::warn!("WGC capture_window failed: {err}; falling back to GDI capture");
+            gdi::capture_window(window.hwnd)
+        }
+    }
 }
 
 #[cfg(not(feature = "wgc"))]
