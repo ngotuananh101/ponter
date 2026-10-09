@@ -16,6 +16,8 @@ import {
   Terminal,
   Shield,
   Laptop,
+  Monitor,
+  Folder,
 } from '@lucide/vue';
 
 defineProps<{
@@ -37,6 +39,28 @@ const copiedTarget = ref<'credential' | 'command' | null>(null);
 
 const generatedCredential = ref('');
 const registeredAgentId = ref('');
+
+/**
+ * The capabilities an operator may toggle when registering a new agent.
+ * Mirrors EditAgentDialog's TOGGLEABLE_CAPABILITIES for consistency.
+ */
+const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
+
+/** Selected capabilities — defaults to all three enabled (preserves current behavior). */
+const selectedCapabilities = ref<string[]>([...TOGGLEABLE_CAPABILITIES]);
+
+function toggleCapability(cap: string) {
+  selectedCapabilities.value = selectedCapabilities.value.includes(cap)
+    ? selectedCapabilities.value.filter((c) => c !== cap)
+    : [...selectedCapabilities.value, cap];
+}
+
+/** Build the capabilities array in stable TOGGLEABLE_CAPABILITIES order. */
+function orderedCapabilities(): string[] {
+  return TOGGLEABLE_CAPABILITIES.filter((c) =>
+    selectedCapabilities.value.includes(c),
+  );
+}
 
 const signalingServerUrl = computed(() => {
   const apiUrl = import.meta.env.VITE_API_URL || window.location.origin;
@@ -63,6 +87,7 @@ function handleClose() {
     generatedCredential.value = '';
     registeredAgentId.value = '';
     copiedTarget.value = null;
+    selectedCapabilities.value = [...TOGGLEABLE_CAPABILITIES];
   }, 200);
 }
 
@@ -81,7 +106,7 @@ async function handleRegister() {
       id: trimmedId,
       hostname: hostname.value.trim() || trimmedId,
       platform: platform.value,
-      capabilities: ['terminal', 'desktop', 'files'],
+      capabilities: orderedCapabilities(),
     });
 
     registeredAgentId.value = res.agent.id;
@@ -244,6 +269,61 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
               </button>
             </div>
           </div>
+
+          <!-- Capabilities -->
+          <fieldset class="space-y-1.5 border-0 p-0 m-0 min-w-0">
+            <legend class="text-xs font-semibold">Capabilities</legend>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+                :class="
+                  selectedCapabilities.includes('terminal')
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+                "
+                :aria-pressed="selectedCapabilities.includes('terminal')"
+                :disabled="loading"
+                data-test="register-cap-terminal"
+                @click="toggleCapability('terminal')"
+              >
+                <Terminal class="w-3.5 h-3.5" />
+                Terminal
+              </button>
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+                :class="
+                  selectedCapabilities.includes('desktop')
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+                "
+                :aria-pressed="selectedCapabilities.includes('desktop')"
+                :disabled="loading"
+                data-test="register-cap-desktop"
+                @click="toggleCapability('desktop')"
+              >
+                <Monitor class="w-3.5 h-3.5" />
+                Desktop
+              </button>
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
+                :class="
+                  selectedCapabilities.includes('files')
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
+                "
+                :aria-pressed="selectedCapabilities.includes('files')"
+                :disabled="loading"
+                data-test="register-cap-files"
+                @click="toggleCapability('files')"
+              >
+                <Folder class="w-3.5 h-3.5" />
+                Files
+              </button>
+            </div>
+          </fieldset>
 
           <!-- Submit Actions -->
           <div class="pt-3 flex justify-end gap-2 border-t border-border/80">
