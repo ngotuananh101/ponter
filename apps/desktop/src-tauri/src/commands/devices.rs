@@ -208,6 +208,7 @@ pub async fn register_device_impl(
     http: &reqwest::Client,
     server_url: &str,
     access_token: Option<String>,
+    capabilities: Vec<String>,
 ) -> Result<DesktopDevice, String> {
     let token = access_token.ok_or_else(|| "not logged in".to_string())?;
     let base = server_url.trim_end_matches('/');
@@ -231,8 +232,8 @@ pub async fn register_device_impl(
         "platform": platform,
         "osVersion": os_version,
         "agentVersion": agent_version,
+        "capabilities": capabilities,
         // `publicKey` omitted: do NOT fabricate (R1).
-        // `capabilities` omitted (R5).
     });
 
     let resp = http
@@ -346,7 +347,10 @@ pub async fn delete_device_impl(
 // ---- Tauri command wrappers ----
 
 #[tauri::command]
-pub async fn register_device(state: tauri::State<'_, AppState>) -> Result<DesktopDevice, String> {
+pub async fn register_device(
+    state: tauri::State<'_, AppState>,
+    capabilities: Vec<String>,
+) -> Result<DesktopDevice, String> {
     // Clone values OUT of mutexes before any `.await` (R4).
     let server_url = {
         let guard = state
@@ -363,7 +367,7 @@ pub async fn register_device(state: tauri::State<'_, AppState>) -> Result<Deskto
         guard.clone()
     };
 
-    register_device_impl(&state.http, &server_url, access_token).await
+    register_device_impl(&state.http, &server_url, access_token, capabilities).await
 }
 
 #[tauri::command]
@@ -412,7 +416,9 @@ pub async fn delete_device(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{ensure_provider, spawn_stub, spawn_stub_capturing};
+    use crate::test_util::{
+        ensure_provider, spawn_stub, spawn_stub_capturing, spawn_stub_capturing_body,
+    };
     use std::sync::Mutex as SyncMutex;
 
     /// Guards keychaint-touching integration tests that all write to the shared
@@ -496,6 +502,7 @@ mod tests {
             &client,
             &url,
             Some("access-token".to_string()),
+            vec![],
         ))
         .expect("register should succeed");
 
@@ -522,7 +529,8 @@ mod tests {
         ensure_provider();
         let url = spawn_stub(201, "{}".to_string());
         let client = reqwest::Client::new();
-        let result = tauri::async_runtime::block_on(register_device_impl(&client, &url, None));
+        let result =
+            tauri::async_runtime::block_on(register_device_impl(&client, &url, None, vec![]));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "not logged in");
     }
@@ -544,6 +552,7 @@ mod tests {
             &client,
             &url,
             Some("access-token".to_string()),
+            vec![],
         ));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Agent already exists");
@@ -596,6 +605,7 @@ mod tests {
             &client,
             &url_a,
             Some("access-token".to_string()),
+            vec![],
         ))
         .expect("register A should succeed");
         assert_eq!(
@@ -611,6 +621,7 @@ mod tests {
             &client,
             &url_b,
             Some("access-token".to_string()),
+            vec![],
         ))
         .expect("register B should succeed");
         assert_eq!(
@@ -703,6 +714,7 @@ mod tests {
             &client,
             &url,
             Some("access-token".to_string()),
+            vec![],
         ));
 
         let raw = rx
@@ -717,6 +729,40 @@ mod tests {
         assert!(
             lower.contains("authorization: bearer access-token"),
             "must send bearer token, got: {raw}",
+        );
+
+        clear_credential();
+    }
+
+    #[test]
+    fn register_device_sends_capabilities_in_payload() {
+        if std::env::var("PONTER_KEYCHAIN_SKIP").is_ok() {
+            eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
+            return;
+        }
+        let _guard = KEYCHAIN_LOCK.lock().unwrap();
+        clear_credential();
+
+        let body = r#"{"agent":{"id":"dev-1","userId":"u1","hostname":"mybox",
+         "platform":"linux","osVersion":"unknown","agentVersion":"0.1.0",
+         "publicKey":"","signingPublicKey":null,"isOnline":false,
+         "lastHeartbeat":null,"capabilities":[],"createdAt":"2026-10-08T00:00:00Z"},
+         "credential":"ag_deadbeefcafebabe"}"#;
+        let (url, rx) = spawn_stub_capturing_body(201, body.to_string());
+        let client = reqwest::Client::new();
+        let _ = tauri::async_runtime::block_on(register_device_impl(
+            &client,
+            &url,
+            Some("access-token".to_string()),
+            vec!["desktop".to_string(), "terminal".to_string()],
+        ));
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("request sent");
+        // serde_json::json! serializes compactly: no spaces after ':' or ','.
+        assert!(
+            raw.contains(r#""capabilities":["desktop","terminal"]"#),
+            "payload must carry capabilities verbatim, got: {raw}",
         );
 
         clear_credential();

@@ -212,4 +212,53 @@ describe('RegisterAgentDialog.vue', () => {
     expect(wrapper.emitted('registered')).toHaveLength(1);
     expect(wrapper.emitted('update:open')).toEqual([[false]]);
   });
+
+  it('8. Capabilities selector defaults to all three enabled', () => {
+    const wrapper = mount(RegisterAgentDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: true } },
+    });
+
+    const caps = ['terminal', 'desktop', 'files'];
+    for (const cap of caps) {
+      const btn = wrapper.find(`[data-test="register-cap-${cap}"]`);
+      expect(btn.exists()).toBe(true);
+      expect(btn.attributes('aria-pressed')).toBe('true');
+    }
+  });
+
+  it('9. Submitting with files deselected sends only terminal and desktop', async () => {
+    vi.mocked(apiClient.agents.create).mockResolvedValueOnce({
+      agent: createMockAgent({ id: 'node-delta-04' }),
+      credential: 'ag_cred',
+    });
+
+    const wrapper = mount(RegisterAgentDialog, {
+      props: { open: true },
+      global: { stubs: { Teleport: true } },
+    });
+
+    // Deselect "files"
+    await wrapper.find('[data-test="register-cap-files"]').trigger('click');
+    // Files is now off
+    expect(
+      wrapper
+        .find('[data-test="register-cap-files"]')
+        .attributes('aria-pressed'),
+    ).toBe('false');
+
+    await wrapper.find('#agent-id').setValue('node-delta-04');
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text().includes('Generate Agent'))
+      ?.trigger('click');
+    await flushPromises();
+
+    expect(apiClient.agents.create).toHaveBeenCalledWith({
+      id: 'node-delta-04',
+      hostname: 'node-delta-04',
+      platform: 'linux',
+      capabilities: ['terminal', 'desktop'],
+    });
+  });
 });

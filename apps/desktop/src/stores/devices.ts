@@ -12,6 +12,12 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { DesktopDevice } from '@/types';
 
+/**
+ * The capabilities an operator may toggle when registering a device.
+ * Mirrors the web dialog's TOGGLEABLE_CAPABILITIES for consistency.
+ */
+const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
+
 export const useDevicesStore = defineStore('devices', () => {
   /** Server-fetched device list (in-memory only; no webview storage). */
   const devices = ref<DesktopDevice[]>([]);
@@ -43,11 +49,15 @@ export const useDevicesStore = defineStore('devices', () => {
   /** Register this device. The credential is stored in the OS keychain by the
    * backend command; the returned value is the public projection only (no
    * `credential` field). */
-  async function register(): Promise<DesktopDevice | null> {
+  async function register(
+    capabilities: string[] = [...TOGGLEABLE_CAPABILITIES],
+  ): Promise<DesktopDevice | null> {
     loading.value = true;
     error.value = null;
     try {
-      const device = await invoke<DesktopDevice>('register_device');
+      const device = await invoke<DesktopDevice>('register_device', {
+        capabilities,
+      });
       registered.value = true;
       // Surface the newly registered device at the top after refreshing.
       await refresh();
