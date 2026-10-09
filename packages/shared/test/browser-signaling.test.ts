@@ -225,4 +225,23 @@ describe('parseBrowserMessage', () => {
     };
     expect(init.type).toBe('signal');
   });
+
+  it('parses subscribe-fleet', () => {
+    expect(
+      parseBrowserMessage(JSON.stringify({ type: 'subscribe-fleet' })),
+    ).toEqual({ type: 'subscribe-fleet' });
+  });
+
+  it('parses unsubscribe-fleet', () => {
+    expect(
+      parseBrowserMessage(JSON.stringify({ type: 'unsubscribe-fleet' })),
+    ).toEqual({ type: 'unsubscribe-fleet' });
+  });
+});
+
+describe('fleet-changed socket message type', () => {
+  it('compiles as a BrowserSocketMessage', () => {
+    const msg: BrowserSocketMessage = { type: 'fleet-changed' };
+    expect(msg.type).toBe('fleet-changed');
+  });
 });
