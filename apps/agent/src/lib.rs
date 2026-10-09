@@ -2380,11 +2380,15 @@ async fn run_desktop_session(
 
             loop {
                 ticker.tick().await;
-                match poller.poll() {
-                    Ok(Some(mut payload)) => {
-                        let seq = last_input_seq.load(Ordering::Relaxed);
-                        payload.last_input_seq = if seq == 0 { None } else { Some(seq) };
-                        let frame = desktop::frame_desktop_cursor(&payload, crate::pty::now_ms());
+                let observed_seq = last_input_seq.load(Ordering::Relaxed);
+                let observed_seq = if observed_seq == 0 {
+                    None
+                } else {
+                    Some(observed_seq)
+                };
+                match poller.poll(observed_seq) {
+                    Ok(Some(ref payload)) => {
+                        let frame = desktop::frame_desktop_cursor(payload, crate::pty::now_ms());
                         if let Err(e) = dc.send_text(&frame).await {
                             tracing::debug!(error = %e, "sending desktop-cursor frame failed");
                             break;
