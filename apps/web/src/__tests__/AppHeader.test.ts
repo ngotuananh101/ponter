@@ -12,6 +12,7 @@ function makeUser(role: 'admin' | 'user'): User {
     username: 'testuser',
     email: 'test@example.com',
     publicKey: 'pk',
+    signingPublicKey: null,
     role,
     approvalStatus: 'approved',
     isActive: true,

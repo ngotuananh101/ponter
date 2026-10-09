@@ -58,3 +58,21 @@ export function parseSdpFingerprint(sdp: string): string {
   }
   throw new Error('SDP carries no a=fingerprint line');
 }
+
+/**
+ * The canonical WS2 user-identity proof, signed by the browser to bind an
+ * Ed25519 signing key to a user id during the one-time post-login bootstrap
+ * of accounts created before WS2 (pre-PR-#44) that carry no signing key.
+ *
+ * Kept separate from the per-session peer proof (`PROOF_VERSION` /
+ * `canonicalProofMessage`) because it is not bound to a session, role, or SDP.
+ */
+export const USER_IDENTITY_PROOF_PREFIX = 'ponter-ws2-user-identity-v1';
+
+/**
+ * The exact UTF-8 string a browser signs to prove ownership of `userId`.
+ * Single `\n` separator, no trailing newline.
+ */
+export function canonicalUserIdentityMessage(userId: string): string {
+  return `${USER_IDENTITY_PROOF_PREFIX}\nuserId=${userId}`;
+}

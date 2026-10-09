@@ -47,8 +47,19 @@ vi.mock('@/services/client', () => ({
     },
     webrtc: { getIceServers: vi.fn(async () => []) },
     http: { baseUrl: 'http://localhost', refreshAccessToken: vi.fn() },
+    agents: {
+      get: vi.fn(async () => ({ signingPublicKey: 'agent-signing-pubkey' })),
+    },
   },
 }));
+
+const { authMock, cryptoMock } = vi.hoisted(() =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('./helpers/terminal-mocks.ts'),
+);
+
+vi.mock('../stores/auth', () => authMock());
+vi.mock('@ponter/crypto', () => cryptoMock());
 
 const peerOptions: Array<Record<string, unknown>> = [];
 const peerClose = vi.fn(async () => {});
@@ -179,6 +190,27 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     filesList.mockResolvedValueOnce({ path: '', entries, truncated: false });
     const tabId = await store.openFilesTab('ag-1', 'Host 1');
     return { store, tabId };
+  }
+
+  /**
+   * Open a files tab with the transfer queue store attached — shared by the
+   * queue-gate tests to avoid repeating the open + queue-fetch scaffolding.
+   */
+  async function openFilesWithClientWithQueue() {
+    const { store, tabId } = await openFilesWithClient();
+    const q = useTransferQueueStore();
+    return { store, tabId, q };
+  }
+
+  /** Return the active and queued items for a direction — shared filter helper. */
+  function queueStatus(
+    q: ReturnType<typeof useTransferQueueStore>,
+    direction: 'upload' | 'download',
+  ): { active: typeof q.items; queued: typeof q.items } {
+    const items = q.items.filter((i) => i.direction === direction);
+    const active = items.filter((i) => i.status === 'active');
+    const queued = items.filter((i) => i.status === 'queued');
+    return { active, queued };
   }
 
   it('openFilesTab offers one files channel and lists the root', async () => {
@@ -523,8 +555,7 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
     });
 
     it('FIFO promotion (upload): settling transfer 1 promotes the next queued item', async () => {
-      const { store, tabId } = await openFilesWithClient();
-      const q = useTransferQueueStore();
+      const { store, tabId, q } = await openFilesWithClientWithQueue();
       const file1 = new File([new Uint8Array([1])], 'a.bin');
       const file2 = new File([new Uint8Array([2])], 'b.bin');
 
@@ -541,15 +572,14 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
       // After settling, the next queued item should have started.
       expect(filesUploadFn).toHaveBeenCalledTimes(2);
       const uploads = q.items.filter((i) => i.direction === 'upload');
-      const active = uploads.filter((i) => i.status === 'active');
+      const { active } = queueStatus(q, 'upload');
       expect(active).toHaveLength(1);
       // The second upload is now active (FIFO).
       expect(active[0]).toBe(uploads[1]);
     });
 
     it('Gate (download): 2 concurrent filesDownload calls → client.download called once, 1 active + 1 queued', async () => {
-      const { store, tabId } = await openFilesWithClient();
-      const q = useTransferQueueStore();
+      const { store, tabId, q } = await openFilesWithClientWithQueue();
 
       store.filesDownload(tabId, 'a.txt');
       store.filesDownload(tabId, 'b.txt');
@@ -557,10 +587,9 @@ describe('files store (Week 10, spec §7.2/§7.5)', () => {
 
       expect(filesDownloadFn).toHaveBeenCalledTimes(1);
 
+      const { active, queued } = queueStatus(q, 'download');
       const downloads = q.items.filter((i) => i.direction === 'download');
       expect(downloads).toHaveLength(2);
-      const active = downloads.filter((i) => i.status === 'active');
-      const queued = downloads.filter((i) => i.status === 'queued');
       expect(active).toHaveLength(1);
       expect(queued).toHaveLength(1);
       expect(q.activeDownloadId).toBe(downloads[0]!.id);

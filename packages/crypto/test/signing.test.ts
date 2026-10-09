@@ -8,6 +8,8 @@ import {
   verifyProof,
   saveSigningKey,
   loadSigningKey,
+  saveSigningPublicKey,
+  loadSigningPublicKey,
   savePrivateKey,
   loadPrivateKey,
   generateUserKeyPair,
@@ -146,5 +148,49 @@ describe('opening a legacy v1 database (pre-WS2, no signing store)', () => {
 
     expect(loaded).not.toBeNull();
     expect(loaded!.type).toBe('private');
+  });
+});
+
+describe('saveSigningPublicKey / loadSigningPublicKey', () => {
+  beforeEach(async () => {
+    const req = indexedDB.deleteDatabase('remote-crypto');
+    await new Promise((resolve, reject) => {
+      req.onsuccess = resolve;
+      req.onerror = reject;
+    });
+  });
+
+  it('round-trips the public raw base64 for a user id', async () => {
+    const raw = await exportSigningPublicKeyRaw(
+      (await generateSigningKeyPair()).publicKey,
+    );
+
+    await saveSigningPublicKey('pub-user-1', raw);
+    const loaded = await loadSigningPublicKey('pub-user-1');
+
+    expect(loaded).toBe(raw);
+  });
+
+  it('returns null for an unknown user id', async () => {
+    expect(await loadSigningPublicKey('pub-unknown')).toBeNull();
+  });
+
+  it('stores under a :pub suffix, not the bare userId (does not overwrite the private key)', async () => {
+    // Cell 3 guard from the PM refinement: the private raw is never recoverable
+    // from the non-extractable private key, so the browser must persist the public
+    // raw at generation time alongside the private key. Storing under the bare
+    // userId would overwrite the private CryptoKey in the same store — assert the
+    // private key survives a public-raw save under the same userId.
+    const pair = await generateSigningKeyPair();
+
+    await saveSigningKey('pub-suffix-user', pair.privateKey);
+    await saveSigningPublicKey('pub-suffix-user', pair.publicKeyRawBase64);
+
+    const privLoaded = await loadSigningKey('pub-suffix-user');
+    expect(privLoaded).not.toBeNull();
+    expect(privLoaded!.type).toBe('private');
+
+    const pubLoaded = await loadSigningPublicKey('pub-suffix-user');
+    expect(pubLoaded).toBe(pair.publicKeyRawBase64);
   });
 });

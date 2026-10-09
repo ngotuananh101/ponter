@@ -76,12 +76,21 @@ vi.mock('../services/client', () => ({
       terminate: vi.fn(async () => ({ success: true })),
     },
     webrtc: { getIceServers: vi.fn(async () => []) },
+    agents: { get: vi.fn(async () => ({ signingPublicKey: 'agent-key' })) },
   },
 }));
 
 vi.mock('../services/token-storage', () => ({
   tokenStorage: { getAccessToken: vi.fn(async () => 'access-123') },
 }));
+
+const { authMock, cryptoMock } = vi.hoisted(() =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('./helpers/terminal-mocks.ts'),
+);
+
+vi.mock('../stores/auth', () => authMock());
+vi.mock('@ponter/crypto', () => cryptoMock());
 
 /**
  * Push a `connectionState` onto the peer the store most recently built.

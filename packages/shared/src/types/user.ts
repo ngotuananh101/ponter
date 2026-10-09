@@ -9,6 +9,8 @@ export interface User {
   username: string;
   email: string | null;
   publicKey: string;
+  /** WS2 Ed25519 signing public key (base64 raw), or null for legacy rows. */
+  signingPublicKey: string | null;
   role: UserRole;
   approvalStatus: ApprovalStatus;
   isActive: boolean;
