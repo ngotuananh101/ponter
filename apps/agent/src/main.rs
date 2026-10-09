@@ -263,6 +263,11 @@ fn shell_on_path(name: &str) -> Option<String> {
 async fn main() -> Result<()> {
     logging::init();
 
+    // Set DPI awareness before any capture object is created so xcap's
+    // `GetDpiForMonitor` path sees the real per-monitor scale factor.
+    // Best-effort: safe no-op on non-Windows / older builds.
+    ponter_agent::enable_dpi_awareness();
+
     let cli = Cli::parse();
     let credential = resolve_credential(&cli)?;
     let shell = resolve_shell(&cli)?;
@@ -434,5 +439,11 @@ mod tests {
         );
 
         std::env::remove_var("AGENT_ALLOW_INPUT");
+    }
+
+    #[test]
+    fn enable_dpi_awareness_compiles_and_runs_without_panic() {
+        // Best-effort: the function must not panic on any platform.
+        ponter_agent::enable_dpi_awareness();
     }
 }

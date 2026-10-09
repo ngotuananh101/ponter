@@ -2324,6 +2324,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "webrtc",
+ "windows 0.62.2",
  "x11rb",
  "xcap",
 ]
