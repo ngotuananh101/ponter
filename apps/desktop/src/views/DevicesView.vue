@@ -65,12 +65,19 @@ onMounted(() => {
       <CardHeader class="space-y-3 pb-4">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+            <div
+              class="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary"
+            >
               <Laptop class="w-4 h-4" />
             </div>
             <div>
-              <CardTitle class="text-xl font-bold tracking-tight">Devices</CardTitle>
-              <CardDescription data-testid="devices-username" class="text-xs text-muted-foreground font-mono">
+              <CardTitle class="text-xl font-bold tracking-tight"
+                >Devices</CardTitle
+              >
+              <CardDescription
+                data-testid="devices-username"
+                class="text-xs text-muted-foreground font-mono"
+              >
                 Signed in as {{ authStore.user?.username }}
               </CardDescription>
             </div>
@@ -100,11 +107,19 @@ onMounted(() => {
           <AlertDescription>{{ store.error }}</AlertDescription>
         </Alert>
 
-        <div v-if="store.loading" data-testid="devices-loading" class="py-8 text-center text-sm text-muted-foreground font-mono">
+        <div
+          v-if="store.loading"
+          data-testid="devices-loading"
+          class="py-8 text-center text-sm text-muted-foreground font-mono"
+        >
           Loading devices...
         </div>
 
-        <div v-else-if="store.devices.length === 0" data-testid="devices-empty" class="py-8 text-center text-sm text-muted-foreground">
+        <div
+          v-else-if="store.devices.length === 0"
+          data-testid="devices-empty"
+          class="py-8 text-center text-sm text-muted-foreground"
+        >
           No devices registered yet
         </div>
 
@@ -117,7 +132,10 @@ onMounted(() => {
           >
             <div class="flex flex-col gap-1.5 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
-                <span data-testid="device-hostname" class="font-semibold text-sm text-foreground">
+                <span
+                  data-testid="device-hostname"
+                  class="font-semibold text-sm text-foreground"
+                >
                   {{ device.hostname }}
                 </span>
                 <!-- Clean sibling badges (NO nesting defect) -->
@@ -140,8 +158,12 @@ onMounted(() => {
                   {{ device.isOnline ? 'online' : 'offline' }}
                 </Badge>
               </div>
-              <div class="flex items-center gap-2 text-xs text-muted-foreground font-mono">
-                <span data-testid="device-id" class="truncate">{{ device.id }}</span>
+              <div
+                class="flex items-center gap-2 text-xs text-muted-foreground font-mono"
+              >
+                <span data-testid="device-id" class="truncate">{{
+                  device.id
+                }}</span>
                 <span>·</span>
                 <span data-testid="device-created">{{ device.createdAt }}</span>
               </div>
@@ -170,7 +192,11 @@ onMounted(() => {
           <Plus class="w-4 h-4 mr-1.5" />
           {{ store.loading ? 'Registering...' : 'Register Device' }}
         </Button>
-        <p v-if="!store.registered" data-testid="devices-register-hint" class="text-xs text-muted-foreground text-center flex items-center justify-center gap-1.5">
+        <p
+          v-if="!store.registered"
+          data-testid="devices-register-hint"
+          class="text-xs text-muted-foreground text-center flex items-center justify-center gap-1.5"
+        >
           <Info class="w-3.5 h-3.5 text-primary shrink-0" />
           <span>The agent runtime runs from the system tray.</span>
         </p>

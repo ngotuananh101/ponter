@@ -53,7 +53,9 @@ async function handleSubmit() {
           </div>
         </div>
         <div>
-          <CardTitle class="text-2xl font-bold tracking-tight">Ponter Desktop</CardTitle>
+          <CardTitle class="text-2xl font-bold tracking-tight"
+            >Ponter Desktop</CardTitle
+          >
           <CardDescription class="text-sm text-muted-foreground mt-0.5">
             Sign in to your Ponter account
           </CardDescription>
@@ -62,7 +64,9 @@ async function handleSubmit() {
           class="flex items-center justify-between p-2 rounded-md bg-muted/40 border border-border/60 text-xs font-mono text-muted-foreground"
           data-testid="login-server-line"
         >
-          <span class="truncate">Server: {{ config.serverUrl || 'not set' }}</span>
+          <span class="truncate"
+            >Server: {{ config.serverUrl || 'not set' }}</span
+          >
           <button
             type="button"
             data-testid="login-change-server"
@@ -76,7 +80,10 @@ async function handleSubmit() {
       <CardContent>
         <form @submit.prevent="handleSubmit" class="space-y-4">
           <div class="space-y-2">
-            <Label for="login-username" class="text-xs font-medium text-foreground flex items-center gap-1.5">
+            <Label
+              for="login-username"
+              class="text-xs font-medium text-foreground flex items-center gap-1.5"
+            >
               <User class="w-3.5 h-3.5 text-muted-foreground" />
               Username
             </Label>
@@ -92,7 +99,10 @@ async function handleSubmit() {
             />
           </div>
           <div class="space-y-2">
-            <Label for="login-password" class="text-xs font-medium text-foreground flex items-center gap-1.5">
+            <Label
+              for="login-password"
+              class="text-xs font-medium text-foreground flex items-center gap-1.5"
+            >
               <Lock class="w-3.5 h-3.5 text-muted-foreground" />
               Password
             </Label>
@@ -122,7 +132,10 @@ async function handleSubmit() {
             :disabled="store.status === 'loading'"
             class="w-full font-medium"
           >
-            <Loader2 v-if="store.status === 'loading'" class="mr-2 h-4 w-4 animate-spin" />
+            <Loader2
+              v-if="store.status === 'loading'"
+              class="mr-2 h-4 w-4 animate-spin"
+            />
             {{ store.status === 'loading' ? 'Signing in...' : 'Sign in' }}
           </Button>
         </form>

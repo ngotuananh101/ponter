@@ -58,15 +58,23 @@ async function connect() {
           <ThemeToggle />
         </div>
         <div>
-          <CardTitle class="text-2xl font-bold tracking-tight">Server Connection</CardTitle>
-          <CardDescription data-testid="server-setup-help" class="text-sm text-muted-foreground mt-0.5">
+          <CardTitle class="text-2xl font-bold tracking-tight"
+            >Server Connection</CardTitle
+          >
+          <CardDescription
+            data-testid="server-setup-help"
+            class="text-sm text-muted-foreground mt-0.5"
+          >
             Enter your Ponter server URL to verify connectivity.
           </CardDescription>
         </div>
       </CardHeader>
       <CardContent class="space-y-4">
         <div class="space-y-2">
-          <Label for="server-setup-url" class="text-xs font-medium text-foreground flex items-center gap-1.5">
+          <Label
+            for="server-setup-url"
+            class="text-xs font-medium text-foreground flex items-center gap-1.5"
+          >
             <Globe class="w-3.5 h-3.5 text-muted-foreground" />
             Server URL
           </Label>

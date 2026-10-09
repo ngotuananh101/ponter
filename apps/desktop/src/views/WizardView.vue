@@ -77,7 +77,9 @@ watch(
       <CardHeader class="space-y-4 pb-4">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-mono font-medium px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+            <span
+              class="text-xs font-mono font-medium px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20"
+            >
               AGENT SETUP
             </span>
           </div>
@@ -85,24 +87,38 @@ watch(
         </div>
 
         <!-- Stepper Navigation -->
-        <div class="grid grid-cols-3 gap-2 border-b border-border/60 pb-3 text-xs font-medium">
+        <div
+          class="grid grid-cols-3 gap-2 border-b border-border/60 pb-3 text-xs font-medium"
+        >
           <div
             class="flex items-center gap-1.5 pb-1"
-            :class="store.step === 'capture' ? 'text-primary font-semibold border-b-2 border-primary' : 'text-muted-foreground'"
+            :class="
+              store.step === 'capture'
+                ? 'text-primary font-semibold border-b-2 border-primary'
+                : 'text-muted-foreground'
+            "
           >
             <Monitor class="w-3.5 h-3.5" />
             <span>1. Capture</span>
           </div>
           <div
             class="flex items-center gap-1.5 pb-1"
-            :class="store.step === 'inputGate' ? 'text-primary font-semibold border-b-2 border-primary' : 'text-muted-foreground'"
+            :class="
+              store.step === 'inputGate'
+                ? 'text-primary font-semibold border-b-2 border-primary'
+                : 'text-muted-foreground'
+            "
           >
             <ShieldCheck class="w-3.5 h-3.5" />
             <span>2. Input</span>
           </div>
           <div
             class="flex items-center gap-1.5 pb-1"
-            :class="store.step === 'autoStart' ? 'text-primary font-semibold border-b-2 border-primary' : 'text-muted-foreground'"
+            :class="
+              store.step === 'autoStart'
+                ? 'text-primary font-semibold border-b-2 border-primary'
+                : 'text-muted-foreground'
+            "
           >
             <Zap class="w-3.5 h-3.5" />
             <span>3. System</span>
@@ -112,11 +128,19 @@ watch(
 
       <CardContent class="space-y-5">
         <!-- Step 1: Capture -->
-        <div v-if="store.step === 'capture'" data-testid="wizard-step-capture" class="space-y-4">
+        <div
+          v-if="store.step === 'capture'"
+          data-testid="wizard-step-capture"
+          class="space-y-4"
+        >
           <div>
             <h1 class="text-xl font-bold tracking-tight">Screen Capture</h1>
-            <p data-testid="wizard-capture-help" class="text-sm text-muted-foreground mt-1">
-              Grant screen-recording permission when prompted, then verify capture.
+            <p
+              data-testid="wizard-capture-help"
+              class="text-sm text-muted-foreground mt-1"
+            >
+              Grant screen-recording permission when prompted, then verify
+              capture.
             </p>
           </div>
 
@@ -127,7 +151,9 @@ watch(
             role="alert"
             aria-live="polite"
           >
-            <AlertDescription>{{ store.captureProbe.message }}</AlertDescription>
+            <AlertDescription>{{
+              store.captureProbe.message
+            }}</AlertDescription>
           </Alert>
 
           <Button
@@ -142,11 +168,22 @@ watch(
         </div>
 
         <!-- Step 2: Input Gate -->
-        <div v-else-if="store.step === 'inputGate'" data-testid="wizard-step-input-gate" class="space-y-4">
+        <div
+          v-else-if="store.step === 'inputGate'"
+          data-testid="wizard-step-input-gate"
+          class="space-y-4"
+        >
           <div>
             <h1 class="text-xl font-bold tracking-tight">Input Gate</h1>
-            <p data-testid="wizard-input-help" class="text-sm text-muted-foreground mt-1 leading-relaxed">
-              Two gates protect your input. Gate A (this step) is the --allow-input preference that defaults to closed; enabling it allows the relay to forward keyboard/mouse events. Gate B is the peer-identity verification performed at admission — even with Gate A open, only verified peers can send input events.
+            <p
+              data-testid="wizard-input-help"
+              class="text-sm text-muted-foreground mt-1 leading-relaxed"
+            >
+              Two gates protect your input. Gate A (this step) is the
+              --allow-input preference that defaults to closed; enabling it
+              allows the relay to forward keyboard/mouse events. Gate B is the
+              peer-identity verification performed at admission — even with Gate
+              A open, only verified peers can send input events.
             </p>
           </div>
 
@@ -155,8 +192,12 @@ watch(
             class="p-3.5 rounded-lg border border-border/80 bg-muted/30 flex items-center justify-between gap-4 cursor-pointer hover:bg-muted/50 transition-colors"
           >
             <div class="space-y-0.5">
-              <span class="text-sm font-medium text-foreground block">Allow remote input</span>
-              <span class="text-xs text-muted-foreground block">Enable remote control of mouse and keyboard</span>
+              <span class="text-sm font-medium text-foreground block"
+                >Allow remote input</span
+              >
+              <span class="text-xs text-muted-foreground block"
+                >Enable remote control of mouse and keyboard</span
+              >
             </div>
             <Checkbox
               id="wizard-input-checkbox"
@@ -178,11 +219,19 @@ watch(
         </div>
 
         <!-- Step 3: Auto-start -->
-        <div v-else-if="store.step === 'autoStart'" data-testid="wizard-step-auto-start" class="space-y-4">
+        <div
+          v-else-if="store.step === 'autoStart'"
+          data-testid="wizard-step-auto-start"
+          class="space-y-4"
+        >
           <div>
             <h1 class="text-xl font-bold tracking-tight">All Set</h1>
-            <p data-testid="wizard-autostart-help" class="text-sm text-muted-foreground mt-1">
-              Adds Ponter to your system's startup so the agent runs on login. Takes effect at the next login.
+            <p
+              data-testid="wizard-autostart-help"
+              class="text-sm text-muted-foreground mt-1"
+            >
+              Adds Ponter to your system's startup so the agent runs on login.
+              Takes effect at the next login.
             </p>
           </div>
 
@@ -191,8 +240,12 @@ watch(
             class="p-3.5 rounded-lg border border-border/80 bg-muted/30 flex items-center justify-between gap-4 cursor-pointer hover:bg-muted/50 transition-colors"
           >
             <div class="space-y-0.5">
-              <span class="text-sm font-medium text-foreground block">Auto-start the agent on login</span>
-              <span class="text-xs text-muted-foreground block">Launch agent in background at system startup</span>
+              <span class="text-sm font-medium text-foreground block"
+                >Auto-start the agent on login</span
+              >
+              <span class="text-xs text-muted-foreground block"
+                >Launch agent in background at system startup</span
+              >
             </div>
             <Checkbox
               id="wizard-autostart-checkbox"
