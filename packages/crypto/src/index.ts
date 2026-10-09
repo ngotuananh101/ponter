@@ -166,8 +166,12 @@ function readKey(
   key: string,
   failureMessage: string,
 ): Promise<CryptoKey | null> {
-  return readValue(db, storeName, key, failureMessage, (r): r is CryptoKey =>
-    r instanceof CryptoKey,
+  return readValue(
+    db,
+    storeName,
+    key,
+    failureMessage,
+    (r): r is CryptoKey => r instanceof CryptoKey,
   );
 }
 
@@ -397,8 +401,12 @@ function readString(
   key: string,
   failureMessage: string,
 ): Promise<string | null> {
-  return readValue(db, storeName, key, failureMessage, (r): r is string =>
-    typeof r === 'string',
+  return readValue(
+    db,
+    storeName,
+    key,
+    failureMessage,
+    (r): r is string => typeof r === 'string',
   );
 }
 

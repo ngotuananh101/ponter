@@ -283,7 +283,11 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
    * assert its distinct outcome.
    */
   function setupFreshKeyScenario(store: ReturnType<typeof useAuthStore>): {
-    signPair: { publicKeyRawBase64: string; privateKey: CryptoKey; publicKey: CryptoKey };
+    signPair: {
+      publicKeyRawBase64: string;
+      privateKey: CryptoKey;
+      publicKey: CryptoKey;
+    };
     registerSpy: ReturnType<typeof vi.spyOn>;
   } {
     store.user = makeUser(null);

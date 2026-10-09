@@ -904,8 +904,11 @@ export const useTerminalStore = defineStore('terminal', () => {
     let sessionId: string | null = null;
 
     try {
-      const { sessionId: sid, transport, rtcPeer } =
-        await openSessionPreamble(agentId, live);
+      const {
+        sessionId: sid,
+        transport,
+        rtcPeer,
+      } = await openSessionPreamble(agentId, live as TabItem | undefined);
       sessionId = sid;
 
       // A control channel carries the source picker, bitrate, and stats. The
@@ -931,12 +934,8 @@ export const useTerminalStore = defineStore('terminal', () => {
       attachServerErrorHook(transport, unsubscribers, agentId, 'desktop', () =>
         discardDesktopConnection(agentId),
       );
-      attachIceFailureHook(
-        peer,
-        unsubscribers,
-        agentId,
-        'desktop',
-        () => discardDesktopConnection(agentId),
+      attachIceFailureHook(peer, unsubscribers, agentId, 'desktop', () =>
+        discardDesktopConnection(agentId),
       );
 
       const client = new DesktopClient(
@@ -1097,8 +1096,11 @@ export const useTerminalStore = defineStore('terminal', () => {
     let sessionId: string | null = null;
 
     try {
-      const { sessionId: sid, transport, rtcPeer } =
-        await openSessionPreamble(agentId, live);
+      const {
+        sessionId: sid,
+        transport,
+        rtcPeer,
+      } = await openSessionPreamble(agentId, live as TabItem | undefined);
       sessionId = sid;
 
       const identity = await resolvePeerIdentity(agentId);
@@ -1115,12 +1117,8 @@ export const useTerminalStore = defineStore('terminal', () => {
       attachServerErrorHook(transport, unsubscribers, agentId, 'files', () =>
         discardFilesConnection(agentId),
       );
-      attachIceFailureHook(
-        peer,
-        unsubscribers,
-        agentId,
-        'files',
-        () => discardFilesConnection(agentId),
+      attachIceFailureHook(peer, unsubscribers, agentId, 'files', () =>
+        discardFilesConnection(agentId),
       );
 
       await peer.start();
