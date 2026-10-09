@@ -63,7 +63,7 @@ The reference implementation lives in two places and must be byte-identical:
 `packages/shared/src/types/identity-proof.ts` (TypeScript) and
 `apps/agent/src/identity.rs` (Rust).
 
-A **second** domain-separated string is used for the user-identity proof that is
+A **third** domain-separated string is used for the user-identity proof that is
 not bound to a session, role, or SDP:
 
 ```
@@ -105,11 +105,11 @@ kind — not even `approved: false` — so no PTY is spawned, no desktop capture
 pipeline is armed, and no files-root probe is performed.
 
 **Gate scope — admission gate for every mode.**
-**`C1 closed (Phase 6a, 2026-10-07):** ADR-41 hoisted `verify_offer_identity` to a single
+**C1 closed (Phase 6a, 2026-10-07):** ADR-41 hoisted `verify_offer_identity` to a single
 admission gate that runs before the mode dispatch in `run_one_session`, so the
 desktop and files paths now run the same verification the terminal path always ran;
-an offer without a valid proof bails with no answer of any kind. The paragraph below
-describes the state before that change; see `docs/security/2026-10-08-ws1-e2ee-rust.md`
+an offer without a valid proof bails with no answer of any kind. This section now
+describes the post-ADR-41 admission-gate behavior; see `docs/security/2026-10-08-ws1-e2ee-rust.md`
 §"What is NOT encrypted" for the sibling WS1 note.
 
 The definition of `verify_offer_identity` is at `apps/agent/src/lib.rs:876`. Its
@@ -178,11 +178,12 @@ no desktop capture pipeline is armed, and no files-root probe is performed: a
 **denial of service** (the session cannot open), **not** a confidentiality break
 — it cannot cause an unverified session to run.
 
-A proof-less offer can only occur when the user signing key is genuinely
-unrecoverable. After PR #90 the browser no longer self-degrades to a
-proof-less offer on a missing key: it attempts a best-effort bootstrap on login
-and restore, and only the unrecoverable cases below leave `identityStatus` as
-`'unavailable'` → `resolvePeerIdentity` throws → the tab surfaces a typed error.
+After PR #90 the browser never sends a proof-less offer — on a missing key it
+attempts a best-effort bootstrap on login and restore, and if that cannot reach
+`'ready'` (the unrecoverable cases below) `resolvePeerIdentity` throws and the tab
+surfaces a typed error, so no offer is built. A proof-less offer can therefore
+only originate from a non-conforming client, which the agent-side admission
+gate rejects.
 
 Accepted at WS2 by design: Phase 5's WS2 is a TOFU/bootstrap layer (spec §8).
 Server-side key attestation / full PKI is **not** delivered by any Phase 5
