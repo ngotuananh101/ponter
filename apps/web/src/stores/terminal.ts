@@ -406,18 +406,25 @@ export const useTerminalStore = defineStore('terminal', () => {
    * ICE servers → browser adapter. Returns the session id, transport, and
    * rtcPeer so callers build their kind-specific PeerConnectionOptions.
    *
+   * `onSessionCreated` is invoked the instant `sessions.create` resolves so
+   * the caller can capture the id before the fallible steps that follow
+   * (`createSignalingTransport`, `getIceServers`); if either throws the
+   * caller's catch block can still terminate the server session (ADR-14).
+   *
    * Extracted from `openDesktopTab` / `openFilesTab` to eliminate the
    * handshake preamble dedup (SonarCloud PR #90 site 5).
    */
   async function openSessionPreamble(
     agentId: string,
     live: TabItem | undefined,
+    onSessionCreated: (sessionId: string) => void,
   ): Promise<{
     sessionId: string;
     transport: WebSocketSignalTransport | RESTPollingTransport;
     rtcPeer: RTCPeerConnectionLike;
   }> {
     const sessionResp = await apiClient.sessions.create({ agentId });
+    onSessionCreated(sessionResp.id);
     const transport = await createSignalingTransport(sessionResp.id);
     if (live) live.initStep = 'ice';
     const iceServers = await apiClient.webrtc.getIceServers();
@@ -908,8 +915,13 @@ export const useTerminalStore = defineStore('terminal', () => {
         sessionId: sid,
         transport,
         rtcPeer,
-      } = await openSessionPreamble(agentId, live as TabItem | undefined);
-      sessionId = sid;
+      } = await openSessionPreamble(
+        agentId,
+        live as TabItem | undefined,
+        (id) => {
+          sessionId = id;
+        },
+      );
 
       // A control channel carries the source picker, bitrate, and stats. The
       // media path is unchanged; the label rides the existing manager (spec §5.2).
@@ -1100,8 +1112,13 @@ export const useTerminalStore = defineStore('terminal', () => {
         sessionId: sid,
         transport,
         rtcPeer,
-      } = await openSessionPreamble(agentId, live as TabItem | undefined);
-      sessionId = sid;
+      } = await openSessionPreamble(
+        agentId,
+        live as TabItem | undefined,
+        (id) => {
+          sessionId = id;
+        },
+      );
 
       const identity = await resolvePeerIdentity(agentId);
       const peer = new PeerConnection(rtcPeer, transport, {
