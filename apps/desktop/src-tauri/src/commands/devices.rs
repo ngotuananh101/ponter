@@ -1,14 +1,16 @@
 //! Device registration + management commands (ADR-54).
 //!
 //! The desktop counterpart of the web dashboard's agent dialogs: register this
-//! device against the existing server API, store the one-time credential in
-//! the OS keychain IMMEDIATELY, list devices, delete with confirm. No server
+//! device against the existing server API, store the one-time credential in the
+//! OS keychain IMMEDIATELY, list devices, delete with confirm. No server
 //! changes. Registration does NOT start the runtime (Task 7).
 //!
-//! Pure helpers (`generate_device_id`, `map_devices_error`) are unit-tested
-//! without HTTP. The `register_device_impl`/`list_devices_impl`/`delete_device_impl`
-//! functions are exercised by integration tests that spin up a real TCP listener
-//! serving a canned response (via the shared `test_util::spawn_stub`).
+//! Pure helpers (`generate_device_id`, `map_devices_error`, `is_auth_error`)
+//! are unit-tested without HTTP. The `register_device_impl`/`list_devices_impl`/
+//! `delete_device_impl` functions are exercised by integration tests that spin
+//! up a real TCP listener serving a canned response (via the shared
+//! `test_util::spawn_stub`). The retry-once-on-401 path lives in
+//! `commands::session::retry_once_on_401`, which is unit-tested there.
 
 use crate::commands::login::KEYCHAIN_SERVICE;
 use crate::keychain;
@@ -346,6 +348,20 @@ pub async fn delete_device_impl(
 
 // ---- Tauri command wrappers ----
 
+/// The exact server message surfaced on a 401 by the access-token middleware
+/// (`apps/server/src/middleware/auth.ts`). The retry-on-401 path triggers only
+/// for this string — never for network or 5xx errors, which must NOT force a
+/// logout.
+pub(crate) const AUTH_401_MESSAGE: &str = "Invalid or expired token";
+
+/// Classify whether an error string is the server's 401 auth failure that
+/// should trigger the refresh+retry path. Only the exact middleware message
+/// matches — a failed refresh surfaces as `REFRESH_FAILED_PREFIX` (see
+/// `commands::session`), which is intentionally NOT treated as a fresh 401.
+pub(crate) fn is_auth_error(err: &str) -> bool {
+    err == AUTH_401_MESSAGE
+}
+
 #[tauri::command]
 pub async fn register_device(
     state: tauri::State<'_, AppState>,
@@ -359,15 +375,26 @@ pub async fn register_device(
             .map_err(|e| format!("state lock poisoned: {e}"))?;
         guard.clone()
     };
-    let access_token = {
-        let guard = state
-            .access_token
-            .lock()
-            .map_err(|e| format!("state lock poisoned: {e}"))?;
-        guard.clone()
-    };
+    let http = &state.http;
+    let access_slot = &state.access_token;
+    let caps = capabilities;
 
-    register_device_impl(&state.http, &server_url, access_token, capabilities).await
+    // Retry the original request once on a 401-shaped auth failure: refresh the
+    // session and re-issue with the rotated access token. A non-auth failure
+    // (network, 5xx) is returned verbatim — no logout, no retry.
+    crate::commands::session::retry_once_on_401(
+        http,
+        &server_url,
+        access_slot,
+        |token| {
+            let token = token.to_string();
+            let caps = caps.clone();
+            let url = server_url.clone();
+            async move { register_device_impl(http, &url, Some(token), caps).await }
+        },
+        is_auth_error,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -379,15 +406,21 @@ pub async fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Deskt
             .map_err(|e| format!("state lock poisoned: {e}"))?;
         guard.clone()
     };
-    let access_token = {
-        let guard = state
-            .access_token
-            .lock()
-            .map_err(|e| format!("state lock poisoned: {e}"))?;
-        guard.clone()
-    };
+    let http = &state.http;
+    let access_slot = &state.access_token;
 
-    list_devices_impl(&state.http, &server_url, access_token).await
+    crate::commands::session::retry_once_on_401(
+        http,
+        &server_url,
+        access_slot,
+        |token| {
+            let token = token.to_string();
+            let url = server_url.clone();
+            async move { list_devices_impl(http, &url, Some(token)).await }
+        },
+        is_auth_error,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -402,30 +435,30 @@ pub async fn delete_device(
             .map_err(|e| format!("state lock poisoned: {e}"))?;
         guard.clone()
     };
-    let access_token = {
-        let guard = state
-            .access_token
-            .lock()
-            .map_err(|e| format!("state lock poisoned: {e}"))?;
-        guard.clone()
-    };
+    let http = &state.http;
+    let access_slot = &state.access_token;
 
-    delete_device_impl(&state.http, &server_url, access_token, &agent_id).await
+    crate::commands::session::retry_once_on_401(
+        http,
+        &server_url,
+        access_slot,
+        |token| {
+            let token = token.to_string();
+            let agent_id = agent_id.clone();
+            let url = server_url.clone();
+            async move { delete_device_impl(http, &url, Some(token), &agent_id).await }
+        },
+        is_auth_error,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_util::{
-        ensure_provider, spawn_stub, spawn_stub_capturing, spawn_stub_capturing_body,
+        ensure_provider, keychain_lock, spawn_stub, spawn_stub_capturing, spawn_stub_capturing_body,
     };
-    use std::sync::Mutex as SyncMutex;
-
-    /// Guards keychaint-touching integration tests that all write to the shared
-    /// `KEYCHAIN_AGENT_ACCOUNT`. Without this, parallel test threads race on the
-    /// same OS secret entry and produce flaky pass/fail. A `std::sync::Mutex`
-    /// is used (not a crate) to avoid adding a `serial_test` dependency.
-    static KEYCHAIN_LOCK: SyncMutex<()> = SyncMutex::new(());
 
     /// Pre-clean + post-clean the credential account so a crashed previous run
     /// cannot make the swap test lie.
@@ -464,6 +497,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn is_auth_error_only_matches_the_401_message() {
+        // The exact server middleware message triggers retry.
+        assert!(is_auth_error("Invalid or expired token"));
+        // Everything else — network, 5xx, a failed refresh — must NOT trigger.
+        assert!(!is_auth_error("network error: ..."));
+        assert!(!is_auth_error("Request failed (HTTP 500)"));
+        assert!(!is_auth_error("Agent not found"));
+        // A failed refresh carries the session-expired prefix, not the raw 401.
+        assert!(!is_auth_error(
+            "session expired after refresh attempt: Refresh token reuse detected"
+        ));
+    }
+
     // ---- integration tests against spawn_stub ----
 
     #[test]
@@ -472,7 +519,7 @@ mod tests {
             eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
             return;
         }
-        let _guard = KEYCHAIN_LOCK.lock().unwrap();
+        let _guard = keychain_lock();
 
         ensure_provider();
         clear_credential();
@@ -540,7 +587,7 @@ mod tests {
         if std::env::var("PONTER_KEYCHAIN_SKIP").is_ok() {
             return;
         }
-        let _guard = KEYCHAIN_LOCK.lock().unwrap();
+        let _guard = keychain_lock();
         ensure_provider();
         clear_credential();
 
@@ -571,7 +618,7 @@ mod tests {
             eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
             return;
         }
-        let _guard = KEYCHAIN_LOCK.lock().unwrap();
+        let _guard = keychain_lock();
         ensure_provider();
         clear_credential();
 
@@ -740,7 +787,7 @@ mod tests {
             eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
             return;
         }
-        let _guard = KEYCHAIN_LOCK.lock().unwrap();
+        let _guard = keychain_lock();
         clear_credential();
 
         let body = r#"{"agent":{"id":"dev-1","userId":"u1","hostname":"mybox",

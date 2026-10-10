@@ -23,15 +23,30 @@ export const useConfigStore = defineStore('config', () => {
   const hasServerUrl = ref(false);
   /** When true, `ServerSetupView` is shown even if a server is configured. */
   const editing = ref(false);
+  /** Whether the config has finished loading (success OR failure). Gated in
+   * `App.vue` to suppress the startup flash until the first route decision is
+   * possible. */
+  const configLoaded = ref(false);
 
-  /** Load the config from the backend. */
+  /** Load the config from the backend.
+   *
+   * Fail-soft (D): a failed read must not break startup. `configLoaded` always
+   * flips to `true` (via `finally`), the app continues with defaults (no server
+   * URL), and the rejection is swallowed so no caller — App.vue, main.ts, or the
+   * wizard — ever sees an unhandled promise rejection. */
   async function load(): Promise<void> {
-    const cfg = await invoke<AppConfig>('get_config');
-    serverUrl.value = cfg.serverUrl ?? '';
-    allowInput.value = cfg.allowInput;
-    theme.value =
-      cfg.theme === 'light' || cfg.theme === 'dark' ? cfg.theme : null;
-    hasServerUrl.value = cfg.hasServerUrl;
+    try {
+      const cfg = await invoke<AppConfig>('get_config');
+      serverUrl.value = cfg.serverUrl ?? '';
+      allowInput.value = cfg.allowInput;
+      theme.value =
+        cfg.theme === 'light' || cfg.theme === 'dark' ? cfg.theme : null;
+      hasServerUrl.value = cfg.hasServerUrl;
+    } catch {
+      // Swallowed intentionally — see the doc comment above.
+    } finally {
+      configLoaded.value = true;
+    }
   }
 
   /** Set the server URL, persist, and leave edit mode. */
@@ -72,6 +87,7 @@ export const useConfigStore = defineStore('config', () => {
     theme,
     hasServerUrl,
     editing,
+    configLoaded,
     load,
     setServerUrl,
     setAllowInput,

@@ -190,7 +190,7 @@ pub async fn logout(state: tauri::State<'_, AppState>) -> std::result::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{ensure_provider, spawn_stub};
+    use crate::test_util::{ensure_provider, keychain_lock, spawn_stub};
 
     #[test]
     fn parses_success_response() {
@@ -222,6 +222,9 @@ mod tests {
             return;
         }
 
+        // Serialize against the session/devices keychain tests on the shared
+        // `KEYCHAIN_REFRESH_ACCOUNT` entry (parallel cargo test threads race).
+        let _guard = keychain_lock();
         ensure_provider();
 
         // Pre-clean so a crashed previous run cannot make this test lie.
@@ -271,6 +274,8 @@ mod tests {
             return;
         }
 
+        // Serialize against the other keychain-touching tests (shared entry).
+        let _guard = keychain_lock();
         ensure_provider();
 
         let body =
@@ -300,6 +305,8 @@ mod tests {
 
     #[test]
     fn logout_impl_clears_token_and_deletes_keychain() {
+        // Deletes the shared `KEYCHAIN_REFRESH_ACCOUNT` entry — serialize.
+        let _guard = keychain_lock();
         let state = AppState::with_config(None);
         {
             let mut token = state.access_token.lock().unwrap();

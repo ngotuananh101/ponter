@@ -8,7 +8,26 @@
 //! `lib.rs`.
 
 use std::io::{Read, Write};
+use std::sync::Mutex;
 use std::thread;
+
+/// Single shared lock serializing every keychain-touching test across modules.
+///
+/// `login`, `session`, and `devices` tests all read/write the same OS keychain
+/// account entries. With `cargo test`'s default parallel threads, one module's
+/// `set_secret` can interleave with another's `delete_secret` on the same
+/// `KEYCHAIN_REFRESH_ACCOUNT`, producing flaky pass/fail. Each module previously
+/// kept a *private* `static Mutex` — which did NOT serialize across modules.
+/// This one shared lock is the single source of truth (Sonar dedup-safe).
+pub static KEYCHAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the shared keychain test lock, recovering from a poisoned mutex so
+/// one panicking test does not cascade into spurious failures in the rest.
+pub fn keychain_lock() -> std::sync::MutexGuard<'static, ()> {
+    KEYCHAIN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Install the ring rustls crypto provider if not already installed. Safe to
 /// call repeatedly; the second call returns `Err` (already installed) and is
