@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
@@ -503,6 +503,87 @@ describe('DesktopView', () => {
   });
 
   describe('cursor overlay canvas', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /**
+     * Shared harness for the cursor-drawing tests: mocks the 2D context
+     * (happy-dom returns null from getContext), stubs the animation-frame loop
+     * with a BOUNDED queue (the real tick re-arms itself, so an unbounded drain
+     * never terminates), and mounts a DesktopView whose <video> reports
+     * 1920×1080 with a matching full-size bounding box.
+     */
+    function setupCursorHarness() {
+      const store = useTerminalStore();
+      vi.spyOn(store, 'sendDesktopInput').mockImplementation(() => {});
+
+      const fakeCtx: Record<string, unknown> = {
+        clearRect: vi.fn(),
+        save: vi.fn(),
+        restore: vi.fn(),
+        translate: vi.fn(),
+        scale: vi.fn(),
+        beginPath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        closePath: vi.fn(),
+        stroke: vi.fn(),
+        fill: vi.fn(),
+      };
+      fakeCtx.strokeStyle = '#fff';
+      fakeCtx.fillStyle = '#00f';
+      fakeCtx.lineWidth = 1;
+      fakeCtx.lineJoin = 'round';
+      const ctxSpy = vi
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockReturnValue(fakeCtx as unknown as CanvasRenderingContext2D);
+
+      const frameQueue: Array<() => void> = [];
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        if (frameQueue.length === 0) {
+          frameQueue.push(() => cb(performance.now()));
+        }
+        return frameQueue.length;
+      });
+      vi.stubGlobal('cancelAnimationFrame', () => {});
+      const drainFrames = (n: number) => {
+        for (let i = 0; i < n && frameQueue.length; i++) {
+          frameQueue.shift()!();
+        }
+      };
+
+      const wrapper = mountWithChrome({
+        desktopInputEnabled: true,
+        desktopPeerVerified: true,
+      });
+
+      const video = wrapper.find('video');
+      const videoEl = video.element as HTMLVideoElement;
+      Object.defineProperty(videoEl, 'videoWidth', {
+        value: 1920,
+        configurable: true,
+      });
+      Object.defineProperty(videoEl, 'videoHeight', {
+        value: 1080,
+        configurable: true,
+      });
+      videoEl.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          width: 1920,
+          height: 1080,
+          right: 1920,
+          bottom: 1080,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      return { wrapper, video, fakeCtx, ctxSpy, drainFrames };
+    }
+
     it('renders a video with cursor-none class when inputOn is true', async () => {
       const wrapper = mountWithChrome({
         desktopInputEnabled: true,
@@ -592,6 +673,90 @@ describe('DesktopView', () => {
       });
       const canvas = wrapper.find('[data-test="desktop-cursor-canvas"]');
       expect(canvas.classes()).not.toContain('hidden');
+    });
+
+    it('draws the local-echo arrow at the local pointer position while controlling', async () => {
+      const { wrapper, video, fakeCtx, ctxSpy, drainFrames } =
+        setupCursorHarness();
+
+      // Enable control.
+      await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
+      await flushPromises();
+      await nextTick();
+
+      // Drain one frame for the initial mount tick.
+      drainFrames(1);
+
+      // Trigger a pointermove to seed the local pointer position.
+      await video.trigger('pointermove', { clientX: 100, clientY: 50 });
+
+      // Drain one frame to invoke renderCursorFrame after the pointermove.
+      drainFrames(1);
+
+      // Expected canvas-local coords: the video fills the element exactly
+      // (no letterbox at this aspect ratio / layout), so contentBox.left = 0,
+      // contentBox.top = 0. normalize(100, 50) → x = 100/1920, y = 50/1080.
+      // toClient maps back to (100, 50). canvas-local = (100, 50).
+      const expectedCx = 100;
+      const expectedCy = 50;
+
+      expect(fakeCtx.translate).toHaveBeenCalledWith(expectedCx, expectedCy);
+      expect(fakeCtx.stroke).toHaveBeenCalled();
+      expect(fakeCtx.fill).toHaveBeenCalled();
+
+      ctxSpy.mockRestore();
+    });
+
+    it('draws nothing in the controlling branch before any pointer sample (no crash)', async () => {
+      const { wrapper, fakeCtx, ctxSpy, drainFrames } = setupCursorHarness();
+
+      await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
+      await flushPromises();
+      await nextTick();
+
+      // No pointermove yet → localPointer is null → nothing should be drawn.
+      drainFrames(1);
+
+      expect(fakeCtx.translate).not.toHaveBeenCalled();
+      expect(fakeCtx.stroke).not.toHaveBeenCalled();
+
+      ctxSpy.mockRestore();
+    });
+
+    it('clears the stale local pointer when input is toggled off and on', async () => {
+      const { wrapper, video, fakeCtx, ctxSpy, drainFrames } =
+        setupCursorHarness();
+
+      const toggle = wrapper.find('[data-test="desktop-input-toggle"]');
+
+      // Toggle on, seed a pointer, drain the frame → arrow drawn.
+      await toggle.trigger('click');
+      await flushPromises();
+      await nextTick();
+      drainFrames(1);
+      await video.trigger('pointermove', { clientX: 100, clientY: 50 });
+      drainFrames(1);
+      expect(fakeCtx.translate).toHaveBeenCalledWith(100, 50);
+
+      // Toggle OFF: stale pointer should be cleared.
+      (fakeCtx.translate as ReturnType<typeof vi.fn>).mockClear();
+      (fakeCtx.stroke as ReturnType<typeof vi.fn>).mockClear();
+      await toggle.trigger('click');
+      await flushPromises();
+      await nextTick();
+      drainFrames(1);
+      expect(fakeCtx.translate).not.toHaveBeenCalled();
+
+      // Toggle ON again without a new pointermove: localPointer is null,
+      // so nothing should be drawn (no stale arrow).
+      await toggle.trigger('click');
+      await flushPromises();
+      await nextTick();
+      drainFrames(1);
+      expect(fakeCtx.translate).not.toHaveBeenCalled();
+      expect(fakeCtx.stroke).not.toHaveBeenCalled();
+
+      ctxSpy.mockRestore();
     });
   });
 

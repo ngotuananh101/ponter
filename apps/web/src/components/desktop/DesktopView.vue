@@ -30,6 +30,9 @@ const cursorCanvas = ref<HTMLCanvasElement | null>(null);
 /** Prior cursor sample for velocity-based extrapolation (view-only mode). */
 let prevCursor: { x: number; y: number; time: number } | null = null;
 
+/** Local pointer position (0..1 normalized source coords) while controlling. */
+const localPointer = ref<{ x: number; y: number } | null>(null);
+
 let rafId: number | null = null;
 
 /** Draw the remote/local cursor arrow onto the overlay canvas. */
@@ -66,9 +69,50 @@ function renderCursorFrame() {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // Draw a simple arrow/cursor shape at the given canvas-local coordinates.
+  // The cursor tip is at the origin, pointing upper-left.
+  function drawCursorArrow(
+    c: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+  ): void {
+    c.save();
+    c.translate(cx, cy);
+    c.scale(1.5, 1.5);
+    c.strokeStyle = '#ffffff';
+    c.fillStyle = '#0099ff';
+    c.lineWidth = 1;
+    c.lineJoin = 'round';
+    c.beginPath();
+    c.moveTo(0, 0);
+    c.lineTo(18, 20);
+    c.lineTo(8, 14);
+    c.lineTo(-2, 22);
+    c.lineTo(4, 24);
+    c.lineTo(10, 16);
+    c.lineTo(18, 26);
+    c.closePath();
+    c.stroke();
+    c.fill('evenodd');
+    c.restore();
+  }
+
   if (inputOn.value) {
-    // Controlling: the local OS cursor is visible, so we don't draw a remote cursor.
-    // The video has cursor-none so the native cursor shows instead.
+    // Controlling: draw the local-echo arrow at the local pointer position
+    // (zero-latency local echo — the remote cursor converges to it).
+    // The video has cursor-none so only our overlay arrow is visible.
+    if (!localPointer.value) return;
+    const clientPos = toClient(
+      localPointer.value.x,
+      localPointer.value.y,
+      rect,
+      videoWidth,
+      videoHeight,
+    );
+    // Convert to canvas-local coordinates (canvas is sized to content box).
+    const cx = clientPos.x - box.left;
+    const cy = clientPos.y - box.top;
+    drawCursorArrow(ctx, cx, cy);
     return;
   }
 
@@ -101,27 +145,7 @@ function renderCursorFrame() {
   const cx = clientPos.x - box.left;
   const cy = clientPos.y - box.top;
 
-  // Draw a simple arrow/cursor shape.
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(1.5, 1.5);
-  ctx.strokeStyle = '#ffffff';
-  ctx.fillStyle = '#0099ff';
-  ctx.lineWidth = 1;
-  ctx.lineJoin = 'round';
-  // Simple arrow pointing to the upper-left (cursor tip at origin).
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(18, 20);
-  ctx.lineTo(8, 14);
-  ctx.lineTo(-2, 22);
-  ctx.lineTo(4, 24);
-  ctx.lineTo(10, 16);
-  ctx.lineTo(18, 26);
-  ctx.closePath();
-  ctx.stroke();
-  ctx.fill('evenodd');
-  ctx.restore();
+  drawCursorArrow(ctx, cx, cy);
 
   prevCursor = { x: cursor.x, y: cursor.y, time: now };
 }
@@ -229,7 +253,12 @@ watch(
 // itself: moving focus to the video on enable is what makes typing land on the
 // remote desktop without a click first (spec §7.2).
 watch(inputOn, async (on) => {
-  if (!on) return;
+  if (!on) {
+    // Stale pointer samples would draw the arrow at an old position after a
+    // re-enable with no new pointermove, so clear them.
+    localPointer.value = null;
+    return;
+  }
   await nextTick();
   videoEl.value?.focus();
 });
@@ -257,10 +286,13 @@ function pointOf(e: MouseEvent): { x: number; y: number } {
 }
 
 function onPointerMove(e: PointerEvent): void {
+  const pos = pointOf(e);
   store.sendDesktopInput(props.tab.id, {
     kind: 'pointer-move',
-    ...pointOf(e),
+    ...pos,
   });
+  // While controlling, track the local pointer for zero-latency local echo.
+  localPointer.value = pos;
 }
 
 function onPointerButton(e: PointerEvent, pressed: boolean): void {
