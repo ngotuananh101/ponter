@@ -151,14 +151,21 @@
 - **ID:** `agent-trust:CLAIM-02-SESSION-APPROVAL-UNENFORCED` (absent-gap)
 - **Statement:** The agent's `approved` refusal flag is not checked or enforced by either the signaling
   server or the browser client.
-- **Evidence:** `docs/guides/handshake-connection-flow.md:155` — "nothing enforces approved === false
-  server-side today — a refusal is visible only in the flag.";
+- **Evidence (as of `64e4066`):** `docs/guides/handshake-connection-flow.md:155` — "nothing enforces
+  approved === false server-side today — a refusal is visible only in the flag.";
   `packages/webrtc-core/src/connection.ts:207-208` consumes the SDP answer without checking `approved`;
   `packages/webrtc-core/src/transport.ts:277` records `approved` but never gates `setRemoteDescription`.
 - **Impact:** When the agent refuses (busy, no terminal capability), the browser still consumes the
   answer and hangs until ICE/connect timeout instead of surfacing a clear refusal; a hostile signaling
   server can deliver an answer the browser honors despite an agent refusal.
 - **Verdict:** CONFIRMED (refute + re-derive).
+- **Status:** **CLOSED** by WS3 (PR #45, `9eab552`). The `approved` flag is now enforced on both sides:
+  the server's `recordSignal` only advances a session `pending → active` when `approved !== false`
+  (`apps/server/src/utils/signals.ts:55`), and the browser refuses a refusal answer before
+  `setRemoteDescription` (`packages/webrtc-core/src/connection.ts:350`). The quotes above are the
+  snapshot at `64e4066`; the guide line they cite was rewritten in PR #94 (`430b749`) and now reads
+  (line 157): "Since Week 14 (WS3) the server enforces it… enforcement gates the transition, not the
+  message."
 
 ### H3 — Agent has no peer identity verification (trusts the signaling server blindly)
 

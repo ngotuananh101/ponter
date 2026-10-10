@@ -64,7 +64,7 @@ Numbered steps trace the code path for one terminal tab opening against one agen
 
 11. **Agent sends the answer (with buffering).** The `SignalClient.run()` loop (`signal.rs:401`) reads inbound frames from the socket stream and forwards them to the `supervise_sessions` loop (`lib.rs:784`). When the supervisor sees an `Offer`, it calls `run_one_session` (`lib.rs:965`):
     - Builds the peer from the pushed ICE servers (`rtc::build_peer`, `rtc.rs:405`).
-    - **Registers `on_ice_candidate` BEFORE answering** (`lib.rs:996`) — gathering starts when the local description is set, and the handler must be installed first or host candidates are lost.
+    - **Registers `on_ice_candidate` BEFORE answering** (`lib.rs:1016` — the handler is constructed via `rtc::SessionHandler::new`, whose `on_ice_candidate` impl lives at `rtc.rs:587`) — gathering starts when the local description is set, and the handler must be installed first or host candidates are lost.
     - Calls `rtc::answer_offer` (`rtc.rs:758`): sets remote description to the offer, creates an answer, sets local description, then sends `SignalMessage::Answer { sessionId, sdp, approved }` where `approved = offer.capabilities contains TERMINAL_LABEL` (`rtc.rs:764`).
     - Calls `rtc::flush_pending_candidates` (`rtc.rs:724`) to apply any candidates buffered during the offer-handling race (`rtc.rs:724` is the definition; `lib.rs:1123` is the call site).
 
@@ -80,7 +80,7 @@ Numbered steps trace the code path for one terminal tab opening against one agen
 
 17. **Browser sends `terminal-create`.** `createSession` (`client.ts:77`) generates a `terminalId` (`crypto.randomUUID` if available, else a fallback), then `sendJson('terminal', 'terminal-create', { terminalId, cols, rows, shell })` (`client.ts:104`). This is the first frame on the data channel.
 
-18. **Agent spawns the PTY.** The dispatcher task (`lib.rs:1128`) parses the envelope, and for `terminal-data`/`terminal-create` it calls `PtyManager::spawn_session` (`lib.rs:2722`). The manager creates a `PtySession` (`pty.rs:338`) which calls `openpty`, spawns the configured shell (default `$SHELL` or `/bin/sh`), drops the slave end (so EOF propagates on child exit — `pty.rs:353`), and installs two pump directions:
+18. **Agent spawns the PTY.** The dispatcher task (`lib.rs:1178`) parses the envelope, and for `terminal-data`/`terminal-create` it calls `PtyManager::spawn_session` (`lib.rs:2722`). The manager creates a `PtySession` (`pty.rs:338`) which calls `openpty`, spawns the configured shell (default `$SHELL` or `/bin/sh`), drops the slave end (so EOF propagates on child exit — `pty.rs:353`), and installs two pump directions:
     - Browser → PTY: a `spawn_blocking` writer thread draining a bounded 64-slot channel (`pty.rs:357`).
     - PTY → browser: a `spawn_blocking` reader (16 KiB buffer, `MAX_PTY_CHUNK`) feeding an async converter that frames output via `frame_pty_output` (`pty.rs:141`) — base64-standard-encoding the raw bytes (ADR-10: no UTF-8 assumption, bytes move as `Vec<u8>`).
 

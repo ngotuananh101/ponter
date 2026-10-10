@@ -948,7 +948,7 @@ gantt
 
 ### Phase 3: Desktop Streaming (Weeks 7-9)
 
-> **Status:** Week 7 is a completed *thin slice* — view-only display, ~720p @ 15fps, software H.264 (openh264). Week 8 is completed — 1080p30 profile (720p30 baseline), manual bitrate controls, source selection, GCC auto-ABR. Remainder of Phase 3 is Week 9 (mouse/keyboard input — Spec B) and hardware codec (spike ADR-25, uncommitted, deferred to Phase 6).
+> **Status:** Week 7 is a completed *thin slice* — view-only display, ~720p @ 15fps, software H.264 (openh264). Week 8 is completed — 1080p30 profile (720p30 baseline), manual bitrate controls, source selection, GCC auto-ABR. Week 9 (mouse/keyboard input — Spec B) is **completed**: the mechanism and wire are in place, DEFAULT OFF (ADR-29), and the gate is now opened under the ADR-42 two-gate model (operator `--allow-input` AND verified peer) — see the Week 9 block below. The only remainder of Phase 3 is hardware codec (spike ADR-25, uncommitted, deferred to Phase 6).
 
 #### Week 7: Desktop Streaming — Thin Slice (Completed)
 - [x] `packages/webrtc-core` — optional media seams (`addTransceiver`/`onTrack`) + `media-channel.ts` (closes ADR-06)
@@ -957,7 +957,7 @@ gantt
 - [x] Web — desktop tab in workspace, exclusive per agent (ADR-19)
 - [x] Cross-language E2E (`desktop.e2e.test.ts`) + manual Chrome demo
 
-#### Weeks 8-9: Quality & Interaction (Upcoming)
+#### Weeks 8-9: Quality & Interaction (Completed)
 
 ##### Week 8: Quality & Source Selection (Completed)
 - [x] 1080p30 quality profile (720p30 baseline), fallback based on capacity (ADR-24)
@@ -966,9 +966,9 @@ gantt
 - [x] Display/window selection, source swapping with time limit (ADR-22)
 - [ ] Hardware codec (H.264 hardware / AV1) — spike ADR-25, uncommitted
 
-##### Week 9: Input Forwarding (Mechanism Ready, NOT YET Usable)
-- [ ] Mouse & keyboard control (input forwarding) — mechanism + wire complete, but **DEFAULT OFF** (ADR-29), enabled only via local `--allow-input`; not usable until WS2/WS3 complete. (ADR-18 superseded by ADR-26; gated by ADR-29)
-> Input unlocks only after **WS2** (peer identity — closes H3) and **WS3** (enforce `approved` — closes H2). See `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
+##### Week 9: Input Forwarding (Completed)
+- [x] Mouse & keyboard control (input forwarding) — mechanism + wire complete, **DEFAULT OFF** (ADR-29), enabled only via local `--allow-input` **and** a verified peer (ADR-42 two-gate). (ADR-18 superseded by ADR-26; gated by ADR-29)
+> The two prerequisites named when this gate was written are closed: **WS2** (peer identity — closes H3, PR #44) and **WS3** (enforce `approved` — closes H2, PR #45). ADR-41 (Phase 6a, PR #49) hoisted `verify_offer_identity` into an admission gate for every session mode, and ADR-42 then opened the ADR-29 gate under a two-gate model (operator `--allow-input` AND verified peer). See `docs/security/2026-10-01-e2ee-zero-trust-audit.md`.
 
 ### Phase 4: File Transfer (Weeks 10-11)
 
@@ -1007,7 +1007,7 @@ gantt
 
 ### Phase 6: Low-latency Interaction (Weeks 17-18)
 
-> **6a completed (2026-10-07; `48edac1`).** **6b Latency in progress** (`feat/phase6b-low-latency`).
+> **Phase 6 completed (2026-10-07; `ae5d251`).** Both workstreams merged: **6a** `48edac1` (PR #49) and **6b** `ae5d251` (PR #50).
 >
 > **Phase 6a Interactivity** — merged to `main` @ `48edac1` (PR #49): ADR-41 (`verify_offer_identity` hoisted as admission gate for all session modes — terminal, desktop, files, unknown); ADR-42 two-gate input (`--allow-input` from operator AND verified peer; UI badge "Verified peer" + Controlling/View only state); ADR-43 120 Hz rate cap; ADR-44 baseline input latency.
 >
@@ -1015,7 +1015,7 @@ gantt
 
 ### Phase 7: Agent Desktop App (Weeks 19-20)
 
-> **Phase 7 completed (2026-10-08; `591a53e`).** Packages `ponter-agent` into a desktop application: account login, device registration/management (following Admin Management), visual setup wizard (server, screen permissions, input gate, auto-start), installer/tray/auto-update. **Framework SELECTED: Tauri v2.** Details: spec `docs/superpowers/specs/2026-10-07-phase7-agent-desktop-app-design.md` (ADR-50..58), plan `docs/superpowers/plans/2026-10-07-phase7-agent-desktop-app.md`.
+> **Phase 7 completed (2026-10-08; `591a53e`).** Packages `ponter-agent` into a desktop application: account login, device registration/management (following Admin Management), visual setup wizard (server, screen permissions, input gate, auto-start), installer/tray/auto-update. **Framework SELECTED: Tauri v2.** Execution followed ADR-58 (layered L0-L5 delivery with a stop-safe boundary at every layer, so a partial delivery is still a coherent shippable slice). Details: spec `docs/superpowers/specs/2026-10-07-phase7-agent-desktop-app-design.md` (ADR-50..58), plan `docs/superpowers/plans/2026-10-07-phase7-agent-desktop-app.md`.
 >
 > **Merged to `main`:** Task 0/0b scaffolding (dialog width, PR #52 `9f1efba` + fix #54 `26feeb4`); Task 1 L0 spike embedded Tauri shell — **GATING PASS** (#53 `6fee3e4`, evidence `docs/spikes/2026-10-07-phase7-tauri-spike.md`); Task 2 split `ponter-agent` into lib + thin CLI (ADR-50, #55 `e830d28`); Task 3 Tauri backend skeleton + keychain wrapper (ADR-51/52, #56 `3f75487`); Task 4 account login + store tokens in keychain (ADR-52, #57 `53846de`); Task 5 setup wizard with live probes (ADR-53, #58 `85ef040`); Task 6 device registration/management (ADR-54, #59 `2e1fd5c`); Task 7 tray icon + lifecycle (ADR-55, #60 `a358622`); Task 8 per-platform auto-start (ADR-55, #61 `e607e13`); desktop UI sync to shadcn-vue (#62 `a5dcc63`); L4 packaging + CI build 3-OS (ADR-56, #64 `1c82218`); frontend design audit Phase B (#65 `4526910`); shared shadcn-vue ui-components (#68 `b3d1ce3`); L5 Task 11 auto-update with signed manifests (ADR-57, #67 `591a53e`).
 >
@@ -1025,9 +1025,15 @@ gantt
 >
 > **Post-Phase-7 additions (PR #83).** (1) **Capability selection at registration:** the operator picks `terminal` / `desktop` / `files` when registering a device; the web `RegisterAgentDialog` defaults to all three (prior behavior), the desktop app defaults to `terminal` + `desktop` (its embedded runtime has no `files_root`), and the desktop `register_device` now forwards the selection in the `POST /api/agents` body. (2) **Live runtime status in the window:** a `get_runtime_status` command returns the same `connected` / `disconnected` / `stopped` keys as the tray, and a `runtime-status` event drives a live indicator in the Devices view (which also refreshes the list every 5 s). (3) **Single-instance guard:** `tauri-plugin-single-instance` is registered first, so a second launch focuses the existing window instead of starting a second agent runtime.
 
-### Phase 8: Open-Source Self-Build + Provider-Selectable TURN
+### Phase 8: Open-Source Self-Build + Provider-Selectable TURN + Desktop Config
 
-> **Phase 8 (2026-10-08).** Two independent workstreams: **8a** enable self-build/self-host (build-from-source for all 4 apps, fork & self-host guide, Docker self-publish, community files) — preserving author attribution (ADR-60); **8b** TURN provider selection via `TURN_PROVIDER=coturn|cloudflare|none` (default `coturn`, preserving existing behavior — ADR-62/63). Details: spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`. Merged: 8a `6a568c0`, 8b `1ebda79`.
+> **Phase 8 (2026-10-08/09).** Three independently shippable workstreams: **8a** enable self-build/self-host (build-from-source for all 4 apps, fork & self-host guide, Docker self-publish, community files) — preserving author attribution (ADR-60), with desktop auto-update opt-out for self-builders via a documented default plus an optional env-driven override (ADR-61); **8b** TURN provider selection via `TURN_PROVIDER=coturn|cloudflare|none` (default `coturn`, preserving existing behavior — ADR-62), where the ICE server list keeps one shared shape and provider differences are normalized server-side (ADR-63); **8c** desktop server configuration, persistence, login ordering & dark mode (ADR-64..68).
+>
+> **Details:** 8a/8b spec `docs/superpowers/specs/2026-10-08-phase8-selfbuild-and-turn-design.md` (ADR-59..63), plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`; 8c spec `docs/superpowers/specs/2026-10-08-phase8c-desktop-config-design.md` (ADR-64..68), plan `docs/superpowers/plans/2026-10-08-phase8c-desktop-config.md`.
+>
+> **Merged to `main`:** 8a `6a568c0` (PR #69); 8b `1ebda79` (PR #70); **8c** `2f608e7` (PR #72) + follow-ups `f7add22` (PR #75). 8c shipped ADR-64 (server URL four-level precedence: runtime `PONTER_SERVER_URL` → persisted config → build-time `PONTER_DEFAULT_SERVER_URL` → `http://localhost:8787`), ADR-65 (settings persist as `config.json` in the Tauri app-config dir; no secret is written to it — tokens stay memory/keychain-only, ADR-52), ADR-66 (flow becomes Server → Login → Setup → Devices, removing the login dead-end), ADR-67 (build-time default compiled in via `option_env!`, set from a repo variable), and ADR-68 (dark mode ports the web *behaviour* but persists via the config file, not webview storage — bound by the R8 storage gate).
+>
+> **Post-Phase-8 backlog drain (2026-10-08/09).** Recorded here for the §8 trail: PR #74 `c64e8fd` (self-hosting guide token-storage correction); PR #75 `f7add22` (Phase 8c follow-ups — slash-only URL, failed-save UI, desktop README); PR #76 `2a7ebe6` (desktop README precedence wording); PR #77 `f9ba7fe` (CI skips the desktop build matrix for markdown-only changes); PR #83 `70370ed` (desktop capability selection, live runtime status, single-instance guard — see the Phase 7 block) + docs PR #85 `98c3630`; PR #84 `3a5762a` (allow `PATCH` in CORS preflight for agent update); fleet-push over the browser WebSocket — spec PR #86 `ec09b66`, code PR #87 `0a86e7c`, docs PR #88 `d6b9155` (ADR-73..77); PR #90 `c51b80f` (legacy-account WS2 signing-key bootstrap) + docs PR #91 `cbbfc5b`; PR #92 `99c6c558` (re-derive WS1-Rust / WS3 agent citations); PR #94 `430b749` (re-derive every citation in `docs/guides/handshake-connection-flow.md`); PR #95 `3222c2f` (fix server runtime `@ponter/shared` import crash + deploy webhook); PR #96 `4b2e84c` (eliminate desktop Devices auto-refresh flicker); PR #97 `9f5d737` (authenticated WS2 signing-key reset & recovery flow) + docs PR #98 `64a62c2`.
 
 ---
 
