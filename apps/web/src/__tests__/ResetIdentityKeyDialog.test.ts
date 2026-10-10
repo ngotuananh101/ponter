@@ -108,7 +108,7 @@ describe('ResetIdentityKeyDialog.vue', () => {
     expect(alert.text()).toContain('Invalid password');
   });
 
-  it('cancel button resets password and error fields', async () => {
+  it('cancel button resets password, error fields, and emits update:open false', async () => {
     const wrapper = mountDialog(true);
     const authStore = useAuthStore();
     vi.spyOn(authStore, 'resetSigningKey').mockRejectedValue(
@@ -130,5 +130,14 @@ describe('ResetIdentityKeyDialog.vue', () => {
     expect(
       wrapper.find('[data-test="reset-identity-key-error"]').exists(),
     ).toBe(false);
+    expect(wrapper.emitted('update:open')).toContainEqual([false]);
+  });
+
+  it('dialog @update:open with false triggers handleClose and emits update:open false', async () => {
+    const wrapper = mountDialog(true);
+    const dialog = wrapper.findComponent({ name: 'Dialog' });
+    await dialog.vm.$emit('update:open', false);
+
+    expect(wrapper.emitted('update:open')).toContainEqual([false]);
   });
 });

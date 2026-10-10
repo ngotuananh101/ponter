@@ -45,14 +45,23 @@ async function handleSubmit() {
   }
 }
 
+function handleOpenChange(isOpen: boolean) {
+  if (!isOpen) {
+    handleClose();
+  } else {
+    emit('update:open', true);
+  }
+}
+
 function handleClose() {
   password.value = '';
   error.value = null;
+  emit('update:open', false);
 }
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="handleClose">
+  <Dialog :open="open" @update:open="handleOpenChange">
     <DialogContent data-test="reset-identity-key-dialog">
       <form @submit.prevent="handleSubmit">
         <DialogHeader>
