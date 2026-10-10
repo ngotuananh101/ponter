@@ -507,6 +507,83 @@ describe('DesktopView', () => {
       vi.unstubAllGlobals();
     });
 
+    /**
+     * Shared harness for the cursor-drawing tests: mocks the 2D context
+     * (happy-dom returns null from getContext), stubs the animation-frame loop
+     * with a BOUNDED queue (the real tick re-arms itself, so an unbounded drain
+     * never terminates), and mounts a DesktopView whose <video> reports
+     * 1920×1080 with a matching full-size bounding box.
+     */
+    function setupCursorHarness() {
+      const store = useTerminalStore();
+      vi.spyOn(store, 'sendDesktopInput').mockImplementation(() => {});
+
+      const fakeCtx: Record<string, unknown> = {
+        clearRect: vi.fn(),
+        save: vi.fn(),
+        restore: vi.fn(),
+        translate: vi.fn(),
+        scale: vi.fn(),
+        beginPath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        closePath: vi.fn(),
+        stroke: vi.fn(),
+        fill: vi.fn(),
+      };
+      fakeCtx.strokeStyle = '#fff';
+      fakeCtx.fillStyle = '#00f';
+      fakeCtx.lineWidth = 1;
+      fakeCtx.lineJoin = 'round';
+      const ctxSpy = vi
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockReturnValue(fakeCtx as unknown as CanvasRenderingContext2D);
+
+      const frameQueue: Array<() => void> = [];
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        if (frameQueue.length === 0) {
+          frameQueue.push(() => cb(performance.now()));
+        }
+        return frameQueue.length;
+      });
+      vi.stubGlobal('cancelAnimationFrame', () => {});
+      const drainFrames = (n: number) => {
+        for (let i = 0; i < n && frameQueue.length; i++) {
+          frameQueue.shift()!();
+        }
+      };
+
+      const wrapper = mountWithChrome({
+        desktopInputEnabled: true,
+        desktopPeerVerified: true,
+      });
+
+      const video = wrapper.find('video');
+      const videoEl = video.element as HTMLVideoElement;
+      Object.defineProperty(videoEl, 'videoWidth', {
+        value: 1920,
+        configurable: true,
+      });
+      Object.defineProperty(videoEl, 'videoHeight', {
+        value: 1080,
+        configurable: true,
+      });
+      videoEl.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          width: 1920,
+          height: 1080,
+          right: 1920,
+          bottom: 1080,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      return { wrapper, video, fakeCtx, ctxSpy, drainFrames };
+    }
+
     it('renders a video with cursor-none class when inputOn is true', async () => {
       const wrapper = mountWithChrome({
         desktopInputEnabled: true,
@@ -599,76 +676,8 @@ describe('DesktopView', () => {
     });
 
     it('draws the local-echo arrow at the local pointer position while controlling', async () => {
-      const store = useTerminalStore();
-      vi.spyOn(store, 'sendDesktopInput').mockImplementation(() => {});
-
-      // Mock the canvas 2D context (happy-dom returns null from getContext).
-      const fakeCtx: Record<string, unknown> = {
-        clearRect: vi.fn(),
-        save: vi.fn(),
-        restore: vi.fn(),
-        translate: vi.fn(),
-        scale: vi.fn(),
-        beginPath: vi.fn(),
-        moveTo: vi.fn(),
-        lineTo: vi.fn(),
-        closePath: vi.fn(),
-        stroke: vi.fn(),
-        fill: vi.fn(),
-      };
-      fakeCtx.strokeStyle = '#fff';
-      fakeCtx.fillStyle = '#00f';
-      fakeCtx.lineWidth = 1;
-      fakeCtx.lineJoin = 'round';
-      const ctxSpy = vi
-        .spyOn(HTMLCanvasElement.prototype, 'getContext')
-        .mockReturnValue(fakeCtx as unknown as CanvasRenderingContext2D);
-
-      // Stub the animation frame loop deterministically with a BOUNDED queue
-      // (the real tick re-arms itself via requestAnimationFrame, so an
-      // unbounded while-loop never terminates — drain a fixed number of frames).
-      const frameQueue: Array<() => void> = [];
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        if (frameQueue.length === 0) {
-          frameQueue.push(() => cb(performance.now()));
-        }
-        return frameQueue.length;
-      });
-      vi.stubGlobal('cancelAnimationFrame', () => {});
-      const drainFrames = (n: number) => {
-        for (let i = 0; i < n && frameQueue.length; i++) {
-          frameQueue.shift()!();
-        }
-      };
-
-      const wrapper = mountWithChrome({
-        desktopInputEnabled: true,
-        desktopPeerVerified: true,
-      });
-
-      // Give the <video> fake dimensions and a bounding box.
-      const video = wrapper.find('video');
-      const videoEl = video.element as HTMLVideoElement;
-      Object.defineProperty(videoEl, 'videoWidth', {
-        value: 1920,
-        configurable: true,
-      });
-      Object.defineProperty(videoEl, 'videoHeight', {
-        value: 1080,
-        configurable: true,
-      });
-      videoEl.getBoundingClientRect = () =>
-        ({
-          left: 0,
-          top: 0,
-          width: 1920,
-          height: 1080,
-          right: 1920,
-          bottom: 1080,
-          x: 0,
-          y: 0,
-          toJSON: () => ({}),
-        }) as DOMRect;
+      const { wrapper, video, fakeCtx, ctxSpy, drainFrames } =
+        setupCursorHarness();
 
       // Enable control.
       await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
@@ -699,71 +708,7 @@ describe('DesktopView', () => {
     });
 
     it('draws nothing in the controlling branch before any pointer sample (no crash)', async () => {
-      const store = useTerminalStore();
-      vi.spyOn(store, 'sendDesktopInput').mockImplementation(() => {});
-
-      const fakeCtx: Record<string, unknown> = {
-        clearRect: vi.fn(),
-        save: vi.fn(),
-        restore: vi.fn(),
-        translate: vi.fn(),
-        scale: vi.fn(),
-        beginPath: vi.fn(),
-        moveTo: vi.fn(),
-        lineTo: vi.fn(),
-        closePath: vi.fn(),
-        stroke: vi.fn(),
-        fill: vi.fn(),
-      };
-      fakeCtx.strokeStyle = '#fff';
-      fakeCtx.fillStyle = '#00f';
-      fakeCtx.lineWidth = 1;
-      fakeCtx.lineJoin = 'round';
-      const ctxSpy = vi
-        .spyOn(HTMLCanvasElement.prototype, 'getContext')
-        .mockReturnValue(fakeCtx as unknown as CanvasRenderingContext2D);
-
-      const frameQueue: Array<() => void> = [];
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        if (frameQueue.length === 0) {
-          frameQueue.push(() => cb(performance.now()));
-        }
-        return frameQueue.length;
-      });
-      vi.stubGlobal('cancelAnimationFrame', () => {});
-      const drainFrames = (n: number) => {
-        for (let i = 0; i < n && frameQueue.length; i++) {
-          frameQueue.shift()!();
-        }
-      };
-
-      const wrapper = mountWithChrome({
-        desktopInputEnabled: true,
-        desktopPeerVerified: true,
-      });
-
-      const video = wrapper.find('video');
-      const videoEl = video.element as HTMLVideoElement;
-      Object.defineProperty(videoEl, 'videoWidth', {
-        value: 1920,
-        configurable: true,
-      });
-      Object.defineProperty(videoEl, 'videoHeight', {
-        value: 1080,
-        configurable: true,
-      });
-      videoEl.getBoundingClientRect = () =>
-        ({
-          left: 0,
-          top: 0,
-          width: 1920,
-          height: 1080,
-          right: 1920,
-          bottom: 1080,
-          x: 0,
-          y: 0,
-          toJSON: () => ({}),
-        }) as DOMRect;
+      const { wrapper, fakeCtx, ctxSpy, drainFrames } = setupCursorHarness();
 
       await wrapper.find('[data-test="desktop-input-toggle"]').trigger('click');
       await flushPromises();
@@ -779,71 +724,8 @@ describe('DesktopView', () => {
     });
 
     it('clears the stale local pointer when input is toggled off and on', async () => {
-      const store = useTerminalStore();
-      vi.spyOn(store, 'sendDesktopInput').mockImplementation(() => {});
-
-      const fakeCtx: Record<string, unknown> = {
-        clearRect: vi.fn(),
-        save: vi.fn(),
-        restore: vi.fn(),
-        translate: vi.fn(),
-        scale: vi.fn(),
-        beginPath: vi.fn(),
-        moveTo: vi.fn(),
-        lineTo: vi.fn(),
-        closePath: vi.fn(),
-        stroke: vi.fn(),
-        fill: vi.fn(),
-      };
-      fakeCtx.strokeStyle = '#fff';
-      fakeCtx.fillStyle = '#00f';
-      fakeCtx.lineWidth = 1;
-      fakeCtx.lineJoin = 'round';
-      const ctxSpy = vi
-        .spyOn(HTMLCanvasElement.prototype, 'getContext')
-        .mockReturnValue(fakeCtx as unknown as CanvasRenderingContext2D);
-
-      const frameQueue: Array<() => void> = [];
-      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-        if (frameQueue.length === 0) {
-          frameQueue.push(() => cb(performance.now()));
-        }
-        return frameQueue.length;
-      });
-      vi.stubGlobal('cancelAnimationFrame', () => {});
-      const drainFrames = (n: number) => {
-        for (let i = 0; i < n && frameQueue.length; i++) {
-          frameQueue.shift()!();
-        }
-      };
-
-      const wrapper = mountWithChrome({
-        desktopInputEnabled: true,
-        desktopPeerVerified: true,
-      });
-
-      const video = wrapper.find('video');
-      const videoEl = video.element as HTMLVideoElement;
-      Object.defineProperty(videoEl, 'videoWidth', {
-        value: 1920,
-        configurable: true,
-      });
-      Object.defineProperty(videoEl, 'videoHeight', {
-        value: 1080,
-        configurable: true,
-      });
-      videoEl.getBoundingClientRect = () =>
-        ({
-          left: 0,
-          top: 0,
-          width: 1920,
-          height: 1080,
-          right: 1920,
-          bottom: 1080,
-          x: 0,
-          y: 0,
-          toJSON: () => ({}),
-        }) as DOMRect;
+      const { wrapper, video, fakeCtx, ctxSpy, drainFrames } =
+        setupCursorHarness();
 
       const toggle = wrapper.find('[data-test="desktop-input-toggle"]');
 
