@@ -28,6 +28,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::login::login,
             commands::login::logout,
+            commands::session::refresh_session,
             commands::wizard::probe_server,
             #[cfg(not(target_env = "musl"))]
             commands::wizard::probe_capture,

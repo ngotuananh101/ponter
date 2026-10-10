@@ -33,6 +33,18 @@ describe('config store', () => {
     expect(invoke).toHaveBeenCalledWith('get_config');
   });
 
+  it('load() resolves and flips configLoaded when get_config fails', async () => {
+    // Fail-soft (D): a rejected read must not surface as a rejection to the
+    // caller (App.vue / main.ts) — pre-fix this test is RED because load()
+    // re-threw. configLoaded must still flip so the startup gate never stalls.
+    const store = useConfigStore();
+    vi.mocked(invoke).mockRejectedValue(new Error('config read failed'));
+
+    await expect(store.load()).resolves.toBeUndefined();
+    expect(store.configLoaded).toBe(true);
+    expect(store.hasServerUrl).toBe(false);
+  });
+
   it('setServerUrl persists via save_config and clears editing', async () => {
     const store = useConfigStore();
     store.editing = true;

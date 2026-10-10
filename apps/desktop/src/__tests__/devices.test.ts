@@ -197,6 +197,143 @@ describe('devices store', () => {
     expect(store.devices).toEqual([]);
     expect(store.loading).toBe(false);
   });
+
+  it('refresh({ background: true }) retains a pre-existing error while in-flight', async () => {
+    // The flicker bug (E): the old code cleared `error` at the START of every
+    // refresh, so a healthy 5s background poll blanked the banner for one tick.
+    // A pre-existing error must survive while the background request is in-flight.
+    const store = useDevicesStore();
+    store.error = 'stale banner error';
+
+    const pending = new Promise<unknown>(() => {}); // never resolves
+    vi.mocked(invoke).mockReturnValue(pending as never);
+
+    void store.refresh({ background: true });
+
+    // Pre-fix this was null (cleared at start) → this assertion fails (RED).
+    expect(store.error).toBe('stale banner error');
+  });
+
+  it('refresh({ background: true }) clears the error on success', async () => {
+    // On a successful background refresh the stale error is cleared (the fresh
+    // result replaces it) and the list is replaced.
+    const store = useDevicesStore();
+    store.error = 'stale banner error';
+    store.devices = [sampleDevice];
+
+    vi.mocked(invoke).mockResolvedValue([]);
+    await store.refresh({ background: true });
+
+    expect(store.error).toBeNull();
+    expect(store.devices).toEqual([]);
+  });
+
+  it('refresh({ background: true }) surfaces a NEW error without clearing devices list', async () => {
+    // Last-known list must remain mounted; only `error` updates.
+    const store = useDevicesStore();
+    store.devices = [sampleDevice];
+
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('session expired after refresh attempt: network boom'),
+    );
+    await store.refresh({ background: true });
+
+    // Auth-failure string (starts with the refresh-failed prefix) is surfaced
+    // verbatim so App.vue / the banner can react.
+    expect(store.error).toBe(
+      'session expired after refresh attempt: network boom',
+    );
+    // Stale-while-revalidate: the last-known list is NOT blanked.
+    expect(store.devices).toHaveLength(1);
+    expect(store.devices[0].id).toBe(sampleDevice.id);
+    expect(store.loading).toBe(false);
+  });
+
+  it('register() with a refresh-failed (auth) error triggers logout()', async () => {
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(
+      new Error(
+        'session expired after refresh attempt: Invalid or expired refresh token',
+      ),
+    );
+
+    const store = useDevicesStore();
+    const result = await store.register();
+
+    expect(result).toBeNull();
+    expect(store.registered).toBe(false);
+    expect(logoutSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('register() with a non-auth error does NOT trigger logout()', async () => {
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(new Error('network down'));
+
+    const store = useDevicesStore();
+    const result = await store.register();
+
+    expect(result).toBeNull();
+    expect(store.error).toBe('network down');
+    expect(logoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('register() with a raw server 401 message (no refresh attempted) triggers logout()', async () => {
+    // When no refresh token is in the keychain, the Rust layer surfaces the
+    // raw server message "Invalid or expired token" directly — this is also
+    // auth-fatal and must log out.
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(new Error('Invalid or expired token'));
+
+    const store = useDevicesStore();
+    await store.register();
+
+    expect(logoutSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('remove() with a refresh-failed (auth) error triggers logout()', async () => {
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('session expired after refresh attempt: refresh reuse'),
+    );
+
+    const store = useDevicesStore();
+    const ok = await store.remove('dev-1');
+
+    expect(ok).toBe(false);
+    expect(logoutSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('remove() with a non-auth error does NOT trigger logout()', async () => {
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(new Error('Agent not found'));
+
+    const store = useDevicesStore();
+    const ok = await store.remove('dev-missing');
+
+    expect(ok).toBe(false);
+    expect(logoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('refresh() (foreground) clears a pre-existing error before retrying', async () => {
+    const store = useDevicesStore();
+    store.error = 'previous error';
+
+    vi.mocked(invoke).mockResolvedValue([sampleDevice]);
+    await store.refresh();
+
+    expect(store.error).toBeNull();
+    expect(store.devices).toHaveLength(1);
+  });
 });
 
 describe('DevicesView', () => {

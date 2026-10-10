@@ -57,6 +57,7 @@ pub fn delete_secret(service: &str, account: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::keychain_lock;
 
     #[test]
     fn round_trips_a_secret() {
@@ -64,6 +65,8 @@ mod tests {
             eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain round trip (headless CI without a secret service)");
             return;
         }
+        // Serialize with every other keychain-touching test (single shared lock).
+        let _guard = keychain_lock();
         let svc = "ponter-desktop-test";
         let acct = "acct-1";
         // Pre-clean so a crashed previous run cannot make this test lie.
