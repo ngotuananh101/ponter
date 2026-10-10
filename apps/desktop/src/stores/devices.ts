@@ -32,9 +32,17 @@ export const useDevicesStore = defineStore('devices', () => {
    * local device row in the list after a successful register+refresh. */
   const registered = ref(false);
 
-  /** Fetch the device list from the server. */
-  async function refresh(): Promise<void> {
-    loading.value = true;
+  /** Fetch the device list from the server.
+   *
+   * When `options.background` is true, this is a scheduled auto-refresh: it
+   * avoids toggling the global `loading` flag so the existing device list
+   * stays mounted (preventing UI flicker on the 5-second interval). Errors are
+   * still captured into `error` so the alert banner can surface them. */
+  async function refresh(options?: { background?: boolean }): Promise<void> {
+    const isBackground = options?.background === true;
+    if (!isBackground) {
+      loading.value = true;
+    }
     error.value = null;
     try {
       devices.value = await invoke<DesktopDevice[]>('list_devices');
@@ -42,7 +50,9 @@ export const useDevicesStore = defineStore('devices', () => {
       error.value = err instanceof Error ? err.message : String(err);
       devices.value = [];
     } finally {
-      loading.value = false;
+      if (!isBackground) {
+        loading.value = false;
+      }
     }
   }
 

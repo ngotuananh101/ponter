@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAuthStore } from '@/stores/auth';
@@ -65,6 +65,17 @@ const runtimeStatus = ref<string>('unknown');
 let unlistenRuntime: UnlistenFn | null = null;
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
+/** Tracks whether the *current* device registration is in-flight, independent
+ * of the background auto-refresh cycle. */
+const isRegistering = ref(false);
+
+/** Combined action-pending flag used to disable interactive controls.
+ * True only during an actual user action (registration) or the initial load
+ * when there are zero devices — NOT during background auto-refresh. */
+const isAnyActionPending = computed(
+  () => isRegistering.value || (store.loading && store.devices.length === 0),
+);
+
 async function probeRuntimeStatus() {
   try {
     const status = await invoke<string>('get_runtime_status');
@@ -76,7 +87,12 @@ async function probeRuntimeStatus() {
 }
 
 async function handleRegister() {
-  await store.register(orderedCapabilities());
+  isRegistering.value = true;
+  try {
+    await store.register(orderedCapabilities());
+  } finally {
+    isRegistering.value = false;
+  }
 }
 
 function handleDelete(deviceId: string) {
@@ -111,8 +127,10 @@ onMounted(async () => {
     // Event listener failed — keep neutral status.
   }
   // Auto-refresh the device list so online/offline badges stay correct.
+  // Background mode avoids toggling `loading`, so the existing device list
+  // stays mounted — preventing UI flicker on each 5-second interval tick.
   refreshInterval = setInterval(() => {
-    void store.refresh();
+    void store.refresh({ background: true });
   }, 5000);
 });
 
@@ -196,7 +214,7 @@ onUnmounted(() => {
         </Alert>
 
         <div
-          v-if="store.loading"
+          v-if="store.loading && store.devices.length === 0"
           data-testid="devices-loading"
           class="py-8 text-center text-sm text-muted-foreground font-mono"
         >
@@ -285,7 +303,7 @@ onUnmounted(() => {
                   : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
               "
               :aria-pressed="selectedCapabilities.includes('terminal')"
-              :disabled="store.loading"
+              :disabled="isAnyActionPending"
               data-test="register-cap-terminal"
               @click="toggleCapability('terminal')"
             >
@@ -301,7 +319,7 @@ onUnmounted(() => {
                   : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
               "
               :aria-pressed="selectedCapabilities.includes('desktop')"
-              :disabled="store.loading"
+              :disabled="isAnyActionPending"
               data-test="register-cap-desktop"
               @click="toggleCapability('desktop')"
             >
@@ -317,7 +335,7 @@ onUnmounted(() => {
                   : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
               "
               :aria-pressed="selectedCapabilities.includes('files')"
-              :disabled="store.loading"
+              :disabled="isAnyActionPending"
               data-test="register-cap-files"
               @click="toggleCapability('files')"
             >
@@ -329,12 +347,12 @@ onUnmounted(() => {
 
         <Button
           data-testid="devices-register"
-          :disabled="store.loading"
+          :disabled="isAnyActionPending"
           class="w-full font-medium"
           @click="handleRegister"
         >
           <Plus class="w-4 h-4 mr-1.5" />
-          {{ store.loading ? 'Registering...' : 'Register Device' }}
+          {{ isRegistering ? 'Registering...' : 'Register Device' }}
         </Button>
         <p
           v-if="!store.registered"
