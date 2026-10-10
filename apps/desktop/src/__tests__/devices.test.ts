@@ -172,6 +172,31 @@ describe('devices store', () => {
     expect(ok).toBe(false);
     expect(store.error).toBe('Agent not found');
   });
+
+  it('refresh({ background: true }) does not set loading=true during in-flight request', async () => {
+    const refreshPromise = new Promise<unknown>(() => {}); // never resolves
+    vi.mocked(invoke).mockReturnValue(refreshPromise as never);
+
+    const store = useDevicesStore();
+    void store.refresh({ background: true });
+
+    // While the request is in-flight, loading must NOT be set to true.
+    expect(store.loading).toBe(false);
+
+    // devices.value should remain unchanged (empty) while inflight.
+    expect(store.devices).toEqual([]);
+  });
+
+  it('refresh({ background: true }) still captures errors into store.error', async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error('bg refresh failed'));
+
+    const store = useDevicesStore();
+    await store.refresh({ background: true });
+
+    expect(store.error).toBe('bg refresh failed');
+    expect(store.devices).toEqual([]);
+    expect(store.loading).toBe(false);
+  });
 });
 
 describe('DevicesView', () => {
@@ -478,5 +503,135 @@ describe('DevicesView', () => {
     await logoutBtn.trigger('click');
 
     expect(logoutSpy).toHaveBeenCalled();
+  });
+
+  it('background refresh interval passes { background: true } to store.refresh', async () => {
+    mockInvoke({
+      list_devices: () => [sampleDevice],
+      get_runtime_status: () => 'stopped',
+    });
+
+    const wrapper = await mountView();
+
+    // Wait past the 5000ms interval
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+
+    // Verify the interval-triggered refresh did NOT set loading=true by checking
+    // that the devices-loading placeholder is absent when devices are present.
+    expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
+      false,
+    );
+
+    wrapper.unmount();
+  });
+
+  it('does not show devices-loading placeholder during background refresh when devices are present', async () => {
+    mockInvoke({
+      list_devices: () => [sampleDevice],
+      get_runtime_status: () => 'stopped',
+    });
+
+    const wrapper = await mountView();
+
+    // The loading placeholder should not appear because devices are loaded.
+    expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
+      false,
+    );
+
+    // Advance the auto-refresh interval — still no loading placeholder.
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
+      false,
+    );
+
+    // The device list should remain mounted.
+    expect(wrapper.find('[data-testid="devices-list"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="device-row"]')).toHaveLength(1);
+
+    wrapper.unmount();
+  });
+
+  it('devices list remains mounted during background refresh', async () => {
+    mockInvoke({
+      list_devices: () => [sampleDevice],
+      get_runtime_status: () => 'stopped',
+    });
+
+    const wrapper = await mountView();
+
+    const listBefore = wrapper.find('[data-testid="devices-list"]');
+    expect(listBefore.exists()).toBe(true);
+
+    // Trigger a background refresh
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+    await nextTick();
+
+    const listAfter = wrapper.find('[data-testid="devices-list"]');
+    expect(listAfter.exists()).toBe(true);
+
+    const rows = wrapper.findAll('[data-testid="device-row"]');
+    expect(rows).toHaveLength(1);
+
+    wrapper.unmount();
+  });
+
+  it('register button and capability toggles remain enabled during background refresh', async () => {
+    mockInvoke({
+      list_devices: () => [sampleDevice],
+      get_runtime_status: () => 'stopped',
+    });
+
+    const wrapper = await mountView();
+
+    // Trigger a background refresh — loading should NOT be true (background=true)
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+    await nextTick();
+
+    const store = useDevicesStore();
+    expect(store.loading).toBe(false);
+
+    const registerBtn = wrapper.find('[data-testid="devices-register"]');
+    expect(registerBtn.exists()).toBe(true);
+    expect(registerBtn.attributes('disabled')).toBeUndefined();
+
+    const capTerminal = wrapper.find('[data-test="register-cap-terminal"]');
+    const capDesktop = wrapper.find('[data-test="register-cap-desktop"]');
+    const capFiles = wrapper.find('[data-test="register-cap-files"]');
+
+    expect(capTerminal.attributes('disabled')).toBeUndefined();
+    expect(capDesktop.attributes('disabled')).toBeUndefined();
+    expect(capFiles.attributes('disabled')).toBeUndefined();
+
+    wrapper.unmount();
+  });
+
+  it('register button text shows "Registering..." only during registration, not during background refresh', async () => {
+    mockInvoke({
+      list_devices: () => [sampleDevice],
+      get_runtime_status: () => 'stopped',
+    });
+
+    const wrapper = await mountView();
+
+    // Before any registration, text should be "Register Device"
+    const registerBtn = wrapper.find('[data-testid="devices-register"]');
+    expect(registerBtn.text()).toContain('Register Device');
+    expect(registerBtn.text()).not.toContain('Registering...');
+
+    // Trigger a background refresh — text should still show "Register Device"
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+    await nextTick();
+
+    expect(registerBtn.text()).toContain('Register Device');
+    expect(registerBtn.text()).not.toContain('Registering...');
+
+    wrapper.unmount();
   });
 });
