@@ -511,14 +511,16 @@ describe('DevicesView', () => {
       get_runtime_status: () => 'stopped',
     });
 
+    const store = useDevicesStore();
+    const refreshSpy = vi.spyOn(store, 'refresh');
     const wrapper = await mountView();
+    refreshSpy.mockClear();
 
     // Wait past the 5000ms interval
     vi.advanceTimersByTime(5000);
     await flushPromises();
 
-    // Verify the interval-triggered refresh did NOT set loading=true by checking
-    // that the devices-loading placeholder is absent when devices are present.
+    expect(refreshSpy).toHaveBeenCalledWith({ background: true });
     expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
       false,
     );
