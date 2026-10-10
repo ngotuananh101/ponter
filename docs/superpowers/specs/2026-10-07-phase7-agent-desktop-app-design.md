@@ -56,6 +56,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 - **Decision.** The agent credential (`ag_...`) and the refresh token are stored in the **OS secret store** — Linux Secret Service (libsecret/gnome-keyring), macOS Keychain, Windows Credential Manager — via a keychain crate in the Rust backend. The Ed25519 identity key stays as the existing PKCS#8 file (ADR unchanged from WS2), with the app resolving its path to the app data dir. The webview `localStorage`/IndexedDB is **not** used for any secret.
 - **Why.** A desktop app's webview storage is trivially readable and not the right place for a long-lived device credential. The keychain gives OS-managed protection at rest and per-user access control.
 - **Login reuse.** Login calls the existing `POST /api/auth/login`; the backend stores the refresh token in the keychain and holds the short-lived access token in memory only.
+- **Realized (PR #106, shipped).** The keychain-held refresh token written at login is now **consumed**: the desktop's `retry_once_on_401` path calls `POST /api/auth/refresh`, rotates the keychain refresh token, and swaps the in-memory access token on a 401 — ADR-52 is realized, not contradicted (the refresh token stays keychain-only).
 
 ### ADR-53: The setup wizard verifies real capability, not just collects strings
 
