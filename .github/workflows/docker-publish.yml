@@ -233,12 +233,7 @@ jobs:
           DEPLOY_BE_WEBHOOK: ${{ env.DEPLOY_BE_WEBHOOK }}
         run: |
           set -euo pipefail
-          echo "Triggering deployment webhook..."
-          if ! curl -k -fsS --max-time 30 -X POST "${DEPLOY_BE_WEBHOOK}"; then
-            echo "POST failed, retrying with GET..."
-            curl -k -fsS --max-time 30 "${DEPLOY_BE_WEBHOOK}"
-          fi
-          echo "Deployment webhook triggered successfully."
+          bash docker/trigger-webhook.sh "$DEPLOY_BE_WEBHOOK"
 
       - name: Prune old sha-* tags (keep 3 newest)
         if: ${{ inputs.tag == '' }}
