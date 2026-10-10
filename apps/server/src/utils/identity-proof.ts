@@ -1,3 +1,5 @@
+import { webcrypto } from 'node:crypto';
+
 /**
  * The canonical WS2 user-identity proof, mirrored locally.
  *
@@ -21,4 +23,36 @@
  */
 export function canonicalUserIdentityMessage(userId: string): string {
   return `ponter-ws2-user-identity-v1\nuserId=${userId}`;
+}
+
+/**
+ * Verify that `signature` is a valid Ed25519 signature over
+ * `canonicalUserIdentityMessage(userId)` produced by `signingPublicKey`.
+ *
+ * Fail closed: any import/verify error, malformed base64, or false signature
+ * returns false.
+ */
+export async function verifyUserIdentityProof(
+  userId: string,
+  signingPublicKeyBase64: string,
+  signatureBase64: string,
+): Promise<boolean> {
+  const message = canonicalUserIdentityMessage(userId);
+  try {
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      Buffer.from(signingPublicKeyBase64, 'base64'),
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+    return await webcrypto.subtle.verify(
+      'Ed25519',
+      key,
+      Buffer.from(signatureBase64, 'base64'),
+      new TextEncoder().encode(message),
+    );
+  } catch {
+    return false;
+  }
 }
