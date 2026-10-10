@@ -85,4 +85,34 @@ describe('AppHeader.vue', () => {
 
     expect(wrapper.find('a[href="/admin"]').exists()).toBe(false);
   });
+
+  it('renders Reset Identity Key dialog and dropdown item when authenticated', async () => {
+    const store = useAuthStore();
+    store.user = makeUser('user');
+    store.status = 'authenticated';
+
+    const { wrapper } = mountWithRouter();
+    await wrapper.vm.$nextTick();
+
+    const dialog = wrapper.findComponent({ name: 'ResetIdentityKeyDialog' });
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.props('open')).toBe(false);
+
+    // Trigger button for dropdown
+    const avatarBtn = wrapper.find('button.rounded-full');
+    expect(avatarBtn.exists()).toBe(true);
+    await avatarBtn.trigger('click');
+    await wrapper.vm.$nextTick();
+
+    // In happy-dom / reka-ui, dropdown menu is teleported to document body
+    const resetItem = document.querySelector(
+      '[data-test="header-reset-identity-key"]',
+    );
+    expect(resetItem).not.toBeNull();
+    expect(resetItem?.textContent).toContain('Reset Identity Key');
+
+    (resetItem as HTMLElement).click();
+    await wrapper.vm.$nextTick();
+    expect(dialog.props('open')).toBe(true);
+  });
 });

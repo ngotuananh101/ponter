@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import ThemeToggle from './ThemeToggle.vue';
@@ -14,7 +14,14 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { Terminal, LayoutDashboard, ShieldCheck, LogOut } from '@lucide/vue';
+import {
+  Terminal,
+  LayoutDashboard,
+  ShieldCheck,
+  LogOut,
+  KeyRound,
+} from '@lucide/vue';
+import ResetIdentityKeyDialog from '@/components/auth/ResetIdentityKeyDialog.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -37,6 +44,7 @@ const headerInnerClass = computed(() =>
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
+const resetKeyDialogOpen = ref(false);
 
 const userInitials = computed(() => {
   const name = authStore.user?.username || 'U';
@@ -183,6 +191,15 @@ async function handleLogout() {
               </div>
               <DropdownMenuSeparator />
               <DropdownMenuItem
+                class="cursor-pointer flex items-center gap-2"
+                data-test="header-reset-identity-key"
+                @click="resetKeyDialogOpen = true"
+              >
+                <KeyRound class="w-4 h-4 text-primary" />
+                Reset Identity Key
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
                 class="cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/10 flex items-center gap-2"
                 @click="handleLogout"
               >
@@ -203,4 +220,6 @@ async function handleLogout() {
       </div>
     </div>
   </header>
+
+  <ResetIdentityKeyDialog v-model:open="resetKeyDialogOpen" />
 </template>

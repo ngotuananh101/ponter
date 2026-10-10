@@ -277,6 +277,28 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function resetSigningKey(password: string): Promise<void> {
+    if (!user.value) throw new Error('Not authenticated');
+
+    const pair = await generateSigningKeyPair();
+    const signature = await signProof(
+      pair.privateKey,
+      canonicalUserIdentityMessage(user.value.id),
+    );
+
+    const res = await apiClient.auth.resetSigningKey({
+      password,
+      signingPublicKey: pair.publicKeyRawBase64,
+      signature,
+    });
+
+    await saveSigningKey(user.value.id, pair.privateKey);
+    await saveSigningPublicKey(user.value.id, pair.publicKeyRawBase64);
+
+    user.value = res.user;
+    identityStatus.value = 'ready';
+  }
+
   async function fetchMe(): Promise<void> {
     try {
       const res = await apiClient.users.me();
@@ -313,6 +335,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     identityStatus,
     ensureUserSigningKey,
+    resetSigningKey,
     restore,
     login,
     register,

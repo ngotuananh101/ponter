@@ -161,4 +161,41 @@ describe('ApiClient general requests & resources', () => {
       capabilities: ['terminal'],
     });
   });
+
+  it('8. auth.resetSigningKey sends POST /api/auth/signing-key/reset with Bearer auth and correct body', async () => {
+    const storage = new MemoryStorage();
+    storage.setTokens({
+      accessToken: 'access-abc',
+      refreshToken: 'refresh-abc',
+    });
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ user: { id: 'u1', signingPublicKey: 'new-pub-key' } }),
+      );
+    const client = makeClient(storage, mockFetch);
+
+    const res = await client.auth.resetSigningKey({
+      password: 'Password123!',
+      signingPublicKey: 'new-pub-key',
+      signature: 'sig-bytes',
+    });
+
+    expect(res).toEqual({
+      user: { id: 'u1', signingPublicKey: 'new-pub-key' },
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    const callInit = mockFetch.mock.calls[0]![1] as RequestInit;
+    expect(callInit.method).toBe('POST');
+    expect(callInit.headers).toMatchObject({
+      Authorization: 'Bearer access-abc',
+    });
+    expect(JSON.parse(callInit.body as string)).toEqual({
+      password: 'Password123!',
+      signingPublicKey: 'new-pub-key',
+      signature: 'sig-bytes',
+    });
+  });
 });

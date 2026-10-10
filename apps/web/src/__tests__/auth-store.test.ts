@@ -476,4 +476,84 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     await expect(store.login('alice', 'password')).resolves.toBeUndefined();
     expect(store.isAuthenticated).toBe(true);
   });
+
+  /** Set up the auth store and crypto mocks for a reset test. */
+  function setupResetMocks() {
+    const store = useAuthStore();
+    store.user = { id: 'u-reset', username: 'alice' } as unknown as User;
+    store.status = 'authenticated';
+    store.identityStatus = 'unavailable';
+
+    const pair = {
+      publicKeyRawBase64: 'new-reset-pub',
+      privateKey: {} as CryptoKey,
+      publicKey: {} as CryptoKey,
+    };
+    vi.mocked(cryptoPkg.generateSigningKeyPair).mockResolvedValue(pair);
+    vi.mocked(cryptoPkg.signProof).mockResolvedValue('proof-sig');
+    vi.mocked(cryptoPkg.saveSigningKey).mockResolvedValue();
+    vi.mocked(cryptoPkg.saveSigningPublicKey).mockResolvedValue();
+
+    return { store, pair };
+  }
+
+  it('resetSigningKey: successful reset generates key, signs proof, calls API, saves keys, updates state', async () => {
+    const { store, pair } = setupResetMocks();
+
+    const resetSpy = vi
+      .spyOn(apiClient.auth, 'resetSigningKey')
+      .mockResolvedValue({
+        user: { id: 'u-reset', username: 'alice' } as unknown as User,
+      });
+
+    await store.resetSigningKey('password123');
+
+    expect(cryptoPkg.generateSigningKeyPair).toHaveBeenCalledTimes(1);
+    expect(cryptoPkg.signProof).toHaveBeenCalledWith(
+      pair.privateKey,
+      expect.stringContaining('u-reset'),
+    );
+    expect(resetSpy).toHaveBeenCalledWith({
+      password: 'password123',
+      signingPublicKey: 'new-reset-pub',
+      signature: 'proof-sig',
+    });
+    expect(cryptoPkg.saveSigningKey).toHaveBeenCalledWith(
+      'u-reset',
+      pair.privateKey,
+    );
+    expect(cryptoPkg.saveSigningPublicKey).toHaveBeenCalledWith(
+      'u-reset',
+      'new-reset-pub',
+    );
+    expect(store.user?.id).toBe('u-reset');
+    expect(store.identityStatus).toBe('ready');
+  });
+
+  it('resetSigningKey: failure (401 invalid password) rejects, leaves identityStatus unchanged, does NOT save keys', async () => {
+    const { store } = setupResetMocks();
+
+    const { ApiError } = await import('@ponter/api-client');
+    vi.spyOn(apiClient.auth, 'resetSigningKey').mockRejectedValue(
+      new ApiError('Invalid password', 401, 'INVALID_PASSWORD'),
+    );
+
+    await expect(store.resetSigningKey('wrongpass')).rejects.toThrow(
+      'Invalid password',
+    );
+
+    expect(cryptoPkg.saveSigningKey).not.toHaveBeenCalled();
+    expect(cryptoPkg.saveSigningPublicKey).not.toHaveBeenCalled();
+    expect(store.identityStatus).toBe('unavailable');
+  });
+
+  it('resetSigningKey: when not authenticated (user.value === null) throws "Not authenticated"', async () => {
+    const store = useAuthStore();
+    store.user = null;
+    store.status = 'idle';
+
+    await expect(store.resetSigningKey('password123')).rejects.toThrow(
+      'Not authenticated',
+    );
+  });
 });

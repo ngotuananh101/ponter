@@ -23,11 +23,16 @@ import {
   ShieldCheck,
   Keyboard,
   RefreshCw,
+  KeyRound,
 } from '@lucide/vue';
+import { useAuthStore } from '@/stores/auth';
+import ResetIdentityKeyDialog from '@/components/auth/ResetIdentityKeyDialog.vue';
 
 const route = useRoute();
 const terminalStore = useTerminalStore();
+const authStore = useAuthStore();
 const sidebarOpen = ref(true);
+const resetKeyDialogOpen = ref(false);
 
 // Fullscreen acts on the terminal/desktop body, so the OS-level fullscreen
 // hides the header, sidebar and tab strip along with it.
@@ -263,6 +268,22 @@ onUnmounted(() => {
               <RefreshCw class="w-3.5 h-3.5" />
               Retry connection
             </Button>
+            <Button
+              v-if="
+                authStore.identityStatus === 'unavailable' ||
+                terminalStore.activeTab.error?.includes(
+                  'Peer identity unavailable',
+                )
+              "
+              size="sm"
+              variant="outline"
+              class="text-xs flex items-center gap-2 border-border/80 text-primary hover:text-primary"
+              data-test="reset-identity-key-button"
+              @click="resetKeyDialogOpen = true"
+            >
+              <KeyRound class="w-3.5 h-3.5" />
+              Reset Identity Key
+            </Button>
           </div>
         </template>
 
@@ -395,6 +416,8 @@ onUnmounted(() => {
         @send-key="handleSendKey"
       />
     </div>
+
+    <ResetIdentityKeyDialog v-model:open="resetKeyDialogOpen" />
   </div>
 </template>
 

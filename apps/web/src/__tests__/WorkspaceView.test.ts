@@ -3,12 +3,32 @@ import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import WorkspaceView from '../views/WorkspaceView.vue';
 import { useTerminalStore } from '../stores/terminal';
+import { useAuthStore } from '@/stores/auth';
 import type { TerminalSession } from '@ponter/terminal-core';
 
 vi.mock('@/services/client', () => ({
   apiClient: {
     agents: { list: vi.fn().mockResolvedValue([]) },
     sessions: { create: vi.fn() },
+    http: {
+      baseUrl: 'http://localhost',
+      refreshAccessToken: vi.fn(),
+      onAuthError: null,
+    },
+    users: { me: vi.fn() },
+    auth: {
+      login: vi.fn(),
+      register: vi.fn(),
+      registerSigningKey: vi.fn(),
+      resetSigningKey: vi.fn(),
+      logout: vi.fn(),
+    },
+    storage: {
+      getAccessToken: vi.fn(),
+      getRefreshToken: vi.fn(),
+      setTokens: vi.fn(),
+      clearTokens: vi.fn(),
+    },
   },
 }));
 
@@ -57,6 +77,7 @@ const STUBS = {
   WorkspaceSidebar: true,
   XtermTerminal: true,
   MobileAccessoryBar: true,
+  ResetIdentityKeyDialog: true,
 };
 
 function mountWorkspace() {
@@ -367,5 +388,34 @@ describe('WorkspaceView.vue', () => {
 
     const footer = wrapper.find('[data-test="footer-media"]').text();
     expect(footer).not.toContain('input');
+  });
+
+  it('renders "Reset Identity Key" button for a tab error containing "Peer identity unavailable" and opens the dialog on click', async () => {
+    const store = useTerminalStore();
+    const authStore = useAuthStore();
+    authStore.identityStatus = 'unavailable';
+    store.tabs.push({
+      id: 'tab-peer',
+      agentId: 'ag-1',
+      kind: 'terminal',
+      terminalId: '',
+      title: 'Host 1',
+      status: 'error',
+      error: 'Peer identity unavailable on this device',
+    });
+    store.setActiveTab('tab-peer');
+
+    const wrapper = mountWorkspace();
+    await flushPromises();
+
+    const resetBtn = wrapper.find('[data-test="reset-identity-key-button"]');
+    expect(resetBtn.exists()).toBe(true);
+    expect(resetBtn.text()).toContain('Reset Identity Key');
+
+    await resetBtn.trigger('click');
+
+    expect(
+      wrapper.findComponent({ name: 'ResetIdentityKeyDialog' }).props('open'),
+    ).toBe(true);
   });
 });
