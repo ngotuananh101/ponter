@@ -387,6 +387,83 @@ auth.post('/signing-key', authMiddleware, async (c) => {
   return c.json({ user: toPublicUser(updated) });
 });
 
+auth.post('/signing-key/reset', authMiddleware, async (c) => {
+  const body = await c.req
+    .json<{
+      password?: unknown;
+      signingPublicKey?: unknown;
+      signature?: unknown;
+    }>()
+    .catch(() => null);
+
+  // 1. Validate: all three fields must be non-empty strings.
+  if (
+    typeof body?.password !== 'string' ||
+    !body.password.trim() ||
+    typeof body?.signingPublicKey !== 'string' ||
+    !body.signingPublicKey.trim() ||
+    typeof body?.signature !== 'string' ||
+    !body.signature.trim()
+  ) {
+    throw new AppError(
+      'password, signingPublicKey, and signature are required',
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  const user = c.get('user');
+
+  // 2. Verify the user's current password.
+  if (!user.passwordHash) {
+    throw new AppError('Invalid password', 401, 'INVALID_CREDENTIALS');
+  }
+  const isValid = await verifyPassword(body!.password, user.passwordHash);
+  if (!isValid) {
+    throw new AppError('Invalid password', 401, 'INVALID_CREDENTIALS');
+  }
+
+  // 3. Verify the Ed25519 signature over the canonical user-identity message.
+  //    Fail closed: any import/verify error, or a false result, is a 400 and
+  //    nothing is stored.
+  const message = canonicalUserIdentityMessage(user.id);
+  let valid = false;
+  try {
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      Buffer.from(body!.signingPublicKey, 'base64'),
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+    valid = await webcrypto.subtle.verify(
+      'Ed25519',
+      key,
+      Buffer.from(body!.signature, 'base64'),
+      new TextEncoder().encode(message),
+    );
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
+    throw new AppError('Invalid signing key proof', 400, 'VALIDATION_ERROR');
+  }
+
+  // 4. Persist the new signing key and return the updated projection.
+  const db = c.get('db');
+  const [updated] = await db
+    .update(users)
+    .set({ signingPublicKey: body!.signingPublicKey })
+    .where(eq(users.id, user.id))
+    .returning();
+
+  if (!updated) {
+    throw new AppError('User not found', 404, 'NOT_FOUND');
+  }
+
+  return c.json({ user: toPublicUser(updated) });
+});
+
 auth.post('/refresh', async (c) => {
   const body = await c.req.json<{ refreshToken?: string }>().catch(() => null);
   if (!body?.refreshToken) {

@@ -74,6 +74,25 @@ export class AuthResource {
     );
   }
 
+  /**
+   * Reset / re-key a WS2 Ed25519 signing key for an authenticated account
+   * by providing the current account password and a fresh identity proof.
+   */
+  async resetSigningKey(input: {
+    password: string;
+    signingPublicKey: string;
+    signature: string;
+  }): Promise<{ user: User }> {
+    return await this.http.request<{ user: User }>(
+      'POST',
+      '/api/auth/signing-key/reset',
+      {
+        body: input,
+        auth: true,
+      },
+    );
+  }
+
   async logout(refreshToken?: string): Promise<{ success: boolean }> {
     const token =
       refreshToken || (await this.http.storage.getRefreshToken()) || undefined;
