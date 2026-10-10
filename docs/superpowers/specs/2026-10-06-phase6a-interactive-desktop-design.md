@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-06
 - **Status:** Design approved by owner (2026-10-06, 5 decisions locked), pending written review
-- **Baseline:** `main` @ `db71f65` (PR #48 merged)
+- **Baseline:** `main` @ `db7f165` (PR #48 merged)
 - **Schedule:** Week 17 — Phase 6 is split in two: **6a Interactivity** (this spec) then **6b Latency** (own spec + plan)
 - **Related:** Phase 5 spec `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` (§3.5, §8); WS1 Rust doc `docs/security/2026-10-08-ws1-e2ee-rust.md` (C1 carry-forward, "Mandatory carry-forward"); Week 9 spec ADR-26..30; `docs/ARCHITECTURE.md` §8 Phase 6 stub
 
@@ -14,7 +14,7 @@ Phase 5 closed WS1–WS5 (E2EE, peer identity, session hardening, auth, ops poli
 **hard carry-forward**: C1 — the desktop path never runs `verify_offer_identity`. The WS1 Rust
 doc states the ruling verbatim: *"extend the identity verification performed by
 `verify_offer_identity` (or an equivalent check) to the desktop path **before Phase 6 opens the
-input-forwarding gate**."* Recon at `db71f65` shows the gap is broader than the memory note:
+input-forwarding gate**."* Recon at `db7f165` shows the gap is broader than the memory note:
 the **files** arm has the same shape (`main.rs:988` returns before the terminal-only verify at
 `main.rs:1025`), so an unverified peer can currently open desktop **and** files sessions.
 
@@ -35,7 +35,7 @@ model** (operator opt-in AND verified identity), adds an agent-side input rate c
 5. The control-path latency baseline (browser send → agent inject) is measured and recorded for
    6b.
 
-## 2. Current state, re-verified against the tree at `db71f65`
+## 2. Current state, re-verified against the tree at `db7f165`
 
 | # | Fact | Evidence |
 |---|------|----------|

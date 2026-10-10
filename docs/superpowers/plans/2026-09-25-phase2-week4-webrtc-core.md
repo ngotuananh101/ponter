@@ -25,7 +25,7 @@
 - SQLite datetime format compatibility: all D1 timestamps and comparisons MUST use `datetime('now')` and `datetime('now', '+5 minutes')` (space-separated `YYYY-MM-DD HH:MM:SS`), NEVER JavaScript ISO-8601 strings (`YYYY-MM-DDTHH:MM:SS.sssZ`). JavaScript ISO strings sort lexicographically greater than `datetime('now')` due to the `'T'` vs `' '` character comparison, which renders the expiry filter a no-op.
 - Prettier: `singleQuote: true`. Run `pnpm format:check` and `pnpm format` as needed.
 - SonarCloud quality gate: Duplication on New Code must be ≤ 3.0%. Consolidating `RESET_STATEMENTS` in Task 1 is mandatory to prevent SonarQube duplication failures across test files.
-- Test baseline: starts at 97 passing tests at HEAD `9ba5613`, grows to exactly 135 passing tests (24 in `webrtc-core`, 14 in `signaling`).
+- Test baseline: starts at 97 passing tests at HEAD `f04d1c4`, grows to exactly 135 passing tests (24 in `webrtc-core`, 14 in `signaling`).
 
 ---
 

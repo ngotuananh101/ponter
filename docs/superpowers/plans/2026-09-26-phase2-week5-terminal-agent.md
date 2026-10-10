@@ -35,7 +35,7 @@
   ```
 
   Use `git commit -m "subject" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"` (a second `-m` keeps it as a separate paragraph), or `git commit -F -` with the subject and trailer on their own lines. A PR description written from this plan ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- **Test baseline: 135 passing JS tests** at `264277f` (signaling 60, `webrtc-core` 24, `apps/web` 30, `api-client` 11, `crypto` 10). Target: **165 JS tests** — signaling **82**, `webrtc-core` **32**, the other three unchanged. Reported **separately** from the Rust suite (**11 test functions**, `cargo test`) and the E2E config (**2**), which run under different runners and do not enter the JS total. The Rust number is a function count, not a case count: §8.1 task 6's `+5` counts the R1–R5 cases the spec names, and several functions cover more than one. One of the 11 (`pty_echo_round_trip`) is `#[cfg(unix)]`, so a Windows run reports 10 — CI is Linux and sees all 11; Task 6 Step 10 says so.
+- **Test baseline: 135 passing JS tests** at `a58625d` (signaling 60, `webrtc-core` 24, `apps/web` 30, `api-client` 11, `crypto` 10). Target: **165 JS tests** — signaling **82**, `webrtc-core` **32**, the other three unchanged. Reported **separately** from the Rust suite (**11 test functions**, `cargo test`) and the E2E config (**2**), which run under different runners and do not enter the JS total. The Rust number is a function count, not a case count: §8.1 task 6's `+5` counts the R1–R5 cases the spec names, and several functions cover more than one. One of the 11 (`pty_echo_round_trip`) is `#[cfg(unix)]`, so a Windows run reports 10 — CI is Linux and sees all 11; Task 6 Step 10 says so.
 - **Week 4 ledger residual — closed by Tasks 1, 2 and 9.** §8.3 names eight residual tests across four rulings, all now covered. `R24` (six reachable branches whose deletion left the suite green) is closed by Task 1's six tests. `R30` (the two `transport.ts` error paths spec §4.7 promises by name) and `R32` (the unbounded candidate buffer, and the flush that drops its tail when one candidate rejects) are closed by Task 2. `R31` (the unreachable `MALFORMED_JSON` path) is closed by Task 2, which pins the contract as `VALIDATION_ERROR` for a non-JSON body and corrects the Week 4 spec's row. `R26` (the `SignalMessage` union missing from `ARCHITECTURE.md` §6.2) is closed by Task 9 Step 2, which is the Week 5 documentation the ledger's own ruling deferred it to. The ledger itself is `.superpowers/sdd/2026-09-25-phase2-week4-webrtc-core/progress.md`, which is gitignored (`.gitignore:38`) and therefore not reviewable in a diff — this line, not a ledger edit, is the durable record (D-15).
 
 ### Spec deviations resolved in this plan
@@ -99,7 +99,7 @@ Five input classes the spec names as dangerous but which no single task's happy-
    *Owning task:* Task 4 (`handleInbound` + the malformed/oversize test in `test/ws.test.ts`).
 
 5. **PTY binary output framing.** PTY output is bytes, not text: it can contain invalid UTF-8 and can split a multi-byte sequence across two `read()` calls. A "looks fine on my machine" implementation passes every unit test and corrupts output in production.
-   *Expected behavior:* frames are `DataChannelMessage<TerminalDataMessage>` sent as JSON text with `payload.data` = standard base64 of the raw bytes; a payload that is not valid UTF-8 (`0xFF 0xFE`) round-trips byte-identically; no layer assumes a JavaScript `string`. The E2E harness dispatches on the decoded envelope rather than on the JavaScript type of the raw message, because Week 4's `5b8ed86` proved a `Buffer`-wrapped string silently downgrades a frame to `WEBRTC_BINARY`.
+   *Expected behavior:* frames are `DataChannelMessage<TerminalDataMessage>` sent as JSON text with `payload.data` = standard base64 of the raw bytes; a payload that is not valid UTF-8 (`0xFF 0xFE`) round-trips byte-identically; no layer assumes a JavaScript `string`. The E2E harness dispatches on the decoded envelope rather than on the JavaScript type of the raw message, because Week 4's `b4d9c00` proved a `Buffer`-wrapped string silently downgrades a frame to `WEBRTC_BINARY`.
    *Owning task:* Task 6 (Rust framing unit tests) and Task 7 (the `0xFF` assertion end to end).
 
 ---
@@ -3662,7 +3662,7 @@ Four flat modules, no `lib.rs`, no `config.rs`, no `webrtc/` subdirectory (D-7).
   async fn run_one_session(offer: &SignalOffer, inbound: &mut mpsc::Receiver<SignalMessage>, outbound: &mpsc::Sender<SignalMessage>, cli: &Cli, shell: &str) -> Result<()>;
   ```
 
-  This block is kept in step with the shipped code signatures in `apps/agent/src/signal.rs`, `rtc.rs`, `pty.rs`, and `main.rs`. Every signature above reflects the code at HEAD `98d37ad`, including the `mut self` bindings on `connect` and `close`, the `_agent_id` parameter name, and the `mut inbound` receiver in `supervise_sessions`.
+  This block is kept in step with the shipped code signatures in `apps/agent/src/signal.rs`, `rtc.rs`, `pty.rs`, and `main.rs`. Every signature above reflects the code at HEAD `d9fdc02`, including the `mut self` bindings on `connect` and `close`, the `_agent_id` parameter name, and the `mut inbound` receiver in `supervise_sessions`.
 
 - **No `hello` frame (D-2).** §5.5.1 prints a `ClientFrame::Hello` and §5.5.2 says "the first frame sent is `ClientFrame::Hello`", but §4.5's `handleInbound` — which Task 4 implemented — has no arm for it and would answer `VALIDATION_ERROR`. Identity comes from the credential in the handshake header (ADR-13), which is strictly stronger than a self-declared id. **This task therefore defines no `ClientFrame` at all**, and §5.5.5's "reconnects and re-sends `hello`" becomes "reconnects and re-sends nothing". Recorded as D-2 and re-stated in Task 9's docs sync.
 
@@ -5884,7 +5884,7 @@ Add inside the `describe` block:
       ).toContain('hello');
 
       // The envelope is the contract, not the JavaScript type of the raw
-      // message. Week 4's 5b8ed86 proved that wrapping a string in a Buffer
+      // message. Week 4's b4d9c00 proved that wrapping a string in a Buffer
       // silently downgrades a frame to WEBRTC_BINARY, so asserting on `typeof`
       // would pin an accident. These assertions come AFTER the byte assertion
       // on purpose: a failure should name the missing byte before it names a
@@ -6273,7 +6273,7 @@ Expected: three lines — `verify:`, `rust:`, `e2e:` — each at two-space inden
 
 Zero tests. Two documents and one note in this plan.
 
-This task is where three earlier tasks' promises come due. D-2 says §5.9.1's `hello` row "is superseded and recorded in Task 9". D-3 says the spec's error-code list contradicts §4.3.3. D-10 says "Task 9 records the correction at the §5.8.1/§5.11.5 doc sites". All three name *the spec file*, not `ARCHITECTURE.md`. Correcting a reviewed spec is established practice in this repository — `bdcd2ca` did exactly that for Week 4's `getStats` finding, and this plan's own Task 2 Step 16 corrects Week 4's malformed-JSON row with an errata block. Task 9 follows that pattern.
+This task is where three earlier tasks' promises come due. D-2 says §5.9.1's `hello` row "is superseded and recorded in Task 9". D-3 says the spec's error-code list contradicts §4.3.3. D-10 says "Task 9 records the correction at the §5.8.1/§5.11.5 doc sites". All three name *the spec file*, not `ARCHITECTURE.md`. Correcting a reviewed spec is established practice in this repository — `f7b749f` did exactly that for Week 4's `getStats` finding, and this plan's own Task 2 Step 16 corrects Week 4's malformed-JSON row with an errata block. Task 9 follows that pattern.
 
 **`ARCHITECTURE.md` is at `docs/ARCHITECTURE.md`, not the repository root.** §3.1's own tree prints `ARCHITECTURE.md  # This file` as a root file at `:523` (not `:522`, which is `.gitlab-ci.yml`) and also lists a `docs/` directory at `:492` — the root entry is stale. Do not create or edit a root-level file.
 

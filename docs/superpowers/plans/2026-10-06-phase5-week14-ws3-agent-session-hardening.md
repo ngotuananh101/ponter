@@ -16,9 +16,9 @@ The spec fixes *what* WS3 must close (§3.3) but not *how*. These are the implem
 
 1. **H1 — allowlist model.** The configured `--shell` / `AGENT_SHELL` is operator-trusted and always allowed (it is this agent's own deploy-time policy). A **client-supplied** `create.shell` must canonicalize (symlinks resolved) into the allowlist: a small platform floor (`/bin/sh`, `/bin/bash`, `/usr/bin/sh`, `/usr/bin/bash` on unix) + every path in `/etc/shells` (admin-maintained) + the configured shell. The resolved path must exist, be a file, and have an execute bit (unix). The gate lives at the single client entry point, the `terminal-create` dispatcher arm (`main.rs:1011`); the implicit spawn-on-demand (`main.rs:1096`) keeps using the trusted configured shell and needs no gate.
 2. **H1 — refusal reuses the pinned wire contract.** A disallowed shell is refused with a `terminal-error` frame carrying `code: "pty-spawn-failed"` and a message naming the policy violation. This deliberately avoids adding a third code: `pty-spawn-failed`/`session-limit-reached` are pinned as a wire contract (`pty.rs:602`), and the browser already surfaces the frame's `message` (there is no code switch to extend). **No FE work**: all production callers (`WorkspaceView.vue`) never pass `shell`, and `stores/terminal.ts` already wires `client.onError` to a toast.
-3. **H2 — server-only fix; the client half already shipped.** The client's `approved === false` fast-fail already exists in `connection.ts` (added by `2de7a23`, pinned by `refused-answer.test.ts`). The remaining gap is server-side: `recordSignal` (`apps/server/src/utils/signals.ts`) transitions `pending → active` on *any* answer. The fix gates the transition on `message.data.approved !== false`. The refusal answer **must still be recorded and relayed** — the browser's fast-fail depends on reading it.
+3. **H2 — server-only fix; the client half already shipped.** The client's `approved === false` fast-fail already exists in `connection.ts` (added by `5ef6bd5`, pinned by `refused-answer.test.ts`). The remaining gap is server-side: `recordSignal` (`apps/server/src/utils/signals.ts`) transitions `pending → active` on *any* answer. The fix gates the transition on `message.data.approved !== false`. The refusal answer **must still be recorded and relayed** — the browser's fast-fail depends on reading it.
 4. **M2 — stop semantics.** Only `4409` (replaced) and `4401` (unauthorized) stop the process; **everything else reconnects** — `1000`, `1001`, no close frame, IO errors, idle timeout. `1001`-reconnects is load-bearing: the server-restart E2E (`terminal-ws.e2e.test.ts:171`) kills the server under a live agent and requires it to come back. The classifier is a pure function (`classify_close`) unit-tested without a socket.
-5. **M3 — already fixed, needs proof.** The candidate guard in `route_inbound` (`main.rs:2027`) landed in `2de7a23` (2026-10-01), which is an ancestor of both the spec baseline `fdead292` and `main`. **Spec §2's table is stale for M3 ("CONFIRMED") and for H2's client half ("nothing enforces")** — both were fixed before the spec's baseline. WS3 therefore does not re-implement M3; it adds the missing regression E2E, a mutation proof that the test is load-bearing, and a documented spec erratum (Task 7). `webrtc` 0.21's `PeerConnection` trait is sealed, so `route_inbound` cannot be unit-tested with a mock — E2E is the only honest coverage.
+5. **M3 — already fixed, needs proof.** The candidate guard in `route_inbound` (`main.rs:2027`) landed in `5ef6bd5` (2026-10-01), which is an ancestor of both the spec baseline `680cccc0` and `main`. **Spec §2's table is stale for M3 ("CONFIRMED") and for H2's client half ("nothing enforces")** — both were fixed before the spec's baseline. WS3 therefore does not re-implement M3; it adds the missing regression E2E, a mutation proof that the test is load-bearing, and a documented spec erratum (Task 7). `webrtc` 0.21's `PeerConnection` trait is sealed, so `route_inbound` cannot be unit-tested with a mock — E2E is the only honest coverage.
 6. **No new dependencies, no new wire fields.** Rust uses `std` only; TypeScript adds nothing. `TerminalCreateMessage.shell` stays as-is (`Option<String>`); no shared type changes.
 7. **ADR-29 stays closed.** WS3 closes H1 and H2 — the two prerequisites ADR-29 names — but opening input forwarding is explicitly out of scope (spec §8). No task may flip `--allow-input` / `AGENT_ALLOW_INPUT`.
 8. **Docs deliverables (Task 7).** A new `docs/security/2026-10-06-ws3-session-hardening.md` (mirroring the WS2 doc), a correction to the now-false sentence in `docs/guides/handshake-connection-flow.md:155`, and a dated erratum in the spec's §2 table for the H2/M3 rows.
@@ -945,7 +945,7 @@ Add the test inside the describe:
    * M3: a candidate addressed to a session this agent is not running must be
    * dropped by the live session's router, not applied to its peer connection.
    *
-   * The guard landed in 2de7a23 (before the spec's baseline) but had no test —
+   * The guard landed in 5ef6bd5 (before the spec's baseline) but had no test —
    * this is that test, and Step 3 proves it is load-bearing by mutation.
    *
    * The debug log is the observable: the live session logs the drop with both
@@ -1202,7 +1202,7 @@ Create `docs/security/2026-10-06-ws3-session-hardening.md`:
 
    **The client half was already shipped.** `connection.ts` refuses an
    `approved: false` answer (never applies the SDP, fails `waitForChannel`
-   fast) since commit `2de7a23` (2026-10-01), which predates this workstream.
+   fast) since commit `5ef6bd5` (2026-10-01), which predates this workstream.
 
 3. **Close-code handling (M2).** `SignalClient::run` returned `Ok(())` on any
    close, so the reconnect loop in `run_with_reconnect` retried even after
@@ -1216,7 +1216,7 @@ Create `docs/security/2026-10-06-ws3-session-hardening.md`:
 4. **`candidate.session_id` validation (M3) — already fixed; now tested.**
    The guard in `route_inbound` (`apps/agent/src/main.rs`) drops a candidate
    whose `session_id` is not the live session, and logs it. It landed in
-   `2de7a23` (2026-10-01) and is present at the spec baseline `fdead292` — the
+   `5ef6bd5` (2026-10-01) and is present at the spec baseline `680cccc0` — the
    spec's §2 table marks M3 CONFIRMED in error. WS3 adds the regression E2E
    and a mutation proof (guard removed → red) rather than re-implementing it.
 
@@ -1258,8 +1258,8 @@ with:
 In `docs/superpowers/specs/2026-10-05-phase5-zero-trust-e2ee-design.md` §2, update the two stale rows:
 
 ```markdown
-| H2 | Session `approved` recorded but never enforced | **CONFIRMED** (server) / **STALE** (client) | server: `recordSignal` activated on any answer — fixed in WS3 (Week 14). client: `connection.ts` has refused `approved: false` since `2de7a23` (2026-10-01), before this spec's baseline |
-| M3 | `candidate.session_id` not validated against the active offer | **STALE** | the guard landed in `2de7a23` (2026-10-01), before this spec's baseline `fdead292`; WS3 (Week 14) added the missing regression test and mutation proof |
+| H2 | Session `approved` recorded but never enforced | **CONFIRMED** (server) / **STALE** (client) | server: `recordSignal` activated on any answer — fixed in WS3 (Week 14). client: `connection.ts` has refused `approved: false` since `5ef6bd5` (2026-10-01), before this spec's baseline |
+| M3 | `candidate.session_id` not validated against the active offer | **STALE** | the guard landed in `5ef6bd5` (2026-10-01), before this spec's baseline `680cccc0`; WS3 (Week 14) added the missing regression test and mutation proof |
 ```
 
 - [ ] **Step 4: Commit**
@@ -1336,8 +1336,8 @@ The SonarQube quality gate must pass on new code (Week 13 gotcha: test-file dupl
 
 ## Self-review notes (author)
 
-- **Spec coverage:** §3.3 bullet 1 (shell allowlist) → Tasks 1, 6; bullet 2 (enforce `approved` in server and client) → Task 2 (server half) + existing `connection.ts`/`refused-answer.test.ts` (client half, already shipped — recorded in Task 7); bullet 3 (close-code handling) → Tasks 3, 4; bullet 4 (validate `candidate.session_id`) → Task 5 (regression + mutation proof — the guard itself already shipped in `2de7a23`).
-- **Stale-spec discovery recorded, not re-implemented:** the M3 guard and the client half of H2 predate the spec baseline `fdead292` (commit `2de7a23`, 2026-10-01 23:20, ancestor of both `fdead292` and `main`). The plan corrects the §2 table (Task 7) instead of duplicating work — this is the one place the plan deviates from the spec text, and it deviates toward *less* code, with the evidence recorded.
+- **Spec coverage:** §3.3 bullet 1 (shell allowlist) → Tasks 1, 6; bullet 2 (enforce `approved` in server and client) → Task 2 (server half) + existing `connection.ts`/`refused-answer.test.ts` (client half, already shipped — recorded in Task 7); bullet 3 (close-code handling) → Tasks 3, 4; bullet 4 (validate `candidate.session_id`) → Task 5 (regression + mutation proof — the guard itself already shipped in `5ef6bd5`).
+- **Stale-spec discovery recorded, not re-implemented:** the M3 guard and the client half of H2 predate the spec baseline `680cccc0` (commit `5ef6bd5`, 2026-10-01 23:20, ancestor of both `680cccc0` and `main`). The plan corrects the §2 table (Task 7) instead of duplicating work — this is the one place the plan deviates from the spec text, and it deviates toward *less* code, with the evidence recorded.
 - **Boundary guards:** no task implements E2EE (WS1); ADR-29 stays closed (`--allow-input` untouched); no wire-contract change (`pty-spawn-failed` reused, `TerminalCreateMessage` unchanged); no new dependency (Rust std only; no npm package).
 - **Type consistency:** `ShellPolicy` (`from_config` / `new` / `resolve_client_shell` → `Result<PathBuf>`) is defined in Task 1 and consumed only at the dispatcher arm; `RunEnd` / `classify_close` are defined in Task 3 and consumed in `run_with_reconnect` in the same task; the E2E file created in Task 4 is extended, not duplicated, by Tasks 5–6.
 - **Load-bearing proofs:** every behavioral fix has a mutation proof (Tasks 4, 5, 6) — the guard is removed, the test is observed red, the guard is restored, the test is observed green. This is the Week 13 lesson ("workflow verdict = INPUT not binding") applied to tests: a green test that cannot go red proves nothing.

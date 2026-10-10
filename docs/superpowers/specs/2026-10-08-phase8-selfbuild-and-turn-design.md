@@ -1,6 +1,6 @@
 # Phase 8: Open-Source Self-Build Enablement + Provider-Selectable TURN — Design Spec
 
-- **Status:** Approved (owner 2026-10-08); implemented/merged — 8a PR #69 `6a568c0`, 8b PR #70 `1ebda79`; plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`
+- **Status:** Approved (owner 2026-10-08); implemented/merged — 8a PR #69 `00048bc`, 8b PR #70 `c1aeb91`; plan `docs/superpowers/plans/2026-10-08-phase8-selfbuild-and-turn.md`
 - **Phase:** 8 (roadmap continuation after Phase 7; `docs/ARCHITECTURE.md` §8)
 - **Owner decisions (2026-10-08):**
   - Ponter is **open source (MIT)**; third parties can **clone, build, and self-host** it.
@@ -34,7 +34,7 @@ Two gaps block that audience today:
 
 ---
 
-## 2. Current state, re-verified against the tree at `a9066ae`
+## 2. Current state, re-verified against the tree at `c53cd6f`
 
 - **Desktop updater config is author-specific.** `apps/desktop/src-tauri/tauri.conf.json` `plugins.updater` = `{ pubkey: "dW50cnVzdGVk…" (author's minisign public key), endpoints: ["https://github.com/ngotuananh101/ponter/releases/latest/download/latest.json"], requireSignedVersion: true }`. Tauri v2 does **not** interpolate environment variables inside `tauri.conf.json`.
 - **Desktop build is config-overlay driven.** `.github/workflows/build-desktop.yml` enables updater artifacts only on the tag/dispatch path via `tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'`, reading `TAURI_SIGNING_PRIVATE_KEY` / `…_PASSWORD` secrets. The PR path builds with **zero secrets**.

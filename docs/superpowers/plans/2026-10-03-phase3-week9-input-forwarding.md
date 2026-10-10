@@ -8,17 +8,17 @@
 
 **Tech Stack:** TypeScript (`@ponter/shared`, `@ponter/desktop-core`, Vue 3 + Pinia), vitest; Rust (`webrtc`/`rtc` 0.21, `tokio`), `cargo test`/`cargo clippy`; werift (E2E offerer); Xvfb + `xdotool` (gate-open E2E); GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-10-03-phase3-week9-input-forwarding-design.md` (ADR-26..30, merged on `main` as `b2bf167`)
+**Spec:** `docs/superpowers/specs/2026-10-03-phase3-week9-input-forwarding-design.md` (ADR-26..30, merged on `main` as `45b8d55`)
 
 > **Reading order:** read the spec's §2 (wire protocol), §4 (ADR-26..30), §6 (agent design), §7 (web design) and §10.3 (delivery sequence) before starting. This plan argues from the spec; where they disagree, the spec wins and the plan is wrong.
 
-> **Cite discipline.** Every `file:line` in this plan was verified against `main` at `b2bf167` (2026-10-03), the commit the spec is on. Two spec cites have **drifted by +1** since PR #29 added one `use` line at `desktop.rs:31`; the corrected numbers are used here and flagged inline (§3.3 → `desktop.rs:141-193`; §3.4 → `desktop.rs:479-520`). If a later PR moves a cite again, re-verify before trusting this plan — do not copy a line number out of the spec unread.
+> **Cite discipline.** Every `file:line` in this plan was verified against `main` at `45b8d55` (2026-10-03), the commit the spec is on. Two spec cites have **drifted by +1** since PR #29 added one `use` line at `desktop.rs:31`; the corrected numbers are used here and flagged inline (§3.3 → `desktop.rs:141-193`; §3.4 → `desktop.rs:479-520`). If a later PR moves a cite again, re-verify before trusting this plan — do not copy a line number out of the spec unread.
 
 ## Global Constraints
 
 Copied from the spec's project-wide requirements. Every task's requirements implicitly include this section.
 
-- **Precondition — one worktree per branch, opened from a fresh `origin/main`.** Week 8 (PR #27, merged `be8a8c9`) and the Week 9 spec (PR #25, merged `3db3bd5`, the `b2bf167` line) must already be on `main`. Never `git checkout` in the shared working directory. The branch split is in **§ Branch & PR Strategy** below.
+- **Precondition — one worktree per branch, opened from a fresh `origin/main`.** Week 8 (PR #27, merged `82fa821`) and the Week 9 spec (PR #25, merged `9afaead`, the `45b8d55` line) must already be on `main`. Never `git checkout` in the shared working directory. The branch split is in **§ Branch & PR Strategy** below.
 - **No new data channel, no new shared envelope.** `desktop-input` rides the existing `'control'` channel via `DataChannelManager.sendJson` (spec §2.1, §5.2). `WebRTCChannelType` already includes `'control'` (`packages/shared/src/types/webrtc.ts:7`) — do not re-add it. The `DataChannelMessage<T>` envelope is reused verbatim (`packages/shared/src/types/webrtc.ts:9-14`).
 - **Terminal path stays byte-identical:** `channelLabels: ['terminal']`, one `'terminal'` channel, `terminal-*` frames. `desktop-input` is desktop-only and `control`-only; the terminal dispatcher never sees it (spec §2.4).
 - **No server-side changes:** the server relays only SDP/ICE; data-channel bytes are peer-to-peer (spec §1.2, §9.4).
@@ -53,7 +53,7 @@ The spec's §10.3 says "single PR, `feat/phase3-week9-input-forwarding`". The PM
 | `feat/phase3-week9-input-web` | **D1 + D2 + D4** (sequential *within* the branch: shared → desktop-core → web) | FE | `packages/shared/**`, `packages/desktop-core/**`, `apps/web/**` | Same branch because the TS types are a compile-time dependency chain; splitting them would force a cross-branch wait for no benefit. |
 | `feat/phase3-week9-input-agent` | **D3** | BE | `apps/agent/**` | No file overlap with the FE branch. Independently buildable/testable; depends only on the **frozen wire shape** in § "Frozen interfaces" (not on the FE code landing). |
 | `test/phase3-week9-input-e2e` | **D5** | **BE** (PM-decided) | `packages/webrtc-core/test/e2e/**`, `.github/workflows/ci-e2e.yml` | Needs both the agent flag (D3) and the wire types (D1) present on the integration base — so it opens **after** the other two, on a branch cut from the merged `main`. Owner is BE: the assertions are agent-behaviour (drop log, `xdotool` seat) and the §8.3 fallback seam (`test-injector`) is Rust-side. The earlier "whoever lands second" is dropped as nondeterministic. |
-| `docs/phase3-week9-input-docs` | **D7 + D8** | **BA** (PM-decided) | `docs/**` only | Docs-only; independent of code. Can run in parallel with D5. Owner is BA: the Task 7 text is already written and its cites verified at `b2bf167`; it balances load (BE already carries D3 + D5). The manual demo runs on an X11 host and is recorded honestly, including "not observed". |
+| `docs/phase3-week9-input-docs` | **D7 + D8** | **BA** (PM-decided) | `docs/**` only | Docs-only; independent of code. Can run in parallel with D5. Owner is BA: the Task 7 text is already written and its cites verified at `45b8d55`; it balances load (BE already carries D3 + D5). The manual demo runs on an X11 host and is recorded honestly, including "not observed". |
 
 **Aggregation.** After the FE and BE branches merge, D5 and D7/D8 open against the updated `main`. If the team prefers a single PR after all (spec §10.3's literal wording), collapse FE+BE+D5+D8 into `feat/phase3-week9-input-forwarding` — the tasks below are written so either works; only the branch names in the `git push`/`gh pr create` steps change.
 
@@ -63,7 +63,7 @@ The spec's §10.3 says "single PR, `feat/phase3-week9-input-forwarding`". The PM
 
 ### Breaking-change file list (the intentional `onSources` change)
 
-`onSources` moves from `DesktopSourceInfo[]` to `DesktopSourcesPayload` (spec §5.3). Every current caller of the old shape, verified at `b2bf167`:
+`onSources` moves from `DesktopSourceInfo[]` to `DesktopSourcesPayload` (spec §5.3). Every current caller of the old shape, verified at `45b8d55`:
 
 | File | Site | Change |
 |---|---|---|
@@ -1905,7 +1905,7 @@ git commit -m "test(e2e): pin the input gate (closed = dropped, open = injected 
 
 > **Language.** Historical note: `docs/ARCHITECTURE.md` section headers were previously in Vietnamese (`## 8. Implementation Roadmap`), but all repository documentation has been standardized to English.
 
-> **The roadmap item is NOT ticked (spec §11.1).** Input ships gated off (ADR-29); the item is annotated **partial**, not done. Verify the current wording before editing: the Week 8 plan (`be8a8c9`) already split the list into a done `##### Week 8` block and a `##### Remaining (Week 9 — Spec B)` block (`ARCHITECTURE.md:941-951`). If a later PR re-shaped it, adjust the wording rather than duplicate.
+> **The roadmap item is NOT ticked (spec §11.1).** Input ships gated off (ADR-29); the item is annotated **partial**, not done. Verify the current wording before editing: the Week 8 plan (`82fa821`) already split the list into a done `##### Week 8` block and a `##### Remaining (Week 9 — Spec B)` block (`ARCHITECTURE.md:941-951`). If a later PR re-shaped it, adjust the wording rather than duplicate.
 
 - [ ] **Step 1: Annotate the Week 9 roadmap item as partial (not done)**
 
@@ -1933,7 +1933,7 @@ In `docs/superpowers/specs/2026-10-01-phase3-week7-desktop-streaming-design.md`,
 
 - [ ] **Step 3: Confirm the perf table needs no edit (spec §11.3)**
 
-Spec §11.3 records that Week 8's **D8** correction already landed in PR #27 (`be8a8c9`): the false `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` row was replaced by the Week 8 software row + a spike-gated hardware row. **Week 9's D8 needs no perf-table edit.** Verify and move on:
+Spec §11.3 records that Week 8's **D8** correction already landed in PR #27 (`82fa821`): the false `Desktop stream (Phase 3 target) | 60fps | Hardware H.265` row was replaced by the Week 8 software row + a spike-gated hardware row. **Week 9's D8 needs no perf-table edit.** Verify and move on:
 
 ```bash
 grep -n "^| Desktop stream" docs/ARCHITECTURE.md

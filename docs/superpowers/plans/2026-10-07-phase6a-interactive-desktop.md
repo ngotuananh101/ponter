@@ -68,7 +68,7 @@ The five input classes / failure modes most likely to bite a user, each pinned b
 - Consumes: `verify_offer_identity(offer: &signal::SignalOffer, identity: &identity::AgentIdentity) -> Result<()>` (`main.rs:787-817`, unchanged); `cfg.identity: identity::AgentIdentity`; `rtc::refuse_offer` (unchanged, still used by the files-root and `None` paths).
 - Produces: the structural invariant every later task relies on — `run_desktop_session` / `run_files_session` / the terminal setup are reachable **only** after a successful verify. Task 4's `peer_verified = true` literal and Task 7's E2E refusals both depend on this placement.
 
-**Current shape (verified at `db71f65`):** the verify sits at `main.rs:1025`, *after* the `match mode` dispatch (`main.rs:964-1014`) whose `Desktop` arm returns at :970, `Files` at :988, and `None` refuses at :1007 — so only `Terminal` ever reaches it.
+**Current shape (verified at `db7f165`):** the verify sits at `main.rs:1025`, *after* the `match mode` dispatch (`main.rs:964-1014`) whose `Desktop` arm returns at :970, `Files` at :988, and `None` refuses at :1007 — so only `Terminal` ever reaches it.
 
 - [ ] **Step 1: Move the call.** In `apps/agent/src/main.rs`, cut this block (currently at :1016-1025):
 

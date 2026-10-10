@@ -14,7 +14,7 @@
 
 ## Plan amendments
 
-**Amendment 1 (2026-10-07, after probe P1 returned ADOPT — spike commit `943aae3`):**
+**Amendment 1 (2026-10-07, after probe P1 returned ADOPT — spike commit `943aae3`, pre-rewrite; PR #50 squash `4fff206`):**
 
 - **Task 18B added** (between Tasks 18 and 19, below): the ADR-49 adopt branch requires a Playwright smoke spec in CI; this plan was written P1-pending, so the smoke was not yet a task.
 - **Ruling PM-3 (smoke location + packaging):** the smoke lives at `packages/webrtc-core/test/e2e/browser-smoke.pw.ts` with `packages/webrtc-core/playwright.config.ts`; `@playwright/test` becomes a devDependency of `@ponter/webrtc-core`; the browser is **pinned via `playwright install chromium --with-deps`** in `ci-e2e.yml` (never a runner's or dev machine's system Chrome); new script `test:browser`. The vitest e2e include (`test/e2e/**/*.e2e.test.ts`) does not match `*.pw.ts`, so the two runners stay separate.
@@ -547,7 +547,7 @@ Expected: PASS.
 git commit -m "feat(agent): implement X11 cursor poller with XFixes and PNG compression" -- apps/agent/Cargo.toml apps/agent/Cargo.lock apps/agent/src/cursor.rs apps/agent/src/desktop.rs apps/agent/src/main.rs
 ```
 
-> **Amendment 2 (2026-10-07, after Task 10 landed as `4ddf993`):** the commit path list above
+> **Amendment 2 (2026-10-07, after Task 10 landed as `4ddf993`, pre-rewrite; part of PR #50, squash `4fff206`):** the commit path list above
 > originally named only `Cargo.toml` + `cursor.rs`. It must also carry `Cargo.lock` (adding the
 > direct deps rewrites the `ponter-agent` lock entry — verified: `cargo check --locked` fails
 > without it; ruling BE-T10-R4), `main.rs` (the `mod cursor;` declaration — without it the module

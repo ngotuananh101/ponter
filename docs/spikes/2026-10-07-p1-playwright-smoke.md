@@ -3,7 +3,7 @@
 - **Task:** Phase 6b L0 probe P1 (plan Task 1)
 - **Date:** 2026-10-07
 - **Branch:** `feat/phase6b-low-latency`
-- **Base commit at probe time:** `bfcedc26d08c86d884b4d6b2cab9adfb5ec650b2`
+- **Base commit at probe time:** `bfcedc26d08c86d884b4d6b2cab9adfb5ec650b2` (pre-rewrite SHA; the Phase 6b work shipped on main as PR #50 squash `4fff206`)
 - **Author:** QA Engineer session (independent probe; not a spec/plan implementation task)
 
 ## Verdict: **ADOPT**
