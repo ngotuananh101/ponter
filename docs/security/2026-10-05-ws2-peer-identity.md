@@ -76,9 +76,12 @@ The exact builder is `canonicalUserIdentityMessage(userId)`
 `USER_IDENTITY_PROOF_PREFIX = 'ponter-ws2-user-identity-v1'`
 (`packages/shared/src/types/identity-proof.ts:70`). The message uses a single
 `\n` separator and **no trailing newline**. Unlike the per-session proof above,
-this string is browser-signed and **server-only verified** (both sides use
-`packages/shared`), so there is no second parser to keep in lockstep (contrast
-ADR-77).
+this string is browser-signed and **server-only verified** (the browser uses
+`packages/shared`, while the server uses a byte-identical local mirror
+`apps/server/src/utils/identity-proof.ts:24` pinned by
+`apps/server/test/identity-proof-mirror.test.ts` to prevent runtime
+TypeScript-source import crashes in production containers), so there is no
+second wire parser to keep in lockstep (contrast ADR-77).
 
 ## Fail-closed points
 
@@ -197,21 +200,24 @@ Accounts created before WS2 (pre-PR-#44) carry a `null` signing key
 dedicated bootstrap path rather than at registration:
 
 - **Endpoint:** `POST /api/auth/signing-key`
-  (`apps/server/src/routes/auth.ts:318`), Bearer-authenticated and
+  (`apps/server/src/routes/auth.ts:317`), Bearer-authenticated and
   **bootstrap-only** — it does not rotate an existing key.
 - **Proof:** the browser proves possession of the private key by signing the
   canonical string `ponter-ws2-user-identity-v1\nuserId=<id>`
   (prefix `USER_IDENTITY_PROOF_PREFIX = 'ponter-ws2-user-identity-v1'` at
   `packages/shared/src/types/identity-proof.ts:70`; builder
   `canonicalUserIdentityMessage(userId)` at `packages/shared/src/types/identity-proof.ts:76`).
-  The server verifies the signature over
-  `canonicalUserIdentityMessage(user.id)` (`apps/server/src/routes/auth.ts:342`).
-  Because both sides use `packages/shared`, there is no second parser to keep
-  in lockstep (contrast ADR-77).
+  The server verifies the signature via `verifyUserIdentityProof`
+  (`apps/server/src/routes/auth.ts:341`, implemented at
+  `apps/server/src/utils/identity-proof.ts:35` using the local mirror
+  `canonicalUserIdentityMessage` at `apps/server/src/utils/identity-proof.ts:24`).
+  The mirror is pinned against `@ponter/shared` by the drift guard
+  (`apps/server/test/identity-proof-mirror.test.ts`), guaranteeing byte stability
+  while avoiding TypeScript-source runtime import crashes in production containers.
 - **No rotation:** if the user already has a key the server returns **409**
-  `SIGNING_KEY_ALREADY_SET` (`apps/server/src/routes/auth.ts:371`) and never
+  `SIGNING_KEY_ALREADY_SET` (`apps/server/src/routes/auth.ts:354`) and never
   rotates. A bad proof is **400** `VALIDATION_ERROR`
-  (`apps/server/src/routes/auth.ts:362`).
+  (`apps/server/src/routes/auth.ts:347`).
 - **Client flow:** `ensureUserSigningKey` (`apps/web/src/stores/auth.ts:69`)
   runs on login (`apps/web/src/stores/auth.ts:198`) and restore
   (`apps/web/src/stores/auth.ts:179`); it is best-effort and **never throws**.
@@ -222,13 +228,67 @@ dedicated bootstrap path rather than at registration:
   `PeerIdentityUnavailableError` (`apps/web/src/stores/terminal.ts:154`) when
   identity is not `'ready'`, so the session surfaces a typed tab `error` and
   **no proof-less offer is ever sent**.
-- **Unrecoverable cases (never fabricate a key):** a second device (local
-  private absent + server key present) and a pre-existing account whose
-  non-extractable private key cannot yield its public raw (local private present
-  + server null + no stored public raw). In both, `identityStatus` stays
-  `'unavailable'` and the connect path fails closed with the typed error — it
-  does **not** generate a mismatched key and does **not** degrade to a
-  proof-less offer.
+
+### Account re-keying & recovery path
+
+Previously, when a user accessed the platform from a second device (or cleared IndexedDB storage),
+the local private key was missing while `users.signingPublicKey` was already populated
+on the server. Because `POST /api/auth/signing-key` is bootstrap-only (returning 409
+`SIGNING_KEY_ALREADY_SET`), `identityStatus` remained permanently `'unavailable'` on that device,
+leaving the account in an unrecoverable state where no P2P sessions could be established.
+
+To enable device switching and key recovery without undermining peer identity security,
+an explicit **re-keying / signing-key reset** path is provided:
+
+- **Endpoint:** `POST /api/auth/signing-key/reset`
+  (`apps/server/src/routes/auth.ts:375`), Bearer-authenticated.
+- **Re-authentication barrier (password check):** The request body must include the
+  user's current account `password`. The server verifies this password against
+  `users.passwordHash` using `verifyPassword` (`apps/server/src/routes/auth.ts:406`).
+  An invalid password or an account without a password hash rejects with **401**
+  `INVALID_CREDENTIALS` (`apps/server/src/routes/auth.ts:404` / `:408`). This prevents
+  a stolen Bearer access token alone from hijacking or replacing the user's signing key.
+- **Proof-of-possession (PoP):** The client generates a fresh Ed25519 keypair on the new
+  device and supplies `signingPublicKey` (raw base64) and a `signature` over
+  `canonicalUserIdentityMessage(user.id)`. The server verifies the signature via
+  `verifyUserIdentityProof` (`apps/server/src/routes/auth.ts:414`,
+  `apps/server/src/utils/identity-proof.ts:35`). An invalid signature, malformed key,
+  or missing parameter rejects with **400** `VALIDATION_ERROR`
+  (`apps/server/src/routes/auth.ts:393` / `:420`) and leaves the existing database
+  record untouched.
+- **Database update:** Upon successful password and signature verification, the server
+  overwrites `users.signingPublicKey` in SQLite (`apps/server/src/routes/auth.ts:425-429`)
+  and returns the updated user projection (`toPublicUser(updated)` at `:435`).
+- **Client flow & recovery UX:**
+  - `packages/api-client` exports `client.auth.resetSigningKey(input)`
+    (`packages/api-client/src/resources/auth.ts:81`) calling
+    `POST /api/auth/signing-key/reset` with Bearer auth.
+  - `apps/web/src/stores/auth.ts` implements `resetSigningKey(password: string)`
+    (`apps/web/src/stores/auth.ts:280`): generates a new Ed25519 keypair
+    (`generateSigningKeyPair`), signs `canonicalUserIdentityMessage(user.id)`
+    (`signProof`), invokes the API endpoint, stores both private and public keys in
+    IndexedDB (`saveSigningKey` / `saveSigningPublicKey`), updates `user.value`,
+    and transitions `identityStatus` to `'ready'` (`apps/web/src/stores/auth.ts:299`).
+  - The UI exposes key reset via `ResetIdentityKeyDialog.vue`
+    (`apps/web/src/components/auth/ResetIdentityKeyDialog.vue`):
+    1. **Contextual recovery:** If a terminal tab fails to connect due to
+       `PeerIdentityUnavailableError` or `identityStatus === 'unavailable'`,
+       `WorkspaceView.vue` (`apps/web/src/views/WorkspaceView.vue:271-286`) renders a
+       **Reset Identity Key** action button directly in the tab error banner,
+       opening the dialog in-place.
+    2. **Proactive management:** In `AppHeader.vue`
+       (`apps/web/src/components/layout/AppHeader.vue:193-200`), the user dropdown
+       menu includes a **Reset Identity Key** option so users can rotate keys on-demand.
+- **Security & operational invariants:**
+  - **Existing P2P sessions:** Active WebRTC connections already established with the
+    previous key are unaffected until closed, because peer identity is verified during
+    offer/answer handshake admission.
+  - **Subsequent sessions:** Offers initiated from the newly re-keyed device carry the
+    new public key. The server signaling relay stores and verifies against the updated
+    `users.signingPublicKey`, so agents admit the new session offers seamlessly.
+  - **Other devices:** A previous device holding the superseded private key will now
+    detect a key mismatch against `user.signingPublicKey` upon next login/restore,
+    transitioning its `identityStatus` to `'unavailable'` until re-keyed on that device.
 
 ## What WS2 does NOT do
 
