@@ -11,6 +11,15 @@
 //! up a real TCP listener serving a canned response (via the shared
 //! `test_util::spawn_stub`). The retry-once-on-401 path lives in
 //! `commands::session::retry_once_on_401`, which is unit-tested there.
+//!
+//! Auth-fatal classification (issue #107) is driven by a **stable signal** —
+//! the HTTP status / the server's `code` field — never by the human-readable
+//! message. `map_devices_error` prepends [`AUTH_FAILED_PREFIX`] when a response
+//! is an auth-death (401 or `code == "UNAUTHORIZED"`), and `is_auth_error`
+//! matches that marker. The server varies the message across every 401 case
+//! ("Invalid or expired token", "Token has been revoked", "Invalid token type",
+//! "User is inactive or not found", "WS ticket rejected by REST", "Missing or
+//! invalid Authorization header"), so matching text would miss most of them.
 
 use crate::commands::login::KEYCHAIN_SERVICE;
 use crate::keychain;
@@ -98,19 +107,61 @@ struct RegisterResponse {
 #[derive(Debug, Deserialize)]
 struct DevicesError {
     error: String,
-    #[allow(dead_code)]
     code: String,
     #[allow(dead_code)]
     details: Option<String>,
 }
 
+/// Stable, distinguishable marker prepended to a device-command error when the
+/// server rejected the request as an **auth-death** — HTTP 401, or any status
+/// carrying the server's `code == "UNAUTHORIZED"`. The frontend matches this
+/// marker to force a logout.
+///
+/// This is a *signal*, not a message list: `apps/server/src/middleware/auth.ts`
+/// emits a different human-readable message for every 401 case ("Invalid or
+/// expired token", "Token has been revoked", "Invalid token type", "User is
+/// inactive or not found", "WS ticket rejected by REST", "Missing or invalid
+/// Authorization header") but ALWAYS `AppError(msg, 401, 'UNAUTHORIZED')`. The
+/// classification keys on the status/code, so every wording is covered by
+/// construction. A FAILED refresh surfaces as `commands::session::
+/// REFRESH_FAILED_PREFIX` instead (never this marker), so the retry path cannot
+/// loop.
+pub const AUTH_FAILED_PREFIX: &str = "unauthorized request";
+
+/// Classify a response as an auth-death from its **stable** signals — the HTTP
+/// status and the server's `code` field — never the free-text message.
+///
+/// 401 is the access-token middleware's rejection status; `code ==
+/// "UNAUTHORIZED"` is the same signal spelled in the envelope, so a future
+/// non-401 carrying that code is still recognised. 403 is deliberately NOT
+/// auth-fatal for device operations: the only 403 the device routes emit is
+/// `AGENT_LIMIT_REACHED` (`apps/server/src/routes/agents.ts`), an operational
+/// limit on an *authenticated* user — logging them out would be wrong. This
+/// differs from `commands::session::is_auth_fatal_status` (401|403) on purpose:
+/// that classifies the refresh endpoint, whose 403 means the credential itself
+/// was refused. Transient failures (5xx/429/400/network) are never auth-fatal.
+fn is_auth_fatal_response(status: u16, code: Option<&str>) -> bool {
+    status == 401 || code == Some("UNAUTHORIZED")
+}
+
 /// Map a non-2xx response into a user-facing error string. Falls back to a
 /// generic message when the body is not the expected envelope (mirrors
 /// `map_login_error`).
+///
+/// When the response is an auth-death (see `is_auth_fatal_response`) the
+/// message is prefixed with [`AUTH_FAILED_PREFIX`] so `is_auth_error` — and the
+/// FE's `isAuthError` — recognise it without matching any message text.
 pub fn map_devices_error(status: u16, body: &str) -> String {
-    match serde_json::from_str::<DevicesError>(body) {
-        Ok(envelope) => envelope.error,
-        Err(_) => format!("Request failed (HTTP {status})"),
+    let parsed = serde_json::from_str::<DevicesError>(body).ok();
+    let inner = match &parsed {
+        Some(envelope) => envelope.error.clone(),
+        None => format!("Request failed (HTTP {status})"),
+    };
+    let code = parsed.as_ref().map(|envelope| envelope.code.as_str());
+    if is_auth_fatal_response(status, code) {
+        format!("{AUTH_FAILED_PREFIX}: {inner}")
+    } else {
+        inner
     }
 }
 
@@ -348,18 +399,14 @@ pub async fn delete_device_impl(
 
 // ---- Tauri command wrappers ----
 
-/// The exact server message surfaced on a 401 by the access-token middleware
-/// (`apps/server/src/middleware/auth.ts`). The retry-on-401 path triggers only
-/// for this string — never for network or 5xx errors, which must NOT force a
-/// logout.
-pub(crate) const AUTH_401_MESSAGE: &str = "Invalid or expired token";
-
-/// Classify whether an error string is the server's 401 auth failure that
-/// should trigger the refresh+retry path. Only the exact middleware message
-/// matches — a failed refresh surfaces as `REFRESH_FAILED_PREFIX` (see
-/// `commands::session`), which is intentionally NOT treated as a fresh 401.
+/// Classify whether an error string is the server's auth-death signal that
+/// should trigger the refresh+retry path. Matches the stable
+/// [`AUTH_FAILED_PREFIX`] marker emitted by `map_devices_error` — NOT any
+/// message text, so every 401 wording is covered. A failed refresh surfaces as
+/// `REFRESH_FAILED_PREFIX` (see `commands::session`), which is intentionally NOT
+/// treated as a fresh 401, so the retry path cannot loop.
 pub(crate) fn is_auth_error(err: &str) -> bool {
-    err == AUTH_401_MESSAGE
+    err.starts_with(AUTH_FAILED_PREFIX)
 }
 
 #[tauri::command]
@@ -456,14 +503,24 @@ pub async fn delete_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::login::KEYCHAIN_REFRESH_ACCOUNT;
     use crate::test_util::{
-        ensure_provider, keychain_lock, spawn_stub, spawn_stub_capturing, spawn_stub_capturing_body,
+        ensure_provider, keychain_lock, spawn_stub, spawn_stub_capturing,
+        spawn_stub_capturing_body, spawn_stub_routing,
     };
 
     /// Pre-clean + post-clean the credential account so a crashed previous run
     /// cannot make the swap test lie.
     fn clear_credential() {
         let _ = keychain::delete_secret(KEYCHAIN_SERVICE, KEYCHAIN_AGENT_ACCOUNT);
+    }
+
+    /// Pre-clean + post-clean the refresh-token account for the retry tests.
+    fn clear_refresh() {
+        let _ = keychain::delete_secret(
+            KEYCHAIN_SERVICE,
+            crate::commands::login::KEYCHAIN_REFRESH_ACCOUNT,
+        );
     }
 
     // ---- pure fn unit tests ----
@@ -498,17 +555,76 @@ mod tests {
     }
 
     #[test]
-    fn is_auth_error_only_matches_the_401_message() {
-        // The exact server middleware message triggers retry.
-        assert!(is_auth_error("Invalid or expired token"));
+    fn is_auth_error_only_matches_the_auth_marker() {
+        // The stable marker (emitted by `map_devices_error`) triggers retry.
+        assert!(is_auth_error(&format!(
+            "{AUTH_FAILED_PREFIX}: Invalid or expired token"
+        )));
+        // A RAW server message is NOT the signal any more — classification is
+        // driven by status/code, never text (issue #107). This is the inverse of
+        // the pre-#107 contract, where the exact string alone matched.
+        assert!(!is_auth_error("Invalid or expired token"));
         // Everything else — network, 5xx, a failed refresh — must NOT trigger.
         assert!(!is_auth_error("network error: ..."));
         assert!(!is_auth_error("Request failed (HTTP 500)"));
         assert!(!is_auth_error("Agent not found"));
-        // A failed refresh carries the session-expired prefix, not the raw 401.
+        // A failed refresh carries the session-expired prefix, not the auth marker.
         assert!(!is_auth_error(
             "session expired after refresh attempt: Refresh token reuse detected"
         ));
+    }
+
+    /// Issue #107: the classification must be driven by the STABLE signal
+    /// (HTTP 401 / `code == "UNAUTHORIZED"`), not by any message text. Every
+    /// 401 wording the server middleware emits must be recognised.
+    #[test]
+    fn map_devices_error_marks_every_401_variant_as_auth_signal() {
+        // The six message variants `apps/server/src/middleware/auth.ts` emits,
+        // ALL as `AppError(msg, 401, 'UNAUTHORIZED')`.
+        let variants = [
+            "Invalid or expired token",
+            "Invalid token type",
+            "Token has been revoked",
+            "User is inactive or not found",
+            "WS ticket rejected by REST",
+            "Missing or invalid Authorization header",
+        ];
+        for msg in variants {
+            let body = format!(r#"{{"error":"{msg}","code":"UNAUTHORIZED","details":null}}"#);
+            let err = map_devices_error(401, &body);
+            assert!(
+                is_auth_error(&err),
+                "401 variant {msg:?} must classify as auth-fatal, got: {err}"
+            );
+        }
+    }
+
+    /// A `code == "UNAUTHORIZED"` envelope is auth-fatal even on a non-401
+    /// status (defensive: the code is the stable signal the brief names).
+    #[test]
+    fn map_devices_error_treats_unauthorized_code_as_auth_signal() {
+        let body = r#"{"error":"anything","code":"UNAUTHORIZED","details":null}"#;
+        assert!(is_auth_error(&map_devices_error(401, body)));
+        assert!(is_auth_error(&map_devices_error(403, body)));
+    }
+
+    /// 403 `AGENT_LIMIT_REACHED` is an operational limit on an AUTHENTICATED
+    /// user — it must NOT be classified auth-fatal (that would log them out).
+    /// 5xx / 429 / 400 / network are transient, never auth-fatal.
+    #[test]
+    fn map_devices_error_does_not_mark_non_auth_failures() {
+        let limit =
+            r#"{"error":"Agent limit reached","code":"AGENT_LIMIT_REACHED","details":null}"#;
+        assert!(!is_auth_error(&map_devices_error(403, limit)));
+
+        let server =
+            r#"{"error":"Internal server error","code":"INTERNAL_SERVER_ERROR","details":null}"#;
+        assert!(!is_auth_error(&map_devices_error(500, server)));
+        assert!(!is_auth_error(&map_devices_error(429, "slow down")));
+        assert!(!is_auth_error(&map_devices_error(400, "bad request")));
+
+        let not_found = r#"{"error":"Agent not found","code":"NOT_FOUND","details":null}"#;
+        assert!(!is_auth_error(&map_devices_error(404, not_found)));
     }
 
     // ---- integration tests against spawn_stub ----
@@ -699,6 +815,8 @@ mod tests {
     #[test]
     fn list_devices_surfaces_error() {
         ensure_provider();
+        // A 401 is an auth-death, so the surfaced error now carries the stable
+        // auth marker (issue #107) — the message is preserved after the prefix.
         let url = spawn_stub(
             401,
             r#"{"error":"Unauthorized","code":"UNAUTH","details":null}"#.to_string(),
@@ -710,7 +828,9 @@ mod tests {
             Some("access-token".to_string()),
         ));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Unauthorized");
+        let err = result.unwrap_err();
+        assert!(err.starts_with(AUTH_FAILED_PREFIX), "got: {err}");
+        assert!(err.contains("Unauthorized"), "got: {err}");
     }
 
     #[test]
@@ -813,5 +933,148 @@ mod tests {
         );
 
         clear_credential();
+    }
+
+    /// Issue #107 Task B: drive a REAL device command (`list_devices`) through
+    /// the full 401 → refresh → retry path against one live stub. Unlike the
+    /// `retry_once_on_401` unit test in `session.rs` (a synthetic closure), this
+    /// exercises the actual wrapper wiring: `list_devices_impl` parses a 401
+    /// envelope, the shared helper refreshes via `/api/auth/refresh`, and the
+    /// retried `GET /api/agents` succeeds with the rotated access token.
+    #[test]
+    fn list_devices_retries_once_after_refresh_on_401() {
+        if std::env::var("PONTER_KEYCHAIN_SKIP").is_ok() {
+            eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
+            return;
+        }
+        let _guard = keychain_lock();
+        ensure_provider();
+        clear_refresh();
+        // Seed a refresh token so the refresh step fires (not the no-token path).
+        keychain::set_secret(KEYCHAIN_SERVICE, KEYCHAIN_REFRESH_ACCOUNT, "rt-seeded")
+            .expect("seed refresh token");
+
+        // One stub serving the whole flow: the first `GET /api/agents` is a 401
+        // (the access token is stale), `/api/auth/refresh` returns rotated
+        // credentials, and the retried `GET /api/agents` succeeds.
+        let agents_401 =
+            r#"{"error":"Token has been revoked","code":"UNAUTHORIZED","details":null}"#;
+        let refresh_ok =
+            r#"{"token":"rotated-access","refreshToken":"rotated-refresh","expiresIn":900}"#;
+        let agents_ok = r#"[{"id":"dev-1","userId":"u1","hostname":"mybox","platform":"linux","osVersion":"unknown","agentVersion":"0.1.0","publicKey":"","signingPublicKey":null,"isOnline":false,"lastHeartbeat":null,"capabilities":[],"createdAt":"2026-10-08T00:00:00Z"}]"#;
+        let agents_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let agents_hits_for_stub = agents_hits.clone();
+        let url = spawn_stub_routing(move |raw| {
+            if raw.contains("/api/auth/refresh") {
+                (200, refresh_ok.to_string())
+            } else if raw.contains("/api/agents") {
+                // First agents call: 401 (stale token). Retry: 200.
+                let n = agents_hits_for_stub.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    (401, agents_401.to_string())
+                } else {
+                    (200, agents_ok.to_string())
+                }
+            } else {
+                (
+                    404,
+                    r#"{"error":"not found","code":"NOT_FOUND","details":null}"#.to_string(),
+                )
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let http = &client;
+        let access: std::sync::Mutex<Option<String>> =
+            std::sync::Mutex::new(Some("stale-access".into()));
+
+        let devices = tauri::async_runtime::block_on(crate::commands::session::retry_once_on_401(
+            http,
+            &url,
+            &access,
+            |token| {
+                let url = url.clone();
+                async move { list_devices_impl(http, &url, Some(token)).await }
+            },
+            is_auth_error,
+        ))
+        .expect("list should succeed after one refresh+retry");
+
+        // Exactly two agents calls: the original 401 and the retried success.
+        assert_eq!(agents_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "dev-1");
+        // The retry used the rotated access token, and the refresh token rotated.
+        assert_eq!(access.lock().unwrap().as_deref(), Some("rotated-access"));
+        assert_eq!(
+            keychain::get_secret(KEYCHAIN_SERVICE, KEYCHAIN_REFRESH_ACCOUNT)
+                .unwrap()
+                .as_deref(),
+            Some("rotated-refresh"),
+        );
+
+        clear_refresh();
+    }
+
+    /// Issue #107 Task B (no-loop proof): a device command whose access token is
+    /// stale AND whose refresh ALSO fails must NOT retry a second time — the
+    /// failed-refresh error (`REFRESH_FAILED_PREFIX`) is surfaced, and the device
+    /// endpoint is hit exactly once. The initial 401 uses the "Token has been
+    /// revoked" wording (which the old exact-string matcher MISSED), so this is
+    /// RED on the base code and proves both the new signal and the no-loop
+    /// invariant.
+    #[test]
+    fn list_devices_does_not_loop_when_refresh_fails() {
+        if std::env::var("PONTER_KEYCHAIN_SKIP").is_ok() {
+            eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
+            return;
+        }
+        let _guard = keychain_lock();
+        ensure_provider();
+        clear_refresh();
+        keychain::set_secret(KEYCHAIN_SERVICE, KEYCHAIN_REFRESH_ACCOUNT, "stale-rt")
+            .expect("seed refresh token");
+
+        let agents_401 =
+            r#"{"error":"Token has been revoked","code":"UNAUTHORIZED","details":null}"#;
+        let refresh_401 = r#"{"error":"Invalid or expired refresh token","code":"INVALID_REFRESH_TOKEN","details":null}"#;
+        let agents_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let agents_hits_for_stub = agents_hits.clone();
+        let url = spawn_stub_routing(move |raw| {
+            if raw.contains("/api/auth/refresh") {
+                (401, refresh_401.to_string())
+            } else if raw.contains("/api/agents") {
+                agents_hits_for_stub.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (401, agents_401.to_string())
+            } else {
+                (404, "{}".to_string())
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let http = &client;
+        let access: std::sync::Mutex<Option<String>> =
+            std::sync::Mutex::new(Some("stale-access".into()));
+
+        let result = tauri::async_runtime::block_on(crate::commands::session::retry_once_on_401(
+            http,
+            &url,
+            &access,
+            |token| {
+                let url = url.clone();
+                async move { list_devices_impl(http, &url, Some(token)).await }
+            },
+            is_auth_error,
+        ));
+
+        // The device endpoint was hit exactly ONCE — no retry after a failed refresh.
+        assert_eq!(agents_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let err = result.unwrap_err();
+        assert!(
+            err.starts_with(crate::commands::session::REFRESH_FAILED_PREFIX),
+            "failed refresh must surface the session-expired prefix, got: {err}"
+        );
+
+        clear_refresh();
     }
 }

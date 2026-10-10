@@ -56,6 +56,19 @@ function mockInvoke(handlers: Record<string, () => unknown> = {}): void {
   });
 }
 
+/**
+ * Arm `auth.logout` with a spy and make the next backend `invoke` reject with
+ * `message`. Returns the logout spy for assertions. Collapses the
+ * spy + mockRejectedValue boilerplate the auth-classification tests share
+ * (Sonar new-code duplication).
+ */
+function armAuthFailure(message: string) {
+  const auth = useAuthStore();
+  const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+  vi.mocked(invoke).mockRejectedValue(new Error(message));
+  return logoutSpy;
+}
+
 /** Mount DevicesView, settle onMounted's async work, and return the wrapper. */
 async function mountView(options: { stubTeleport?: boolean } = {}) {
   const wrapper = mount(
@@ -281,20 +294,48 @@ describe('devices store', () => {
     expect(logoutSpy).not.toHaveBeenCalled();
   });
 
-  it('register() with a raw server 401 message (no refresh attempted) triggers logout()', async () => {
-    // When no refresh token is in the keychain, the Rust layer surfaces the
-    // raw server message "Invalid or expired token" directly — this is also
-    // auth-fatal and must log out.
-    const auth = useAuthStore();
-    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+  // Auth classification (issue #107): the FE keys on the STABLE marker the Rust
+  // layer prepends, never on server message text. One it.each table keeps every
+  // distinct input as its own reporter case while the shared setup boilerplate
+  // appears exactly once (Sonar new-code duplication).
+  it.each([
+    // Auth-deaths (marker present) → log out exactly once.
+    ['register', 'unauthorized request: Invalid or expired token', true],
+    ['register', 'unauthorized request: Token has been revoked', true],
+    ['refresh', 'unauthorized request: User is inactive or not found', true],
+    // A bare server message with NO marker is not the signal → must NOT log out.
+    ['register', 'Invalid or expired token', false],
+    // A transient 5xx is not an auth-death → must NOT log out (brief C).
+    ['refresh', 'Request failed (HTTP 500)', false],
+  ] as ['register' | 'refresh', string, boolean][])(
+    '%s() with %s (logout: %s)',
+    async (method, message, shouldLogout) => {
+      const logoutSpy = armAuthFailure(message);
+      const store = useDevicesStore();
+      const result = await (method === 'register'
+        ? store.register()
+        : store.refresh());
 
-    vi.mocked(invoke).mockRejectedValue(new Error('Invalid or expired token'));
-
-    const store = useDevicesStore();
-    await store.register();
-
-    expect(logoutSpy).toHaveBeenCalledTimes(1);
-  });
+      // The error is surfaced verbatim; the store settles (not loading) and no
+      // stale devices appear.
+      expect(store.error).toBe(message);
+      expect(store.loading).toBe(false);
+      expect(store.devices).toEqual([]);
+      // register() fails closed (null, never marked registered); refresh() is void.
+      if (method === 'register') {
+        expect(result).toBeNull();
+        expect(store.registered).toBe(false);
+      } else {
+        expect(result).toBeUndefined();
+      }
+      // Auth-death logs out exactly once; anything else must NOT log out.
+      if (shouldLogout) {
+        expect(logoutSpy).toHaveBeenCalledTimes(1);
+      } else {
+        expect(logoutSpy).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it('remove() with a refresh-failed (auth) error triggers logout()', async () => {
     const auth = useAuthStore();
