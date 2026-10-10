@@ -3,7 +3,6 @@ import type { AppContext } from '../types.js';
 import { users, revokedTokens } from '../db/schema.js';
 import { eq, or, count } from 'drizzle-orm';
 import { webcrypto } from 'node:crypto';
-import { canonicalUserIdentityMessage } from '@ponter/shared';
 import { hashPassword, verifyPassword } from '../utils/crypto.js';
 import { getSystemSettings } from '../utils/settings.js';
 import {
@@ -18,6 +17,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { verifyTokenForUser } from '../utils/auth.js';
 import { toPublicUser } from '../utils/user.js';
 import { getJwtSecret, getRefreshSecret } from '../utils/env.js';
+import { canonicalUserIdentityMessage } from '../utils/identity-proof.js';
 import { closeUserSockets } from './ws.js';
 import {
   storeRefreshToken,

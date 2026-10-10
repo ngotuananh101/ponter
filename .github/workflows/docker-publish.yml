@@ -40,6 +40,7 @@ env:
   # credential. Override the repo half with a DOCKERHUB_REPOSITORY variable if
   # it ever needs to differ from `ponter`.
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || 'ponter' }}
+  DEPLOY_BE_WEBHOOK: ${{ secrets.DEPLOY_BE_WEBHOOK || vars.DEPLOY_BE_WEBHOOK }}
 
 jobs:
   validate:
@@ -224,6 +225,15 @@ jobs:
 
           echo "Published tags: ${tags[*]}"
           docker buildx imagetools inspect "${tags[0]}"
+
+      - name: Trigger deployment webhook
+        if: ${{ env.DEPLOY_BE_WEBHOOK != '' }}
+        shell: bash
+        env:
+          DEPLOY_BE_WEBHOOK: ${{ env.DEPLOY_BE_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          bash docker/trigger-webhook.sh "$DEPLOY_BE_WEBHOOK"
 
       - name: Prune old sha-* tags (keep 3 newest)
         if: ${{ inputs.tag == '' }}

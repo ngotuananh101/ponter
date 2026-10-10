@@ -46,3 +46,31 @@ jobs:
 
       - name: Verify image exists
         run: docker image inspect ponter-server:ci
+
+      - name: Smoke-test the image (server must boot and answer /health)
+        run: |
+          docker run -d --name ponter-smoke -p 8787:8787 \
+            -e JWT_SECRET="smoke-jwt-secret-at-least-32-characters-long" \
+            -e REFRESH_TOKEN_SECRET="smoke-refresh-secret-at-least-32-characters" \
+            -e CORS_ORIGIN="http://localhost:5173" \
+            ponter-server:ci
+          # Poll /health for up to ~30s. A non-booting image (e.g. an
+          # ERR_MODULE_NOT_FOUND at startup) exits and curl never succeeds.
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8787/health >/dev/null 2>&1; then
+              echo "server healthy after ${i}s"
+              curl -fsS http://localhost:8787/health
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' ponter-smoke)" != "true" ]; then
+              echo "::error::container exited before becoming healthy"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::server did not become healthy within 30s"
+          exit 1
+
+      - name: Container logs on failure
+        if: always()
+        run: docker logs ponter-smoke || true
