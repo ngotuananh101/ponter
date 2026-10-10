@@ -90,7 +90,7 @@ from two executed spikes (see §2.2); F5-F14 from direct file inspection.
 | drizzle-orm / drizzle-kit | `^0.45.3` / `^0.31.11` | `workers/signaling/package.json` |
 | Hono | 4.13.9 | `workers/signaling/package.json` |
 | `werift` (new devDependency) | 0.24.4 | verified by install (F5) |
-| Baseline test count | **97 passing** | `pnpm test` at HEAD `9ba5613` |
+| Baseline test count | **97 passing** | `pnpm test` at HEAD `f04d1c4` |
 
 ### 2.2 Spike Record
 

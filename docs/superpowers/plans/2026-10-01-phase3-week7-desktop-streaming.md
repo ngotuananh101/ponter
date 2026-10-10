@@ -13,7 +13,7 @@
 > **Reconciliation note (added 2026-10-03) — read before following any CI step below.**
 > This plan is a historical record of Week 7, written when a single
 > `.github/workflows/ci.yml` still existed. That file was **split by PR #19**
-> (`chore(ci): split ci.yml into path-filtered workflows`, merged as `b1e5982`)
+> (`chore(ci): split ci.yml into path-filtered workflows`, merged as `d3f504e`)
 > into `ci-node.yml` / `ci-e2e.yml` / `ci-docker.yml`, alongside the already
 > separate `build-agent.yml`. Every reference below to `ci.yml`, and to its old
 > job keys, is therefore stale — the steps themselves were correct when the work

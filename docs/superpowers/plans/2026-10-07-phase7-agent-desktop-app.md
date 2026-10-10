@@ -141,7 +141,7 @@ git add apps/web/src/components/security/EncryptionByChannelDialog.vue apps/web/
 git commit -m "fix(web): make Encryption by Channel dialog width apply via sm:max-w-2xl"
 ```
 
-> **Correction (Task 0b).** The first attempt set an unprefixed `class="max-w-3xl"` on `DialogContent` (commit `998bc95`, shipped as `9f1efba`). It never applied: the generated `DialogContent` default is the **`sm:`-variant** `sm:max-w-md`, and tailwind-merge treats an unprefixed `max-w-*` as a different group, so `sm:max-w-md` kept winning at ≥640px. The fix (commit `6e9c97f`) passes the **same-variant** `sm:max-w-2xl`, which tailwind-merge replaces the default with — effective width 42rem (2xl) at ≥640px. Lesson: when overriding a generated component's width via `class`, match the variant of the default you are replacing.
+> **Correction (Task 0b).** The first attempt set an unprefixed `class="max-w-3xl"` on `DialogContent` (branch commit `998bc95`, pre-rewrite; shipped as `b23c846`, PR #52). It never applied: the generated `DialogContent` default is the **`sm:`-variant** `sm:max-w-md`, and tailwind-merge treats an unprefixed `max-w-*` as a different group, so `sm:max-w-md` kept winning at ≥640px. The fix (branch commit `6e9c97f`, pre-rewrite; shipped as `2963986`, PR #54) passes the **same-variant** `sm:max-w-2xl`, which tailwind-merge replaces the default with — effective width 42rem (2xl) at ≥640px. Lesson: when overriding a generated component's width via `class`, match the variant of the default you are replacing.
 
 ---
 
@@ -298,7 +298,7 @@ git add apps/agent/Cargo.toml apps/agent/src/lib.rs apps/agent/src/main.rs
 git commit -m "refactor(agent): split into lib + thin CLI (ADR-50)"
 ```
 
-> **Correction (Task 2).** The split shipped as `ce162f95` (plus follow-up fix `d315c667`, which dropped a dead `#[cfg(windows)]` path import left by the move). Three details differ from the sketch above and are the shipped reality:
+> **Correction (Task 2).** The split shipped as `bd310408` (PR #55, squash of branch commits `ce162f95` + follow-up fix `d315c667`, pre-rewrite — the latter dropped a dead `#[cfg(windows)]` path import left by the move). Three details differ from the sketch above and are the shipped reality:
 > - **`logging::init()` stays in the CLI.** The library never initialises a subscriber — `AgentRuntime::start` leaves logging to the caller, so an embedder (the Tauri backend) can install its own. `main.rs` calls `logging::init()` before starting the runtime.
 > - **`shutdown_signal()` lives in `lib.rs`, and the CLI's Ctrl-C/SIGTERM behaviour is preserved via `handle.wait()`.** The CLI awaits `RuntimeHandle::wait()` (not `stop()`), so the reconnect loop's own `shutdown_signal()` branch produces the established log lines and exit behaviour rather than a synthesised stop.
 > - **The E2E suite keeps 5 pre-existing environmental desktop failures** (Xvfb cursor/input on some hosts); they were proven identical with the baseline binary, so the split introduced none. CI is the binding check for this refactor.
@@ -363,7 +363,7 @@ git add apps/desktop/src-tauri
 git commit -m "feat(desktop): Tauri backend skeleton + keychain wrapper (ADR-51/52)"
 ```
 
-> **Correction (Task 3).** Shipped as `13fa265`; the decisions below are what Tasks 4, 6, and 10 must rely on.
+> **Correction (Task 3).** Shipped as `a4dbffa` (PR #56, squash of branch commit `13fa265`, pre-rewrite); the decisions below are what Tasks 4, 6, and 10 must rely on.
 > - **Keychain crate:** `keyring` **4.2.0** (`features = ["apple-native-keyring-store"]`). `Entry::new(service, account)` returns a `Result`, so the `?` is required; the value API is `set_password` / `get_password` / `delete_credential`. A **missing** credential is matched as the exact variant **`keyring::Error::NoEntry`** → `Ok(None)` (get) and idempotent `Ok(())` (delete). **Every other error bubbles** — `PlatformFailure` / `NoStorageAccess` must surface, so callers can distinguish "no credential stored yet" from "the store is broken".
 > - **Headless-CI env guard:** the round-trip test returns early when `PONTER_KEYCHAIN_SKIP=1`; locally it runs for real against the OS secret store. **Task 10's workflow author must set `PONTER_KEYCHAIN_SKIP=1` if the CI job ever runs `cargo test`** on the desktop crate — GitHub runners have no secret-service session bus.
 > - **`[patch.crates-io]` must be repeated in the desktop root manifest:** Cargo reads `[patch]` only from the **root** manifest of the build, so `apps/desktop/src-tauri/Cargo.toml` carries `[patch.crates-io] xcap = { path = "../../agent/vendor/xcap" }` plus the Windows-only `xcap` wgc target-dep block (same as `apps/agent`). Verify with `cargo tree -i xcap` → vendored path. **Without it the desktop build silently links the unpatched registry `xcap`** (the Wayland black-stream regression the vendored patch fixes).
@@ -431,7 +431,7 @@ git add apps/desktop pnpm-lock.yaml
 git commit -m "feat(desktop): account login + keychain token storage (ADR-52)"
 ```
 
-> **Correction (Task 4).** Shipped as `f96a472` (18 files, +785/−66) plus the review-fix commit `463da71` (mutex lock error mapping + honest storage assertions); the decisions below are what Tasks 5, 6, and 10 must rely on.
+> **Correction (Task 4).** Shipped as `3f38e2c` (PR #57, squash of branch commits `f96a472` — 18 files, +785/−66 — plus review-fix `463da71`, pre-rewrite; mutex lock error mapping + honest storage assertions); the decisions below are what Tasks 5, 6, and 10 must rely on.
 > - **Server contract:** `POST /api/auth/login` with body **`{username, password}`** — the server looks up `users.username`, so the shipped command is **`login(username, password)`** (the plan's earlier `login(email, password)` was wrong). A `200` returns `{user, token, refreshToken, expiresIn}`; a non-`200` returns `{error, code, details}` and the `error` string is surfaced verbatim to the UI.
 > - **HTTP client:** `reqwest` **0.13** with `default-features = false, features = ["json", "rustls-no-provider"]` plus `rustls` **0.23** with `features = ["ring", "std", "tls12"]`. The ring crypto provider is installed **once** in `AppState::new()` before any client is built — reqwest 0.13's `rustls-no-provider` **panics at `Client` build time if no provider is installed**. Ring is chosen because it is already in the lockfile via the agent crate (no `aws-lc-sys` C build). Tasks 5/6 must **reuse `AppState.http` / `AppState.server_url`**, not construct new clients.
 > - **Secrets:** the refresh token goes to the keychain under service **`"ponter-desktop"`** / account **`"refresh-token"`** (consts `KEYCHAIN_SERVICE` / `KEYCHAIN_REFRESH_ACCOUNT` in `commands/login.rs`); the access token lives in `AppState.access_token` (`Mutex<Option<String>>`), **memory only**. A keychain write failure **fails the login loudly** (no success-without-persistence). Task 6 adds the agent credential under the same service.
@@ -495,7 +495,7 @@ git add apps/desktop pnpm-lock.yaml
 git commit -m "feat(desktop): verified setup wizard (ADR-53)"
 ```
 
-> **Correction (Task 5).** Shipped as `50b37c4` (11 files) plus the review-fix commit `b384736`; the decisions below are what Tasks 6, 7, and 8 must rely on.
+> **Correction (Task 5).** Shipped as `418cdfb` (PR #58, squash of branch commits `50b37c4` — 11 files — plus review-fix `b384736`, pre-rewrite); the decisions below are what Tasks 6, 7, and 8 must rely on.
 > - **Probe contract:** `probe_server(url)` does `GET <url>/health` (the entered URL has its trailing slashes trimmed first; server route `apps/server/src/app.ts:41` → `{"status":"ok"}`, no auth) with a **5s** timeout; success = 2xx **and** `status == "ok"`. Returns `ProbeResult { ok, message }` (camelCase). `probe_capture()` runs `enumerate_sources` → `default_source_id(false, "primary")` → `source_for(id, SAFE_720P30)` → poll `next_frame` ≤5s → `source.stop()`; returns `CaptureProbe { sourceId, width, height, kind }`. The `probe_capture` command is cfg-gated `not(target_env = "musl")` **and its `generate_handler!` entry carries the same per-entry cfg attribute** (the Tauri macro honours per-entry attributes) — without it the musl build fails to resolve the symbol.
 > - **Agent lib surface (new public API):** `apps/agent/src/lib.rs` now re-exports (cfg-gated non-musl) `DesktopSourceInfo`, `FrameSource`, `SourceKind`, `default_source_id`, `enumerate_sources`, `source_for`, and defines `CaptureProbe` + `pub async fn probe_capture()`. Tasks 6/7 use this surface; they must **not** re-open the private `desktop` module.
 > - **Wizard state machine:** steps `server → capture → inputGate → autoStart`; `allowInput` defaults **false** (ADR-42 Gate A). The advance-gate lives **in the store** (`advance()` refuses without `serverProbe.ok` / `captureProbe.ok`); `inputGate → autoStart` is unconditional (Gate B peer-identity verification happens at admission — Task 7). `completed` is set after steps 1-3 verify; step 4 is not required.
@@ -552,7 +552,7 @@ git add apps/desktop pnpm-lock.yaml
 git commit -m "feat(desktop): device registration + management (ADR-54)"
 ```
 
-> **Correction (Task 6).** Shipped as `f7216ec` (11 files) plus the review-dedup commit `da016f1` (4 files); 13 files total across the range. The decisions below are what Tasks 7+ must rely on.
+> **Correction (Task 6).** Shipped as `9e20216` (PR #59, squash of branch commits `f7216ec` — 11 files — plus review-dedup `da016f1` — 4 files — pre-rewrite); 13 files total across the range. The decisions below are what Tasks 7+ must rely on.
 > - **Command surface:** 3 new commands — `register_device()`, `list_devices()`, `delete_device(agent_id)` — bringing `invoke_handler` to **7** total (`login`, `probe_server`, `probe_capture`, `save_wizard_settings`, + these 3). No command starts the runtime; the tray/lifecycle is Task 7.
 > - **Credential handling:** on a `201` the response envelope `{ agent, credential }` is deserialized, the `credential` is written to the keychain under service **`"ponter-desktop"`** (imported `KEYCHAIN_SERVICE` from `commands/login.rs`) / account **`"agent-credential"`** (`KEYCHAIN_AGENT_ACCOUNT`), then dropped. Only the `DesktopDevice` projection (no `credential` field) crosses to the frontend. A keychain write failure **fails the registration loudly**. **Re-registration replaces** the stored value (last credential wins) — no "write only if absent".
 > - **Server contract:** `POST /api/agents` with body `{id, hostname, platform, osVersion, agentVersion}` and header `Authorization: Bearer <access token>`; `publicKey` and `capabilities` are **deliberately omitted** (not fabricated). Success is exactly **201**; `GET /api/agents` → 200 list; `DELETE /api/agents/:id` → 200 `{success:true}`. Non-2xx maps `{error, code, details}` → the `error` string verbatim (`map_devices_error`).
@@ -578,7 +578,7 @@ git commit -m "feat(desktop): device registration + management (ADR-54)"
 - Consumes: `AgentRuntime::start/stop`, `RuntimeHandle::status()` (Task 2); `AppState.server_url` / `AppState.allow_input` (Task 5); the keychain credential (Task 6); the identity-path rule mirrored from `apps/agent/src/main.rs`.
 - Produces: `tray::TrayState` (managed state owning the runtime slot + tray bookkeeping); 7 pure fns (`tray_label`, `status_text`, `action_for_menu_id`, `derive_ws_url`, `should_hide_on_close`, `resolve_identity_path`, `build_runtime_config`); the lifecycle fns (`init`, `build_menu`, `handle_menu_action`, `start_agent`, `stop_agent`, `quit_app`, `spawn_status_poll`); the exact menu ids `status` / `start` / `stop` / `open` / `quit`; close-to-tray (hide only when the tray built).
 
-> **Cross-ref (Task 5).** The wizard's input-gate copy says the `allow_input` preference (Gate A, ADR-42) is applied at runtime and that Gate B is "wired in Task 7". Task 7's scope here is the tray + lifecycle (start/stop the runtime, consuming `AgentRuntime::status()`); the runtime it starts carries Gate B — the ADR-41 peer-identity admission gate **already shipped in Phase 6a** (`48edac1`) — so Task 7 adds no new identity code.
+> **Cross-ref (Task 5).** The wizard's input-gate copy says the `allow_input` preference (Gate A, ADR-42) is applied at runtime and that Gate B is "wired in Task 7". Task 7's scope here is the tray + lifecycle (start/stop the runtime, consuming `AgentRuntime::status()`); the runtime it starts carries Gate B — the ADR-41 peer-identity admission gate **already shipped in Phase 6a** (`c624897`) — so Task 7 adds no new identity code.
 
 - [ ] **Step 1: Write the failing state-mapping test**
 
@@ -611,7 +611,7 @@ git add apps/desktop/src-tauri/src/tray.rs apps/desktop/src-tauri/src/lib.rs app
 git commit -m "feat(desktop): tray icon + lifecycle (ADR-55)"
 ```
 
-> **Correction (Task 7).** Shipped as `b1d7868` (3 files, +731/−1) on `phase7/task-7-tray` (base `2e1fd5c`). The decisions below are what Tasks 8+ must rely on.
+> **Correction (Task 7).** Shipped as `0f28d51` (PR #60, squash of branch commit `b1d7868`, pre-rewrite; 3 files, +731/−1) on `phase7/task-7-tray` (base `9e20216`). The decisions below are what Tasks 8+ must rely on.
 > - **File set:** `tray.rs` (create, 703 lines) + `lib.rs` (modify) + `Cargo.toml` (modify) — the `Cargo.toml` change is the ONE-line feature flip `features = []` → `features = ["tray-icon"]` (R2). `Cargo.lock` is **byte-identical** (`tray-icon v0.25.1` / `muda` / `libappindicator` were already resolved transitively; zero new crates).
 > - **Honest state surface (3 states only):** the tray label maps `RuntimeStatus`'s exactly three variants — `Stopped` → "Stopped", `Disconnected` → "Disconnected", `Connected` → "Connected". No "Connecting"/"Error" state is fabricated (R7) — the runtime API does not have one.
 > - **Menu ids (dispatch contract):** `status` (disabled label "Status: …"), `start`, `stop`, `open`, `quit`. **No "Open at login" item** — auto-start is Task 8 (ADR-55's `set_autostart`).
@@ -668,11 +668,11 @@ git add apps/desktop/src-tauri/src/autostart.rs apps/desktop/src-tauri/src/lib.r
 git commit -m "feat(desktop): per-platform auto-start (ADR-55)"
 ```
 
-> **Correction (Task 8).** Shipped as 5 commits on `phase7/task-8-autostart` (base `a358622`): `b286f28` (BE Rust) → `916e51e` (FE wizard) → `8e75d41` (FE type fix) → `7536b82` (BE XDG-subdir fix) → `2d467cb` (FE view tests) — 6 files, +848/−25. The decisions below are what Tasks 9+ must rely on.
+> **Correction (Task 8).** Shipped as 5 commits on `phase7/task-8-autostart` (base `0f28d51`; landed on main as PR #61 squash `248d931`; branch SHAs below are pre-rewrite): `b286f28` (BE Rust) → `916e51e` (FE wizard) → `8e75d41` (FE type fix) → `7536b82` (BE XDG-subdir fix) → `2d467cb` (FE view tests) — 6 files, +848/−25. The decisions below are what Tasks 9+ must rely on.
 > - **Full scope (owner ruling 2026-10-08):** backend `autostart.rs` + the tray "Open at login" `CheckMenuItem` + wizard step-4 wiring. The plan's original Files block named only `autostart.rs`; the real set is **6 files** (3 Rust + 3 Vue/TS).
 > - **`invoke_handler` 7 → 9:** `set_autostart(enabled: bool)` and `is_autostart_enabled() -> bool`, both sync, both callable directly from `tray.rs` (no `State` arg). No new deps; `Cargo.lock` byte-identical.
 > - **The entry IS the source of truth (no stored boolean):** `is_autostart_enabled()` reports whether the platform entry exists; `set_autostart` installs/removes it. Both idempotent. Returns `false` on any resolution error (never panics).
-> - **Linux entry path = `<XDG config>/autostart/ponter-desktop.desktop`** — the `autostart/` subdir is **mandatory** (XDG only discovers that dir). The initial implementation wrote to `<config>/ponter-desktop.desktop` (a real defect), fixed in `7536b82`; the pin test `linux_autostart_entry_dir_appends_autostart_subdir` locks it. `linux_autostart_dir` keeps its base-config-dir contract; the caller appends the subdir.
+> - **Linux entry path = `<XDG config>/autostart/ponter-desktop.desktop`** — the `autostart/` subdir is **mandatory** (XDG only discovers that dir). The initial implementation wrote to `<config>/ponter-desktop.desktop` (a real defect), fixed in branch commit `7536b82` (pre-rewrite; PR #61 squash `248d931`); the pin test `linux_autostart_entry_dir_appends_autostart_subdir` locks it. `linux_autostart_dir` keeps its base-config-dir contract; the caller appends the subdir.
 > - **macOS** = LaunchAgent plist `~/Library/LaunchAgents/com.ponter.desktop.plist` (chosen over `SMAppService`, which needs a signed/bundled app + entitlements and cannot be verified on this branch). **Windows** = `reg.exe` `Run` value `PonterDesktop` under `HKCU\...\Run` (no `winreg` crate). All take effect at the **next login** (no immediate launch).
 > - **Tray item:** a `CheckMenuItem` (id `autostart`, text "Open at login"), placed after "Open window" and before Quit; its checked state is the real OS state at build time. On toggle failure the checkbox **reverts** so it never lies about the real state.
 > - **Wizard flow fix:** `completed` is set at **step 4** (`complete()`), not step 3 (`finish()`). Step 3's "Continue" persists settings + advances; step 4's "Finish" applies the auto-start toggle then completes. This makes step 4 reachable in the real app (`App.vue` unmounts the wizard when `completed` is true — previously step 4 was dead). `setAutoStart`/`loadAutoStart` surface errors via `autoStartError`.
@@ -682,12 +682,12 @@ git commit -m "feat(desktop): per-platform auto-start (ADR-55)"
 
 ### Desktop UI sync → shadcn-vue (owner-requested addition, not in the original plan)
 
-**Shipped:** branch `phase7/desktop-shadcn-sync` (base `e607e13`) — 2 commits, 34 files, **FE-only**.
+**Shipped:** branch `phase7/desktop-shadcn-sync` (base `248d931`) — 2 commits, 34 files, **FE-only**.
 
-> **Correction (Desktop UI sync → shadcn-vue).** Shipped as `c4f17a9` (feat: infra + 3 views) → `6601650` (fix: restore device hostname in the device row). The desktop app adopted the **shadcn-vue** UI stack for parity with `apps/web`. What the note below records is what Tasks 9+ and the later design audit must rely on.
+> **Correction (Desktop UI sync → shadcn-vue).** Shipped as `c3fc4ff` (PR #62, squash of branch commits `c4f17a9` — feat: infra + 3 views — → `6601650` — fix: restore device hostname in the device row — pre-rewrite). The desktop app adopted the **shadcn-vue** UI stack for parity with `apps/web`. What the note below records is what Tasks 9+ and the later design audit must rely on.
 > - **Infra (parity with `apps/web`):** Tailwind v4 + `@tailwindcss/vite` plugin (wired into `vite.config.ts`), `shadcn-vue` + `reka-ui` + `class-variance-authority` + `clsx` + `tailwind-merge` + `tw-animate-css` + `@lucide/vue`; `components.json` (style `reka-vega`, baseColor neutral, cssVariables); `src/style.css` token layer imported from `main.ts`; `src/lib/utils.ts` `cn()`.
 > - **Generated UI layer:** `apps/desktop/src/components/ui/**` — alert / badge / button / card / input / label (21 files), **byte-identical to the web client's** `ui/` (verified: matching git blob hashes vs `apps/web/src/components/ui/`).
-> - **3 views rewritten** on shadcn components: `LoginView.vue`, `WizardView.vue`, `DevicesView.vue`. The stale DevicesView copy was fixed and the device hostname restored in the row (`6601650`).
+> - **3 views rewritten** on shadcn components: `LoginView.vue`, `WizardView.vue`, `DevicesView.vue`. The stale DevicesView copy was fixed and the device hostname restored in the row (branch commit `6601650`, pre-rewrite; PR #62 squash `c3fc4ff`).
 > - **Byte-identity + ignore rule extended:** `.prettierignore` now also ignores `apps/desktop/src/components/ui` (registry ships without semicolons; repo prettier would rewrite them — same rationale as the web `ui/`); `eslint.config.js` turns off `vue/multi-word-component-names` for the desktop `ui/**` glob too.
 > - **`@vueuse/core` runtime-dep nuance:** added as a **runtime** `dependency` (shadcn-vue components import it), unlike the build-only tooling deps (`@tailwindcss/vite`, `tailwindcss`) added to `devDependencies`. Recorded so a later dependency audit does not "fix" it into devDependencies.
 > - **WizardView Card-free ruling (ACCEPTED):** the sync brief mentioned a `Card`, but the shipped WizardView uses Input/Label/Button only — no `Card`. Accepted: the owner's constraint is **reuse the shadcn stack to minimize hand-written code**, not "a Card is mandatory"; visual polish/parity is the concern of the separate frontend design audit below, not this sync.
@@ -764,13 +764,13 @@ git add .github/workflows/build-desktop.yml
 git commit -m "ci(desktop): 3-OS build + bundle + release (ADR-56)"
 ```
 
-> **Correction (Task 9/10).** Shipped as `1c82218` (PR #64, squash; base `a5dcc63`), 3 files, +329/−3. Pre-squash commits: `7608cc5` (Task 9 bundle config) → `f80caa9` (Task 10 workflow) → `d9349a3` (Windows compile fix) → `e8afcde` (Windows assert fix). The decisions below are what Task 11 must rely on.
+> **Correction (Task 9/10).** Shipped as `cd51d33` (PR #64, squash; base `c3fc4ff`), 3 files, +329/−3. Pre-squash commits (pre-rewrite SHAs): `7608cc5` (Task 9 bundle config) → `f80caa9` (Task 10 workflow) → `d9349a3` (Windows compile fix) → `e8afcde` (Windows assert fix). The decisions below are what Task 11 must rely on.
 >
 > - **Task 9 (ADR-56).** `tauri.conf.json` bundle stanza: `active: true`, `targets: "all"`, icon array gains `icons/icon.ico` + `icons/icon.icns` (in addition to the 4 PNGs).
 > - **Task 10 (ADR-56).** New `.github/workflows/build-desktop.yml` — 3-OS matrix (`ubuntu-latest`/`macos-14`/`windows-latest`), build + bundle + artifact upload + per-OS assert, plus a `release` job gated on tag or a non-dry-run dispatch.
 > - **Two Windows defects, found only at the first cross-platform compile** (the desktop crate had never been compiled on Windows before this task):
->   1. `d9349a3` — `autostart.rs` was missing the `#[cfg(windows)] fn resolve_autostart_location()` arm, so the Windows build hit `E0425` (unresolved name). This was a **pre-existing Task 8 gap** surfaced by Task 10's first Windows compile; the fix returns a placeholder `(PathBuf::new(), WINDOWS_RUN_VALUE)` that the Windows runtime arms ignore.
->   2. `e8afcde` — the Windows assert step filtered on `$_.Extension -match '^(msi|exe)$'`, which **never matched** because `FileInfo.Extension` carries a leading dot (`.msi`); the fix uses `-in '.msi', '.exe'`.
+>   1. `d9349a3` (pre-rewrite) — `autostart.rs` was missing the `#[cfg(windows)] fn resolve_autostart_location()` arm, so the Windows build hit `E0425` (unresolved name). This was a **pre-existing Task 8 gap** surfaced by Task 10's first Windows compile; the fix returns a placeholder `(PathBuf::new(), WINDOWS_RUN_VALUE)` that the Windows runtime arms ignore.
+>   2. `e8afcde` (pre-rewrite) — the Windows assert step filtered on `$_.Extension -match '^(msi|exe)$'`, which **never matched** because `FileInfo.Extension` carries a leading dot (`.msi`); the fix uses `-in '.msi', '.exe'`.
 > - **Release-glob regression (fixed in the same PR).** The release `files:` globs were widened to recursive `dist/**/*.<ext>` and a **0-installer assert** was added to the release job, closing a silent-empty-release class (a non-recursive glob would have matched nothing while the job stayed green).
 > - **Signing is build-only this phase** (PM decision #1). The macOS (notarization) and Windows (Authenticode) signing hooks are present but **commented** in `build-desktop.yml`; installers ship unsigned.
 > - **Carry-forward (not proven by CI).** The `release` job is skipped at PR time (tag/dispatch only), so the recursive release globs and the 0-installer assert are **reasoned-but-unproven** by PR CI — only a real tag or non-dry-run dispatch exercises them (side effect: that creates a public GitHub Release).
@@ -836,9 +836,9 @@ git add apps/desktop/src-tauri/src/commands/updater.rs apps/desktop/src-tauri/ta
 git commit -m "feat(desktop): signed auto-update (ADR-57)"
 ```
 
-**Stop condition (RESOLVED — shipped):** L5 shipped as `591a53e` (PR #67, squash). The public updater key is compiled in; the private key + password CI secrets were set 2026-10-08. Phase 7 is complete.
+**Stop condition (RESOLVED — shipped):** L5 shipped as `34263bf` (PR #67, squash). The public updater key is compiled in; the private key + password CI secrets were set 2026-10-08. Phase 7 is complete.
 
-> **Correction (Task 11).** Shipped as `591a53e` (PR #67, squash; base `b3d1ce3` = the #68 merge; branch `phase7/task-11-updater`, chain `b0bf020` → `08176da` → `48ef477` → `bd182a5` → `1bada79`). Scope (8 files): `apps/desktop/src-tauri/**` (updater command module + `commands/mod.rs` + `lib.rs`, `tauri.conf.json` updater plugin block, capabilities, Cargo) + `.github/workflows/build-desktop.yml` (manifest assembly). The decisions below are the shipped reality:
+> **Correction (Task 11).** Shipped as `34263bf` (PR #67, squash; base `9353aaf` = the #68 merge; branch `phase7/task-11-updater`, chain `b0bf020` → `08176da` → `48ef477` → `bd182a5` → `1bada79`, pre-rewrite SHAs). Scope (8 files): `apps/desktop/src-tauri/**` (updater command module + `commands/mod.rs` + `lib.rs`, `tauri.conf.json` updater plugin block, capabilities, Cargo) + `.github/workflows/build-desktop.yml` (manifest assembly). The decisions below are the shipped reality:
 >
 > - **Manifest key format is `{os}-{arch}-{bundle_type}`** (e.g. `linux-x86_64-deb`, `darwin-aarch64-app`, `windows-x86_64-msi`) — **NOT** Rust target triples. `bundle_type` follows `tauri-plugin-updater`'s `Installer::name`.
 > - **Signature is per-platform** — inside each `platforms[key]` entry as `{ url, signature }` (the minisign signature of that installer binary). **There is no top-level manifest signature**; the plugin reads none for static manifests (it verifies the downloaded bytes against the per-platform signature during `Update::download`).

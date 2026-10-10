@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-03
 **Machine:** Fedora 44 Workstation, Wayland session
-**Agent:** `ponter-agent --desktop-source screen` (branch `feat/phase3-week8-stream-quality` @ `6ce398f`), default profile 1080p30
+**Agent:** `ponter-agent --desktop-source screen` (branch `feat/phase3-week8-stream-quality` @ `6ce398f` — pre-rewrite SHA, not on main; content shipped in PR #27 squash `82fa821`), default profile 1080p30
 **Recording:** none — manual rows not formally gated; see Status
 
 ## Status
@@ -78,7 +78,7 @@ The ignored live-display unit tests also pass on this host:
   IDRs across 3 frames. The PM ruled (2026-10-03) to keep the usage type and the
   fallback unchanged and to **pin the measured behavior** instead of the
   disproven assertion (`screen_content_real_time_emits_idrs_on_content_change`,
-  commit `a2de973`). **What this changes for the demo:** a source switch's "brief
+  commit `a2de973`, pre-rewrite; PR #27 squash `82fa821`). **What this changes for the demo:** a source switch's "brief
   blip" is a normal content-change IDR, not a distinct one-shot artifact — the
   switch is *at least as* self-healing as the plan assumed, since real desktop
   content keeps re-keying anyway.

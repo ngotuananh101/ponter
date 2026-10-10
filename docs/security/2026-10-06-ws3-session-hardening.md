@@ -27,7 +27,7 @@
 
    **The client half was already shipped.** `connection.ts` refuses an
    `approved: false` answer (never applies the SDP, fails `waitForChannel`
-   fast) since commit `2de7a23` (2026-10-01), which predates this workstream.
+   fast) since commit `5ef6bd5` (2026-10-01), which predates this workstream.
 
 3. **Close-code handling (M2).** `SignalClient::run` returned `Ok(())` on any
    close, so the reconnect loop in `run_with_reconnect` retried even after
@@ -41,7 +41,7 @@
 4. **`candidate.session_id` validation (M3) — already fixed; now tested.**
    The guard in `route_inbound` (`apps/agent/src/lib.rs:2568`) drops a candidate
    whose `session_id` is not the live session, and logs it. It landed in
-   `2de7a23` (2026-10-01) and is present at the spec baseline `fdead292` — the
+   `5ef6bd5` (2026-10-01) and is present at the spec baseline `680cccc0` — the
    spec's §2 table marks M3 CONFIRMED in error. WS3 adds the regression E2E
    and a mutation proof (guard removed → red) rather than re-implementing it.
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (`@ponter/shared`, `@ponter/webrtc-core`, `@ponter/desktop-core`, Vue 3 + Pinia), vitest; Rust (`webrtc`/`rtc` 0.21, `openh264` 0.9.8, `xcap` 0.9.8, tokio), `cargo test`/`cargo clippy`; werift (unit + E2E offerer); GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-10-03-phase3-week8-stream-quality-design.md` (ADR-21..25, merged on `main` as `2899b39`)
+**Spec:** `docs/superpowers/specs/2026-10-03-phase3-week8-stream-quality-design.md` (ADR-21..25, merged on `main` as `f8c2c97`)
 
 > **Reading order:** read the spec's §2 (wire protocol), §3.7 (the ADR-23 spike result — the mechanism this plan ships), §6 (agent design) and §10.4 (review focus) before starting. This plan argues from the spec; where they disagree, the spec wins and the plan is wrong.
 
@@ -16,7 +16,7 @@
 
 Copied verbatim from the spec's project-wide requirements. Every task's requirements implicitly include this section.
 
-- **Precondition — open the branch from a fresh `origin/main` in a separate worktree:** `feat/phase3-week8-stream-quality`, e.g. `.claude/worktrees/phase3-week8`. Week 7 (`feat/phase3-week7-desktop-streaming`) and the Week 8 spec PR (#24, merged `2899b39`) must already be on `main`. Never `git checkout` in the shared working directory.
+- **Precondition — open the branch from a fresh `origin/main` in a separate worktree:** `feat/phase3-week8-stream-quality`, e.g. `.claude/worktrees/phase3-week8`. Week 7 (`feat/phase3-week7-desktop-streaming`) and the Week 8 spec PR (#24, merged `f8c2c97`) must already be on `main`. Never `git checkout` in the shared working directory.
 - **No new shared surface beyond one module:** `packages/shared/src/types/desktop.ts` (source/stats types) + its re-export in `types/index.ts` is the **only** `@ponter/shared` change. `WebRTCChannelType` already includes `'control'` (`packages/shared/src/types/webrtc.ts:7`) — do not re-add it.
 - **`packages/webrtc-core` gains no new code.** The control channel rides the existing `DataChannelManager` and the pre-create/auto-register machinery in `connection.ts` (spec §5.2). Do not add a desktop-specific seam here.
 - **Terminal path stays byte-identical:** `channelLabels: ['terminal']`, one `'terminal'` channel, `terminal-*` frames. The `'control'` label is desktop-only; the terminal path never sees it (spec §2.4).
@@ -4321,7 +4321,7 @@ git commit -m "test(e2e): control channel, manual bitrate, and refused-selection
 - Consumes: every artifact from Tasks 1–6.
 - Produces: the reconciled ARCHITECTURE.md, the demo record, the PR.
 
-> **D8 is NOT already done.** The Week 8 spec PR (#24, merged `2899b39`) was **spec-only** — it did not touch `docs/ARCHITECTURE.md`. So the two drifts the spec describes (§11) are still present on `main` today, and this task is where they are actually fixed:
+> **D8 is NOT already done.** The Week 8 spec PR (#24, merged `f8c2c97`) was **spec-only** — it did not touch `docs/ARCHITECTURE.md`. So the two drifts the spec describes (§11) are still present on `main` today, and this task is where they are actually fixed:
 > - `docs/ARCHITECTURE.md:1081` still reads `| Desktop stream (Phase 3 target) | 60fps | Hardware H.265 |` — and H.265 is not viable in WebRTC (spec §3.5). This row is **wrong** and is replaced, not merely annotated.
 > - The roadmap §8 Week 8-9 list (`docs/ARCHITECTURE.md:941-944`) still shows every Week 8 item unchecked.
 >
@@ -4497,6 +4497,6 @@ EOF
 
 - [x] **Step 9: Record the PR number and hand off**
 
-> PR #27 — merged into `main` as `be8a8c9` (squash, 2026-10-03). No recording artifact exists; the demo's status and evidence live in `docs/superpowers/specs/2026-10-03-phase3-week8-demo.md` (Step 6).
+> PR #27 — merged into `main` as `82fa821` (squash, 2026-10-03). No recording artifact exists; the demo's status and evidence live in `docs/superpowers/specs/2026-10-03-phase3-week8-demo.md` (Step 6).
 
 Note the PR URL. The demo recording (Step 6) is attached as a PR comment, not committed. No further commits are expected on the branch until review.

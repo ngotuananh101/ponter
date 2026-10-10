@@ -4,7 +4,7 @@
 - **Status:** Research note — required reading before starting **Phase 5 (E2EE & Security & Polish, Weeks 12-14)**
 - **Audit scope:** end-to-end encryption (E2EE) and Zero-Trust compliance across `apps/web`, `apps/server`, `apps/agent`, `packages/*`
 - **Method:** adversarial multi-agent audit — 6 independent finder lenses → 48 claims → 28 claims selected for verification → 56 independent adversarial verifiers (2 per claim: one prompted to refute, one to re-derive independently) → completeness critic. 63 agents total. All 28 verified claims survived both verifiers (**CONFIRMED**, 0 refuted, 0 uncertain).
-- **Verified against commit:** `64e4066` (branch `feat/fe-ws-signaling`). Line numbers are accurate as of that commit — re-check before acting.
+- **Verified against commit:** `64b5171` (branch `feat/fe-ws-signaling`). Line numbers are accurate as of that commit — re-check before acting.
 - **Provenance:** workflow run `wf_13b522c3-61f`; the raw journal and full JSON result are retained in local session artifacts (not committed to the repo).
 
 > **Context — why this document exists.** The design specs already defer most of these gaps to Phase 5 on purpose
@@ -50,7 +50,7 @@
   `implemented` = working as intended.
 - **CONFIRMED** means both an adversarial refuter and an independent re-derivation failed to refute the
   claim (56/56 verifier verdicts came back CONFIRMED for the 28 claims below).
-- Evidence quotes are verbatim from the codebase at commit `64e4066`.
+- Evidence quotes are verbatim from the codebase at commit `64b5171`.
 
 ---
 
@@ -151,7 +151,7 @@
 - **ID:** `agent-trust:CLAIM-02-SESSION-APPROVAL-UNENFORCED` (absent-gap)
 - **Statement:** The agent's `approved` refusal flag is not checked or enforced by either the signaling
   server or the browser client.
-- **Evidence (as of `64e4066`):** `docs/guides/handshake-connection-flow.md:155` — "nothing enforces
+- **Evidence (as of `64b5171`):** `docs/guides/handshake-connection-flow.md:155` — "nothing enforces
   approved === false server-side today — a refusal is visible only in the flag.";
   `packages/webrtc-core/src/connection.ts:207-208` consumes the SDP answer without checking `approved`;
   `packages/webrtc-core/src/transport.ts:277` records `approved` but never gates `setRemoteDescription`.
@@ -159,11 +159,11 @@
   answer and hangs until ICE/connect timeout instead of surfacing a clear refusal; a hostile signaling
   server can deliver an answer the browser honors despite an agent refusal.
 - **Verdict:** CONFIRMED (refute + re-derive).
-- **Status:** **CLOSED** by WS3 (PR #45, `9eab552`). The `approved` flag is now enforced on both sides:
+- **Status:** **CLOSED** by WS3 (PR #45, `204612e`). The `approved` flag is now enforced on both sides:
   the server's `recordSignal` only advances a session `pending → active` when `approved !== false`
   (`apps/server/src/utils/signals.ts:55`), and the browser refuses a refusal answer before
   `setRemoteDescription` (`packages/webrtc-core/src/connection.ts:350`). The quotes above are the
-  snapshot at `64e4066`; the guide line they cite was rewritten in PR #94 (`430b749`) and now reads
+  snapshot at `64b5171`; the guide line they cite was rewritten in PR #94 (`e754bff`) and now reads
   (line 157): "Since Week 14 (WS3) the server enforces it… enforcement gates the transition, not the
   message."
 

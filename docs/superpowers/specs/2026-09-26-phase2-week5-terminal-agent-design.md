@@ -1323,7 +1323,7 @@ the connect timeout, the agent tears the session down rather than idling (§5.6.
 
 **Context.** PTY output is arbitrary bytes. Terminal streams routinely split a multi-byte UTF-8
 sequence across two `read()` calls, so the agent cannot assume any given chunk is valid UTF-8. The
-browser peer receives whatever the offerer's channel was created with, and Week 4 commit `5b8ed86`
+browser peer receives whatever the offerer's channel was created with, and Week 4 commit `b4d9c00`
 (`fix(webrtc-core): pass string directly in WeriftAdapter to preserve WEBRTC_STRING PPID`) shows the
 channel is string-oriented end to end.
 
@@ -2542,7 +2542,7 @@ The harness is the Week 4 `SignalTransport` seam (`packages/webrtc-core/src/type
 8. Send a `DataChannelMessage<TerminalDataMessage>` whose `data` is base64 of `echo hello\n`; assert the received frame is a `DataChannelMessage` on `channel: 'terminal'` whose decoded PTY output contains `hello`.
 9. Teardown in a `finally`: kill the agent child process, close the peer, stop the Worker.
 
-**Two assertions that carry the design.** First, the offerer must assert `typeof data === 'string'` is *not* assumed anywhere: the Week 4 PPID bug (`5b8ed86`) proved that wrapping a string in a `Buffer` silently downgrades the frame to `WEBRTC_BINARY`, so the harness must accept both frame kinds and dispatch on the decoded envelope, not on the JavaScript type of the raw message. Second, the harness sends a second message whose PTY output is `printf '\377'` and asserts the received bytes are `0xFF` — this is R2's framing guarantee re-proved end to end, through Rust, webrtc-rs, D1, and werift, where a lossy string conversion anywhere in the chain would corrupt it.
+**Two assertions that carry the design.** First, the offerer must assert `typeof data === 'string'` is *not* assumed anywhere: the Week 4 PPID bug (`b4d9c00`) proved that wrapping a string in a `Buffer` silently downgrades the frame to `WEBRTC_BINARY`, so the harness must accept both frame kinds and dispatch on the decoded envelope, not on the JavaScript type of the raw message. Second, the harness sends a second message whose PTY output is `printf '\377'` and asserts the received bytes are `0xFF` — this is R2's framing guarantee re-proved end to end, through Rust, webrtc-rs, D1, and werift, where a lossy string conversion anywhere in the chain would corrupt it.
 
 **Why this is not a flaky CI liability.** Loopback needs no STUN (Week 4 F4), the only external process is one binary that is built in the same job, all waits are bounded, and the one wall-clock-sensitive step (step 5) is ordered rather than raced.
 

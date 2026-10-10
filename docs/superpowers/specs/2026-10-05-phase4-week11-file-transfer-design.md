@@ -9,7 +9,7 @@
 
 ## 1. Overview & Objectives
 
-In Week 10 (merged in PR #40 @ `8e957e2`), the foundation of File Transfer was established: the third session mode `Files` with data channel label `'files'`, the agent-side sandbox `--files-root` with refuse-at-offer gating (ADR-32, ADR-33), and a thin slice supporting listing, sequential download, and sequential upload.
+In Week 10 (merged in PR #40 @ `e0e1137`), the foundation of File Transfer was established: the third session mode `Files` with data channel label `'files'`, the agent-side sandbox `--files-root` with refuse-at-offer gating (ADR-32, ADR-33), and a thin slice supporting listing, sequential download, and sequential upload.
 
 However, Week 10 had explicit intentional constraints:
 - **Memory footprint:** Download assembled all chunks into a memory `Blob`; upload loaded the entire file into memory via `File.arrayBuffer()`. Large files (>500 MB to 1 GiB) risked browser tab crashes (OOM).

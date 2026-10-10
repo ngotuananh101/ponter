@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-07
 - **Status:** Framework approved by owner (2026-10-07; 4 decisions locked, 3 defaults confirmed), pending written review
-- **Baseline:** `main` @ `48edac1` (PR #49 merged)
+- **Baseline:** `main` @ `c624897` (PR #49 merged)
 - **Schedule:** Phase 6's second half. 6a Interactivity shipped 2026-10-07; this is **6b Latency**
 - **Related:** Phase 6a spec `docs/superpowers/specs/2026-10-06-phase6a-interactive-desktop-design.md` (§4.3 defers the latency pipeline here; ADR-44 baseline); Week 7 spec §1.2 ("WebCodecs rendering … a later quality concern"); Week 8 spec §ADR-25 (hardware-codec spike, carried here); Week 9 spec ADR-30 (letterbox mapping); `docs/ARCHITECTURE.md` §8 (Phase 6) and §11 (performance table)
 
@@ -15,7 +15,7 @@ of 0–1 ms loopback). It deliberately shipped **no** latency work: the render p
 `<video>` + `srcObject`, there is no jitter/playout control, no cursor layer, no WebCodecs, and no
 way to observe video-path latency anywhere. 6b is that pipeline.
 
-Recon at `48edac1` changes the shape of the problem in three ways:
+Recon at `c624897` changes the shape of the problem in three ways:
 
 1. **The agent is already tuned.** The encoder runs `ScreenContentRealTime` / `Complexity::Low` /
    `RateControlMode::Bitrate` with in-place bitrate retargeting and GCC congestion control. The
@@ -58,7 +58,7 @@ smoke test on pass; manual + unit fakes documented on fail); (3) **one spec, lay
 agent→browser control frame (video is plain SRTP today; no new encryption scope); playout tuning
 defaults **ON**; **no hard glass-to-glass target** is committed in this spec.
 
-## 2. Current state, re-verified against the tree at `48edac1`
+## 2. Current state, re-verified against the tree at `c624897`
 
 | # | Fact | Evidence |
 |---|------|----------|

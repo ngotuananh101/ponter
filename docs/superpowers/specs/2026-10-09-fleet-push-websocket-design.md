@@ -1,6 +1,6 @@
 # Fleet Push over the Browser WebSocket — Design Spec
 
-- **Status:** Implemented/merged — PR #87 (squash `0a86e7c`)
+- **Status:** Implemented/merged — PR #87 (squash `b87a1c6`)
 - **Phase:** Post-Phase-8 hardening (owner Issue 5)
 - **Related:** `apps/server/src/routes/ws.ts`, `apps/server/src/routes/agents.ts`, `apps/server/src/routes/devices.ts`, `packages/shared/src/types/signaling.ts`, `apps/web/src/views/DashboardView.vue`, `apps/web/src/stores/`, `packages/webrtc-core/src/transport.ts`, `docs/plans/fe-ws-signaling.md`, `docs/guides/deployment.md` §3.1.
 

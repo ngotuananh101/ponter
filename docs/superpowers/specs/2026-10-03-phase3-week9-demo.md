@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-04
 **Machine:** Fedora Linux, X11 session
-**Agent:** `ponter-agent --desktop-source screen --allow-input` (build 19bf0b1)
+**Agent:** `ponter-agent --desktop-source screen --allow-input` (build 639a642)
 
 ## Status
 

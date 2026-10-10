@@ -2,7 +2,9 @@
 
 **Date:** 2026-10-04
 **Machine:** Fedora Linux, X11 session
-**Agent:** `ponter-agent --files-root /tmp/ponter-demo-files` (agent code at `d67e705`; branch HEAD at write time `b32ef24`)
+**Agent:** `ponter-agent --files-root /tmp/ponter-demo-files` (agent code at `d67e705`; branch HEAD at write time `b32ef24` — both pre-rewrite SHAs, not on main; content shipped in PR #40 squash `e0e1137`)
+
+> **Note on commit SHAs (2026-10-10).** Every SHA cited in this document is a pre-rewrite snapshot SHA (the branch state at demo time) and is **not** an ancestor of `main`; the Phase 4 Week 10 work shipped on main as PR #40 squash `e0e1137`.
 
 ## Status
 
