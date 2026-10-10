@@ -392,8 +392,13 @@ mod tests {
             async move {
                 let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if n == 0 {
-                    // First attempt: mimic a 401 from the device endpoint.
-                    Err(crate::commands::devices::AUTH_401_MESSAGE.to_string())
+                    // First attempt: mimic a 401 from the device endpoint. The
+                    // stable auth marker (issue #107) is what `is_auth_error`
+                    // now matches.
+                    Err(format!(
+                        "{}: Invalid or expired token",
+                        crate::commands::devices::AUTH_FAILED_PREFIX
+                    ))
                 } else {
                     // Retry: succeeds with whatever token the helper passed.
                     Ok(token)
@@ -461,8 +466,11 @@ mod tests {
             let calls = calls.clone();
             async move {
                 calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                // Always returns a 401-shaped auth error on the first attempt.
-                Err(crate::commands::devices::AUTH_401_MESSAGE.to_string())
+                // Always returns the stable auth marker on the first attempt.
+                Err(format!(
+                    "{}: Invalid or expired token",
+                    crate::commands::devices::AUTH_FAILED_PREFIX
+                ))
             }
         };
 

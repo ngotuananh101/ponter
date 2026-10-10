@@ -282,9 +282,26 @@ describe('devices store', () => {
   });
 
   it('register() with a raw server 401 message (no refresh attempted) triggers logout()', async () => {
-    // When no refresh token is in the keychain, the Rust layer surfaces the
-    // raw server message "Invalid or expired token" directly — this is also
-    // auth-fatal and must log out.
+    // The Rust layer now prepends the stable auth marker to any 401 (issue
+    // #107) — the FE classifies on that marker, never the server wording.
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('unauthorized request: Invalid or expired token'),
+    );
+
+    const store = useDevicesStore();
+    await store.register();
+
+    expect(logoutSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('register() with a raw server message and NO marker does not logout (classification is by signal, not text)', async () => {
+    // Issue #107: the old code matched the exact string "Invalid or expired
+    // token". The new contract matches the STABLE marker; a bare server message
+    // is not the signal. (The Rust layer always prefixes a real 401, so this
+    // path only occurs for a non-auth-death.)
     const auth = useAuthStore();
     const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
 
@@ -293,7 +310,52 @@ describe('devices store', () => {
     const store = useDevicesStore();
     await store.register();
 
+    expect(logoutSpy).not.toHaveBeenCalled();
+    expect(store.error).toBe('Invalid or expired token');
+  });
+
+  it('register() with an auth marker for a non-"invalid" 401 variant triggers logout()', async () => {
+    // Every 401 wording the middleware emits is prefixed with the same stable
+    // marker by the Rust layer, so all of them log out (issue #107).
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('unauthorized request: Token has been revoked'),
+    );
+
+    const store = useDevicesStore();
+    await store.register();
+
     expect(logoutSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refresh() with an auth marker for a revoked token triggers logout()', async () => {
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('unauthorized request: User is inactive or not found'),
+    );
+
+    const store = useDevicesStore();
+    await store.refresh();
+
+    expect(logoutSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refresh() with a transient 5xx error does NOT trigger logout()', async () => {
+    // A transient server problem must never log the user out (brief C).
+    const auth = useAuthStore();
+    const logoutSpy = vi.spyOn(auth, 'logout').mockResolvedValue(undefined);
+
+    vi.mocked(invoke).mockRejectedValue(new Error('Request failed (HTTP 500)'));
+
+    const store = useDevicesStore();
+    await store.refresh();
+
+    expect(logoutSpy).not.toHaveBeenCalled();
+    expect(store.error).toBe('Request failed (HTTP 500)');
   });
 
   it('remove() with a refresh-failed (auth) error triggers logout()', async () => {

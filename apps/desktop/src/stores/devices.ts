@@ -19,6 +19,15 @@ import type { DesktopDevice } from '@/types';
 const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
 
 /**
+ * Stable signal from the Rust backend (`commands::devices::AUTH_FAILED_PREFIX`)
+ * that a device-command response was rejected as an auth-death — HTTP 401, or
+ * any status carrying the server's `code == "UNAUTHORIZED"`. The Rust layer
+ * prepends this marker so the FE never has to match server message text
+ * (issue #107): the middleware emits a different wording for every 401 case.
+ */
+export const AUTH_FAILED_PREFIX = 'unauthorized request';
+
+/**
  * Typed signal from the Rust backend (`commands::session::REFRESH_FAILED_PREFIX`)
  * that an auth failure survived the refresh attempt — i.e. the session is
  * unrecoverable and the user must be logged out. Matched as a prefix so the
@@ -27,20 +36,18 @@ const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
 export const REFRESH_FAILED_PREFIX = 'session expired after refresh attempt';
 
 /**
- * The raw server middleware message (`apps/server/src/middleware/auth.ts`)
- * returned when no refresh was attempted (e.g. the keychain held no refresh
- * token). This is also auth-fatal and must trigger logout.
- */
-export const AUTH_401_MESSAGE = 'Invalid or expired token';
-
-/**
  * Classify a backend error as auth-fatal (logout required). Matches ONLY the
- * two auth-death signals above — never network errors or 5xx, which must NOT
- * force a logout.
+ * two stable signals above — never a server message string, never network
+ * errors or 5xx, which must NOT force a logout.
+ *
+ * A failed refresh surfaces as `REFRESH_FAILED_PREFIX` (not `AUTH_FAILED_PREFIX`)
+ * so it is never re-classified as a fresh 401 — the retry path cannot loop.
  */
 function isAuthError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.startsWith(REFRESH_FAILED_PREFIX) || msg === AUTH_401_MESSAGE;
+  return (
+    msg.startsWith(REFRESH_FAILED_PREFIX) || msg.startsWith(AUTH_FAILED_PREFIX)
+  );
 }
 
 /**

@@ -79,6 +79,52 @@ pub fn spawn_stub(canned_status: u16, canned_body: String) -> String {
     format!("http://{addr}")
 }
 
+/// A stub whose response depends on the raw request. `responder` receives the
+/// full request text (request line + headers, up to `\r\n\r\n`) and returns
+/// `(status, body)`. Use for multi-step flows — e.g. a retry that must serve a
+/// 401 on the first `GET /api/agents`, a 200 on `/api/auth/refresh`, then a 200
+/// on the retried `GET /api/agents` — which the fixed-response `spawn_stub`
+/// cannot express. Returns the bound `http://127.0.0.1:port` URL.
+pub fn spawn_stub_routing<F>(responder: F) -> String
+where
+    F: Fn(&str) -> (u16, String) + Send + 'static,
+{
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break, // client closed
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let raw = String::from_utf8_lossy(&buf).to_string();
+            let (status, body) = responder(&raw);
+            let resp = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+                status = status,
+                len = body.len(),
+                body = body,
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    format!("http://{addr}")
+}
+
 /// Like `spawn_stub_capturing` but reads the FULL request: the header block
 /// plus the body (Content-Length bytes), so a test can assert on the JSON
 /// payload. Returns `(base_url, receiver)`.
