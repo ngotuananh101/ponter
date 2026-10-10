@@ -482,7 +482,6 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     store.user = { id: 'u-reset', username: 'alice' } as unknown as User;
     store.status = 'authenticated';
     store.identityStatus = 'unavailable';
-    store.password = undefined;
 
     const pair = {
       publicKeyRawBase64: 'new-reset-pub',
