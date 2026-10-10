@@ -253,7 +253,12 @@ watch(
 // itself: moving focus to the video on enable is what makes typing land on the
 // remote desktop without a click first (spec §7.2).
 watch(inputOn, async (on) => {
-  if (!on) return;
+  if (!on) {
+    // Stale pointer samples would draw the arrow at an old position after a
+    // re-enable with no new pointermove, so clear them.
+    localPointer.value = null;
+    return;
+  }
   await nextTick();
   videoEl.value?.focus();
 });

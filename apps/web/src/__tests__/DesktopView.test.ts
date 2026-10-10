@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
@@ -503,6 +503,10 @@ describe('DesktopView', () => {
   });
 
   describe('cursor overlay canvas', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
     it('renders a video with cursor-none class when inputOn is true', async () => {
       const wrapper = mountWithChrome({
         desktopInputEnabled: true,
@@ -768,6 +772,105 @@ describe('DesktopView', () => {
       // No pointermove yet → localPointer is null → nothing should be drawn.
       drainFrames(1);
 
+      expect(fakeCtx.translate).not.toHaveBeenCalled();
+      expect(fakeCtx.stroke).not.toHaveBeenCalled();
+
+      ctxSpy.mockRestore();
+    });
+
+    it('clears the stale local pointer when input is toggled off and on', async () => {
+      const store = useTerminalStore();
+      vi.spyOn(store, 'sendDesktopInput').mockImplementation(() => {});
+
+      const fakeCtx: Record<string, unknown> = {
+        clearRect: vi.fn(),
+        save: vi.fn(),
+        restore: vi.fn(),
+        translate: vi.fn(),
+        scale: vi.fn(),
+        beginPath: vi.fn(),
+        moveTo: vi.fn(),
+        lineTo: vi.fn(),
+        closePath: vi.fn(),
+        stroke: vi.fn(),
+        fill: vi.fn(),
+      };
+      fakeCtx.strokeStyle = '#fff';
+      fakeCtx.fillStyle = '#00f';
+      fakeCtx.lineWidth = 1;
+      fakeCtx.lineJoin = 'round';
+      const ctxSpy = vi
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockReturnValue(fakeCtx as unknown as CanvasRenderingContext2D);
+
+      const frameQueue: Array<() => void> = [];
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        if (frameQueue.length === 0) {
+          frameQueue.push(() => cb(performance.now()));
+        }
+        return frameQueue.length;
+      });
+      vi.stubGlobal('cancelAnimationFrame', () => {});
+      const drainFrames = (n: number) => {
+        for (let i = 0; i < n && frameQueue.length; i++) {
+          frameQueue.shift()!();
+        }
+      };
+
+      const wrapper = mountWithChrome({
+        desktopInputEnabled: true,
+        desktopPeerVerified: true,
+      });
+
+      const video = wrapper.find('video');
+      const videoEl = video.element as HTMLVideoElement;
+      Object.defineProperty(videoEl, 'videoWidth', {
+        value: 1920,
+        configurable: true,
+      });
+      Object.defineProperty(videoEl, 'videoHeight', {
+        value: 1080,
+        configurable: true,
+      });
+      videoEl.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          width: 1920,
+          height: 1080,
+          right: 1920,
+          bottom: 1080,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      const toggle = wrapper.find('[data-test="desktop-input-toggle"]');
+
+      // Toggle on, seed a pointer, drain the frame → arrow drawn.
+      await toggle.trigger('click');
+      await flushPromises();
+      await nextTick();
+      drainFrames(1);
+      await video.trigger('pointermove', { clientX: 100, clientY: 50 });
+      drainFrames(1);
+      expect(fakeCtx.translate).toHaveBeenCalledWith(100, 50);
+
+      // Toggle OFF: stale pointer should be cleared.
+      (fakeCtx.translate as ReturnType<typeof vi.fn>).mockClear();
+      (fakeCtx.stroke as ReturnType<typeof vi.fn>).mockClear();
+      await toggle.trigger('click');
+      await flushPromises();
+      await nextTick();
+      drainFrames(1);
+      expect(fakeCtx.translate).not.toHaveBeenCalled();
+
+      // Toggle ON again without a new pointermove: localPointer is null,
+      // so nothing should be drawn (no stale arrow).
+      await toggle.trigger('click');
+      await flushPromises();
+      await nextTick();
+      drainFrames(1);
       expect(fakeCtx.translate).not.toHaveBeenCalled();
       expect(fakeCtx.stroke).not.toHaveBeenCalled();
 
