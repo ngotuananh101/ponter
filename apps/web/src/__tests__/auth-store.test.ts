@@ -477,7 +477,8 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     expect(store.isAuthenticated).toBe(true);
   });
 
-  it('resetSigningKey: successful reset generates key, signs proof, calls API, saves keys, updates state', async () => {
+  /** Set up the auth store and crypto mocks for a reset test. */
+  function setupResetMocks() {
     const store = useAuthStore();
     store.user = { id: 'u-reset', username: 'alice' } as unknown as User;
     store.status = 'authenticated';
@@ -492,6 +493,12 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
     vi.mocked(cryptoPkg.signProof).mockResolvedValue('proof-sig');
     vi.mocked(cryptoPkg.saveSigningKey).mockResolvedValue();
     vi.mocked(cryptoPkg.saveSigningPublicKey).mockResolvedValue();
+
+    return { store, pair };
+  }
+
+  it('resetSigningKey: successful reset generates key, signs proof, calls API, saves keys, updates state', async () => {
+    const { store, pair } = setupResetMocks();
 
     const resetSpy = vi
       .spyOn(apiClient.auth, 'resetSigningKey')
@@ -524,20 +531,7 @@ describe('Auth Store — ensureUserSigningKey bootstrap matrix', () => {
   });
 
   it('resetSigningKey: failure (401 invalid password) rejects, leaves identityStatus unchanged, does NOT save keys', async () => {
-    const store = useAuthStore();
-    store.user = { id: 'u-reset', username: 'alice' } as unknown as User;
-    store.status = 'authenticated';
-    store.identityStatus = 'unavailable';
-
-    const pair = {
-      publicKeyRawBase64: 'new-reset-pub',
-      privateKey: {} as CryptoKey,
-      publicKey: {} as CryptoKey,
-    };
-    vi.mocked(cryptoPkg.generateSigningKeyPair).mockResolvedValue(pair);
-    vi.mocked(cryptoPkg.signProof).mockResolvedValue('proof-sig');
-    vi.mocked(cryptoPkg.saveSigningKey).mockResolvedValue();
-    vi.mocked(cryptoPkg.saveSigningPublicKey).mockResolvedValue();
+    const { store } = setupResetMocks();
 
     const { ApiError } = await import('@ponter/api-client');
     vi.spyOn(apiClient.auth, 'resetSigningKey').mockRejectedValue(
