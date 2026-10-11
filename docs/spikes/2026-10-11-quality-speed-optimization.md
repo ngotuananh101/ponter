@@ -57,15 +57,15 @@ Order is load-bearing (do not re-rank): it is the leverage order the spike found
 |---|---|---|---|---|---|---|
 | **1** | **Speed up / vectorise `downscale`** (scalar per-pixel RGBA box filter) | speed | **[M]** pure-CPU scalar loop, **≈7.07 ms/frame** (1080p→720p, C proxy = lower bound) — *more than the ~4 ms H.264 encode itself*; a SIMD/`fast_image_resize` path removes a real per-frame cost | Low | Low | **Y** (C proxy; bench the fn) |
 | **2** | **openh264 rate-control mode** — verify `bitrate` (already set) | quality (same bitrate) | **[M]** `rc_mode=bitrate` beats ffmpeg's `quality` default by +0.14% SSIM / +0.15 dB at the *same* ~2 Mbit/s — **but the agent already sets `RateControlMode::Bitrate`**, so this is a **confirmation, not a change** | none | none | **Y** |
-| **3** | **`libaom-av1` realtime (cpu-used 8) instead of SVT-AV1** — IF AV1 is pursued | quality | **[M]** AV1 realtime beats H.264 quality-per-bit at matched bytes (VMAF 94.27 vs 90.74; SSIM 0.9834 vs 0.9793 at ~2 Mbit/s) — but see the AV1 verdict (§5.4) | High (codec swap) | High | **Y** |
+| **3** | **`libaom-av1` realtime (cpu-used 8) instead of SVT-AV1** — IF AV1 is pursued | quality | **[M]** AV1 realtime beats H.264 quality-per-bit at matched bytes (VMAF 94.27 vs 91.08; SSIM 0.9834 vs 0.9807 at ~2 Mbit/s) — but see the AV1 verdict (§5.4) | High (codec swap) | High | **Y** |
 | **4** | **PLI / keyframe-on-demand (LFIR)** — the missing feedback path | latency/quality on loss | **[C]** no PLI path exists (`grep` → none); a lost IDR currently waits up to `intra_frame_period(60)` ≈ 2 s to recover | Medium | Medium | **N** (needs two peers) |
 | **5** | **Duplicate-frame skip / damage-region capture** | speed (CPU) + bits | **[E]** static screens re-encode identically every tick; skipping saves encoder CPU (codecs already save the bits) | Medium–High | Medium | **N** (needs live desktop) |
 | **6** | **Content-aware ABR + telemetry extension (VMAF/QoE)** | quality adaptivity | **[E]** today ABR is bitrate-only (`desktop-stats`), with no quality feedback | Medium | Low | Partly |
 | **7** | **Encode off the runtime worker (`spawn_blocking`)** | latency jitter | **[C]** encoder runs inline on the async worker (`desktop.rs:1595-1598`) — and the code **itself names `spawn_blocking` as a deferred "Week 8–9 refinement"**; a slow frame can jitter the runtime | Low | Low | **Y** (load test) |
-| **8** | **AV1** (whole codec) | quality + royalty-free | **[M]** the quality-per-bit win is real (VMAF +3.5 for libaom at matched bytes) but CPU cost is the blocker | High | High | **Y** (SW encode) |
+| **8** | **AV1** (whole codec) | quality + royalty-free | **[M]** the quality-per-bit win is real (VMAF +3.2 for libaom at matched bytes) but CPU cost is the blocker | High | High | **Y** (SW encode) |
 
 **AV1 go/no-go: CONDITIONAL GO — but NOT as a default switch.** See §5.4. The quality-per-bit edge over
-H.264 is **real but modest** at 720p (SSIM ≈ +0.4%, **VMAF +3.5** at matched bytes) and costs **~2.3×
+H.264 is **real but modest** at 720p (SSIM ≈ +0.27%, **VMAF +3.2** at matched bytes) and costs **~2.3×
 CPU / ~4.5× wall time** with `libaom-av1` realtime; SVT-AV1 realtime matches H.264's wall time but
 **burns ~5× the CPU**. Recommendation: **keep H.264 as the default; treat AV1 as an opt-in quality mode**
 gated on a capability handshake and a machine-class check — not a drop-in.
@@ -178,9 +178,11 @@ spike:
 
 **The only measurable HW encoder is VP9** — `vp9_vaapi` uses **~half the CPU** of software H.264
 (63–67% vs 128–130% @720p) but is **slower in wall time** (1.42 s vs 0.63 s) because VP9 is intrinsically
-costlier. **[M]** (predecessor spike). **Verdict:** HW encode is a **CPU-headroom** lever, not an
-encode-time lever; and it is **not available on this host** for H.264/HEVC/AV1. Re-measure on a host whose
-driver exposes the encode profiles. **Measurable here? N** (except VP9).
+costlier. **[M]** — measured in the predecessor spike, `docs/spikes/2026-10-11-hardware-encode-h265.md`
+§2, where the `ffmpeg` command for each figure is inlined; not re-measured here. **Verdict:** HW encode is
+a **CPU-headroom** lever, not an encode-time lever; and it is **not available on this host** for
+H.264/HEVC/AV1. Re-measure on a host whose driver exposes the encode profiles. **Measurable here? N**
+(except VP9).
 
 ---
 
@@ -194,7 +196,7 @@ reported **as produced** (see the rate-control caveat):
 | `libopenh264 -rc_mode bitrate` | 2M | 1999 | 0.980719 | 38.756 |
 | `libsvtav1 -preset 10` | 1.6M | 1743 | 0.978041 | 35.243 |
 | `libsvtav1 -preset 10` | 1.8M | 1961 | 0.978675 | 35.775 |
-| `libsvtav1 -preset 10` | 2M | 2176 | 0.979060 | 36.237 |
+| `libsvtav1 -preset 10` | 2M | 2202 | 0.979154 | 36.342 |
 | **`libaom-av1 -cpu-used 8 -usage realtime`** | **2M** | **1960** | **0.983358** | **39.352** |
 | `libvpx-vp9 -deadline realtime -cpu-used 8` | 2M | 1704 | 0.977255 | 36.839 |
 | `libaom-av1 -cpu-used 6 -usage realtime` | 2M | 1959 | 0.992902 | 42.482 |
@@ -207,11 +209,11 @@ ffmpeg -i r_aom_2M.mkv -i src720.mkv -lavfi "[0:v][1:v]ssim;[0:v][1:v]psnr" -f n
 
 **Reading (honest, matched bytes):**
 
-- At **~2 Mbit/s**, `libaom-av1` realtime gives **0.9834 SSIM / 39.35 dB** vs H.264's **0.9793 / 38.60** —
-  a **real but modest** quality-per-bit edge (≈ +0.4% SSIM, +0.75 dB) at essentially the same bytes
-  (1960 vs 1987 kbps).
-- **SVT-AV1 preset 10 is *worse* than H.264 at matched bytes on SSIM** here (0.9787 vs 0.9807) — its
-  single-pass realtime RC overshot the target (~2176 vs 2000 kbps) and its aggressive preset hurt
+- At **~2 Mbit/s**, `libaom-av1` realtime gives **0.9834 SSIM / 39.35 dB** vs H.264's **0.9807 / 38.76** —
+  a **real but modest** quality-per-bit edge (≈ +0.27% SSIM, +0.6 dB) at essentially the same bytes
+  (1960 vs 1999 kbps).
+- **SVT-AV1 preset 10 is *worse* than H.264 at matched bytes on SSIM** here (0.9792 vs 0.9807) — its
+  single-pass realtime RC overshot the target (~2202 vs 2000 kbps) and its aggressive preset hurt
   text/pattern quality. At **matched bytes**, SVT preset 10 does *not* beat H.264 on SSIM. (But note:
   **VMAF disagrees** — see the cross-check table below, where SVT-10 lands *above* H.264; the honest
   verdict is **≈ parity**, not "worse".)
@@ -236,11 +238,11 @@ the perceptual metric of record. Same files as above:
 
 | Codec / settings | actual kbps | **VMAF** | SSIM (for contrast) |
 |---|---|---|---|
-| `libopenh264 -rc_mode bitrate` | 1987 | **90.736** | 0.9793 |
+| `libopenh264 -rc_mode bitrate` | 1999 | **91.082** | 0.9807 |
 | `libvpx-vp9 -deadline realtime -cpu-used 8` | 1704 | **90.350** | 0.9773 |
 | `libaom-av1 -cpu-used 8 -usage realtime` | **1960** (matched) | **94.269** | 0.9834 |
-| `libsvtav1 -preset 10` | 2202 (+11%) | **91.632** | 0.9792 |
-| `libsvtav1 -preset 8` | 2176 (+10%) | **94.458** | 0.9872 |
+| `libsvtav1 -preset 10` | 2202 (+10%) | **91.632** | 0.9792 |
+| `libsvtav1 -preset 8` | 2176 (+9%) | **94.458** | 0.9872 |
 
 ```bash
 ffmpeg -hide_banner -i r_aom_2M.mkv -i src720.mkv -lavfi "libvmaf" -f null -   # → VMAF score: 94.268665
@@ -248,12 +250,12 @@ ffmpeg -hide_banner -i r_aom_2M.mkv -i src720.mkv -lavfi "libvmaf" -f null -   #
 
 **Reading — VMAF is *more* favourable to AV1 than SSIM, and it disagrees with SSIM on SVT-10:**
 
-- **At matched bytes**, `libaom-av1` realtime is **+3.53 VMAF** over H.264 (94.27 vs 90.74) — a
-  *substantially* larger perceptual margin than SSIM's +0.4%. VMAF weights the text/edge structure AV1
+- **At matched bytes**, `libaom-av1` realtime is **+3.19 VMAF** over H.264 (94.27 vs 91.08) — a
+  *substantially* larger perceptual margin than SSIM's +0.27%. VMAF weights the text/edge structure AV1
   preserves better, which SSIM's block statistics miss.
-- **SVT-AV1 preset 10 flips sign**: SSIM says *worse* than H.264 (0.9792 vs 0.9793), VMAF says *better*
-  (91.63 vs 90.74). **The two metrics disagree on SVT-10** — the honest conclusion is that SVT-10 is
-  **at parity with H.264, not clearly worse**; SSIM's verdict was too harsh. (SVT-10 also carried +11%
+- **SVT-AV1 preset 10 flips sign**: SSIM says *worse* than H.264 (0.9792 vs 0.9807), VMAF says *better*
+  (91.63 vs 91.08). **The two metrics disagree on SVT-10** — the honest conclusion is that SVT-10 is
+  **at parity with H.264, not clearly worse**; SSIM's verdict was too harsh. (SVT-10 also carried +10%
   bytes here, so part of its VMAF edge is the byte overshoot — but its *matched-byte* verdict is
   "≈ parity", not "worse".)
 - The **ordering is stable across both metrics** for the main comparison: **libaom-AV1 > H.264 > VP9**
@@ -319,12 +321,12 @@ vs 0.69 s / 672% and 2.81 s / 256% here — **same picture**: SVT-AV1 realtime m
 | 12 | 0.77 | 708% | 2196 | 0.979096 | 36.277 |
 
 **Reading:** to *beat* H.264 (SSIM 0.9807) SVT-AV1 needs **preset 8 or slower** (≥ 1.47 s/300f = **2.3×
-H.264 wall time at ~5× CPU**), and it **still overshoots the bitrate** (~2176 vs 2000 kbps). The fast
+H.264 wall time at ~5× CPU**), and it **still overshoots the bitrate** (~2202 vs 2000 kbps). The fast
 presets (10–12) that match H.264's wall time land at **≈ parity** with H.264 — SSIM says slightly *worse*,
 VMAF says *better* (the two metrics disagree; see §4). Only preset 8-or-slower clearly beats H.264.
 
 **Rate-control inaccuracy [M]** — a real finding for a live stream: SVT-AV1 single-pass realtime **does
-not hold the target** (2M → 2176 kbps, ~+9–13% across all targets 1M/2M/4M/8M). A production AV1 path
+not hold the target** (2M → 2202 kbps, ~+10% at this target; ~+9–13% across 1M/2M/4M/8M). A production AV1 path
 would need `-maxrate`/`-bufsize` (capped VBR) or 2-pass — neither is realtime-friendly.
 
 **HW AV1 encode [M]:** `av1_vaapi` and `av1_qsv` both **fail on this host** (same driver limit as
@@ -340,7 +342,7 @@ behind the AV1 row in the shortlist: a new encoder integration, not a config cha
 ### 5.4 AV1 verdict — CONDITIONAL GO (opt-in), NOT a default switch
 
 - **Quality-per-bit:** a **real win** over H.264 at matched bytes, and only with `libaom-av1` realtime —
-  **SSIM +0.4% / PSNR +0.75 dB / VMAF +3.53** at 2 Mbit/s on synthetic content (VMAF is the larger, more
+  **SSIM +0.27% / PSNR +0.6 dB / VMAF +3.19** at 2 Mbit/s on synthetic content (VMAF is the larger, more
   perceptual signal) — at **~2.3× CPU and ~4.5× wall time**. On this host, the cheapest realtime AV1 that
   *beats* H.264 costs materially more than H.264. (Metric caveat: SSIM and VMAF **disagree** on SVT-AV1
   preset 10 — see §4 — so the win is robust for libaom, marginal-to-parity for fast SVT presets.)
@@ -462,8 +464,10 @@ rolling stats (`captureMsP50`/`encodeMsP50`), (2) present-time health, (3) input
   and it sits on the *critical path before* `encode()` every frame. The biggest *local* CPU term on the
   agent and the clearest lever (#1).
 - **Capture→encode:** H.264 SW encode is already **2.1 ms/frame @720p, 4.0 ms/frame @1080p** on this CPU
-  **[M]** — small relative to a 30 fps (33 ms) budget. **The encode itself is not the bottleneck; the
-  pre-encode downscale is.**
+  **[M]** — derived from the predecessor spike's wall times (0.63 s / 300 frames @720p; 1.21 s / 300 @1080p,
+  `docs/spikes/2026-10-11-hardware-encode-h265.md` §2, where the encode commands are inlined). Small
+  relative to a 30 fps (33 ms) budget. **The encode itself is not the bottleneck; the pre-encode downscale
+  is.**
 - **Playout:** fixed **100 ms** jitter-buffer target (`client.ts:95-96`) — the largest single *tunable*
   latency term. **[E]** lowering it trades latency for stutter.
 - **Transport:** one-way network + GCC dynamics; **[E]** the dominant unknown in real deployments.
