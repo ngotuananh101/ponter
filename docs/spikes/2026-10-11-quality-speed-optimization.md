@@ -566,11 +566,13 @@ so the claim rests on the fallback named beside it (weaker).
   `RangeError`. **[S]**
   https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpReceiver/jitterBufferTarget . *Repo tie-in:
   already used with a feature check (`client.ts:510-529`).*
-- **`playoutDelayHint`** (RTCRtpReceiver): minimum playout delay, in **seconds**; being superseded by
-  `jitterBufferTarget`. **[S?]** the MDN page **404s**
-  (https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpReceiver/playoutDelayHint → 404); the claim
-  rests on the W3C spec — https://www.w3.org/TR/webrtc/ . *Repo tie-in: used as the Firefox path, and the
-  repo writes it in **seconds** (`client.ts:529` divides ms by 1000) — consistent with the spec.*
+- **`playoutDelayHint`** (RTCRtpReceiver): minimum playout delay, in **seconds**; a **legacy,
+  non-standardised** property that `jitterBufferTarget` supersedes. **[S?]** the MDN page **404s**
+  (https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpReceiver/playoutDelayHint → 404), and the live
+  W3C WebRTC spec does **not** define `playoutDelayHint` on `RTCRtpReceiver` either — so the property is
+  best treated as a browser-era shim, not a spec'd API. **The verifiable evidence is our own code**, not a
+  spec: the repo writes it in **seconds** (`client.ts:529` divides the ms value by 1000) as the Firefox
+  playout path (`client.ts:510-529`).
 - **`setCodecPreferences`**: reorders/filters negotiated codecs **via API**, not SDP-string munging. **It
   lives on `RTCRtpTransceiver`, not `RTCRtpSender`** — verified:
   https://developer.mozilla.org/en-US/docs/Web/API/RTCRtpTransceiver/setCodecPreferences → 200; the
