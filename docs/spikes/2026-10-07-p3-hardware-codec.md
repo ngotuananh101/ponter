@@ -4,6 +4,12 @@ Status: **investigation only — non-gating, no commitments.** This is a desk sp
 carry-forward "is hardware H.264/AV1 encode viable on the agent?" into evidence. It **gates nothing and
 commits nothing**; adoption remains a later phase. All findings are current to 2026-10-07.
 
+> **Follow-up (2026-10-11):** `docs/spikes/2026-10-11-hardware-encode-h265.md` adds a **measured** host
+> result (no H.264/HEVC/AV1 hardware encode profile on the spike host; a VP9-HW proxy), a decode
+> reality-check, and an H.265/HEVC verdict. It also **corrects** this doc's §0 and §2.2 claim that
+> `register_default_codecs` registers only H.264/VP8 (it also registers AV1 and HEVC) — see the dated
+> correction notes there.
+
 Authoritative home for the decision this informs: ADR-25
 (`docs/superpowers/specs/2026-10-03-phase3-week8-stream-quality-design.md:250-258`)
 carries the row that is still open as of this writing:
@@ -43,8 +49,15 @@ no network at build time). The path is:
   `level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f` —
   `apps/agent/src/rtc.rs:196-211`). Payload type is selected back from the negotiated sender by matching
   `MIME_TYPE_H264` (`select_h264_payload_type`, `rtc.rs:293-302`). The `MediaEngine` is populated with
-  `register_default_codecs` (`rtc.rs:414`), which for the 0.21 line registers H.264 and VP8 only — **AV1
-  is not registered** (see §3.3).
+  `register_default_codecs` (`rtc.rs:414`), which for the 0.21 line registers H.264, VP8, VP9, **AV1
+  (PT 41)** and **HEVC (PT 126)**, each with RTX (corrected 2026-10-11 — see the note below).
+
+> **Correction (2026-10-11).** This bullet previously stated that `register_default_codecs` "registers
+> H.264 and VP8 only — **AV1 is not registered**". That is **wrong** for the dependency the agent uses
+> (`rtc = "0.21"` directly, `apps/agent/Cargo.toml:31`): `rtc-0.21.0` registers **H.264, VP8, VP9, AV1
+> (PT 41) and HEVC (PT 126)**, each with RTX
+> (`rtc-0.21.0/src/peer_connection/configuration/media_engine.rs:350`, AV1 at `:543-551`, HEVC at
+> `:556-561`). See `docs/spikes/2026-10-11-hardware-encode-h265.md` §4.2 for the crate-source evidence.
 
 Build posture: desktop-only deps (`openh264`, `openh264-sys2`, `xcap`, `enigo`) sit behind
 `cfg(not(target_env = "musl"))` (`Cargo.toml:42-55`). The musl artifact is the fully-static
@@ -162,17 +175,26 @@ work the `MediaEngine`/sender does today; one that emits Annex-B (openh264, MF M
 as a 1:1 replacement. Either way the **SDP negotiation is unchanged** — only the producer of the NALU
 bytes changes.
 
-### 2.2 Codec negotiation — H.264 today, AV1 gated
+### 2.2 Codec negotiation — H.264 today, AV1 registered but not adopted
 
-The `MediaEngine` is populated with `register_default_codecs` (`rtc.rs:414`), which for `webrtc 0.21`
-registers H.264 and VP8 by default. **AV1 is not registered** and the browser offers first
-(`rtc.rs:279-285` comment on Chrome offering VP8 PT 96 before H.264 is the lived failure mode), so
-introducing AV1 encode is not a drop-in: it needs (a) the agent to register an AV1 payload
-(`MIME_TYPE_AV1`) on the media engine, (b) `webrtc 0.21` to actually ship an AV1 RTP producer (it does
-not in the 0.21 line — AV1 RTP support in `webrtc-rs` is incomplete behind feature flags that are off
-in this version), and (c) a browser that offers/decodes AV1 in WebRTC (Chrome/Edge yes, Safari partial,
-Firefox via libaom behind a pref). **Net: AV1 is not a 6b-low-latency lever in this dependency set**
-without a `webrtc` upgrade — a future-phase decision, not a spike outcome.
+The `MediaEngine` is populated with `register_default_codecs` (`rtc.rs:414`), which for the `0.21` line
+registers H.264, VP8, VP9, **AV1 (PT 41)** and **HEVC (PT 126)**, each with RTX (corrected 2026-10-11 —
+see the §0 correction note). **AV1 is therefore already registered**, and `rtc 0.21` ships a real
+`Av1Payloader` (`rtc-0.21.0/src/rtp_transceiver/rtp_sender/rtp_codec.rs:114-115`), so the
+registration/payloader layer is not what stands between the agent and AV1. What remains true: the
+browser offers first — a real Chrome offer lists VP8 (PT 96) before H.264 (PT 102), so codec selection
+is not first-wins (`rtc.rs:279-285` comment on the lived failure mode). **Net: AV1 was not adopted in
+6b-low-latency — that remains a future-phase decision, not a spike outcome.** The earlier version of
+this section asserted AV1 was "not registered"; that premise was wrong and is superseded by this
+correction.
+
+> **Correction (2026-10-11).** This section previously claimed `register_default_codecs` "registers
+> H.264 and VP8 by default", that "**AV1 is not registered**", and that `webrtc 0.21` does not "ship an
+> AV1 RTP producer". Both claims are **wrong** for the dependency the agent uses: `rtc-0.21.0` registers
+> AV1 (PT 41) — `media_engine.rs:543-551` — and ships `Av1Payloader` —
+> `rtp_codec.rs:114-115`. The AV1-not-adopted *conclusion* may still hold for other reasons, but the
+> stated registration/payloader reason does not. See `docs/spikes/2026-10-11-hardware-encode-h265.md`
+> §4.2 for the crate-source evidence.
 
 ### 2.3 Keyframe / PLI — the missing feedback path (fact)
 
@@ -242,8 +264,9 @@ labeled as such.
 3. **Measure before optimizing.** Land the L1 `captureMsP50` / `encodeMsP50` probes
    (this plan's L1 work) and confirm encode time is the bottleneck *before* adding a
    GPU/VAAPI/ MF/VideoToolbox dependency that only helps if the math adds up.
-4. **Defer AV1 to a post-`webrtc`-upgrade phase.** AV1 in RTP needs a `webrtc-rs` line that ships AV1
-   producers and a media-engine registration step; that is a dependency decision, not a codec spike.
+4. **Defer AV1 to a future phase.** AV1 was not adopted in 6b; re-evaluating it is a product decision,
+   not a codec spike. (Note the corrected premise in §2.2: AV1 *is* already registered in `rtc 0.21`
+   with an `Av1Payloader`, so a `webrtc` upgrade is not the gating factor it was once assumed to be.)
 5. **PLI feedback is a sibling spike.** Hardware H.264 without receiver-driven keyframes is fragile on
    lossy links; pair any hardware-encode adoption with a "PLI/LFIR → encoder keyframe" spike. Out of
    scope for P3.
