@@ -5,6 +5,10 @@ Status: **investigation only — non-gating, no commitments.** This spike extend
 before the desktop product existed. This spike adds a **measured** host result and an **H.265** verdict.
 It gates nothing and commits nothing; adoption remains uncommitted.
 
+> Follow-up: the same-day [quality / speed optimization spike](2026-10-11-quality-speed-optimization.md)
+> surveys all image-quality and speed levers (including AV1) and supersedes the encode-side survey here
+> where they overlap.
+
 **Scope:** (1) measure whether a hardware H.264 encoder is viable on the spike host; (2) settle whether
 HEVC/H.265 is a near-term lever. Every external claim carries a source URL that was opened; every
 `file:line` was re-derived against the current tree.
