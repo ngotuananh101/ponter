@@ -9,6 +9,7 @@ pub mod fleet_ws;
 pub mod keychain;
 pub mod session;
 pub mod state;
+pub mod updater;
 pub mod wizard;
 
 #[cfg(test)]
