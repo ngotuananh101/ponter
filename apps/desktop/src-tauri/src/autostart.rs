@@ -9,17 +9,13 @@
 //! The `#[tauri::command]` wrappers that touch `current_exe()` / spawn `reg.exe`
 //! are NOT unit-tested against real OS state — their building blocks are (R7).
 //!
-//! No new crates (R2): Linux/macOS use `std::fs`/`std::path`; Windows uses
+//! No new crates (R2): Linux uses `std::fs`/`std::path`; Windows uses
 //! `reg.exe` via `std::process::Command`.
 
 use std::path::{Path, PathBuf};
 
 /// Linux XDG autostart filename.
 pub const LINUX_ENTRY_FILE: &str = "ponter-desktop.desktop";
-/// macOS LaunchAgent label.
-pub const MACOS_LABEL: &str = "com.ponter.desktop";
-/// macOS LaunchAgent filename.
-pub const MACOS_ENTRY_FILE: &str = "com.ponter.desktop.plist";
 /// Windows `Run` registry value name.
 pub const WINDOWS_RUN_VALUE: &str = "PonterDesktop";
 /// Windows `Run` registry key path (raw string so backslashes are literal).
@@ -43,19 +39,6 @@ pub fn linux_autostart_dir(xdg_config_home: Option<&str>, home: Option<&str>) ->
     PathBuf::from(".").join(".config")
 }
 
-/// macOS LaunchAgents dir. HOME/Library/LaunchAgents, else "./Library/LaunchAgents".
-pub fn macos_launch_agents_dir(home: Option<&str>) -> PathBuf {
-    if let Some(h) = home {
-        if !h.trim().is_empty() {
-            let mut p = PathBuf::from(h);
-            p.push("Library");
-            p.push("LaunchAgents");
-            return p;
-        }
-    }
-    PathBuf::from(".").join("Library").join("LaunchAgents")
-}
-
 /// The Linux `.desktop` file body (pure). Quotes Exec when the path has spaces.
 pub fn render_linux_desktop_entry(binary: &Path) -> String {
     let binary_str = binary.to_string_lossy();
@@ -72,27 +55,6 @@ pub fn render_linux_desktop_entry(binary: &Path) -> String {
          X-GNOME-Autostart-enabled=true\n\
          Terminal=false\n\
          Comment=Start Ponter Desktop agent on login\n"
-    )
-}
-
-/// The macOS LaunchAgent plist body (pure).
-pub fn render_macos_plist(binary: &Path) -> String {
-    let binary_str = binary.to_string_lossy().replace('\t', "\\t");
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \t<key>Label</key>\n\
-         \t<string>{MACOS_LABEL}</string>\n\
-         \t<key>ProgramArguments</key>\n\
-         \t<array>\n\
-         \t\t<string>{binary_str}</string>\n\
-         \t</array>\n\
-         \t<key>RunAtLoad</key>\n\
-         \t<true/>\n\
-         </dict>\n\
-         </plist>\n"
     )
 }
 
@@ -187,12 +149,6 @@ fn resolve_autostart_location() -> (PathBuf, &'static str) {
     )
 }
 
-#[cfg(target_os = "macos")]
-fn resolve_autostart_location() -> (PathBuf, &'static str) {
-    let home = std::env::var("HOME").ok();
-    (macos_launch_agents_dir(home.as_deref()), MACOS_ENTRY_FILE)
-}
-
 /// Windows has no file-based entry: `set_autostart_in`/`is_autostart_enabled_in`
 /// ignore the dir/filename and drive `reg.exe` against `WINDOWS_RUN_KEY`. Return a
 /// documented placeholder; the returned value name mirrors the registry value
@@ -202,7 +158,7 @@ fn resolve_autostart_location() -> (PathBuf, &'static str) {
     (PathBuf::new(), WINDOWS_RUN_VALUE)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn resolve_autostart_location() -> (PathBuf, &'static str) {
     (PathBuf::from("."), LINUX_ENTRY_FILE)
 }
@@ -223,17 +179,6 @@ fn set_autostart_in(
             write_entry(dir, LINUX_ENTRY_FILE, &contents)
         } else {
             remove_entry(dir, LINUX_ENTRY_FILE)
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let _ = filename;
-        let contents = render_macos_plist(binary);
-        if enabled {
-            write_entry(dir, MACOS_ENTRY_FILE, &contents)
-        } else {
-            remove_entry(dir, MACOS_ENTRY_FILE)
         }
     }
 
@@ -258,7 +203,7 @@ fn set_autostart_in(
         Ok(())
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = binary;
         let _ = enabled;
@@ -288,12 +233,6 @@ fn is_autostart_enabled_in(_binary: &Path, dir: &Path, filename: &str) -> bool {
         entry_exists(dir, LINUX_ENTRY_FILE)
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let _ = filename;
-        entry_exists(dir, MACOS_ENTRY_FILE)
-    }
-
     #[cfg(windows)]
     {
         let _ = dir;
@@ -308,7 +247,7 @@ fn is_autostart_enabled_in(_binary: &Path, dir: &Path, filename: &str) -> bool {
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = _binary;
         let _ = dir;
@@ -366,19 +305,6 @@ mod tests {
         assert_eq!(p, PathBuf::from(".").join(".config").join("autostart"));
     }
 
-    // R10 test 2: macos_launch_agents_dir.
-    #[test]
-    fn macos_launch_agents_dir_home() {
-        let p = macos_launch_agents_dir(Some("/home/user"));
-        assert_eq!(p, PathBuf::from("/home/user/Library/LaunchAgents"));
-    }
-
-    #[test]
-    fn macos_launch_agents_dir_none() {
-        let p = macos_launch_agents_dir(None);
-        assert_eq!(p, PathBuf::from(".").join("Library").join("LaunchAgents"));
-    }
-
     // R10 test 3: render_linux_desktop_entry.
     #[test]
     fn render_linux_desktop_entry_contains_binary() {
@@ -395,16 +321,6 @@ mod tests {
         // The Exec line must quote the binary path because it contains a space.
         let exec_line = entry.lines().find(|l| l.starts_with("Exec=")).unwrap();
         assert!(exec_line.contains("\"/opt/ponter/ponter desktop\""));
-    }
-
-    // R10 test 4: render_macos_plist.
-    #[test]
-    fn render_macos_plist_contains_binary_and_label() {
-        let plist = render_macos_plist(Path::new("/opt/ponter/ponter-desktop"));
-        assert!(plist.contains("/opt/ponter/ponter-desktop"));
-        assert!(plist.contains("RunAtLoad"));
-        assert!(plist.contains(MACOS_LABEL));
-        assert!(plist.contains("ProgramArguments"));
     }
 
     // R10 test 5: windows_run_add_args / windows_run_delete_args.
