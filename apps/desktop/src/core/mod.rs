@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod devices;
 pub mod error;
 pub mod keychain;
 pub mod session;
