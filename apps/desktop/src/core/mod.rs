@@ -7,6 +7,7 @@ pub mod error;
 pub mod keychain;
 pub mod session;
 pub mod state;
+pub mod wizard;
 
 #[cfg(test)]
 pub mod test_util;
