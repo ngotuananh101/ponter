@@ -15,7 +15,6 @@ import {
   AlertTriangle,
   Terminal,
   Shield,
-  Laptop,
   Monitor,
   Folder,
 } from '@lucide/vue';
@@ -32,7 +31,7 @@ const emit = defineEmits<{
 const step = ref<'form' | 'success'>('form');
 const agentId = ref('');
 const hostname = ref('');
-const platform = ref<'linux' | 'macos' | 'windows'>('linux');
+const platform = ref<'linux' | 'windows'>('linux');
 const loading = ref(false);
 const error = ref<string | null>(null);
 const copiedTarget = ref<'credential' | 'command' | null>(null);
@@ -238,20 +237,6 @@ async function copyToClipboard(text: string, target: 'credential' | 'command') {
               >
                 <Terminal class="w-4 h-4" />
                 <span>Linux</span>
-              </button>
-
-              <button
-                type="button"
-                class="flex flex-col items-center gap-1.5 p-2.5 rounded-lg border text-xs font-medium transition-colors"
-                :class="
-                  platform === 'macos'
-                    ? 'border-primary bg-primary/10 text-primary shadow-xs'
-                    : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
-                "
-                @click="platform = 'macos'"
-              >
-                <Laptop class="w-4 h-4" />
-                <span>macOS</span>
               </button>
 
               <button
