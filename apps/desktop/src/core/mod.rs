@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod error;
+pub mod keychain;
 
 #[cfg(test)]
 pub mod test_util;
