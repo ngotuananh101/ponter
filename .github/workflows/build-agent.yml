@@ -97,7 +97,7 @@ jobs:
         run: cargo build --release --locked
 
   # ---------------------------------------------------------------------------
-  # Cross-platform build + package matrix (6 targets).
+  # Cross-platform build + package matrix (4 targets).
   # Runs on every trigger; on PRs/branch pushes the artifact upload is skipped.
   # ---------------------------------------------------------------------------
   build:
@@ -116,8 +116,6 @@ jobs:
           - x86_64-unknown-linux-gnu
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-gnu
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
         include:
           - target: x86_64-unknown-linux-gnu
@@ -137,18 +135,6 @@ jobs:
             os: Linux
             arch: arm64-gnu
             runner: ubuntu-24.04-arm
-            pkg_ext: tar.gz
-            bin_name: ponter-agent
-          - target: x86_64-apple-darwin
-            os: macOS
-            arch: x64
-            runner: macos-14
-            pkg_ext: tar.gz
-            bin_name: ponter-agent
-          - target: aarch64-apple-darwin
-            os: macOS
-            arch: arm64
-            runner: macos-14
             pkg_ext: tar.gz
             bin_name: ponter-agent
           - target: x86_64-pc-windows-msvc

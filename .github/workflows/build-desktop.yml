@@ -4,7 +4,7 @@ name: Build Desktop
 # Tauri app at `apps/desktop`. ADR-56.
 #
 # - Tag push (v*.*.* / desktop-v*.*.*): builds all platforms, produces native
-#   installers (.deb + .AppImage / .dmg / .msi + .exe), uploads them as
+#   installers (.deb + .AppImage / .msi + .exe), uploads them as
 #   artifacts, and attaches them to a GitHub Release.
 # - workflow_dispatch: identical, plus `dry_run` to build without releasing.
 # - Pull requests and branch pushes to main/develop: builds all platforms,
@@ -13,10 +13,8 @@ name: Build Desktop
 #   dependency bumps elsewhere don't trigger the 3-OS matrix.
 #
 # NOTE: this workflow is BUILD-ONLY for this phase (ADR-56 / PM decision #1).
-# Signing is deferred — see the commented "macOS signing" and "Windows signing"
-# blocks below where the env vars / secrets would be wired in:
-#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_ID /
-#   APPLE_APP_SPECIFIC_PASSWORD (for notarization) and
+# Signing is deferred — see the commented "Windows signing" block below where
+# the env vars / secrets would be wired in:
 #   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD (Authenticode).
 # Add these secrets to the repo, then uncomment the signing steps.
 
@@ -68,7 +66,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build + bundle matrix across Linux / macOS / Windows.
+  # Build + bundle matrix across Linux / Windows.
   # Linux system deps are the UNION of the Tauri deps and the agent capture
   # stack (xcap/x11rb/pipewire/wayland/enigo/openh264), since apps/desktop/src-tauri
   # path-depends on apps/agent.
@@ -84,12 +82,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, windows-latest]
         include:
           - os: ubuntu-latest
             runner: ubuntu-latest
-          - os: macos-14
-            runner: macos-14
           - os: windows-latest
             runner: windows-latest
     steps:
@@ -136,13 +132,6 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      # macOS signing (PM decision #1: build-only this phase).
-      # To enable notarization/signing, add the secrets below and uncomment:
-      # env:
-      #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      #   APPLE_ID: ${{ secrets.APPLE_ID }}
-      #   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       - name: Build (Tauri bundle)
         # On the tag/dispatch path, the signing secrets are available and we
         # enable updater artifact generation via a config overlay so the bundler
@@ -205,15 +194,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload macOS dmg artifact
-        if: ${{ runner.os == 'macOS' }}
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
-        with:
-          name: ponter-desktop-macos-dmg
-          path: ${{ env.WORKSPACE }}/src-tauri/target/release/bundle/dmg/*
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Upload Windows msi artifact
         if: ${{ runner.os == 'Windows' }}
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
@@ -256,23 +236,20 @@ jobs:
       # `${{ env.WORKSPACE }}/src-tauri/...` which is correct — its `path` input
       # resolves from the workspace root, not the run CWD.)
       # ---------------------------------------------------------------------
-      - name: Assert installer artifacts (Linux/macOS)
+      - name: Assert installer artifacts (Linux)
         if: ${{ runner.os != 'Windows' }}
         run: |
           set -e
           BUNDLE="src-tauri/target/release/bundle"
           echo "Bundle dir contents:"
           ls -la "$BUNDLE"
-          # Tauri emits installers in type-specific subdirs (deb/, rpm/, appimage/,
-          # dmg/). Check only those flat installer files; exclude .app bundle
-          # internals (Contents/Info.plist, PkgInfo, _CodeSignature/*) which are
-          # legitimately < 10 KB and would false-positive on macOS.
+          # Tauri emits installers in type-specific subdirs (deb/, rpm/, appimage/).
+          # Check only those flat installer files.
           # Use `wc -b` for cross-platform size (GNU/BSD stat differ in flags).
           find "$BUNDLE" -type f \
             ! -name '*.sha256' \
-            ! -path '*.app/*' \
-            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \
-               -o -name '*.msi' -o -name '*.exe' -o -name '*.app' \) \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
+               -o -name '*.msi' -o -name '*.exe' \) \
             -print0 | while IFS= read -r -d '' f; do
             sz=$(wc -c < "$f")
             echo "  $f  ($sz bytes)"
@@ -281,7 +258,7 @@ jobs:
               exit 1
             fi
           done
-          echo "Installer artifact check PASSED (Linux/macOS)."
+          echo "Installer artifact check PASSED (Linux)."
 
       - name: Assert installer artifacts (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -343,9 +320,9 @@ jobs:
           set -e
           echo "Installer files present under dist/:"
           find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
-            -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -print || true
+            -o -name '*.msi' -o -name '*.exe' \) -print || true
           count=$(find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \
-            -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) | wc -l)
+            -o -name '*.msi' -o -name '*.exe' \) | wc -l)
           echo "Installer files found: $count"
           if [ "$count" -lt 1 ]; then
             echo "::error::No installer files found under dist/ — the release would be empty"
@@ -403,7 +380,7 @@ jobs:
         # static format — verified in src/updater.rs::get_urls):
         #   { version, notes, pub_date, platforms: { "{os}-{arch}-{bundle_type}": { url, signature } } }
         # - keys are `{os}-{arch}-{bundle_type}` (e.g. linux-x86_64-deb,
-        #   darwin-aarch64-app, windows-x86_64-msi), NOT target triples.
+        #   windows-x86_64-msi), NOT target triples.
         # - signature is PER-PLATFORM (the minisign sig of each installer binary),
         #   embedded inside each platform entry. There is NO top-level signature:
         #   the plugin does NOT read one for static manifests (verified in
@@ -441,7 +418,6 @@ jobs:
             if (/\.AppImage$/.test(f))        return { os: "linux",   arch: "x86_64", bundle: "appimage" };
             if (/\.deb$/.test(f))            return { os: "linux",   arch: "x86_64", bundle: "deb" };
             if (/\.rpm$/.test(f))            return { os: "linux",   arch: "x86_64", bundle: "rpm" };
-            if (/\.dmg$/.test(f))            return { os: "darwin",  arch: "aarch64", bundle: "app" };
             if (/\.msi$/.test(f))            return { os: "windows", arch: "x86_64", bundle: "msi" };
             if (/\.exe$/.test(f))            return { os: "windows", arch: "x86_64", bundle: "nsis" };
             return null;
@@ -488,7 +464,6 @@ jobs:
             dist/**/*.deb
             dist/**/*.rpm
             dist/**/*.AppImage
-            dist/**/*.dmg
             dist/**/*.msi
             dist/**/*.exe
             dist/**/*.sha256
