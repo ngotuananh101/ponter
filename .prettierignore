@@ -17,3 +17,6 @@ apps/desktop/src/components/ui
 packages/ui-components/src/components/ui
 # Tauri CLI-generated capability schemas (see src-tauri/.gitignore)
 apps/desktop/src-tauri/gen
+# WiX XML source file for Windows installer (ADR-79)
+apps/desktop/wix
+

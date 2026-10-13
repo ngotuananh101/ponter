@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Ponter Desktop" Language="1033" Version="!(bind.FileVersion.ponter-desktop.exe)"
+           Manufacturer="Ponter" UpgradeCode="b6b0f0b8-2f2f-4f3a-9d5a-6c8a2b0f7d10">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"/>
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed."/>
+    <MediaTemplate EmbedCab="yes"/>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="Ponter Desktop">
+          <Component Id="MainExe" Guid="*">
+            <File Id="ponter-desktop.exe" Source="target\release\ponter-desktop.exe" KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Main" Title="Ponter Desktop" Level="1">
+      <ComponentRef Id="MainExe"/>
+    </Feature>
+  </Product>
+</Wix>

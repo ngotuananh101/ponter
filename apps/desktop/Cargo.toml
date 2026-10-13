@@ -3,6 +3,8 @@ name = "ponter-desktop"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
+description = "Ponter Desktop Client"
+license = "MIT"
 
 [[bin]]
 name = "ponter-desktop"
@@ -48,6 +50,9 @@ xcap = { path = "../agent/vendor/xcap" }
 # Used only by the updater test that signs a payload with a throwaway keypair
 # and asserts `verify` accepts it (the positive path of guard (c)).
 minisign = "0.9.1"
+
+[package.metadata.wix]
+name = "Ponter Desktop"
 
 [profile.release]
 opt-level = 3

@@ -16,7 +16,6 @@ on:
     paths:
       - 'apps/server/**'
       - 'apps/web/**'
-      - 'apps/desktop/**'
       - 'apps/mobile/**'
       - 'packages/**'
       - 'package.json'
@@ -33,7 +32,6 @@ on:
     paths:
       - 'apps/server/**'
       - 'apps/web/**'
-      - 'apps/desktop/**'
       - 'apps/mobile/**'
       - 'packages/**'
       - 'package.json'
