@@ -339,14 +339,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    static REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn set_autostart_in_round_trip_in_temp_dir() {
+        let _guard = REG_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("ponter-autostart-rt-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
         let binary = Path::new("/opt/ponter/ponter-desktop");
+        let _ = set_autostart_in(binary, &dir, LINUX_ENTRY_FILE, false);
 
         set_autostart_in(binary, &dir, LINUX_ENTRY_FILE, true).unwrap();
         assert!(is_autostart_enabled_in(binary, &dir, LINUX_ENTRY_FILE));
@@ -359,12 +363,14 @@ mod tests {
 
     #[test]
     fn is_autostart_enabled_in_false_when_not_present() {
+        let _guard = REG_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("ponter-autostart-np-{}", std::process::id()));
 
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
         let binary = Path::new("/opt/ponter/ponter-desktop");
+        let _ = set_autostart_in(binary, &dir, LINUX_ENTRY_FILE, false);
         assert!(!is_autostart_enabled_in(binary, &dir, LINUX_ENTRY_FILE));
 
         let _ = std::fs::remove_dir_all(&dir);
