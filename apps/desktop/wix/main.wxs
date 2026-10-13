@@ -9,7 +9,7 @@
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLFOLDER" Name="Ponter Desktop">
           <Component Id="MainExe" Guid="*">
-            <File Id="ponter-desktop.exe" Source="target\release\ponter-desktop.exe" KeyPath="yes"/>
+            <File Id="PonterDesktopExe" Name="ponter-desktop.exe" Source="target\release\ponter-desktop.exe" KeyPath="yes"/>
           </Component>
         </Directory>
       </Directory>
