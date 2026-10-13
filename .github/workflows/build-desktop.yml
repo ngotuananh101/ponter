@@ -192,7 +192,7 @@ jobs:
           cargo install cargo-wix --locked
           mkdir -p target/release/bundle/nsis target/release/bundle/msi
           makensis installer.nsi
-          cargo wix --no-build --nocapture
+          cargo wix --no-build --nocapture -L -sice:ICE38 -L -sice:ICE64 -L -sice:ICE91
           cp target/wix/*.msi target/release/bundle/msi/ 2>/dev/null || true
 
       - name: Upload Linux deb artifact
