@@ -122,7 +122,9 @@ Five source files carry macOS conditionals. All are **narrowing of existing
 | `src/desktop.rs:1848-1850` | Doc comment: `cursor_in_frame` is `cfg!(target_os = "macos")` | Update comment: the flag is always `false` now (cursor is never captured in-frame) |
 | `src/input.rs:355-360` | `#[cfg(target_os = "macos")]` enigo `Settings { open_prompt_to_get_permissions: false, .. }` + `#[cfg(not(target_os = "macos"))]` default | Delete the macOS arm; keep `let settings = enigo::Settings::default();` unconditionally |
 | `src/desktop.rs:358` | Doc comment referencing `x86_64-apple-darwin` build failure | Reword without the macOS reference (keep the `Send` rationale) |
+| `src/desktop.rs:2730-2732` | Comment inside the `frame_desktop_sources` test naming macOS and `cfg!(target_os = "macos")` | **Comment reworded only.** The assertions (`cursorInFrame` true then false) and the test count are **unchanged** — this is not a test change under TEST-INTEGRITY. Reworded so the zero-hit sweep (§8.1) holds. |
 | `src/cursor.rs:8,125` | Doc comments naming macOS | Reword to "non-Linux unix (musl)" |
+| `Cargo.toml:78,82` | Dependency comments: "on Linux/macOS the default backend is used" / "on Linux/macOS these code paths are cfg-gated out" | Reword to "on Linux" (both comments describe the Windows-only `xcap`/`windows` deps; Linux is the only non-Windows, non-musl target left) |
 
 **Important — the `frame_desktop_sources` unit test is NOT changed.** The test at
 `desktop.rs:2730-2745` pins `cursorInFrame` in **both** directions by calling the
@@ -135,10 +137,23 @@ assertion is a property of the pure function and must be preserved.
 
 - **`src-tauri/Cargo.toml`:**
   - `keyring = { version = "4.2.0", features = ["apple-native-keyring-store"] }`
-    → `keyring = { version = "4.2.0", default-features = false, features = ["windows-native-keyring-store", "zbus-secret-service-keyring-store"] }`.
-    The `keyring 4.2.0` default feature set is `v1 = [apple, windows, zbus]`; the
-    new config keeps Windows (Credential Manager) and Linux (Secret Service via
-    zbus) and drops Apple. Verified against the crate's `[features]` table.
+    → `keyring = { version = "4.2.0", default-features = false, features = ["v1"] }`.
+    **Why `v1`, not a bare store list:** `keyring 4.2.0` gates its entire API
+    behind `#[cfg(not(any(feature = "v1", feature = "cli")))] compile_error!(...)`
+    (`src/lib.rs:32`). A config that lists only `windows-native-keyring-store` +
+    `zbus-secret-service-keyring-store` **does not compile** — verified with an
+    offline `cargo check` probe (`error: could not compile keyring (lib) due to 1
+    previous error`). `v1 = ["apple-native-keyring-store/keychain",
+    "windows-native-keyring-store", "zbus-secret-service-keyring-store"]` is the
+    only feature that provides the `keyring::Entry` API this crate calls, and it
+    re-enables the Windows and Linux stores for free.
+  - **`apple-native-keyring-store` stays in `Cargo.lock`, and that is correct.**
+    It is a *target-gated optional* dependency
+    (`[target.'cfg(any(target_os = "macos", target_os = "ios"))']`), so it is never
+    compiled on Windows or Linux under any feature set; `Cargo.lock` is
+    target-agnostic and lists every platform's resolved deps. The edit's purpose
+    is to drop the explicit macOS feature *string* from the manifest, not
+    (impossibly) to remove the crate from the lock.
   - Remove any macOS-only dependency lines if present (none beyond the keyring
     feature are macOS-specific).
 - **`src-tauri/tauri.conf.json`:** remove `"icons/icon.icns"` from
@@ -161,8 +176,14 @@ assertion is a property of the pure function and must be preserved.
   tests that pin it: `capture_error_macos_guidance` (`:325`) and
   `capture_error_permission_guidance` (`:332`). The Wayland/portal arm and its two
   tests (`capture_error_wayland_portal_note`, `capture_error_wayland_only`) stay.
-- **`src-tauri/src/commands/devices.rs:250`:** remove the `"macos" => "macos"`
-  arm from `device_platform()`; keep `linux` / `windows` / `other`.
+- **`src-tauri/src/commands/devices.rs`:** remove the `"macos" => "macos"` arm
+  from `device_platform()` (`:250`); keep `linux` / `windows` / `other`. Also
+  reword its doc comment (`:246`, `"linux" | "macos" | "windows"` → `"linux" |
+  "windows"`). No test change: the `devices.rs` test module has no
+  `device_platform` test (verified — its 20 tests cover id/format/error mapping
+  and registration).
+- **`src/stores/wizard.ts`:** doc comment only (`:21`) — drop "macOS uses a
+  LaunchAgent plist;" so the R12 note names Windows/`reg.exe` only.
 - **`apps/desktop/README.md`:** remove the macOS config-path line (`:75`).
 
 ### 4.3 CI
@@ -171,27 +192,44 @@ assertion is a property of the pure function and must be preserved.
   - Remove the two `*-apple-darwin` matrix targets (`:119-120`) and their two
     `include` entries (`:142-151`). Matrix shrinks from 6 to 4 targets
     (`x86_64/aarch64-linux-gnu`, `x86_64-linux-musl`, `x86_64-pc-windows-msvc`).
-  - Remove any macOS-specific steps (e.g. codesign, `.dmg` packaging) if present
-    in the agent workflow.
-- **`.github/workflows/build-desktop.yml`:**
-  - Matrix `os: [ubuntu-latest, macos-14, windows-latest]` → `[ubuntu-latest, windows-latest]`; drop the `macos-14` `include` entry.
+  - Update the `# Cross-platform build + package matrix (6 targets).` comment
+    (`:100`) to say **4 targets**.
+  - The `verify` job (`cargo fmt`/`clippy`/`test`/`build --release`) runs on
+    `ubuntu-latest` only and carries no macOS reference — unchanged.
+- **`.github/workflows/build-desktop.yml`:** every macOS touchpoint (verified by
+  a full-file sweep; the list is exhaustive):
+  - Header comment (`:7`) — drop `.dmg` from the installer list; header block
+    (`:16-19`) — drop the `APPLE_*` secret names and the "macOS signing" reference
+    from the "Signing is deferred" note (the Windows signing comment stays).
+  - Matrix comment (`:71`) `Linux / macOS / Windows` → `Linux / Windows`; matrix
+    `os: [ubuntu-latest, macos-14, windows-latest]` → `[ubuntu-latest,
+    windows-latest]` (`:87`) and drop the `macos-14` `include` entry (`:91-92`).
+  - Remove the commented "macOS signing" secret block (`:139-145`).
   - Remove the "Upload macOS dmg artifact" step (`:208-214`).
-  - Remove `.dmg` from the installer-assert glob and the `macos-14` special-case
-    comment (`:259-284`).
-  - Remove the `darwin` branch in the `latest.json` assembly script (`:444`) and
-    the `dist/**/*.dmg` upload path (`:491`).
-  - Remove the commented "macOS signing" secret block (`:139-145`) and the
-    `APPLE_*` secret names from the header comment (`:16-19`).
-  - Keep the `windows` + `linux` branches untouched.
+  - `Assert installer artifacts (Linux/macOS)` (`:259-284`) → rename to
+    `(Linux)`, drop `-name '*.dmg'` and `-name '*.app'` from the `find` glob and
+    the `.app`-exclusion comment, and change the final echo to `PASSED (Linux).`
+  - **`Assert release installer assets exist` (`:336-348`, release job):** drop
+    `-name '*.dmg'` from **both** `find` invocations (the `-print` listing and the
+    `wc -l` counter).
+  - `latest.json` assembly comment (`:405-406`): drop `darwin-aarch64-app` from the
+    example key list; remove the `.dmg → darwin` branch in `targetFor` (`:444`).
+  - Release upload glob (`:491`): drop `dist/**/*.dmg`.
+  - Keep every `windows` + `linux` branch untouched.
 
 ### 4.4 `apps/web`
 
 - **`RegisterAgentDialog.vue`:** narrow the union
   `ref<'linux' | 'macos' | 'windows'>('linux')` → `ref<'linux' | 'windows'>('linux')`
-  (`:35`); remove the macOS button block (`:247-254`). The default stays `linux`.
+  (`:35`); remove the macOS button block (`:245-255`); drop `Laptop` from the
+  `@lucide/vue` import (`:18`) — it is used only by that block (verified: the only
+  other `Laptop` hit is `:253`, inside the removed block). The platform grid
+  `grid-cols-3` (`:228`) stays as-is (cosmetic; two buttons in a 3-column grid is
+  acceptable and avoids touching layout). The default stays `linux`.
 - **Tests:** `RegisterAgentDialog.test.ts` already exercises `linux` and
   `windows` only (no `macos` case exists), so **no test change is required**.
-  Verified by grep: the test file contains no `macos` reference.
+  Verified by reading the file: it asserts `platform: 'linux'`/`'windows'` and
+  clicks the button whose text includes `'Windows'`; neither breaks.
 
 ### 4.5 `apps/server`
 
@@ -266,7 +304,7 @@ deleted macOS-only code).
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Keyring feature swap breaks Linux or Windows keychain at runtime | Low | High | Explicitly re-enable `windows-native-keyring-store` + `zbus-secret-service-keyring-store`; the `round_trips_a_secret` test must stay green on both; CI builds both legs |
+| Keyring feature swap breaks Linux or Windows keychain at runtime | Low | High | Keep `features = ["v1"]` (verified to compile via probe) — `v1` itself re-enables the Windows + Linux stores; the `round_trips_a_secret` test must stay green on both; CI builds both legs |
 | A macOS reference is missed (code, CI, or docs) | Medium | Low | A verification checklist (§8) greps for `macos\|darwin\|apple\|\.icns\|videotoolbox` across code + CI + living docs; the only allowed hits are in historical docs |
 | `cfg` narrowing changes behavior on an unintended target | Low | Medium | The narrowed predicate is a strict subset of the old one for Windows/Linux; the unit tests for the affected modules stay green |
 | Windows CI is the only automated proof (no local Windows) | Medium | Medium | The desktop matrix already builds Windows; PR CI is the gate; the Linux leg is verified locally |
@@ -278,19 +316,22 @@ deleted macOS-only code).
 Split by the repository's existing convention of separating code/CI from docs.
 
 **PR 1 — code + CI (non-docs):**
-- `apps/agent/src/{cursor,lib,desktop,input}.rs`
+- `apps/agent/src/{cursor,lib,desktop,input}.rs` + `apps/agent/Cargo.toml` (comment only)
 - `apps/desktop/src-tauri/{Cargo.toml,tauri.conf.json}` +
-  `src/{autostart,keychain}.rs` + `src/commands/{wizard,devices}.rs`
+  `src/{autostart,keychain}.rs` + `src/commands/{wizard,devices}.rs` +
+  `src/stores/wizard.ts` (comment only) + `apps/desktop/README.md`
 - `.github/workflows/{build-agent,build-desktop}.yml`
 - `apps/web/src/components/agent/RegisterAgentDialog.vue`
 - Triggered CI: the agent + desktop workflows (both now Windows/Linux only) plus
   the standard Node checks. **QA binding verdict required** (test files change:
-  4 Rust tests removed).
+  **5** Rust tests removed).
 
 **PR 2 — docs:**
-- `README.md`, `docs/ARCHITECTURE.md` (living sections + §8 trail), the three
-  `docs/guides/*` files, and the new ADR-78 (recorded in the spec/ARCHITECTURE
-  per repo convention).
+- `README.md`, `docs/ARCHITECTURE.md` (living sections + §8 trail + **ADR-78**),
+  and the three `docs/guides/*` files.
+- ADR-78 is recorded inline in `docs/ARCHITECTURE.md` (the repo keeps ADRs in
+  that file; there is no `docs/adr/` directory), as a new blockquote in §8 beside
+  the existing Phase blocks.
 - Docs-only ⇒ SonarCloud only, no QA binding (precedent: #108/#111/#113/#114).
 
 The §8 trail entry for PR 1 and PR 2 is added in PR 2 (docs), consistent with
@@ -303,7 +344,20 @@ how prior merges recorded their trail.
 1. `grep -rniE "macos|darwin|apple|\.icns|videotoolbox"` across `apps/**`,
    `.github/workflows/**`, and living docs returns **zero** hits outside
    `docs/superpowers/**`, `docs/demos/**`, `docs/spikes/**`, `docs/notes/**`,
-   `docs/security/**`, `node_modules`, `target`, and `vendor`.
+   `docs/security/**`, `node_modules`, `target`, `vendor`, **and
+   `Cargo.lock`**. The lock files are excluded deliberately:
+   `apps/desktop/src-tauri/Cargo.lock` must keep the
+   `apple-native-keyring-store` entry (target-gated optional dep — see §4.2), and
+   `apps/agent/Cargo.lock` already has zero hits.
+   **Two `-apple-system` hits are expected and correct:** the CSS font stacks
+   `--font-sans: 'Inter', system-ui, -apple-system, sans-serif;` in
+   `apps/web/src/style.css:12` and `apps/desktop/src/style.css:12`. `-apple-system`
+   is a W3C-standard font *name* (the WebKit system-font keyword), not macOS
+   platform support; removing it would degrade font rendering on macOS *browsers*
+   — which is out of scope (we drop macOS as a *build target*, not as a client).
+   Both stay. A reviewer running the sweep must therefore either exclude the
+   `-apple-system` token or confirm the only `apple` hits are these two font
+   lines.
 2. `apps/agent` builds + tests pass on Linux; CI's Windows leg passes.
 3. `apps/desktop` builds + tests pass on Linux; CI's Windows leg passes.
 4. `keychain.rs::round_trips_a_secret` green on Linux and Windows.
