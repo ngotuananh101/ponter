@@ -282,6 +282,11 @@ mod tests {
 
     #[test]
     fn logout_impl_clears_token_and_deletes_keychain() {
+        if std::env::var("PONTER_KEYCHAIN_SKIP").is_ok() {
+            eprintln!("PONTER_KEYCHAIN_SKIP set — skipping keychain integration test");
+            return;
+        }
+
         // Deletes the shared `KEYCHAIN_REFRESH_ACCOUNT` entry — serialize.
         let _guard = keychain_lock();
         let state = CoreState::with_config(None);
