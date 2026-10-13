@@ -3,6 +3,7 @@
 //! `ponter-desktop` — the native desktop shell (ADR-79).
 
 mod app;
+pub mod autostart;
 mod core;
 
 use eframe::egui;
