@@ -1,6 +1,6 @@
 # Desktop Agent Setup Guide
 
-Detailed guide on building, configuring, and operating the native Rust Desktop Agent (`apps/agent`) on Linux, macOS, and Windows.
+Detailed guide on building, configuring, and operating the native Rust Desktop Agent (`apps/agent`) on Linux and Windows.
 
 ---
 
@@ -219,13 +219,7 @@ Windows service deployment will be supported in Phase 3. Temporarily use Task Sc
 
 ---
 
-## 7. macOS LaunchDaemon (Pending)
-
-macOS daemon deployment will be supported in Phase 3.
-
----
-
-## 8. Security Considerations
+## 7. Security Considerations
 
 ### Credential Storage
 
@@ -259,7 +253,7 @@ To rotate credentials:
 
 ---
 
-## 9. Troubleshooting
+## 8. Troubleshooting
 
 ### Issue: Agent cannot connect to WebSocket
 

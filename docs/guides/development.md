@@ -326,7 +326,7 @@ pnpm --filter @ponter/desktop tauri build    # native bundle
 ```
 
 Output: installers under `apps/desktop/src-tauri/target/release/bundle/`
-(`.deb` + `.AppImage` + `.rpm` on Linux, `.dmg` on macOS, `.msi` + `.exe` on Windows).
+(`.deb` + `.AppImage` + `.rpm` on Linux, `.msi` + `.exe` on Windows).
 Building a signed auto-update bundle requires your own signing key; building
 without one is supported (auto-update simply stays inert). `pnpm tauri build`
 needs the platform's Tauri prerequisites (system webkit/gtk packages on Linux).
