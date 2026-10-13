@@ -55,7 +55,7 @@ pub fn map_health_response(status: u16, body: &str) -> ProbeResult {
 
 /// Map an agent capture error into an honest, actionable message (R4).
 ///
-/// Wayland/portal errors and macOS permission errors get platform-specific
+/// Wayland/portal errors get platform-specific
 /// guidance; everything else is passed through verbatim — no invention.
 pub fn map_capture_error(err: &str) -> String {
     let lower = err.to_lowercase();
@@ -64,11 +64,6 @@ pub fn map_capture_error(err: &str) -> String {
             "{err}; Wayland capture is portal-dependent (recorded limitation ADR-27/45). \
              Try X11/XWayland or grant the screen-capture portal access."
         )
-    } else if lower.contains("screen recording")
-        || lower.contains("permission")
-        || lower.contains("denied")
-    {
-        format!("{err}; on macOS, grant Screen Recording in System Settings, then re-probe.")
     } else {
         err.to_string()
     }
@@ -320,18 +315,6 @@ mod tests {
     fn capture_error_wayland_only() {
         let m = map_capture_error("Wayland: no session");
         assert!(m.contains("portal-dependent"));
-    }
-
-    #[test]
-    fn capture_error_macos_guidance() {
-        let m = map_capture_error("Screen Recording permission denied");
-        assert!(m.contains("Screen Recording in System Settings"));
-    }
-
-    #[test]
-    fn capture_error_permission_guidance() {
-        let m = map_capture_error("permission denied");
-        assert!(m.contains("Screen Recording in System Settings"));
     }
 
     #[test]

@@ -243,11 +243,10 @@ fn device_hostname() -> String {
 }
 
 /// Build the platform string exactly as the server/web dialog accepts (R1):
-/// `"linux" | "macos" | "windows"`.
+/// `"linux" | "windows"`.
 fn device_platform() -> String {
     match std::env::consts::OS {
         "linux" => "linux".to_string(),
-        "macos" => "macos".to_string(),
         "windows" => "windows".to_string(),
         other => other.to_string(),
     }

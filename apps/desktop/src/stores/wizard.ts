@@ -18,7 +18,7 @@
  * longer part of the wizard state machine.
  *
  * R12 (honesty): auto-start takes effect at the next login; the toggle
- * reflects the real OS entry. macOS uses a LaunchAgent plist; Windows uses
+ * reflects the real OS entry. Windows uses
  * reg.exe. See task-8-brief.md R3/R12.
  */
 import { defineStore } from 'pinia';

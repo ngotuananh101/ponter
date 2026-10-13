@@ -1,7 +1,7 @@
 //! Thin wrapper over the OS secret store (ADR-51).
 //!
 //! The public API is intentionally minimal and synchronous; the OS keychain
-//! abstracts away the platform (macOS Keychain, Windows Credential Manager,
+//! abstracts away the platform (Windows Credential Manager,
 //! GNOME/KDE Secret Service via zbus on Linux).
 //!
 //! Error-contract note: a *missing* credential is **not** an error for our

@@ -72,7 +72,6 @@ the access token stays in memory and the refresh token lives in the OS
 keychain (ADR-52).
 
 - **Linux:** `~/.config/com.ponter.desktop/config.json`
-- **macOS:** `~/Library/Application Support/com.ponter.desktop/config.json`
 - **Windows:** `%APPDATA%\com.ponter.desktop\config.json`
 
 See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
