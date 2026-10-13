@@ -1,5 +1,6 @@
 //! GUI-free core logic. Every module here is unit-testable without a display.
 
+pub mod agent_host;
 pub mod auth;
 pub mod config;
 pub mod devices;
