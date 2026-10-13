@@ -21,4 +21,4 @@ exec "$(dirname "$0")/usr/bin/ponter-desktop" "$@"
 APPRUN
 chmod +x "$appdir/AppRun"
 mkdir -p target/release/bundle/appimage
-appimagetool "$appdir" target/release/bundle/appimage/PonterDesktop-x86_64.AppImage
+ARCH="${ARCH:-x86_64}" appimagetool "$appdir" target/release/bundle/appimage/PonterDesktop-x86_64.AppImage

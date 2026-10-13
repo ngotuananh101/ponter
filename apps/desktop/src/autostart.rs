@@ -111,8 +111,7 @@ pub fn entry_exists(dir: &Path, filename: &str) -> bool {
 /// The Linux XDG autostart **entry** dir — the config dir plus the `autostart`
 /// subdir. XDG desktop environments only discover `.desktop` entries inside
 /// `autostart/` (ADR-55 / R4: `~/.config/autostart/*.desktop`).
-#[cfg(target_os = "linux")]
-fn linux_autostart_entry_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> PathBuf {
+pub fn linux_autostart_entry_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> PathBuf {
     linux_autostart_dir(xdg_config_home, home).join("autostart")
 }
 

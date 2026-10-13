@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.98.1
           components: rustfmt, clippy
@@ -98,8 +98,17 @@ jobs:
             libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
             libxrandr-dev libxkbcommon-dev libx11-dev libgl1-mesa-dev \
             libwayland-dev libegl-dev libgbm-dev libdrm-dev \
-            libpipewire-0.3-dev libspa-0.2-dev \
-            appimagetool
+            libpipewire-0.3-dev libspa-0.2-dev
+
+      - name: Install appimagetool
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          curl -sSL -o /tmp/appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          (cd /tmp && ./appimagetool.AppImage --appimage-extract >/dev/null)
+          sudo mv /tmp/squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -142,6 +151,7 @@ jobs:
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: apps/desktop
+        shell: bash
         run: |
           cargo install cargo-wix --locked
           mkdir -p target/release/bundle/nsis target/release/bundle/msi
@@ -205,6 +215,7 @@ jobs:
 
       - name: Assert installer artifacts (Linux)
         if: matrix.os == 'ubuntu-latest'
+        working-directory: apps/desktop
         run: |
           set -e
           echo "Target release contents:"
@@ -224,6 +235,7 @@ jobs:
 
       - name: Assert installer artifacts (Windows)
         if: matrix.os == 'windows-latest'
+        working-directory: apps/desktop
         shell: pwsh
         run: |
           $bundle = "target\release\bundle"
