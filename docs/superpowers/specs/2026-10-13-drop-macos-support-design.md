@@ -152,8 +152,15 @@ assertion is a property of the pure function and must be preserved.
   arms remain (they still cover unknown targets).
 - **`src-tauri/src/keychain.rs`:** doc comment only — drop "macOS Keychain" from
   the list of abstracted stores.
-- **`src-tauri/src/commands/wizard.rs`:** remove the macOS branch in the capture
-  error guidance (`:71`) and the macOS guidance test (`:326`).
+- **`src-tauri/src/commands/wizard.rs`:** delete the macOS `else if` arm in
+  `map_capture_error` (`:66-72`) — the `screen recording` / `permission` /
+  `denied` branch that appends "on macOS, grant Screen Recording in System
+  Settings". With macOS gone there is no actionable guidance for those errors on
+  Windows or Linux, so they fall through to the verbatim `else`. This also fixes a
+  latent bug: the arm already appended macOS-only text on Linux. Delete the two
+  tests that pin it: `capture_error_macos_guidance` (`:325`) and
+  `capture_error_permission_guidance` (`:332`). The Wayland/portal arm and its two
+  tests (`capture_error_wayland_portal_note`, `capture_error_wayland_only`) stay.
 - **`src-tauri/src/commands/devices.rs:250`:** remove the `"macos" => "macos"`
   arm from `device_platform()`; keep `linux` / `windows` / `other`.
 - **`apps/desktop/README.md`:** remove the macOS config-path line (`:75`).
@@ -225,9 +232,9 @@ exists.
 | File | Test(s) | Count | Reason |
 |---|---|---|---|
 | `apps/desktop/src-tauri/src/autostart.rs` | `macos_launch_agents_dir_home`, `macos_launch_agents_dir_none`, `render_macos_plist_contains_binary_and_label` | 3 | `macos_launch_agents_dir()` and `render_macos_plist()` are deleted with the macOS support |
-| `apps/desktop/src-tauri/src/commands/wizard.rs` | `capture_error_macos_guidance` | 1 | The macOS guidance branch is deleted |
+| `apps/desktop/src-tauri/src/commands/wizard.rs` | `capture_error_macos_guidance`, `capture_error_permission_guidance` | 2 | The macOS guidance branch in `map_capture_error` is deleted; both tests assert its "Screen Recording in System Settings" text |
 
-**Net test count delta:** −4 tests (all Rust unit tests, all covering
+**Net test count delta:** −5 tests (all Rust unit tests, all covering
 deleted macOS-only code).
 
 ### Preserved tests (explicitly NOT changed)
@@ -304,7 +311,7 @@ how prior merges recorded their trail.
 6. `build-desktop.yml` matrix has exactly 2 OS legs (`ubuntu-latest`,
    `windows-latest`); no `.dmg`, no `darwin`, no `APPLE_*`.
 7. `RegisterAgentDialog.vue` union is `'linux' | 'windows'`; no macOS button.
-8. Net test delta is exactly −4 (the four declared macOS tests); no other test
+8. Net test delta is exactly −5 (the five declared macOS tests); no other test
    file changed.
 9. `README.md` / `ARCHITECTURE.md` / guides state Windows + Linux only.
 10. Zero `Co-authored-by` trailers in the commits.
