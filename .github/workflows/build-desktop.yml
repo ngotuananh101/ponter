@@ -3,14 +3,14 @@ name: Build Desktop
 # Cross-platform build + bundle + release workflow for the `ponter-desktop`
 # Tauri app at `apps/desktop`. ADR-56.
 #
-# - Tag push (v*.*.* / desktop-v*.*.*): builds all platforms, produces native
+# - Tag push (v*.*.* / desktop-v*.*.*): builds every supported platform, produces native
 #   installers (.deb + .AppImage / .msi + .exe), uploads them as
 #   artifacts, and attaches them to a GitHub Release.
 # - workflow_dispatch: identical, plus `dry_run` to build without releasing.
-# - Pull requests and branch pushes to main/develop: builds all platforms,
+# - Pull requests and branch pushes to main/develop: builds every supported platform,
 #   uploads installer artifacts (no release is created).
 # - Path filter: `apps/desktop/**`, `apps/agent/**`, and this workflow file so
-#   dependency bumps elsewhere don't trigger the 3-OS matrix.
+#   dependency bumps elsewhere don't trigger the 2-OS matrix.
 #
 # NOTE: this workflow is BUILD-ONLY for this phase (ADR-56 / PM decision #1).
 # Signing is deferred — see the commented "Windows signing" block below where
