@@ -104,7 +104,6 @@ End users can still change the server from the app's first screen (or via
 directory, in a `config.json` file:
 
 - Linux: `~/.config/com.ponter.desktop/config.json`
-- macOS: `~/Library/Application Support/com.ponter.desktop/config.json`
 - Windows: `%APPDATA%\com.ponter.desktop\config.json`
 
 This file holds non-secret preferences only — the server URL, the input-gate
