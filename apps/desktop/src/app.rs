@@ -95,6 +95,7 @@ pub enum Msg {
 
 /// The shell's root object.
 pub struct App {
+    pub state: std::sync::Arc<crate::core::state::CoreState>,
     /// Background task -> app channel.
     pub(crate) tx: tokio::sync::mpsc::Sender<Msg>,
     rx: tokio::sync::mpsc::Receiver<Msg>,
@@ -106,16 +107,25 @@ pub struct App {
 
 impl App {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let config_path = crate::core::state::config_dir().map(|d| d.join("config.json"));
+        let state = std::sync::Arc::new(crate::core::state::CoreState::with_config(config_path));
+        let screen = if !state.has_server_url() {
+            Screen::ServerSetup
+        } else {
+            Screen::Login
+        };
+
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("building the tokio runtime");
         Self {
+            state,
             tx,
             rx,
             rt,
-            screen: Screen::ServerSetup,
+            screen,
         }
     }
 
