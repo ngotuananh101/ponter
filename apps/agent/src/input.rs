@@ -349,15 +349,6 @@ pub mod platform {
         /// display must not fail the stream merely because input is enabled
         /// (spec §6.3).
         pub fn try_new() -> Result<Self> {
-            // On macOS the default pops a GUI permission prompt on first use;
-            // the ADR-27 finding says turn it off (the prompt is not ours to
-            // trigger from a headless agent).
-            #[cfg(target_os = "macos")]
-            let settings = enigo::Settings {
-                open_prompt_to_get_permissions: false,
-                ..enigo::Settings::default()
-            };
-            #[cfg(not(target_os = "macos"))]
             let settings = enigo::Settings::default();
             Ok(Self {
                 inner: enigo::Enigo::new(&settings)?,
@@ -432,10 +423,10 @@ pub mod platform {
     ///
     /// **Do not replace the `Unicode` path with `enigo::Key::A`..`Key::Z` or a
     /// `Digit0`..`Digit9` variant.** In enigo 0.6.1 the letter variants are
-    /// `#[cfg(target_os = "windows")]`-only (referencing them on Linux/macOS
+    /// `#[cfg(target_os = "windows")]`-only (referencing them on Linux
     /// does not compile) and there is **no** `DigitN` variant at all. Routing
     /// printable characters through `Unicode` is the only mapping that compiles
-    /// on all five agent targets.
+    /// on all agent targets.
     fn map_code(code: &str) -> Option<enigo::Key> {
         use enigo::Key;
         // Printable single characters → `Unicode` (see the doc note above). This
@@ -541,8 +532,8 @@ pub mod platform {
         fn map_code_routes_letters_and_digits_through_unicode() {
             // Letters/digits MUST go through `Key::Unicode`: `enigo::Key::A` is
             // `#[cfg(target_os = "windows")]`-only and there is no `DigitN`
-            // variant, so `Key::A`/`Key::Digit0` would not compile on Linux or
-            // macOS. Do not "optimise" this back to the letter variants.
+            // variant, so `Key::A`/`Key::Digit0` would not compile on Linux.
+            // Do not "optimise" this back to the letter variants.
             assert_eq!(map_code("KeyA"), Some(Key::Unicode('a')));
             assert_eq!(map_code("Digit3"), Some(Key::Unicode('3')));
             // Punctuation also goes through `Unicode` (no cross-platform named

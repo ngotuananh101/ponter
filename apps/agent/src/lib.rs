@@ -2028,7 +2028,7 @@ async fn run_desktop_session(
         &sources,
         cfg.allow_input,
         true,
-        cfg!(target_os = "macos"),
+        false,
         crate::pty::now_ms(),
     );
 
@@ -2159,9 +2159,8 @@ async fn run_desktop_session(
     // `current_source` is borrowed by the control task's input path AND
     // consumed by the cursor poller; clone the cursor share before `control_task`
     // moves the original into its `async move` block.
-    #[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+    #[cfg(all(unix, not(target_env = "musl")))]
     let cursor_source = current_source.clone();
-    // BE-T12: hand the control data channel to the cursor task via a oneshot
     // BE-T12: hand the control data channel to the cursor task via a oneshot
     // once the control task has resolved it. The cursor task waits on `dc_rx`
     // regardless of `allow_input` — view-only watchers still track the remote
@@ -2185,7 +2184,7 @@ async fn run_desktop_session(
         // BE-T12: publish the resolved data channel to the cursor task before
         // the control loop starts consuming messages. `let _ =` ignores the
         // case where the cursor task already gave up (it is cfg-gated off on
-        // macOS/Windows/musl, where `dc_rx` is simply never awaited).
+        // Windows/musl, where `dc_rx` is simply never awaited).
         let _ = dc_tx.send(Arc::clone(&dc));
         if let Err(e) = dc.send_text(&sources_frame).await {
             tracing::debug!(error = %e, "sending desktop-sources failed");
@@ -2347,11 +2346,10 @@ async fn run_desktop_session(
         let _ = end_tx_for_control.try_send("the control channel closed");
     });
 
-    // BE-T12: cursor poller task. Runs only on Linux (unix, non-macos, non-musl);
-    // on macOS the cursor is composited in-frame (ADR-45), and on Windows/musl the
-    // desktop module does not exist at all. `None` on those targets keeps every CI
-    // build compiling clean (Ruling BE-T12-R2).
-    #[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+    // BE-T12: cursor poller task. Runs only on non-musl unix (Linux);
+    // on Windows the desktop module does not exist at all. `None` on those
+    // targets keeps every CI build compiling clean (Ruling BE-T12-R2).
+    #[cfg(all(unix, not(target_env = "musl")))]
     let cursor_task = {
         let last_input_seq = Arc::clone(&last_input_seq);
         tokio::spawn(async move {
@@ -2403,9 +2401,9 @@ async fn run_desktop_session(
             }
         })
     };
-    #[cfg(not(all(unix, not(target_os = "macos"), not(target_env = "musl"))))]
+    #[cfg(not(all(unix, not(target_env = "musl"))))]
     let cursor_task: Option<tokio::task::JoinHandle<()>> = None;
-    #[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+    #[cfg(all(unix, not(target_env = "musl")))]
     let cursor_task = Some(cursor_task);
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
@@ -2475,8 +2473,8 @@ async fn run_desktop_session(
     // ends when the channel closes; abort it so it cannot outlive the session.
     control_task.abort();
     // BE-T12: abort the cursor poller beside the control dispatcher so neither
-    // outlives the session. `cursor_task` is `None` on macOS/Windows/musl where
-    // it was never spawned (Ruling BE-T12-R2).
+    // outlives the session. `cursor_task` is `None` on Windows/musl where it was
+    // never spawned (Ruling BE-T12-R2).
     if let Some(task) = cursor_task {
         task.abort();
     }

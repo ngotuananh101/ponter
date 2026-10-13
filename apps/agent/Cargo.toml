@@ -75,11 +75,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # with "screen capture unavailable: opening the video recorder" (upstream
 # nashaofu/xcap#264). WGC captures per monitor through a GraphicsCaptureItem
 # and has no such adapter constraint. Windows-only: the feature pulls in
-# Windows-only dependencies, and on Linux/macOS the default backend is used.
+# Windows-only dependencies, and on Linux the default backend is used.
 [target.'cfg(all(not(target_env = "musl"), target_os = "windows"))'.dependencies]
 xcap = { version = "0.9.8", features = ["wgc"] }
 # Direct Windows API access for DPI awareness (Task 1) and GDI fallback
-# (Task 2). Only linked on Windows; on Linux/macOS these code paths are
+# (Task 2). Only linked on Windows; on Linux these code paths are
 # cfg-gated out.
 windows = { version = "0.62", features = [
     "Win32_Foundation",

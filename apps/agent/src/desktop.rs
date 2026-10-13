@@ -354,9 +354,8 @@ impl FrameSource for TestPatternSource {
 /// Live screen capture.
 ///
 /// **Why a dedicated thread.** `xcap`'s capture objects are not `Send` on every
-/// platform — verified by compiling `is_send::<xcap::VideoRecorder>()` for
-/// `x86_64-apple-darwin` (fails: `Retained<AVCaptureSession>` is not `Send`)
-/// and `is_send::<xcap::Monitor>()` for `x86_64-pc-windows-msvc` (fails:
+/// platform — verified by compiling `is_send::<xcap::Monitor>()` for
+/// `x86_64-pc-windows-msvc` (fails:
 /// `HMONITOR` wraps a raw pointer) — while `supervise_sessions` runs in a
 /// `tokio::spawn` and everything in `run_one_session` must be `Send`. So the
 /// thread below creates, owns and drops the monitor/recorder/`Receiver`, and
@@ -1845,11 +1844,10 @@ pub fn test_source_info() -> DesktopSourceInfo {
 /// unreachable on a session whose peer was not verified. It stays a parameter
 /// (not a hard-coded `true`) so the unit test can pin both directions.
 ///
-/// `cursor_in_frame` is ADR-45's flag: macOS captures the cursor in-frame
-/// (spec §3.2/§6.2), so the production call site passes `cfg!(target_os = "macos")`.
-/// No poller runs on macOS; the cursor is composited into the frame at capture.
-/// It is a parameter (not a hard-coded `cfg!`) so the unit test can pin both
-/// directions.
+/// `cursor_in_frame` is ADR-45's flag. The production call site now passes
+/// `false` unconditionally (no remaining target composites the cursor in-frame
+/// any more). It stays a parameter (not a hard-coded `false`) so the unit test
+/// can pin both directions.
 pub fn frame_desktop_sources(
     sources: &[DesktopSourceInfo],
     input_enabled: bool,
@@ -2727,10 +2725,9 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(unverified["payload"]["peerVerified"], false);
-        // ADR-45: `cursorInFrame` is pinned in BOTH directions. macOS captures the
-        // cursor in-frame (spec §3.2/§6.2), so the production call site passes
-        // `cfg!(target_os = "macos")`. The framing function must render whatever
-        // it is given — asserted true and false to pin both branches.
+        // ADR-45: `cursorInFrame` is pinned in BOTH directions. The framing
+        // function must render whatever it is given — asserted true and false
+        // to pin both branches.
         assert_eq!(value["payload"]["cursorInFrame"], true);
         let cursor_out: serde_json::Value = serde_json::from_str(&frame_desktop_sources(
             &[test_source_info()],

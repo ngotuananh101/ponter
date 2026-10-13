@@ -5,7 +5,7 @@
 //! or the shape serial has changed.
 //!
 //! The pure helpers and wire structs are ungated so the module compiles on every
-//! target (CI builds Windows and macOS too); only the X11 backend is cfg-gated
+//! target (CI builds Windows too); only the X11 backend is cfg-gated
 //! to `unix` + non-musl.
 
 use crate::desktop::{DesktopCursorPayload, DesktopShape, DesktopSourceInfo};
@@ -122,8 +122,8 @@ fn argb_to_rgba(pixels: &[u32]) -> Vec<u8> {
 }
 
 /// X11 cursor sampler using XFixes. Non-musl unix only: X11 does not exist on
-/// musl (terminal-only artifact) and is absent on macOS/Windows.
-#[cfg(all(unix, not(target_os = "macos"), not(target_env = "musl")))]
+/// musl (terminal-only artifact) and is absent on Windows.
+#[cfg(all(unix, not(target_env = "musl")))]
 pub mod platform {
     use super::*;
     use anyhow::{Context, Result};
