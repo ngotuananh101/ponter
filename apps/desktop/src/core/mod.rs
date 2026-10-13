@@ -5,6 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod devices;
 pub mod error;
+pub mod fleet_ws;
 pub mod keychain;
 pub mod session;
 pub mod state;
