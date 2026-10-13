@@ -104,7 +104,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
-          curl -sSL -o /tmp/appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          curl --proto "=https" --tlsv1.2 -sSfL -o /tmp/appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool.AppImage
           (cd /tmp && ./appimagetool.AppImage --appimage-extract >/dev/null)
           sudo mv /tmp/squashfs-root /opt/appimagetool
