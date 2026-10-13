@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="Ponter Desktop" Language="1033" Version="!(bind.FileVersion.ponter-desktop.exe)"
+  <Product Id="*" Name="Ponter Desktop" Language="1033" Version="0.1.0"
            Manufacturer="Ponter" UpgradeCode="b6b0f0b8-2f2f-4f3a-9d5a-6c8a2b0f7d10">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"/>
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed."/>

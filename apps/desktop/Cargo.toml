@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Ponter Desktop Client"
+authors = ["Ngo Tuan Anh <ngotuananh2101@gmail.com>"]
 license = "MIT"
 
 [[bin]]
@@ -53,6 +54,17 @@ minisign = "0.9.1"
 
 [package.metadata.wix]
 name = "Ponter Desktop"
+
+[package.metadata.deb]
+maintainer = "Ngo Tuan Anh <ngotuananh2101@gmail.com>"
+copyright = "2026 Ponter Team"
+
+[package.metadata.generate-rpm]
+summary = "Ponter Desktop Client"
+assets = [
+    { source = "target/release/ponter-desktop", dest = "/usr/bin/ponter-desktop", mode = "755" },
+    { source = "icons/128x128@2x.png", dest = "/usr/share/icons/hicolor/256x256/apps/ponter-desktop.png", mode = "644" },
+]
 
 [profile.release]
 opt-level = 3

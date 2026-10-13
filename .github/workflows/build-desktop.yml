@@ -147,11 +147,48 @@ jobs:
           cp target/generate-rpm/*.rpm target/release/ 2>/dev/null || true
           ./scripts/make-appimage.sh
 
+      - name: Set up Windows packaging tools
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $nsisPaths = @("C:\Program Files (x86)\NSIS", "C:\Program Files\NSIS")
+          $nsisFound = $false
+          foreach ($p in $nsisPaths) {
+            if (Test-Path "$p\makensis.exe") {
+              Write-Host "Found NSIS at $p"
+              $p | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $nsisFound = $true
+              break
+            }
+          }
+          if (-not $nsisFound) {
+            Write-Host "Installing NSIS via chocolatey..."
+            choco install nsis -y --no-progress
+            "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+          $wixPaths = @(
+            "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+            "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+            "C:\Program Files (x86)\WiX Toolset\bin",
+            "C:\Program Files\WiX Toolset\bin"
+          )
+          foreach ($wp in $wixPaths) {
+            if (Test-Path "$wp\candle.exe") {
+              Write-Host "Found WiX at $wp"
+              $wp | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              break
+            }
+          }
+
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: apps/desktop
         shell: bash
         run: |
+          for p in "/c/Program Files (x86)/NSIS" "/c/Program Files/NSIS" "/c/Program Files (x86)/WiX Toolset v3.14/bin" "/c/Program Files (x86)/WiX Toolset v3.11/bin"; do
+            if [ -d "$p" ]; then export PATH="$p:$PATH"; fi
+          done
           cargo install cargo-wix --locked
           mkdir -p target/release/bundle/nsis target/release/bundle/msi
           makensis installer.nsi
