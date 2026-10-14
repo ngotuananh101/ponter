@@ -12,7 +12,6 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 /// Mirrors the `SignalMessage` union in `packages/shared/src/types/signaling.ts`.
@@ -351,11 +350,7 @@ impl SignalClient {
         identity: std::sync::Arc<crate::identity::AgentIdentity>,
     ) -> Result<Self> {
         let mut request = url.into_client_request().context("invalid signaling URL")?;
-        request.headers_mut().insert(
-            "Authorization",
-            HeaderValue::from_str(&format!("Bearer {credential}"))
-                .context("credential is not a valid header value")?,
-        );
+        crate::api::with_bearer(&mut request, credential)?;
 
         let (ws, _response) = tokio_tungstenite::connect_async(request)
             .await

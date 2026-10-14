@@ -20,6 +20,7 @@ mod e2ee;
 // is compiled out. The musl artifact has no desktop session to inject into
 // (ADR-15), so nothing here is reachable on musl. `--allow-input` still exists
 // on every target (spec §6.4) — it lives in the CLI's `Cli`, not in this module.
+pub mod api;
 mod files;
 pub mod identity;
 #[cfg(not(target_env = "musl"))]
@@ -625,6 +626,7 @@ async fn run_with_reconnect(
         identity: config.identity.clone(),
     };
 
+    let signaling_url = api::to_ws_url(&config.server).context("invalid signaling server URL")?;
     let mut delay = signal::BACKOFF_INITIAL;
     let mut supervisor: Option<tokio::task::JoinHandle<Result<()>>> = None;
 
@@ -641,7 +643,7 @@ async fn run_with_reconnect(
         // answers the upgrade). Racing the connect against the signal keeps a
         // listener live for the whole attempt.
         let connect = SignalClient::connect(
-            &config.server,
+            &signaling_url,
             &config.credential,
             inbound_tx.clone(),
             ice_tx.clone(),
