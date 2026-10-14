@@ -25,3 +25,4 @@ export {
 
 export { default as LoginForm } from './components/app/LoginForm.vue';
 export { default as RegisterForm } from './components/app/RegisterForm.vue';
+export { default as ThemeToggle } from './components/app/ThemeToggle.vue';
