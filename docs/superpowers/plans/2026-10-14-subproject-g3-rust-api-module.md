@@ -46,7 +46,7 @@ Failure modes the spec implies that a naive implementation gets wrong (each has 
 **Interfaces:**
 - Produces: `pub fn to_ws_url(base: &str) -> anyhow::Result<String>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `apps/agent/src/api.rs` with the module doc, the import, the function stub, and the tests:
 
@@ -68,7 +68,8 @@ use anyhow::Result;
 /// Rewrite a configured base URL to a WebSocket URL (URL-3).
 ///
 /// `http://`->`ws://`, `https://`->`wss://`, `ws://`/`wss://` pass through;
-/// trailing slashes are trimmed (URL-4). Any other scheme is an error.
+/// trailing path slashes are trimmed (URL-4). Query parameters and fragments
+/// are preserved byte-for-byte (G3-W1). Any other scheme is an error.
 ///
 /// **No path is appended**: the agent's `--server` is already a complete WS URL
 /// (`apps/agent/src/main.rs:29`), so appending would double the path.
@@ -117,6 +118,35 @@ mod tests {
     }
 
     #[test]
+    fn preserves_a_ws_query_value_ending_in_slash() {
+        assert_eq!(
+            to_ws_url("wss://signal.example/api/ws/agent?next=/").unwrap(),
+            "wss://signal.example/api/ws/agent?next=/"
+        );
+    }
+
+    #[test]
+    fn rewrites_https_with_a_query_value_ending_in_slash() {
+        assert_eq!(
+            to_ws_url("https://signal.example/api/ws/agent?scope=/").unwrap(),
+            "wss://signal.example/api/ws/agent?scope=/"
+        );
+    }
+
+    #[test]
+    fn trims_a_path_slash_before_the_query_without_altering_it() {
+        assert_eq!(
+            to_ws_url("http://h/p/?q=1/").unwrap(),
+            "ws://h/p?q=1/"
+        );
+    }
+
+    #[test]
+    fn preserves_a_fragment_suffix_unchanged() {
+        assert_eq!(to_ws_url("http://h/p/#frag").unwrap(), "ws://h/p#frag");
+    }
+
+    #[test]
     fn rejects_an_unknown_scheme() {
         assert!(to_ws_url("ftp://h/p").is_err());
         assert!(to_ws_url("").is_err());
@@ -141,36 +171,40 @@ mod input;
 pub mod logging;
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd apps/agent && cargo test --locked api::tests`
 Expected: FAIL — the tests panic with `not yet implemented` (the `todo!()`).
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
-Replace the `todo!()` body of `to_ws_url`:
+Replace the `todo!()` body of `to_ws_url` with the scheme rewrite splitting query/fragment before path trimming:
 
 ```rust
 pub fn to_ws_url(base: &str) -> Result<String> {
-    let trimmed = base.trim_end_matches('/');
+    let (head, suffix) = match base.find(['?', '#']) {
+        Some(idx) => (&base[..idx], &base[idx..]),
+        None => (base, ""),
+    };
+    let trimmed = head.trim_end_matches('/');
     if let Some(rest) = trimmed.strip_prefix("https://") {
-        Ok(format!("wss://{rest}"))
+        Ok(format!("wss://{rest}{suffix}"))
     } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        Ok(format!("ws://{rest}"))
+        Ok(format!("ws://{rest}{suffix}"))
     } else if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
-        Ok(trimmed.to_string())
+        Ok(format!("{trimmed}{suffix}"))
     } else {
         anyhow::bail!("unsupported URL scheme in {base:?}: expected http(s):// or ws(s)://")
     }
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd apps/agent && cargo test --locked api::tests`
-Expected: PASS — 6 tests pass.
+Expected: PASS — tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/api.rs apps/agent/src/lib.rs
@@ -194,12 +228,7 @@ git commit -m "feat(agent): add ponter_agent::api with the WS-URL rewrite (URL-3
   - `ApiError::network(message: impl Into<String>) -> ApiError`
   - `ApiError::is_auth_fatal(&self) -> bool`
 
-- [ ] **Step 1: Write the failing test**
-
-Append to the `#[cfg(test)] mod tests` block in `apps/agent/src/api.rs`:
-
-```rust
-    // --- ApiError::from_response (D6) ---
+- [x] **Step 1: Write the failing test**
 
     #[test]
     fn parses_the_error_envelope() {
@@ -268,12 +297,12 @@ Append to the `#[cfg(test)] mod tests` block in `apps/agent/src/api.rs`:
     }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd apps/agent && cargo test --locked api::tests`
 Expected: FAIL to compile — `ApiError` / `API_ERROR` / `NETWORK_ERROR` are not defined.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Insert below the `to_ws_url` function in `apps/agent/src/api.rs`:
 
@@ -363,12 +392,12 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd apps/agent && cargo test --locked api::tests`
 Expected: PASS — 13 tests pass (6 from Task 1 + 7 new).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/api.rs
@@ -387,7 +416,7 @@ git commit -m "feat(agent): add ApiError envelope type mirroring TS ApiError (RS
 - Consumes: nothing from Tasks 1-2.
 - Produces: `pub fn with_bearer(request: &mut tokio_tungstenite::tungstenite::http::Request<()>, credential: &str) -> anyhow::Result<()>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to the `#[cfg(test)] mod tests` block in `apps/agent/src/api.rs`:
 
@@ -417,12 +446,12 @@ Append to the `#[cfg(test)] mod tests` block in `apps/agent/src/api.rs`:
     }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd apps/agent && cargo test --locked api::tests`
 Expected: FAIL to compile — `with_bearer` and `Request` are not defined.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Extend the import line at the top of `apps/agent/src/api.rs` from
 
@@ -452,12 +481,12 @@ pub fn with_bearer(request: &mut Request<()>, credential: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd apps/agent && cargo test --locked api::tests`
 Expected: PASS — 15 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/api.rs
@@ -477,7 +506,7 @@ git commit -m "feat(agent): add api::with_bearer so no module writes a Bearer he
 - Consumes: `api::with_bearer` (Task 3), `api::to_ws_url` (Task 1).
 - Produces: no new public surface — this is the integration.
 
-- [ ] **Step 1: Replace the inline Bearer construction in `signal.rs`**
+- [x] **Step 1: Replace the inline Bearer construction in `signal.rs`**
 
 In `apps/agent/src/signal.rs`, `SignalClient::connect` currently reads (around lines 353-358):
 
@@ -505,7 +534,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 (`HeaderValue` has no other use in `signal.rs`; leaving it would fail `clippy -D warnings`.)
 
-- [ ] **Step 2: Normalize the signaling URL in `lib.rs`**
+- [x] **Step 2: Normalize the signaling URL in `lib.rs`**
 
 In `apps/agent/src/lib.rs`, the reconnect supervisor builds `SignalClient::connect(&config.server, ...)` inside a `loop`. Immediately **before** the loop, where the code reads:
 
@@ -539,7 +568,7 @@ Then change the connect call (around line 643) from `&config.server` to the norm
         );
 ```
 
-- [ ] **Step 3: Add a behavior test for the URL fix**
+- [x] **Step 3: Add a behavior test for the URL fix**
 
 The normalization is a real fix: today `--server http://host:8787` fails the handshake with `UnsupportedUrlScheme` (`tokio-tungstenite` 0.30 `connect.rs:88`). `to_ws_url` is already unit-tested in Task 1; add one integration-style assertion in `apps/agent/src/api.rs`'s test module that pins the exact default the CLI ships, so a regression in the default is caught:
 
@@ -554,7 +583,7 @@ The normalization is a real fix: today `--server http://host:8787` fails the han
     }
 ```
 
-- [ ] **Step 4: Run the full agent suite + clippy + fmt**
+- [x] **Step 4: Run the full agent suite + clippy + fmt**
 
 Run:
 ```bash
@@ -562,7 +591,7 @@ cd apps/agent && cargo fmt --check && cargo clippy --all-targets --locked -- -D 
 ```
 Expected: all PASS — the existing `signal.rs` tests (`classify_close_*`, `backoff_sequence`, parsers) and the new `api::tests` are green; no unused-import warning.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/signal.rs apps/agent/src/lib.rs apps/agent/src/api.rs
@@ -584,7 +613,7 @@ git commit -m "refactor(agent): route the signaling URL + Bearer header through 
 
 **URL rule allow-list — corrected (BE G3-F4).** Rule (b) forbids string-literal server URLs, but its allow-list must cover **two** files, not one: `src/main.rs` (the clap config default) **and** `src/api.rs` (the shared module, whose own unit tests carry literal URLs to pin the scheme rewrite — URL-3 *is* a rewrite, so inputs and outputs are literals). A naive `grep -v '^src/main.rs'` is **red** once `api.rs` exists: this plan's Tasks 1-4 put 13 literal-URL lines in `api.rs`'s tests, all of which the one-file allow-list would flag (verified: the old rule exits non-zero on `api.rs`'s tests; `grep -vE '^src/(main|api)\.rs'` exits zero). The spec's own §6.2 **Allow-list sentence already named `src/api.rs`** — its rule-(b) sentence merely omitted it; the spec has since been corrected to the two-file allow-list, so spec == plan.
 
-- [ ] **Step 1: Add the gate step**
+- [x] **Step 1: Add the gate step**
 
 In `.github/workflows/build-agent.yml`, in the `verify` job, insert this step immediately after the `Check formatting` step (`run: cargo fmt --check`) and before `Lint`:
 
@@ -597,7 +626,7 @@ In `.github/workflows/build-agent.yml`, in the `verify` job, insert this step im
           # The envelope's distinguishing field is `details`, which has zero
           # occurrences in src/ today (a `struct ...Error` name alone would
           # false-positive on files.rs's legitimate FilesError).
-          if grep -rn --include='*.rs' '\bdetails\b' src | grep -v '^src/api.rs'; then
+          if grep -rn --include='*.rs' '\bdetails\b' src | grep -vE '^src/api\.rs:'; then
             echo "::error::ad-hoc error envelope outside src/api.rs (use ponter_agent::api::ApiError)"
             exit 1
           fi
@@ -610,28 +639,28 @@ In `.github/workflows/build-agent.yml`, in the `verify` job, insert this step im
           # clap config default (main.rs) and the shared module itself (api.rs),
           # whose own unit tests must carry literal URLs to pin the scheme
           # rewrite (URL-3 is a rewrite, so inputs/outputs are literals).
-          if grep -rn --include='*.rs' -E '"https?://|"wss?://' src | grep -vE '^src/(main|api)\.rs'; then
+          if grep -rn --include='*.rs' -E '"https?://|"wss?://' src | grep -vE '^src/(main|api)\.rs:'; then
             echo "::error::literal server URL outside src/main.rs or src/api.rs (use ponter_agent::api::to_ws_url)"
             exit 1
           fi
           echo "API-access guard PASSED"
 ```
 
-The job's `defaults.run.working-directory` is `apps/agent`, so `src` and `^src/api.rs` are correct as written.
+The job's `defaults.run.working-directory` is `apps/agent`, so `src` and `^src/api\.rs:` are correct as written.
 
-- [ ] **Step 2: Verify the gate PASSES on the current tree**
+- [x] **Step 2: Verify the gate PASSES on the current tree**
 
 Run (from `apps/agent`):
 ```bash
 set -euo pipefail
-if grep -rn --include='*.rs' '\bdetails\b' src | grep -v '^src/api.rs'; then echo FAIL; exit 1; fi
+if grep -rn --include='*.rs' '\bdetails\b' src | grep -vE '^src/api\.rs:'; then echo FAIL; exit 1; fi
 if grep -rn --include='*.rs' -E 'reqwest::|hyper::Client|ureq::' src; then echo FAIL; exit 1; fi
-if grep -rn --include='*.rs' -E '"https?://|"wss?://' src | grep -vE '^src/(main|api)\.rs'; then echo FAIL; exit 1; fi
+if grep -rn --include='*.rs' -E '"https?://|"wss?://' src | grep -vE '^src/(main|api)\.rs:'; then echo FAIL; exit 1; fi
 echo "API-access guard PASSED"
 ```
-Expected: `API-access guard PASSED`. (The first check finds `details` in `src/api.rs` only — excluded by `grep -v '^src/api.rs'`; the URL check finds only `main.rs:29` and the literal URLs inside `src/api.rs`'s own tests — both excluded by `grep -vE '^src/(main|api)\.rs'`. **G3-F4: the URL check MUST allow `api.rs`, not only `main.rs`** — otherwise the module's own unit tests trip it and the gate can never pass.)
+Expected: `API-access guard PASSED`. (The first check finds `details` in `src/api.rs` only — excluded by `grep -vE '^src/api\.rs:'`; the URL check finds only `main.rs:29` and the literal URLs inside `src/api.rs`'s own tests — both excluded by `grep -vE '^src/(main|api)\.rs:'. **G3-W2: exact regexes with escaped dot `\.` and grep's colon separator `:` prevent false-negative exemptions of similar filenames like `src/api_rs.rs` or `src/api.rs.backup.rs`.)
 
-- [ ] **Step 3: Prove the gate FAILS on a seeded violation (seed-fail obligation)**
+- [x] **Step 3: Prove the gate FAILS on a seeded violation (seed-fail obligation)**
 
 Temporarily add a violation to `apps/agent/src/signal.rs` — a duplicated envelope field:
 
@@ -645,7 +674,7 @@ struct SeededEnvelope {
 Run the Step 2 block again.
 Expected: the first check prints `src/signal.rs:NNN:    details: Option<String>,` and exits non-zero.
 
-- [ ] **Step 4: Remove the seed and re-verify**
+- [x] **Step 4: Remove the seed and re-verify**
 
 Delete the `SeededEnvelope` struct (do not commit it), then run:
 ```bash
@@ -654,7 +683,7 @@ cd apps/agent && cargo fmt --check && cargo clippy --all-targets --locked -- -D 
 and the Step 2 block.
 Expected: `git status` shows only `.github/workflows/build-agent.yml` modified; clippy/test green; guard prints `API-access guard PASSED`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/build-agent.yml
@@ -685,3 +714,19 @@ git commit -m "ci(agent): gate API access through the shared module (R-G1/R-G2)"
 2. A non-JSON body with a status maps to `API_ERROR` (spec §5.3's cause-based definition), not the TS `fromResponse` catch-arm's `NETWORK_ERROR`.
 3. `is_auth_fatal` pins the general-API rule (`401` or `UNAUTHORIZED`; 403 not fatal), matching issue #107 / PR #110 — not `session.rs`'s refresh-path `401 | 403`.
 4. `main.rs:29`'s `--server` default stays the only literal URL in **non-test** source; `api.rs` carries literal URLs in its own unit tests (allow-listed). The CLI keeps resolving `flag > env > default` (`main.rs:25-31`) — G3 adds no HTTP base-URL resolver for the agent (there is no HTTP consumer).
+
+---
+
+## Execution & Merge Record
+
+- **Tasks 1–5 Completed:** All 5 tasks implemented via subagent-driven development (TDD RED→GREEN per task).
+- **Whole-Branch Review (Opus):** Two Important findings identified on candidate `8e3430f`:
+  - **G3-W1:** `to_ws_url` trimmed entire URL rather than path-only, corrupting query values ending in `/` (`?next=/`). Fixed by pre-splitting query/fragment at first `?` or `#` and adding 4 new unit tests.
+  - **G3-W2:** Gate allow-list regexes `^src/api.rs` and `^src/(main|api)\.rs` were overbroad (regex wildcard dot, missing filename terminator), allowing false negatives (`src/api_rs.rs`, `src/api.rs.backup.rs`). Fixed by tightening regexes to `^src/api\.rs:` and `^src/(main|api)\.rs:` with seed proof.
+- **Fix Commit:** `1e617aa` (`fix(agent): preserve signaling URL query suffix and tighten gate allow-list (G3-W1/W2)`).
+- **Scoped Re-Review:** Approved (`final-fix-review-report.md`).
+- **TEST-INTEGRITY:** 20 unit tests and 36 assertions in `api::tests` (lib suite 283 passed / 4 ignored, bin suite 6 passed; total 289 passed, net +20 tests vs baseline 269; 0 modified, 0 deleted, 0 skipped).
+- **QA Binding Verdict:** PASS (`RECOMMEND MERGE`).
+- **BA Audit Verdict:** PASS (`RECOMMEND MERGE`).
+- **Merged to `main`:** Squash-merged by PM @ `9de96c2e16801fd53f78e413541e30a8db65203c` ([PR #129](https://github.com/ngotuananh101/ponter/pull/129)).
+
