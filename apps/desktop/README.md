@@ -1,115 +1,90 @@
-# PonterDesktop
+# Ponter Desktop
 
-Ponter remote-desktop client. The desktop app is built with
-[Tauri v2](https://tauri.app/) (Rust backend) + [Vue 3](https://vuejs.org/) +
-[Pinia](https://pinia.vuejs.org/) + [shadcn-vue](https://www.shadcn-vue.com/)
-(reka-ui).
+Native GUI desktop client for the Ponter remote-desktop platform, built with pure Rust using [`eframe`](https://github.com/emilk/egui/tree/master/crates/eframe) and [`egui`](https://github.com/emilk/egui).
 
-- **Crate:** `ponter_desktop` (lib `ponter_desktop_lib`) — Rust/Tauri backend.
+- **Crate:** `ponter-desktop` — standalone Rust binary (no WebKit, GTK, webview, or Node runtime).
 - **Identifier:** `com.ponter.desktop` · **Version:** `0.1.0`
+- **Supported Platforms:** Linux (x86_64) and Windows (x86_64) (ADR-78).
+
+## Architecture & ADRs
+
+The native shell implements:
+
+- **ADR-79 (Native egui/eframe Desktop Shell):** Replaces legacy Tauri v2 and Vue 3 frontend with a pure Rust crate, eliminating webview and Node runtime dependencies.
+- **ADR-80 (Minisign-Verified Self-Updater):** Verifies cryptographic signatures against embedded public keys prior to binary replacement via `self_replace`.
+- **ADR-81 (Independent Tray Thread):** Runs tray icon and context menus on a dedicated thread (StatusNotifierItem over D-Bus via `ksni` on Linux without GTK; Win32 notification area via `tray-icon` on Windows).
+- **ADR-82 (Push-Primary Fleet with Polling Fallback):** Connects to `/api/ws/browser` via ticket minted from `POST /api/ws/ticket` listening for `fleet-changed` notifications, with automatic fallback to periodic polling if WebSocket is unavailable.
 
 ## Prerequisites
 
-- **Node** `>= 24` and **pnpm** `>= 12` (repo pins `packageManager: pnpm@12.6.0`).
-- A **Rust toolchain (stable)** is required for the Tauri backend.
-  There is a `rust-toolchain.toml` only under `apps/agent/`; the desktop crate
-  has no toolchain pin of its own.
-- No `.nvmrc` / `.node-version` at the repository root.
+- **Rust toolchain:** `>= 1.85.0` (stable).
+- **Linux system dependencies:** `libx11-dev`, `libxcb1-dev` (or distro equivalent) for native windowing. No GTK or WebKit required.
 
 ## Development
 
-```bash
-pnpm --filter @ponter/desktop tauri dev
-```
-
-Behind the scenes this runs `pnpm dev` (Vite dev server at
-`http://localhost:1420`) as the `beforeDevCommand`, with the Tauri window
-loading that URL during development.
-
-### Available scripts (from `apps/desktop/package.json`)
-
-| Script      | Command                          |
-| ----------- | -------------------------------- |
-| `dev`       | `vite`                           |
-| `build`     | `vue-tsc --noEmit && vite build` |
-| `preview`   | `vite preview`                   |
-| `tauri`     | `tauri`                          |
-| `lint`      | `eslint .`                       |
-| `typecheck` | `vue-tsc --noEmit`               |
-| `test`      | `vitest run`                     |
-
-> The Tauri CLI is provided by `@tauri-apps/cli` (v2).
-
-## Building
+Run the desktop client in development:
 
 ```bash
-pnpm --filter @ponter/desktop tauri build
+cargo run --manifest-path apps/desktop/Cargo.toml
 ```
 
-This runs `pnpm build` (the `beforeBuildCommand`) which type-checks and bundles
-the Vue app into `../dist` (`frontendDist`), then the Tauri bundler produces the
-platform-native artifacts.
+Run test suite (152 unit tests):
 
-### Build-time default server
+```bash
+cargo test --locked --manifest-path apps/desktop/Cargo.toml
+```
 
-The backend is compiled with the environment variable
-`PONTER_DEFAULT_SERVER_URL`. At runtime the effective server URL is resolved
-from a four-level precedence chain:
+Check formatting and linter:
 
-1. Runtime env `PONTER_SERVER_URL`
-2. Persisted `config.json`
-3. Build-time default `PONTER_DEFAULT_SERVER_URL`
-4. Fallback `http://localhost:8787`
+```bash
+cargo fmt --manifest-path apps/desktop/Cargo.toml --check
+cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets --locked -- -D warnings
+```
 
-See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
-for the full precedence order and usage notes.
+## Building Artifacts
 
-## Configuration
+### Linux
 
-User preferences are persisted in `config.json` inside the OS Tauri app-config
-directory for `com.ponter.desktop`. Only non-secret fields are stored on disk;
-the access token stays in memory and the refresh token lives in the OS
-keychain (ADR-52).
+- **AppImage:**
+  ```bash
+  apps/desktop/scripts/make-appimage.sh
+  ```
+- **Debian package (.deb):**
+  ```bash
+  cargo deb --manifest-path apps/desktop/Cargo.toml
+  ```
+- **RPM package (.rpm):**
+  ```bash
+  cargo generate-rpm --manifest-path apps/desktop/Cargo.toml
+  ```
+
+### Windows
+
+- **Portable executable:**
+  ```bash
+  cargo build --release --manifest-path apps/desktop/Cargo.toml
+  ```
+- **NSIS Installer:**
+  ```bash
+  makensis apps/desktop/installer.nsi
+  ```
+- **MSI Installer (WiX):**
+  ```bash
+  cargo wix --manifest-path apps/desktop/Cargo.toml
+  ```
+
+## Configuration & Continuity Invariants
+
+User preferences and connection state are persisted in `config.json` inside the standard application config directory for `com.ponter.desktop`. Only non-secret settings are stored on disk; access tokens remain in memory, and the refresh token and agent credentials are kept in the OS keychain (ADR-52):
 
 - **Linux:** `~/.config/com.ponter.desktop/config.json`
 - **Windows:** `%APPDATA%\com.ponter.desktop\config.json`
 
-See [Self-hosting guide — §3.1](../../docs/guides/self-hosting.md#31-desktop-app-default-server-build-time)
-for config location details.
+Server URL resolution follows the four-level precedence chain:
 
-## Behavior notes
+1. Runtime environment variable `PONTER_SERVER_URL`
+2. Persisted setting in `config.json`
+3. Build-time default `PONTER_DEFAULT_SERVER_URL`
+4. Fallback default `http://localhost:8787`
 
-- **Capabilities at registration.** When you register this device, you pick the
-  capabilities to advertise (`terminal`, `desktop`, `files`). The desktop app
-  defaults to **`terminal` + `desktop`** — `files` is off because the embedded
-  runtime has no `files_root` configured. The selection is sent to
-  `POST /api/agents`; the web dashboard's Register Agent dialog defaults to all
-  three for parity with its previous behavior.
-- **Live runtime status.** The Devices view shows the runtime state
-  (`Connected` / `Disconnected` / `Stopped`) — the same three states as the tray
-  icon — and refreshes the device list every 5 seconds. A `runtime-status` event
-  updates the indicator the moment the state changes.
-- **One instance at a time.** Launching the app a second time does **not** start
-  a second agent runtime; the existing window is focused instead. Only one agent
-  runtime runs per install.
-
-## Source layout
-
-- `src/` — Vue 3 application (Pinia stores, views, shadcn-vue components).
-- `src-tauri/` — Rust/Tauri backend:
-  - `commands/` — Tauri commands exposed to the frontend.
-  - `config.rs` — persisted config shape + resolution logic.
-  - `state.rs`, `keychain.rs`, `tray.rs`, `autostart.rs` — session state, OS
-    keychain, tray icon, and autostart helpers.
-
-## Further reading
-
-- Architecture overview: [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)
-- Self-hosting guide: [docs/guides/self-hosting.md](../../docs/guides/self-hosting.md)
-
-## Recommended IDE setup
-
-- [VS Code](https://code.visualstudio.com/)
-  - [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar)
-  - [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
-  - [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Agent identity keys are stored in `ponter/agent-identity.pkcs8` under `XDG_CONFIG_HOME` (or `~/.config`).
