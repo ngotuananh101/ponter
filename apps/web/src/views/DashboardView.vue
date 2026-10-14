@@ -297,11 +297,11 @@ onUnmounted(() => {
             <button
               type="button"
               data-test="security-details-toggle"
-              class="mt-1 inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
               @click="showSecurityDetails = true"
             >
               Details
-              <ChevronRight class="w-3 h-3" />
+              <ChevronRight class="w-3.5 h-3.5" />
             </button>
           </div>
           <div

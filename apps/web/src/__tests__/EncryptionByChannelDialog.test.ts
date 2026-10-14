@@ -119,13 +119,13 @@ describe('EncryptionByChannelDialog.vue', () => {
     }
   });
 
-  it('overrides the default sm:max-w-md so the wider sm:max-w-2xl width applies', async () => {
+  it('overrides the default sm:max-w-md so the wider sm:max-w-3xl width applies', async () => {
     const wrapper = mountDialog(true);
     await wrapper.vm.$nextTick();
 
     const content = wrapper.find('[data-test="encryption-by-channel-dialog"]');
     const classes = content.classes();
-    expect(classes).toContain('sm:max-w-2xl');
+    expect(classes).toContain('sm:max-w-3xl');
     expect(classes).not.toContain('sm:max-w-md'); // default was REPLACED by the merge (core regression pin)
     expect(classes).not.toContain('max-w-3xl'); // broken unprefixed approach removed
     expect(classes).toContain('max-w-[calc(100%-2rem)]'); // mobile cap default survives the merge
