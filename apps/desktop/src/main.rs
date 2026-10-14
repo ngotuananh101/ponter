@@ -5,6 +5,8 @@
 mod app;
 pub mod autostart;
 mod core;
+pub mod theme;
+pub mod ui;
 
 use eframe::egui;
 

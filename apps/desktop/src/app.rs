@@ -4,7 +4,6 @@
 //! `ui`, and also while the window is hidden when a repaint was requested — so
 //! background `Msg`s are still folded in with the window hidden.)
 
-use crate::core::error;
 use eframe::egui;
 
 /// Which top-level screen is showing. The router in `ui::mod` picks it from
@@ -103,6 +102,8 @@ pub struct App {
     pub(crate) rt: tokio::runtime::Runtime,
     /// Current screen (overridden by the router each frame).
     pub screen: Screen,
+    /// Manual override: return to Server Setup from Settings.
+    pub editing_server: bool,
 }
 
 impl App {
@@ -126,6 +127,7 @@ impl App {
             rx,
             rt,
             screen,
+            editing_server: false,
         }
     }
 
@@ -145,9 +147,10 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Task 1: a placeholder. The router (Task 14) replaces this body.
-        ui.heading("Ponter Desktop");
-        ui.label(format!("screen: {:?}", self.screen));
-        let _ = error::AUTH_FAILED_PREFIX;
+        // The router picks the screen from CoreState each frame (Task 16 adds the
+        // `showing_settings` override in front of this).
+        self.screen = crate::ui::route(&self.state, self.editing_server);
+        crate::theme::apply(ui.ctx(), self.state.theme.lock().unwrap().as_deref());
+        crate::ui::render(self, ui);
     }
 }
