@@ -193,28 +193,28 @@ fn spawn_windows(tx: Sender<Msg>, runtime: RuntimeSlot) {
     use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tray_icon::TrayIconBuilder;
 
-    let menu = Menu::new();
-    let status = MenuItem::new(current_status_text(&runtime), false, None);
-    let start = MenuItem::with_id(ID_START, "Start agent", true, None);
-    let stop = MenuItem::with_id(ID_STOP, "Stop agent", true, None);
-    let open = MenuItem::with_id(ID_OPEN, "Open window", true, None);
-    let quit = MenuItem::with_id(ID_QUIT, "Quit", true, None);
-    menu.append_items(&[
-        &status,
-        &start,
-        &stop,
-        &open,
-        &PredefinedMenuItem::separator(),
-        &quit,
-    ])
-    .expect("building the tray menu");
-
-    let icon = eframe::icon_data::from_png_bytes(TRAY_ICON_PNG)
-        .map(|img| tray_icon::Icon::from_rgba(img.rgba, img.width, img.height))
-        .expect("decoding the embedded tray icon")
-        .expect("building the tray icon");
-
     std::thread::spawn(move || {
+        let menu = Menu::new();
+        let status = MenuItem::new(current_status_text(&runtime), false, None);
+        let start = MenuItem::with_id(ID_START, "Start agent", true, None);
+        let stop = MenuItem::with_id(ID_STOP, "Stop agent", true, None);
+        let open = MenuItem::with_id(ID_OPEN, "Open window", true, None);
+        let quit = MenuItem::with_id(ID_QUIT, "Quit", true, None);
+        menu.append_items(&[
+            &status,
+            &start,
+            &stop,
+            &open,
+            &PredefinedMenuItem::separator(),
+            &quit,
+        ])
+        .expect("building the tray menu");
+
+        let icon = eframe::icon_data::from_png_bytes(TRAY_ICON_PNG)
+            .map(|img| tray_icon::Icon::from_rgba(img.rgba, img.width, img.height))
+            .expect("decoding the embedded tray icon")
+            .expect("building the tray icon");
+
         let _tray = TrayIconBuilder::new()
             .with_tooltip("Ponter Desktop")
             .with_icon(icon)
