@@ -58,11 +58,17 @@ name = "Ponter Desktop"
 [package.metadata.deb]
 maintainer = "Ngo Tuan Anh <ngotuananh2101@gmail.com>"
 copyright = "2026 Ponter Team"
+assets = [
+    ["target/release/ponter-desktop", "usr/bin/", "755"],
+    ["ponter-desktop.desktop", "usr/share/applications/", "644"],
+    ["icons/128x128@2x.png", "usr/share/icons/hicolor/256x256/apps/ponter-desktop.png", "644"],
+]
 
 [package.metadata.generate-rpm]
 summary = "Ponter Desktop Client"
 assets = [
     { source = "target/release/ponter-desktop", dest = "/usr/bin/ponter-desktop", mode = "755" },
+    { source = "ponter-desktop.desktop", dest = "/usr/share/applications/ponter-desktop.desktop", mode = "644" },
     { source = "icons/128x128@2x.png", dest = "/usr/share/icons/hicolor/256x256/apps/ponter-desktop.png", mode = "644" },
 ]
 

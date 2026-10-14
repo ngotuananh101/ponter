@@ -375,4 +375,50 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn packaging_desktop_entry_exists_and_contains_required_fields() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("ponter-desktop.desktop");
+        assert!(
+            path.exists(),
+            "apps/desktop/ponter-desktop.desktop must exist"
+        );
+
+        let content = std::fs::read_to_string(&path).expect("read ponter-desktop.desktop file");
+
+        let mut in_desktop_entry = false;
+        let mut map = std::collections::HashMap::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if trimmed == "[Desktop Entry]" {
+                in_desktop_entry = true;
+                continue;
+            } else if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                in_desktop_entry = false;
+                continue;
+            }
+            if in_desktop_entry {
+                if let Some((k, v)) = trimmed.split_once('=') {
+                    map.insert(k.trim(), v.trim());
+                }
+            }
+        }
+
+        assert_eq!(map.get("Type"), Some(&"Application"));
+        assert_eq!(map.get("Name"), Some(&"Ponter Desktop"));
+        assert_eq!(map.get("Comment"), Some(&"Ponter Remote Desktop Client"));
+        assert_eq!(map.get("Exec"), Some(&"ponter-desktop"));
+        assert_eq!(map.get("Icon"), Some(&"ponter-desktop"));
+        assert_eq!(map.get("Terminal"), Some(&"false"));
+        assert_eq!(
+            map.get("Categories"),
+            Some(&"Utility;Network;RemoteAccess;")
+        );
+        assert_eq!(map.get("StartupWMClass"), Some(&"ponter-desktop"));
+        assert_eq!(map.get("Keywords"), Some(&"remote;desktop;ponter;"));
+    }
 }
