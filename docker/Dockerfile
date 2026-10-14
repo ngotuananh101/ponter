@@ -52,6 +52,7 @@ COPY --from=builder /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/apps/server/package.json ./apps/server/package.json
+COPY --from=builder /app/apps/server/node_modules ./apps/server/node_modules
 COPY --from=builder /app/apps/server/dist ./apps/server/dist
 
 # Copy compiled frontend SPA to Nginx document root

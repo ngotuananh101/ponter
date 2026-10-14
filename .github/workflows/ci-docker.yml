@@ -80,9 +80,9 @@ jobs:
           curl -fsS http://localhost:8080/config.js | grep -q 'window.__PONTER_CONFIG__'
 
           echo "Verifying API proxy route..."
-          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/auth/me)
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/users/me)
           if [ "$status" != "401" ]; then
-            echo "::error::expected 401 from /api/auth/me proxy, got $status"
+            echo "::error::expected 401 from /api/users/me proxy, got $status"
             exit 1
           fi
 
