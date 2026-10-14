@@ -10,7 +10,8 @@
 //! is written now so any future agent HTTP call has exactly one place to map a
 //! server response; the WS half (`to_ws_url`, `with_bearer`) is live.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 
 /// Rewrite a configured base URL to a WebSocket URL (URL-3).
 ///
@@ -115,6 +116,17 @@ impl std::fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+/// Insert `Authorization: Bearer {credential}` on a WebSocket client request.
+///
+/// The single place the agent builds a `Bearer` header (AUTH-3); the credential
+/// travels in the header, never the query string (ADR-13).
+pub fn with_bearer(request: &mut Request<()>, credential: &str) -> Result<()> {
+    let value = HeaderValue::from_str(&format!("Bearer {credential}"))
+        .context("credential is not a valid header value")?;
+    request.headers_mut().insert("Authorization", value);
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -228,5 +240,29 @@ mod tests {
         assert!(!ApiError::from_response(429, "{}").is_auth_fatal());
         assert!(!ApiError::from_response(400, "{}").is_auth_fatal());
         assert!(!ApiError::network("down").is_auth_fatal());
+    }
+
+    // --- with_bearer (AUTH-3, ADR-13) ---
+
+    #[test]
+    fn sets_the_authorization_header() {
+        let mut request = Request::builder()
+            .uri("ws://localhost:8787/api/ws/agent")
+            .body(())
+            .unwrap();
+        with_bearer(&mut request, "ag_secret").unwrap();
+        assert_eq!(
+            request.headers().get("Authorization").unwrap(),
+            "Bearer ag_secret"
+        );
+    }
+
+    #[test]
+    fn rejects_a_credential_with_a_control_character() {
+        let mut request = Request::builder()
+            .uri("ws://localhost:8787/api/ws/agent")
+            .body(())
+            .unwrap();
+        assert!(with_bearer(&mut request, "bad\nvalue").is_err());
     }
 }
