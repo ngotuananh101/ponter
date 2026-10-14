@@ -1,11 +1,11 @@
 # Unified API Access Standard — Design Spec
 
-- **Status:** Draft (ready for owner review)
+- **Status:** Approved (owner, 2026-10-14) — ready for implementation planning.
 - **Phase:** Cross-cutting standardization (Sub-project G)
 - **Date:** 2026-10-14
 - **Owner directive:** "Standardize how APIs (and similar parts) are called across the whole project" (2026-10-14); scope = the whole project, **including Rust**.
-- **Proposed ADR:** ADR-89 (Unified API Access Standard). Numbering is provisional — see §9.
-- **Related ADRs:** ADR-13 (agent credential via header, never query string), ADR-52 (OS keychain), ADR-64/65 (desktop config precedence), ADR-67 (build-time default server URL), ADR-85..88 (Electron migration, in flight on local `main`, not yet on `origin/main`).
+- **ADR:** ADR-89 (Unified API Access Standard) — number and the four open questions confirmed by the owner on 2026-10-14 (§9).
+- **Related ADRs:** ADR-13 (agent credential via header, never query string), ADR-52 (OS keychain), ADR-64/65 (desktop config precedence), ADR-67 (build-time default server URL), ADR-85..88 (Electron migration).
 - **Related Files:** `packages/api-client/**`, `packages/webrtc-core/**`, `packages/shared/src/types/signaling.ts`, `apps/web/src/{config.ts,services/**}`, `apps/agent/**`, `apps/desktop/**` (being removed), `apps/server/src/{middleware,routes}/**`, `.github/workflows/{ci-node,build-agent,build-desktop}.yml`, `docs/superpowers/specs/2026-10-14-electron-desktop-migration-design.md`.
 
 ---
@@ -41,6 +41,10 @@ Every client surface today reaches the backend through a **different** mechanism
 3. **One HTTP client per language.** TypeScript/JavaScript → `@ponter/api-client`; Rust → a single shared module (see ADR-89).
 4. **Enforcement is part of the standard** — a CI gate per language, not a convention.
 5. **Fix the Electron-spec drift** (§7) so the next migration step targets the right client.
+6. **ADR-89** is the number for this standard (Electron migration keeps ADR-85..88).
+7. **The TS enforcement gate is a vitest source-scan guard test** (modelled on `apps/web/src/__tests__/e2ee-claims.test.ts`), not a shell `grep` step.
+8. **The `createApiClient` factory ships in G2** — not deferred to when the Electron main process needs it.
+9. **The `FleetSocket` backoff divergence is kept**, expressed as configuration of the shared base (§3.5 WS-2) — not removed.
 
 ---
 
@@ -55,7 +59,7 @@ Rules use RFC-2119 keywords. "App code" = first-party source under `apps/*/src` 
   - `apps/server/**` (it *is* the backend);
   - `packages/webrtc-core/src/ws-ticket.ts` (the sanctioned ticket-mint helper — it takes an **injected** `fetch` and is the one place a raw call is allowed);
   - `packages/webrtc-core/src/transport.ts` (REST polling transport — see §3.5; it also uses an injected `fetch`).
-- **TS-3** There is **no factory today**. Construction is `new ApiClient({ baseUrl, storage, onAuthError?, fetch? })` (`packages/api-client/src/client.ts:202,212`). **A `createApiClient({ baseUrl, storage })` factory is a proposal of this spec, not current state** — it is deferred to the plan (§8, G2) and **MUST** be introduced without changing `ApiClient`'s behavior. (This corrects PM item 1, which assumed the factory exists.)
+- **TS-3** There is **no factory today**. Construction is `new ApiClient({ baseUrl, storage, onAuthError?, fetch? })` (`packages/api-client/src/client.ts:202,212`). **A `createApiClient({ baseUrl, storage })` factory is a deliverable of G2** (owner decision, §2.8) — it **MUST** be introduced without changing `ApiClient`'s behavior, and every app **SHOULD** construct its client through it once available. (This corrects PM item 1, which assumed the factory already exists.)
 - **TS-4** Every client **MUST** configure a `TokenStorageAdapter` (§3.4) and **MUST NOT** hold tokens anywhere else.
 
 ### 3.2 HTTP — Rust (`apps/agent`; any retained Rust)
@@ -93,7 +97,7 @@ Rules use RFC-2119 keywords. "App code" = first-party source under `apps/*/src` 
 ### 3.5 WebSocket — one transport, one ticket path
 
 - **WS-1** All WebSocket **ticket minting** and **browser URL building** **MUST** go through `packages/webrtc-core` (`mintWsTicket`, `buildBrowserWsUrl`). Web already does (`apps/web/src/services/fleet-socket.ts:15,155,166`).
-- **WS-2** Reconnect/backoff **MUST** live in **one shared base**, not be mirrored. The duplicated constants `WS_INITIAL_BACKOFF_MS = 200`, `WS_MAX_BACKOFF_MS = 2000`, the `randomUnit()` helper, and the delay formula `min(initial * 2**retries, max) + round(randomUnit()*100 - 50)` exist in **both** `apps/web/src/services/fleet-socket.ts:18-19,28,207-208` **and** `packages/webrtc-core/src/transport.ts:330-331,340,689-690`. G2 **MUST** collapse them into one shared implementation. The documented divergence (transport has a retry cap + fallback + pending queue; fleet reconnects forever with a 60s REST poll) **MUST** be preserved as configuration, not as a second copy.
+- **WS-2** Reconnect/backoff **MUST** live in **one shared base**, not be mirrored. The duplicated constants `WS_INITIAL_BACKOFF_MS = 200`, `WS_MAX_BACKOFF_MS = 2000`, the `randomUnit()` helper, and the delay formula `min(initial * 2**retries, max) + round(randomUnit()*100 - 50)` exist in **both** `apps/web/src/services/fleet-socket.ts:18-19,28,207-208` **and** `packages/webrtc-core/src/transport.ts:330-331,340,689-690`. G2 **MUST** collapse them into one shared implementation. The documented divergence (transport has a retry cap + fallback + pending queue; fleet reconnects forever with a 60s REST poll) **MUST** be preserved as configuration of that shared base, not as a second copy (owner decision, §2.9).
 - **WS-3** The agent's own signaling client (`apps/agent/src/signal.rs`) is a **separate, Rust-side** concern: it uses `Bearer` on the upgrade (ADR-13, never query string), a ×1.5 backoff (`BACKOFF_INITIAL=200ms`, `BACKOFF_MAX=2000ms`, no jitter), and classifies close codes `4401`/`4409` as terminal (`signal.rs:298-303`). The standard records this as the Rust transport contract; it is **not** unified with the TS backoff (different language, different protocol role).
 - **WS-4** Error frames and close codes are part of the server contract (§5).
 
@@ -219,9 +223,10 @@ A gate that has never been seen to fail is not a gate. Each gate below carries a
 
 ### 6.1 TypeScript gate — no raw `fetch` in app code
 
-- **Placement:** `ci-node.yml` (or a small dedicated job), path-filtered to the app/package trees.
-- **Rule:** grep app code for direct `fetch(`/`axios` against backend endpoints; fail with the offending `file:line`. Allow-list: `apps/server/**`, `packages/webrtc-core/src/ws-ticket.ts`, `packages/webrtc-core/src/transport.ts` (both use an **injected** `fetch`).
-- **Model to imitate:** the existing source-scanning guard tests read files and regex-assert — e.g. `apps/web/src/__tests__/e2ee-claims.test.ts:1-25`, `apps/web/src/__tests__/sonner-styles.test.ts:12-17`. A vitest guard test is the most idiomatic form here; a shell `grep` step is the fallback.
+- **Form (owner decision, §2.7):** a **vitest source-scan guard test**, not a shell `grep` step.
+- **Placement:** the test lives in the app/package tree and runs in the existing gating test step of `ci-node.yml`.
+- **Rule:** the test reads app source files and fails (naming the offending `file:line`) if any direct `fetch(`/`axios` call against a backend endpoint is found. Allow-list: `apps/server/**`, `packages/webrtc-core/src/ws-ticket.ts`, `packages/webrtc-core/src/transport.ts` (both use an **injected** `fetch`).
+- **Model to imitate:** the existing source-scanning guard tests read files and regex-assert — e.g. `apps/web/src/__tests__/e2ee-claims.test.ts:1-25`, `apps/web/src/__tests__/sonner-styles.test.ts:12-17`.
 
 ### 6.2 Rust gate — API access goes through the shared module
 
@@ -244,8 +249,8 @@ A gate that has never been seen to fail is not a gate. Each gate below carries a
 
 | Slice | Scope | Can start | Blocked by |
 |---|---|---|---|
-| **G1** | This spec (ADR-89) + owner review | now | — |
-| **G2** | TS consolidation: `createApiClient` factory; collapse `FleetSocket` ↔ `WebSocketSignalTransport` into one backoff base; a shared base-URL resolver where feasible; the TS gate | after G1 **and** after sub-project A merges | A touches `apps/web` |
+| **G1** | This spec (ADR-89) + owner approval | done | — |
+| **G2** | TS consolidation: ship the `createApiClient({ baseUrl, storage })` factory (§2.8, TS-3); collapse `FleetSocket` ↔ `WebSocketSignalTransport` into one backoff base (keeping the divergence as config, §2.9); a shared base-URL resolver where feasible; the vitest TS gate (§6.1) | after G1 **and** after sub-project A merges | A touches `apps/web` |
 | **G3** | Rust shared module `ponter_agent::api` (base-URL/WS-URL rewrite, `with_bearer`, `ApiError` mirror, `is_auth_fatal`) + the Rust gate | now (after G1) | — |
 | **G4** | Electron main wiring to `@ponter/api-client` (safeStorage/IPC token adapter + config-store base URL) | — | folds into sub-project B |
 | **G5** | Enforcement gates (part of G2/G3, listed separately for tracking) | with G2/G3 | — |
@@ -255,12 +260,16 @@ A gate that has never been seen to fail is not a gate. Each gate below carries a
 
 ---
 
-## 9. Open Questions (for the owner / PM)
+## 9. Resolved Decisions (owner, 2026-10-14)
 
-1. **ADR number.** ADR-85..88 are claimed by the Electron-migration spec, which is on local `main` but **not** on `origin/main`. This spec proposes **ADR-89**. If the Electron spec merges first, ADR-89 is correct; if this standard merges first, it could take ADR-85. **Ruling needed:** confirm ADR-89, or renumber at plan time. (Numbering follows merge order.)
-2. **TS gate form.** A vitest source-scan guard test (idiomatic, runs in the existing gating step) vs. a standalone shell `grep` step. Recommend the vitest guard.
-3. **`createApiClient` factory scope.** Introduce it only when a second consumer (Electron main) needs it, or now as part of G2? Recommend: introduce in G2 when Electron wiring lands, to avoid a speculative abstraction.
-4. **FleetSocket backoff divergence.** Confirm the "reconnect forever + 60s REST poll" behavior must be preserved as configuration of the shared base (WS-2), not dropped.
+All four questions raised in the draft were decided by the owner on 2026-10-14:
+
+1. **ADR number → ADR-89.** The Electron migration keeps ADR-85..88; this standard is ADR-89. No provisional numbering remains.
+2. **TS gate form → vitest source-scan guard test** (modelled on `apps/web/src/__tests__/e2ee-claims.test.ts`), not a shell `grep` step. See §6.1.
+3. **`createApiClient` factory → ships in G2**, not deferred until the Electron main process needs it. See §2.8, TS-3, §8.
+4. **`FleetSocket` backoff divergence → kept**, expressed as configuration of the shared base (§3.5 WS-2), not removed. See §2.9.
+
+With these resolved, the spec is approved and ready for implementation planning (§8).
 
 ---
 
@@ -280,4 +289,4 @@ A gate that has never been seen to fail is not a gate. Each gate below carries a
 - **A shared Rust module with no HTTP consumer yet** could look speculative. Mitigated: the WS/URL/auth half is live (the agent's URL derivation and error classification exist today), and the gate is what makes the boundary real.
 - **The TS gate may flag legitimate injected-`fetch` helpers.** Mitigated by an explicit, small allow-list in §3.1 / §6.1.
 - **Collapsing the two WS backoffs (WS-2) risks changing fleet behavior.** Mitigated by preserving the divergence as configuration, not by deleting it.
-- **ADR-number collision** if the Electron spec and this spec merge out of order. Mitigated by §9.1 — renumber at plan time.
+- **ADR-number collision** if the Electron spec and this spec merge out of order. **Resolved:** the owner fixed ADR-89 (§9.1), so the number is settled regardless of merge order.
