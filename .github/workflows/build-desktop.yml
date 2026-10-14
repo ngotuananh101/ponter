@@ -70,6 +70,15 @@ jobs:
       run:
         working-directory: ${{ env.WORKSPACE }}
         shell: bash
+    # ADR-67: the default server URL is baked into the binary at COMPILE time via
+    # `option_env!("PONTER_DEFAULT_SERVER_URL")` (apps/desktop/src/core/state.rs).
+    # The installers are packaged from that already-built binary
+    # (`cargo deb --no-build` / `cargo generate-rpm` / `scripts/make-appimage.sh`),
+    # so the variable must be set on the BUILD step — setting it only on Test
+    # made the repo variable a no-op for the shipped artifacts. Job-level `env`
+    # covers every compile step (Build and Test) from a single source of truth.
+    env:
+      PONTER_DEFAULT_SERVER_URL: ${{ vars.PONTER_DEFAULT_SERVER_URL || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -133,7 +142,6 @@ jobs:
         working-directory: apps/desktop
         env:
           PONTER_KEYCHAIN_SKIP: 1
-          PONTER_DEFAULT_SERVER_URL: ${{ vars.PONTER_DEFAULT_SERVER_URL || '' }}
         run: cargo test --locked
 
       - name: Package (Linux)
