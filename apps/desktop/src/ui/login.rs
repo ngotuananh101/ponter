@@ -43,20 +43,13 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(16.0);
 
         crate::ui::components::field_label(ui, "Username");
-        let username_res = ui.add(
-            egui::TextEdit::singleline(&mut app.username_input)
-                .hint_text("Enter username")
-                .desired_width(f32::INFINITY),
-        );
+        let username_res =
+            crate::ui::components::text_input(ui, &mut app.username_input, "Enter username", false);
         ui.add_space(12.0);
 
         crate::ui::components::field_label(ui, "Password");
-        let password_res = ui.add(
-            egui::TextEdit::singleline(&mut app.password_input)
-                .password(true)
-                .hint_text("Enter password")
-                .desired_width(f32::INFINITY),
-        );
+        let password_res =
+            crate::ui::components::text_input(ui, &mut app.password_input, "Enter password", true);
         ui.add_space(20.0);
 
         let enter_pressed = (username_res.lost_focus() || password_res.lost_focus())

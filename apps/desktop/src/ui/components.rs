@@ -4,6 +4,10 @@
 
 use eframe::egui;
 
+/// Standard interactive control height (px) shared by text inputs and buttons,
+/// so form rows line up on a single baseline grid.
+pub const CONTROL_HEIGHT: f32 = 36.0;
+
 /// Wraps contents in a centered, bounded card with subtle borders and shadows.
 pub fn centered_card<R>(
     ui: &mut egui::Ui,
@@ -130,7 +134,7 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     };
 
     ui.add_sized(
-        [width, 36.0],
+        [width, CONTROL_HEIGHT],
         egui::Button::new(egui::RichText::new(text).strong().size(14.0).color(fg))
             .fill(bg)
             .corner_radius(egui::CornerRadius::same(6)),
@@ -141,9 +145,33 @@ pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
 pub fn secondary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let width = ui.available_width();
     ui.add_sized(
-        [width, 36.0],
+        [width, CONTROL_HEIGHT],
         egui::Button::new(egui::RichText::new(text).size(14.0))
             .corner_radius(egui::CornerRadius::same(6)),
+    )
+}
+
+/// Renders a single-line text input with a stable, button-aligned height.
+///
+/// `egui::TextEdit::singleline` ignores the global `interact_size.y` and sizes
+/// itself from its font line height plus its own frame margin, which yields a
+/// ~19px-tall box — noticeably shorter than a 36px button. Forcing `min_size.y`
+/// makes the painted frame a consistent height so inputs line up with
+/// [`primary_button`] / [`secondary_button`], and the extra frame margin gives
+/// comfortable horizontal padding so text never hugs the border.
+pub fn text_input(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    hint: &str,
+    password: bool,
+) -> egui::Response {
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .hint_text(hint)
+            .password(password)
+            .desired_width(f32::INFINITY)
+            .margin(egui::Margin::symmetric(10, 10))
+            .min_size(egui::vec2(0.0, CONTROL_HEIGHT)),
     )
 }
 
@@ -173,4 +201,48 @@ pub fn status_badge(ui: &mut egui::Ui, text: &str, is_online: bool) {
                 egui::RichText::new(text).size(11.0).strong().color(fg),
             ));
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Lay out `build` inside a headless egui pass and return the measured
+    /// height of the widget it produces.
+    fn measure_height(mut build: impl FnMut(&mut egui::Ui) -> egui::Response) -> f32 {
+        let ctx = egui::Context::default();
+        let height = RefCell::new(0.0f32);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            *height.borrow_mut() = build(ui).rect.height();
+        });
+        out.textures_delta.clear();
+        height.into_inner()
+    }
+
+    #[test]
+    fn text_input_height_matches_control_height() {
+        let mut value = String::new();
+        let h = measure_height(|ui| text_input(ui, &mut value, "hint", false));
+        assert_eq!(h, CONTROL_HEIGHT);
+    }
+
+    #[test]
+    fn text_input_height_matches_primary_button_height() {
+        let mut value = String::new();
+        let input_h = measure_height(|ui| text_input(ui, &mut value, "hint", false));
+        let button_h = measure_height(|ui| primary_button(ui, "Sign in"));
+        assert_eq!(input_h, button_h);
+    }
+
+    #[test]
+    fn plain_singleline_is_shorter_than_control_height() {
+        // Regression guard: documents why `text_input` exists. A bare
+        // `TextEdit::singleline` ignores `interact_size.y` and renders short.
+        let mut value = String::new();
+        let h = measure_height(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut value).desired_width(f32::INFINITY))
+        });
+        assert!(h < CONTROL_HEIGHT, "bare singleline measured {h}px");
+    }
 }
