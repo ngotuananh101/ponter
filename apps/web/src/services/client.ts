@@ -1,9 +1,8 @@
 import { ApiClient } from '@ponter/api-client';
+import { getApiBaseUrl } from '../config';
 import { tokenStorage } from './token-storage';
 
-const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8787';
-
 export const apiClient = new ApiClient({
-  baseUrl,
+  baseUrl: getApiBaseUrl(),
   storage: tokenStorage,
 });

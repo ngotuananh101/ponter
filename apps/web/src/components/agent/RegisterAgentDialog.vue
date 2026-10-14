@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { getApiBaseUrl } from '@/config';
 import { apiClient } from '@/services/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -62,7 +63,7 @@ function orderedCapabilities(): string[] {
 }
 
 const signalingServerUrl = computed(() => {
-  const apiUrl = import.meta.env.VITE_API_URL || window.location.origin;
+  const apiUrl = getApiBaseUrl();
   const wsUrl = apiUrl.replace(/^http/, 'ws');
   return `${wsUrl}/api/ws/agent`;
 });
