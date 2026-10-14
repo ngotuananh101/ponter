@@ -478,6 +478,14 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let close_requested = ui.ctx().input(|i| i.viewport().close_requested());
+        if close_requested && crate::tray::should_hide_on_close(self.tray_active) {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
         if self.show_window {
             self.show_window = false;
             ui.ctx()
