@@ -16,7 +16,7 @@ Welcome to the Ponter technical documentation.
 ### 2. Operational & Developer Guides
 
 - **[Local Development Guide](guides/development.md)**: Setup, running the backend (`@ponter/server`), Vue 3 web workspace, native agent, and cross-language E2E tests.
-- **[Deployment Guide](guides/deployment.md)**: Self-hosted Docker Compose setups (Local LAN, Homelab via Cloudflare Tunnel, Production VPS with Caddy + Coturn) and Cloudflare Pages static web deployment.
+- **[Deployment Guide](guides/deployment.md)**: All-in-one self-hosted Docker deployment publishing port 8080 (standard and Coturn TURN relay setups).
 - **[Self-Hosting & Fork Guide](guides/self-hosting.md)**: Fork the repo, repoint or disable the desktop updater, and build/publish your own Docker image.
 - **[Desktop Agent Setup Guide](guides/agent-setup.md)**: Compiling, configuring CLI options, and running the native Rust daemon interactively or as a systemd background service.
 - **[Terminal Multiplexing & Wire Protocol](guides/terminal-protocol.md)**: Wire framing protocol specification for WebRTC DataChannel shell multiplexing.
@@ -40,12 +40,13 @@ ponter/
 │   ├── terminal-core/     # Headless pure TypeScript terminal manager (RingBuffer, TerminalClient)
 │   ├── webrtc-core/       # WebRTC connection orchestration & DataChannel management
 │   └── ui-components/     # Shared Vue 3 UI component library
-├── docker/                # Docker packaging for @ponter/server
-│   ├── Dockerfile.server  # Multi-stage build (node:24-alpine)
-│   ├── docker-compose.local.yml   # Local LAN testing
-│   ├── docker-compose.tunnel.yml  # Homelab + Cloudflare Tunnel
-│   ├── docker-compose.prod.yml    # Production VPS + Caddy + Coturn
-│   ├── Caddyfile
+├── docker/                # All-in-one Docker packaging (Backend + Web + Nginx)
+│   ├── Dockerfile         # Multi-stage build (node:24-alpine)
+│   ├── docker-compose.yml # Standard all-in-one deployment (port 8080)
+│   ├── docker-compose.coturn.yml # Production VPS with integrated Coturn TURN
+│   ├── nginx.web.conf     # Reverse proxy & static SPA configuration
+│   ├── supervisord.conf   # Process supervisor configuration
+│   ├── entrypoint.sh      # Container entrypoint & runtime config generator
 │   ├── .env.example
 │   └── README.md
 ├── docs/

@@ -56,20 +56,19 @@ ponter/
 
 ## 🛠️ Tech Stack
 
-| Layer                    | Technologies                                                             |
-| ------------------------ | ------------------------------------------------------------------------ |
-| **Backend Runtime**      | Node.js 24 LTS, Hono, TypeScript, `ws` (WebSocket)                       |
-| **Database**             | SQLite (better-sqlite3 + Drizzle ORM, WAL mode)                          |
-| **Token Revocation**     | SQLite `revoked_tokens` table (replaces Cloudflare KV blacklist)         |
-| **Authentication**       | PBKDF2-HMAC-SHA256, Stateless JWT (15m access / 7d refresh)              |
-| **Web Client**           | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`                         |
-| **Desktop Agent**        | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`  |
-| **WebRTC & Transport**   | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP |
-| **TURN/STUN**            | Coturn (RFC 5766 shared secret), Google STUN (local dev)                 |
-| **Containerization**     | Docker (multi-stage), Docker Compose (3 setups)                          |
-| **Web Frontend Hosting** | Cloudflare Pages (static assets only)                                    |
-| **Testing**              | Vitest, Cargo test, Cross-language E2E                                   |
-| **Build & Toolchain**    | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt             |
+| Layer                  | Technologies                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| **Backend Runtime**    | Node.js 24 LTS, Hono, TypeScript, `ws` (WebSocket)                           |
+| **Database**           | SQLite (better-sqlite3 + Drizzle ORM, WAL mode)                              |
+| **Token Revocation**   | SQLite `revoked_tokens` table (replaces Cloudflare KV blacklist)             |
+| **Authentication**     | PBKDF2-HMAC-SHA256, Stateless JWT (15m access / 7d refresh)                  |
+| **Web Client**         | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`                             |
+| **Desktop Agent**      | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`      |
+| **WebRTC & Transport** | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP     |
+| **TURN/STUN**          | Coturn (RFC 5766 shared secret), Google STUN (local dev)                     |
+| **Deployment**         | Unified All-in-One Docker Container (Backend + Vue 3 SPA + Nginx, port 8080) |
+| **Testing**            | Vitest, Cargo test, Cross-language E2E                                       |
+| **Build & Toolchain**  | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt                 |
 
 ---
 
@@ -119,12 +118,12 @@ _For details on registering an agent and obtaining credentials, see the [Local D
 ### 4. Docker (Alternative)
 
 ```bash
-# Run backend in Docker (local LAN setup — build from source)
+# Run all-in-one container in Docker (build from source)
 cd docker
-docker compose -f docker-compose.local.yml up --build
+docker compose up -d --build
 ```
 
-See the [Deployment Guide](docs/guides/deployment.md) for details on all three Docker Compose environments.
+See the [Deployment Guide](docs/guides/deployment.md) for details on standard and Coturn compose setups.
 
 ---
 
@@ -186,32 +185,23 @@ _See complete specifications in the [Terminal Multiplexing & Wire Protocol Guide
 
 ## 🐳 Deployment
 
-### Self-Hosted Backend (Docker)
+Ponter deploys as an all-in-one Docker container publishing a single port (`8080`), bundling the backend server (`@ponter/server`), the web frontend (`@ponter/web`), and an internal Nginx reverse proxy managed by Supervisord.
 
 ```bash
-# Local LAN (build from source)
 cd docker
-docker compose -f docker-compose.local.yml up --build
+cp .env.example .env
+# Edit .env: set JWT_SECRET and REFRESH_TOKEN_SECRET
 
-# Homelab (Cloudflare Tunnel) — pull prebuilt image from Docker Hub
-docker compose -f docker-compose.tunnel.yml pull
-docker compose -f docker-compose.tunnel.yml up -d
+# Standard deployment (STUN-only)
+docker compose pull
+docker compose up -d
 
-# Production VPS (Caddy + Coturn) — pull prebuilt image from Docker Hub
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+# Production VPS with integrated Coturn TURN relay
+docker compose -f docker-compose.coturn.yml pull
+docker compose -f docker-compose.coturn.yml up -d
 ```
 
-The `ngotuananh2101/ponter` image is built and published by the **Docker Publish** workflow (GitHub Actions) for both `linux/amd64` and `linux/arm64` — target machines only need to `pull`, without rebuilding. See the [Deployment Guide](docs/guides/deployment.md#31-deploying-new-versions).
-
-### Web Frontend (Cloudflare Pages)
-
-```bash
-pnpm --filter @ponter/web build
-pnpm --filter @ponter/web exec wrangler deploy
-```
-
-See the [Deployment Guide](docs/guides/deployment.md) for full details.
+The `ngotuananh2101/ponter` multi-arch image (`linux/amd64` and `linux/arm64`) is published to Docker Hub. See the [Deployment Guide](docs/guides/deployment.md) for full configuration details.
 
 ---
 
@@ -220,7 +210,7 @@ See the [Deployment Guide](docs/guides/deployment.md) for full details.
 - **[Documentation Index](docs/README.md)**
 - **[Master Architecture Document](docs/ARCHITECTURE.md)**: Full system architecture, security models, and roadmap.
 - **[Local Development Guide](docs/guides/development.md)**: Setup, running backend, web workspace, native agent, and testing.
-- **[Deployment Guide](docs/guides/deployment.md)**: Self-hosted Docker Compose setups (local, tunnel, prod) and Cloudflare Pages static web deployment.
+- **[Deployment Guide](docs/guides/deployment.md)**: All-in-one self-hosted Docker deployment publishing port 8080 (standard and Coturn TURN relay setups).
 - **[Desktop Agent Setup Guide](docs/guides/agent-setup.md)**: Building and configuring the Rust daemon as a systemd service.
 - **[Terminal Multiplexing Protocol](docs/guides/terminal-protocol.md)**: Detailed wire specification for WebRTC DataChannels.
 
