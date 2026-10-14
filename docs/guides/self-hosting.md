@@ -96,8 +96,13 @@ PONTER_DEFAULT_SERVER_URL = https://ponter.example.com
 ```
 
 The CI workflow (`.github/workflows/build-desktop.yml`) reads that variable and
-exposes it as `PONTER_DEFAULT_SERVER_URL` to its `cargo test` step. A source
-build sets it inline on the build command itself:
+exposes it as `PONTER_DEFAULT_SERVER_URL` at **job-level `env`** of the `build`
+job, so every compile step — the `Build` step (`cargo build --release --locked`)
+and the `Test` step alike — runs with it present. This placement matters: the
+installers are packaged from the already-built binary (`cargo deb --no-build` /
+`cargo generate-rpm` / `scripts/make-appimage.sh`), so the default is baked in at
+the `Build` step, not at test time. A source build sets it inline on the build
+command itself:
 
 ```bash
 PONTER_DEFAULT_SERVER_URL=https://ponter.example.com \
