@@ -1,0 +1,51 @@
+# Production compose setup with integrated Coturn TURN server.
+#
+# Runs the all-in-one Ponter container alongside Coturn for peer relaying
+# across symmetric NAT environments.
+#
+# Usage:
+#   cd docker
+#   cp .env.example .env
+#   # configure TURN_SECRET and DOMAIN in .env
+#   docker compose -f docker-compose.coturn.yml pull
+#   docker compose -f docker-compose.coturn.yml up -d
+#
+services:
+  ponter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${DOCKERHUB_IMAGE:-ngotuananh2101/ponter}:latest
+    container_name: ponter
+    restart: unless-stopped
+    stop_grace_period: 15s
+    ports:
+      - '${PONTER_HTTP_PORT:-8080}:8080'
+    environment:
+      - PORT=8787
+      - DATABASE_PATH=/app/data/remote.db
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET:?REFRESH_TOKEN_SECRET must be set}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:8080}
+      - PONTER_API_URL=${PONTER_API_URL:-}
+      - TURN_SECRET=${TURN_SECRET:?TURN_SECRET must be set for Coturn deployment}
+      - TURN_URL=${TURN_URL:-turn:${DOMAIN}:3478}
+      - STUN_URL=${STUN_URL:-stun:${DOMAIN}:3478}
+      - TURN_PROVIDER=coturn
+    volumes:
+      - ./data:/app/data
+
+  coturn:
+    image: coturn/coturn:4.6.3@sha256:71c3c990283385567f11794ee692e3a47b66fd9b0bb39e42afbe776e331dd888
+    container_name: ponter-coturn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - '-n'
+      - '--log-file=stdout'
+      - '--lt-cred-mech'
+      - '--use-auth-secret'
+      - '--static-auth-secret=${TURN_SECRET}'
+      - '--realm=${DOMAIN}'
+      - '--min-port=49152'
+      - '--max-port=49200'
