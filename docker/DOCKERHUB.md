@@ -1,121 +1,188 @@
-# Ponter Server
+# Ponter
 
-Docker image for the self-hosted backend and WebRTC signaling server of [Ponter](https://github.com/ngotuananh101/ponter) — a remote access platform with a multi-shell remote terminal over peer-to-peer WebRTC DataChannels.
+Docker image for [Ponter](https://github.com/ngotuananh101/ponter) — a high-performance, zero-trust remote access platform featuring multi-shell remote terminal, remote desktop, and remote file management over peer-to-peer WebRTC DataChannels.
 
-This image packages the `@ponter/server` Node.js application (`apps/server`) only. It does **not** contain the web UI, and the native Rust agent (`ponter-agent`) is not distributed as a Docker image.
+This unified all-in-one container packages:
+
+- **Backend Server (`@ponter/server`)**: Node.js 24 LTS, Hono REST API, SQLite database with WAL mode, and WebSocket signaling servers (`/api/ws/agent`, `/api/ws/browser`) listening internally on `127.0.0.1:8787`.
+- **Web Client SPA (`@ponter/web`)**: Vue 3 SPA static assets compiled and served by Nginx from `/usr/share/nginx/html`.
+- **Reverse Proxy (Nginx)**: Front door listening on port `80`, serving frontend SPA assets with client-side history routing fallback (`try_files`), directly proxying `/health`, and reverse proxying `/api/` and WebSocket signaling with connection upgrade support to the backend server.
+- **Process Supervisor (`supervisord`)**: Supervises Nginx and the Node.js backend (`su-exec node`), handling automatic restarts and graceful multi-process termination.
+
+The native Rust agent daemon (`ponter-agent`) runs on the target machines you want to access and is not distributed as a Docker image (see the [Agent Setup Guide](https://github.com/ngotuananh101/ponter/blob/main/docs/guides/agent-setup.md)).
+
+---
 
 ## Quick Start
 
-Generate two secrets (32+ characters each), then run the container:
+Generate two secrets (minimum 32 characters each), then run the container:
 
 ```bash
 openssl rand -base64 48   # use for JWT_SECRET
 openssl rand -base64 48   # use for REFRESH_TOKEN_SECRET
 
 docker run -d \
-  --name ponter-server \
-  -p 8787:8787 \
+  --name ponter \
+  -p 80:80 \
   -v ponter-data:/app/data \
   -e JWT_SECRET="<32+ random characters>" \
   -e REFRESH_TOKEN_SECRET="<32+ random characters>" \
-  -e CORS_ORIGIN="https://your-web-app.example.com" \
+  -e CORS_ORIGIN="http://localhost" \
   ngotuananh2101/ponter:latest
 ```
 
-- `-p 8787:8787` — HTTP API and WebSocket signaling (same port).
-- `-v ponter-data:/app/data` — persists the SQLite database across restarts.
-- `JWT_SECRET` / `REFRESH_TOKEN_SECRET` — **required**; token operations return HTTP 500 without them.
-- `CORS_ORIGIN` — set it to your web app origin (see the warning below).
+- `-p 80:80` — Publishes port 80 for the Web UI, REST API, and WebSocket signaling.
+- `-v ponter-data:/app/data` — Persists the SQLite database across restarts.
+- `JWT_SECRET` / `REFRESH_TOKEN_SECRET` — **Required**; authentication returns HTTP 500 without them.
+- `CORS_ORIGIN` — Allowed browser origins for CORS and WebSocket CSWSH defense.
+
+Access the web interface at `http://localhost`.
 
 Verify the container is healthy:
 
 ```bash
-curl http://localhost:8787/health
+curl -fsS http://localhost/health
 # {"status":"ok"}
 ```
 
-The `/health` endpoint answers HTTP 200 without authentication.
+The `/health` endpoint responds with HTTP 200 without authentication.
+
+---
 
 ## Ports and Volumes
 
-|                |                                                                                                             |
-| -------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Port**       | `8787` — HTTP (`/health`, `/api/*`) and WebSocket upgrades (`/api/ws/agent`, `/api/ws/browser`)             |
-| **Volume**     | `/app/data` — SQLite database (default `/app/data/remote.db`)                                               |
-| **Base image** | `node:24-alpine`; the server process runs as the unprivileged `node` user                                   |
-| **Entrypoint** | Starts as root only to `chown /app/data` (fixes bind-mount permissions), then drops to `node` via `su-exec` |
+|                |                                                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Port**       | `80` (TCP) — Web UI (SPA), HTTP API (`/health`, `/api/*`), and WebSocket upgrades (`/api/ws/*`)                 |
+| **Volume**     | `/app/data` — SQLite database (default `/app/data/remote.db`)                                                   |
+| **Base image** | `node:24-alpine`; Nginx runs as root, backend runs as unprivileged `node` user via `su-exec`                    |
+| **Entrypoint** | Adjusts `./data` permissions, renders `/usr/share/nginx/html/config.js` from `PONTER_API_URL`, runs Supervisord |
 
-## Environment Variables
+---
 
-| Variable                   | Required | Default                                                 | Description                                                                                                                                              |
-| -------------------------- | -------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                     | No       | `8080` (code); the image sets `8787`                    | HTTP + WebSocket listen port                                                                                                                             |
-| `DATABASE_PATH`            | No       | `:memory:` (code); the image sets `/app/data/remote.db` | SQLite database path                                                                                                                                     |
-| `JWT_SECRET`               | **Yes**  | —                                                       | Signs access tokens and browser WebSocket tickets                                                                                                        |
-| `REFRESH_TOKEN_SECRET`     | **Yes**  | —                                                       | Signs refresh tokens                                                                                                                                     |
-| `CORS_ORIGIN`              | No       | `*`                                                     | Comma-separated origin allowlist for HTTP CORS **and** the browser WebSocket Origin check                                                                |
-| `JWT_EXPIRES_IN`           | No       | `900` (15m)                                             | Access token TTL. Requires an explicit unit — `s`, `m`, `h` or `d` (e.g. `15m`, `1h`, `900s`). A value without a unit is ignored and the default is used |
-| `REFRESH_TOKEN_EXPIRES_IN` | No       | `604800` (7d)                                           | Refresh token TTL. Same unit requirement                                                                                                                 |
-| `TURN_SECRET`              | No       | —                                                       | Coturn shared secret for minting time-limited TURN credentials                                                                                           |
-| `TURN_URL`                 | No       | —                                                       | TURN server advertised to peers. Without it (and `TURN_SECRET`) the server falls back to public Google STUN                                              |
-| `STUN_URL`                 | No       | `stun:stun.l.google.com:19302`                          | STUN entry used when TURN is configured                                                                                                                  |
+## Environment Variables Reference
 
-**CORS_ORIGIN warning.** With `CORS_ORIGIN=*` (or unset), the browser WebSocket upgrade accepts any Origin, which disables the Cross-Site WebSocket Hijacking defence. Set it to your web app origin in production.
+| Variable                   | Required   | Default                 | Description                                                                                                                                           |
+| -------------------------- | ---------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PONTER_HTTP_PORT`         | No         | `80`                    | Published host port for the web UI and reverse proxy. Use `127.0.0.1:80` (or `127.0.0.1:8080` to avoid host port collision) when behind a host proxy. |
+| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for default same-origin resolution.                                                 |
+| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                                                                                |
+| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                                                                            |
+| `JWT_SECRET`               | **Yes**    | —                       | Secret used to sign JWT access tokens (HS256). Minimum 32 characters.                                                                                 |
+| `REFRESH_TOKEN_SECRET`     | **Yes**    | —                       | Secret used to sign JWT refresh tokens (HS256). Minimum 32 characters.                                                                                |
+| `CORS_ORIGIN`              | No         | `http://localhost`      | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                                                                        |
+| `JWT_EXPIRES_IN`           | No         | `900` (15m)             | Access token TTL in seconds.                                                                                                                          |
+| `REFRESH_TOKEN_EXPIRES_IN` | No         | `604800` (7d)           | Refresh token TTL in seconds.                                                                                                                         |
+| `DOCKERHUB_IMAGE`          | No         | `ngotuananh2101/ponter` | Image repository name on Docker Hub.                                                                                                                  |
+| `DOMAIN`                   | Coturn     | —                       | Domain or hostname for the Coturn realm and TURN server.                                                                                              |
+| `TURN_SECRET`              | Coturn     | —                       | Shared secret for Coturn RFC 5766 authentication.                                                                                                     |
+| `TURN_URL`                 | Coturn     | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.                                                            |
+| `STUN_URL`                 | Coturn     | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.                                                            |
+| `TURN_PROVIDER`            | No         | `coturn`                | TURN provider: `coturn` \| `cloudflare` \| `none`.                                                                                                    |
+| `TURN_KEY_ID`              | Cloudflare | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                                                                              |
+| `TURN_KEY_API_TOKEN`       | Cloudflare | —                       | Cloudflare Calls TURN API token (required when `TURN_PROVIDER=cloudflare`).                                                                           |
 
-`NODE_ENV` and `LOG_LEVEL` are not read by the server; the image already sets `NODE_ENV=production`. `DOMAIN`, `CLOUDFLARE_TUNNEL_TOKEN` and `DOCKERHUB_IMAGE` are compose-level variables (Caddy, cloudflared, image selection), not read by the server process.
+---
 
-## What Else You Need
+## Deploying with Docker Compose
 
-This image is one of three components:
+The repository ships two standard compose configurations in [`docker/`](https://github.com/ngotuananh101/ponter/tree/main/docker):
 
-1. **Web UI** (`apps/web`) — a Vue 3 SPA deployed separately (e.g. Cloudflare Pages or any static host) and pointed at this server via `VITE_API_URL`.
-2. **Agent** (`apps/agent`) — the `ponter-agent` native binary that runs on the machines you want to reach, built from source with Cargo (`cargo build --release --manifest-path apps/agent/Cargo.toml`); see the [Agent Setup Guide](https://github.com/ngotuananh101/ponter/blob/main/docs/guides/agent-setup.md). It is not a Docker image.
-3. **TURN relay** (optional) — e.g. Coturn, for peers behind symmetric NAT or restrictive firewalls.
+Both compose files include `env_file: [{path: .env, required: false}]`, automatically loading environment variables from `docker/.env`.
 
-## Deploying with Compose
+### 1. Standard Deployment (`docker-compose.yml`)
 
-The repository ships ready-made compose setups in [`docker/`](https://github.com/ngotuananh101/ponter/tree/main/docker):
-
-- `docker-compose.tunnel.yml` — homelab behind a Cloudflare Tunnel (no inbound ports to open).
-- `docker-compose.prod.yml` — VPS with Caddy (automatic HTTPS) + Coturn.
-- `docker-compose.nginx.yml` — VPS with an existing host Nginx + Coturn.
-
-They pull this image through the `DOCKERHUB_IMAGE` variable:
+For local networks, homelabs, or VPS instances where direct peer-to-peer WebRTC connections succeed via STUN:
 
 ```bash
 cd docker
 cp .env.example .env
-# edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, TURN_SECRET, and:
-#   DOCKERHUB_IMAGE=ngotuananh2101/ponter
+# Edit .env: set JWT_SECRET and REFRESH_TOKEN_SECRET
 
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose pull
+docker compose up -d
 ```
 
-See the [Deployment Guide](https://github.com/ngotuananh101/ponter/blob/main/docs/guides/deployment.md) for the full walkthrough (tunnel, prod and nginx variants).
+Access the web interface at `http://localhost`.
 
-## Tags
+### 2. Production VPS with Coturn TURN Relay (`docker-compose.coturn.yml`)
 
-| Tag           | Meaning                                                                                                                                                                 |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `latest`      | The most recent image manually published from the `main` branch via the Docker Publish workflow                                                                         |
-| `sha-<short>` | Every publish run, tagged with the 7-character commit SHA (e.g. `sha-553d3cd`) — use it to pin a build or roll back                                                     |
-| `<tag>`       | An optional custom tag (e.g. `v1.2.3`) attached when the `tag` input is supplied; persists — avoid a `sha-` prefix, which falls inside the retention window (see below) |
+When clients or agents reside behind symmetric NAT firewalls (e.g., mobile networks, corporate intranets), use the standalone Coturn compose configuration:
 
-Only the three most recent `sha-<short>` tags are retained; each publish without a custom tag prunes older `sha-` tags automatically. Pin a `sha-` tag only within that window, or use a custom tag for a durable name. A custom tag that itself starts with `sha-` is indistinguishable from a build tag and falls inside the retention window — avoid the `sha-` prefix for durable tags.
+```bash
+cd docker
+cp .env.example .env
+# Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, and TURN_SECRET
 
-All tags are multi-arch manifests (`linux/amd64` + `linux/arm64` in one image, built on native runners without QEMU). The compressed image is roughly 280 MB on amd64 and 270 MB on arm64.
+docker compose -f docker-compose.coturn.yml pull
+docker compose -f docker-compose.coturn.yml up -d
+```
+
+Required firewall ports for Coturn:
+
+- `80` (TCP): Web UI & API (or your custom `PONTER_HTTP_PORT`)
+- `3478` (TCP/UDP): Coturn STUN/TURN listener
+- `49152-49200` (UDP): Coturn media relay port range
+
+---
+
+## Running Behind an External Host Reverse Proxy
+
+If your host machine already runs an external reverse proxy (e.g., Traefik, Caddy, or host Nginx) terminating TLS on ports 80/443:
+
+1. Bind the container to loopback in `docker/.env`:
+   ```env
+   PONTER_HTTP_PORT=127.0.0.1:8080
+   CORS_ORIGIN=https://ponter.example.com
+   ```
+2. Forward traffic from your external reverse proxy to `http://127.0.0.1:8080`:
+   - Pass standard proxy headers: `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
+   - Forward WebSocket upgrade headers: `Upgrade $http_upgrade` and `Connection $connection_upgrade`.
+   - Set proxy read and send timeouts to at least `86400s` (24h) to maintain persistent WebRTC signaling connections.
+   - Disable proxy buffering (`proxy_buffering off;`).
+   - Set maximum client body size to at least `50M` (`client_max_body_size 50M;`) for file transfers.
+
+---
+
+## Runtime Frontend Configuration
+
+The Vue 3 frontend SPA dynamically resolves its backend API endpoint at runtime rather than baking a URL at build time:
+
+1. On container startup, `entrypoint.sh` writes `/usr/share/nginx/html/config.js` based on `PONTER_API_URL`.
+2. The web application resolves its API endpoint with the following precedence:
+   - `window.__PONTER_CONFIG__.apiUrl` (if `PONTER_API_URL` is set).
+   - `import.meta.env.VITE_API_URL` (build-time variable, used during local `vite dev`).
+   - `window.location.origin` (default same-origin fallback).
+
+For standard deployments where the frontend and backend are served together on the same host and port (`http://your-host`), leave `PONTER_API_URL` empty.
+
+---
+
+## Tags & Versioning
+
+| Tag           | Description                                                                                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `latest`      | The newest build published from the `main` branch.                                                                                                                  |
+| `sha-<short>` | Build tagged with the 7-character commit SHA (e.g. `sha-553d3cd`). **Only the 3 most recent builds are retained**; older tags are automatically pruned.             |
+| `<tag>`       | Custom versioned release tag (e.g. `v1.2.0`). Retained permanently. Avoid using a `sha-` prefix for custom tags to prevent them from matching the automated pruner. |
+
+All published tags are multi-arch manifests (`linux/amd64` and `linux/arm64`) built on native GitHub Actions runners.
+
+---
 
 ## How It Works
 
-- **Signaling and auth, not a data relay.** The server authenticates users and agents, records sessions, and forwards WebRTC offer/answer/ICE messages; terminal data then flows peer-to-peer over WebRTC DataChannels (encrypted with DTLS/SCTP).
-- **Two WebSocket channels.** Agents connect to `/api/ws/agent` with their agent credential; browsers mint a single-use ticket with a 15-second TTL via `POST /api/ws/ticket` and connect to `/api/ws/browser`. REST polling (`/api/signal/poll/:sessionId`) remains as a fallback.
-- **SQLite persistence.** better-sqlite3 + Drizzle ORM in WAL mode (`foreign_keys=ON`, `busy_timeout=5000`); the schema is created at startup. The database is opened before the server starts listening, so an unusable `DATABASE_PATH` fails fast instead of failing on the first request.
-- **Background maintenance.** Every 15 minutes, expired signals are deleted and abandoned pending sessions (older than 60 minutes) are terminated.
-- **Graceful shutdown.** On SIGTERM/SIGINT the server closes signaling sockets with close code 1001, drains in-flight HTTP, and forces exit after 10 seconds. The prod and tunnel compose files set `stop_grace_period: 15s` so a redeploy does not look like a network drop to connected clients.
+- **Signaling and Coordination, Not Data Relaying:** The backend authenticates users and agents, tracks sessions, and exchanges WebRTC signaling messages (SDP offer/answer and ICE candidates). Terminal, desktop, and file transfer streams flow directly peer-to-peer over DTLS/SCTP WebRTC DataChannels.
+- **WebSocket Signaling Channels:** Agents connect to `/api/ws/agent` using long-lived agent credentials (`ag_`). Browser clients mint a short-lived ticket via `POST /api/ws/ticket` and connect to `/api/ws/browser`.
+- **SQLite Database:** Uses `better-sqlite3` with Drizzle ORM in WAL mode (`foreign_keys=ON`, `busy_timeout=5000`). Database schema migrations run automatically on startup.
+- **Process Supervision:** Supervisord runs as PID 1 (`nodaemon=true`), monitoring Nginx and `@ponter/server` with automatic process restart on unexpected exits (`autorestart=true`).
+- **Graceful Termination:** On `SIGTERM`, Supervisord signals the Node.js server with a 15-second grace period (`stop_grace_period: 15s`), allowing WebSocket signaling sockets to close cleanly with status code 1001 (Going Away).
+
+---
 
 ## Links
 
-- Repository: <https://github.com/ngotuananh101/ponter>
-- Deployment guide: <https://github.com/ngotuananh101/ponter/blob/main/docs/guides/deployment.md>
-- Agent setup guide: <https://github.com/ngotuananh101/ponter/blob/main/docs/guides/agent-setup.md>
+- **Repository:** <https://github.com/ngotuananh101/ponter>
+- **Deployment Guide:** <https://github.com/ngotuananh101/ponter/blob/main/docs/guides/deployment.md>
+- **Local Development Guide:** <https://github.com/ngotuananh101/ponter/blob/main/docs/guides/development.md>
+- **Desktop Agent Setup Guide:** <https://github.com/ngotuananh101/ponter/blob/main/docs/guides/agent-setup.md>

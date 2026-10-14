@@ -16,7 +16,7 @@ This fragmented topology introduces significant friction:
 2. **Configuration Proliferation:** Choosing among four compose files creates confusion regarding which scenario matches a user's network environment.
 3. **External Cloudflare Infrastructure Dependency:** Deploying the web client requires Cloudflare account credentials (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`), which runs counter to the project's self-hosting philosophy.
 
-**The Goal:** Unify the deployment into a single self-contained Docker image (`ngotuananh2101/ponter`) containing the Node.js backend server (`@ponter/server`), the compiled web frontend (`@ponter/web`), and an internal Nginx reverse proxy managed by Supervisord. The entire platform publishes exactly **one HTTP port** (default `8080`) and is driven by exactly **two compose files**:
+**The Goal:** Unify the deployment into a single self-contained Docker image (`ngotuananh2101/ponter`) containing the Node.js backend server (`@ponter/server`), the compiled web frontend (`@ponter/web`), and an internal Nginx reverse proxy managed by Supervisord. The entire platform publishes exactly **one HTTP port** (default `80`) and is driven by exactly **two compose files**:
 - `docker-compose.yml`: Standard all-in-one deployment (Backend + Frontend + Nginx, STUN-only).
 - `docker-compose.coturn.yml`: Complete self-hosted deployment with an integrated Coturn TURN relay service.
 
@@ -29,9 +29,9 @@ The following architectural and operational decisions were approved by the proje
 1. **One Unified Image on Docker Hub:** Published to `ngotuananh2101/ponter` (single repository and tag namespace). Contains `@ponter/server`, `@ponter/web` static assets, and Nginx.
 2. **CI Builds from Compose:** The GitHub Actions release pipeline builds the image via `docker buildx bake -f docker/docker-compose.yml` (or direct compose build), never from a standalone, detached Dockerfile invocation.
 3. **Exactly Two Compose Files:**
-   - `docker/docker-compose.yml`: All-in-one service publishing one port (8080).
+   - `docker/docker-compose.yml`: All-in-one service publishing one port (80).
    - `docker/docker-compose.coturn.yml`: Standalone compose file containing the `ponter` service plus an integrated `coturn` service. Runs independently via `docker compose -f docker-compose.coturn.yml up`.
-4. **Default Published Port = 8080:** The host port defaults to `8080` (overridable via environment variable, e.g. `PONTER_HTTP_PORT`).
+4. **Default Published Port = 80:** The host port defaults to `80` (overridable via environment variable, e.g. `PONTER_HTTP_PORT`).
 5. **Supervisord Process Model:** Inside the container, processes are supervised by `supervisord` (installed via Alpine `apk add supervisor`). `s6-overlay` is explicitly rejected.
 6. **Retain Cloudflare TURN Relay Provider:** `TURN_PROVIDER=cloudflare` is strictly preserved in server source code (`apps/server/src/utils/ice.ts`), unit tests (`test/ice-provider.test.ts`), and documentation. Only Cloudflare *hosting and infrastructure* (Pages, Tunnels, Caddy) are removed.
 7. **Runtime Frontend Configuration:** The web frontend resolves its API endpoint dynamically at runtime via `window.__PONTER_CONFIG__.apiUrl`, falling back to same-origin (`window.location.origin`), eliminating build-time endpoint baking.
@@ -42,7 +42,7 @@ The following architectural and operational decisions were approved by the proje
 
 ### ADR-83: Unified All-in-One Container Image (BE + FE + Nginx under Supervisord)
 
-- **Decision:** Consolidate the backend HTTP/WebSocket signaling server (`@ponter/server`) and the web client static SPA (`@ponter/web`) into a single multi-stage Docker image based on `node:24-alpine`. Inside the container, Nginx acts as the front door listening on port `8080`, serving frontend static files at `/` and proxying `/api/` (including WebSocket upgrade routes) to `@ponter/server` listening on internal loopback `127.0.0.1:8787`. Both processes run under `supervisord`.
+- **Decision:** Consolidate the backend HTTP/WebSocket signaling server (`@ponter/server`) and the web client static SPA (`@ponter/web`) into a single multi-stage Docker image based on `node:24-alpine`. Inside the container, Nginx acts as the front door listening on port `80`, serving frontend static files at `/` and proxying `/api/` (including WebSocket upgrade routes) to `@ponter/server` listening on internal loopback `127.0.0.1:8787`. Both processes run under `supervisord`.
 - **Rationale:** Reduces operational overhead to zero for self-hosters. Eliminates CORS mismatches because frontend and backend share the exact same host and port. Prevents PID 1 zombie reaping issues and manages graceful multi-process termination.
 - **Alternatives Rejected:**
   - *Separate Frontend Container:* Rejected — requires managing multiple containers, inter-container bridge networks, and port orchestration.
@@ -140,9 +140,9 @@ VOLUME /app/data
 ENV DATABASE_PATH=/app/data/remote.db
 ENV PORT=8787
 ENV HOST=127.0.0.1
-ENV PONTER_HTTP_PORT=8080
+ENV PONTER_HTTP_PORT=80
 
-EXPOSE 8080
+EXPOSE 80
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["supervisord", "-c", "/etc/supervisord.conf"]
@@ -150,7 +150,7 @@ CMD ["supervisord", "-c", "/etc/supervisord.conf"]
 
 ### 4.2 Nginx Web & Reverse Proxy Configuration (`docker/nginx.web.conf`)
 
-Nginx listens on port `8080`, serves SPA assets with client-side history routing fallback, preserves all security headers formerly in `apps/web/public/_headers`, sets no-cache directives on runtime config, and proxies API / WebSocket calls to `127.0.0.1:8787`.
+Nginx listens on port `80`, serves SPA assets with client-side history routing fallback, preserves all security headers formerly in `apps/web/public/_headers`, sets no-cache directives on runtime config, and proxies API / WebSocket calls to `127.0.0.1:8787`.
 
 ```nginx
 # Connection upgrade map for WebSocket support
@@ -160,8 +160,8 @@ map $http_upgrade $connection_upgrade {
 }
 
 server {
-    listen 8080 default_server;
-    listen [::]:8080 default_server;
+    listen 80 default_server;
+    listen [::]:80 default_server;
     server_name _;
 
     root /usr/share/nginx/html;
@@ -379,7 +379,7 @@ Used for all standard deployments. Contains build instructions as well as prebui
 # Runs the all-in-one container containing:
 #   - @ponter/server (Node.js 24 signaling & REST backend on internal 127.0.0.1:8787)
 #   - @ponter/web (Vue 3 static SPA)
-#   - Nginx (reverse proxy & static server publishing port 8080)
+#   - Nginx (reverse proxy & static server publishing port 80)
 #
 # Usage:
 #   cd docker
@@ -399,13 +399,13 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
     ports:
-      - "${PONTER_HTTP_PORT:-8080}:8080"
+      - "${PONTER_HTTP_PORT:-80}:80"
     environment:
       - PORT=8787
       - DATABASE_PATH=/app/data/remote.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET:?REFRESH_TOKEN_SECRET must be set}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:8080}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
       - PONTER_API_URL=${PONTER_API_URL:-}
     volumes:
       - ./data:/app/data
@@ -438,13 +438,13 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
     ports:
-      - "${PONTER_HTTP_PORT:-8080}:8080"
+      - "${PONTER_HTTP_PORT:-80}:80"
     environment:
       - PORT=8787
       - DATABASE_PATH=/app/data/remote.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET:?REFRESH_TOKEN_SECRET must be set}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:8080}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
       - PONTER_API_URL=${PONTER_API_URL:-}
       - TURN_SECRET=${TURN_SECRET:?TURN_SECRET must be set for Coturn deployment}
       - TURN_URL=${TURN_URL:-turn:${DOMAIN}:3478}
@@ -489,11 +489,11 @@ Updated to test the unified container:
 1. **Path Triggers:** Runs on changes to `docker/**`, `apps/server/**`, `apps/web/**`, `packages/**`, workspace manifests, and `.github/workflows/ci-docker.yml`.
 2. **Build Step:** Builds `ponter:ci` from `docker/Dockerfile`.
 3. **Smoke Verification Matrix:**
-   - Boots container with mapped port `8080:8080`.
-   - Polling check `GET http://localhost:8080/health` -> HTTP 200 `{"status":"ok"}`.
-   - Frontend verification `GET http://localhost:8080/` -> HTTP 200, contains `<div id="app"></div>`.
-   - Runtime config verification `GET http://localhost:8080/config.js` -> HTTP 200, content contains `window.__PONTER_CONFIG__`.
-   - Proxy verification `GET http://localhost:8080/api/auth/me` -> HTTP 401 Unauthorized (confirms reverse proxy successfully routes to backend without bypass).
+   - Boots container with mapped port `80:80`.
+   - Polling check `GET http://localhost/health` -> HTTP 200 `{"status":"ok"}`.
+   - Frontend verification `GET http://localhost/` -> HTTP 200, contains `<div id="app"></div>`.
+   - Runtime config verification `GET http://localhost/config.js` -> HTTP 200, content contains `window.__PONTER_CONFIG__`.
+   - Proxy verification `GET http://localhost/api/auth/me` -> HTTP 401 Unauthorized (confirms reverse proxy successfully routes to backend without bypass).
 
 ---
 
@@ -522,7 +522,7 @@ Updated to test the unified container:
 6. `apps/web/src/services/client.ts`: Route `baseUrl` through `getApiBaseUrl()`.
 7. `apps/web/src/components/agent/RegisterAgentDialog.vue`: Route `signalingServerUrl` through `getApiBaseUrl()`.
 8. `.github/workflows/docker-publish.yml`: Update build instructions to bake from compose.
-9. `.github/workflows/ci-docker.yml`: Update path filters and smoke tests for port 8080.
+9. `.github/workflows/ci-docker.yml`: Update path filters and smoke tests for port 80.
 10. `docker/.env.example`: Update environment variables for the two compose files.
 11. `docker/README.md`: Rewrite around the two compose files.
 12. `docs/guides/deployment.md`: Rewrite deployment instructions; retain Cloudflare TURN provider table; remove Cloudflare Pages/Tunnel instructions.
@@ -554,7 +554,7 @@ Updated to test the unified container:
 ## 9. Consequences & Trade-offs
 
 1. **Symmetric NAT Handling:** Running the standard `docker-compose.yml` relies purely on public STUN servers (e.g. Google STUN). In environments where both client and agent sit behind restrictive or symmetric NAT, direct peer-to-peer WebRTC connections will fail without a TURN relay. Deployers requiring guaranteed connectivity across strict firewalls must use `docker-compose.coturn.yml` or configure `TURN_PROVIDER=cloudflare`.
-2. **Default Host Binding (`0.0.0.0:8080`):** Mapping `8080:8080` binds to all host interfaces by default, making the web UI reachable on the local network. Users fronting Ponter with an existing host reverse proxy (such as external Traefik or Nginx with Let's Encrypt) should bind explicitly to localhost (`127.0.0.1:8080:8080`) in `.env` via `PONTER_HTTP_PORT=127.0.0.1:8080`.
+2. **Default Host Binding (`0.0.0.0:80`):** Mapping `80:80` binds to all host interfaces by default, making the web UI reachable on the local network. Users fronting Ponter with an existing host reverse proxy (such as external Traefik or Nginx with Let's Encrypt) should bind explicitly to localhost (`127.0.0.1:80` or an alternate port like `127.0.0.1:8080` to avoid host port collision) in `.env` via `PONTER_HTTP_PORT=127.0.0.1:8080`.
 3. **Container Image Footprint:** Including Nginx, Supervisord, and frontend static assets increases the uncompressed image size from ~380MB (server-only) to ~450MB. This slight increase is easily justified by eliminating an entire external hosting platform and third-party SaaS dependency.
 4. **Process Lifecycle Semantics:** Supervisord manages `@ponter/server` and `nginx`. If the Node.js server crashes, Supervisord automatically restarts it (`autorestart=true`). If the container receives `SIGTERM`, Supervisord gracefully signals `@ponter/server` with 15 seconds grace period, allowing WebSockets to close cleanly with status 1001.
 
@@ -566,11 +566,11 @@ A full quality assurance cycle must verify the following items:
 
 1. **Image Build Verification:** `docker buildx bake -f docker/docker-compose.yml` builds without errors on Linux `amd64` and `arm64`.
 2. **Container Boot & Supervision:** Running `docker compose up -d` launches Supervisord, which in turn boots both `@ponter/server` and `nginx`.
-3. **Health Check Endpoint:** `curl -fsS http://localhost:8080/health` returns HTTP 200 with JSON `{"status":"ok"}`.
-4. **SPA Asset Serving:** `curl -fsS http://localhost:8080/` returns HTTP 200 containing HTML with `<div id="app"></div>`. Subpaths like `http://localhost:8080/devices` return `index.html` via `try_files` fallback.
-5. **Runtime Configuration Injection:** `curl -fsS http://localhost:8080/config.js` returns JavaScript assigning `window.__PONTER_CONFIG__`. Setting `PONTER_API_URL=https://my-domain.com` in container environment properly populates `apiUrl: "https://my-domain.com"`.
-6. **API Proxying:** `curl -fsS http://localhost:8080/api/auth/me` returns HTTP 401 Unauthorized from the Node.js backend.
-7. **WebSocket Upgrade Flow:** Connecting a WebSocket client to `ws://localhost:8080/api/ws/agent` and `ws://localhost:8080/api/ws/browser` successfully initiates handshakes and maintains persistent connections without idle disconnects.
+3. **Health Check Endpoint:** `curl -fsS http://localhost/health` returns HTTP 200 with JSON `{"status":"ok"}`.
+4. **SPA Asset Serving:** `curl -fsS http://localhost/` returns HTTP 200 containing HTML with `<div id="app"></div>`. Subpaths like `http://localhost/devices` return `index.html` via `try_files` fallback.
+5. **Runtime Configuration Injection:** `curl -fsS http://localhost/config.js` returns JavaScript assigning `window.__PONTER_CONFIG__`. Setting `PONTER_API_URL=https://my-domain.com` in container environment properly populates `apiUrl: "https://my-domain.com"`.
+6. **API Proxying:** `curl -fsS http://localhost/api/auth/me` returns HTTP 401 Unauthorized from the Node.js backend.
+7. **WebSocket Upgrade Flow:** Connecting a WebSocket client to `ws://localhost/api/ws/agent` and `ws://localhost/api/ws/browser` successfully initiates handshakes and maintains persistent connections without idle disconnects.
 8. **Data Persistence Invariant:** SQLite data created at `/app/data/remote.db` persists across container destruction and recreate (`docker compose down && docker compose up -d`).
 9. **Coturn Deployment Variant:** `docker compose -f docker-compose.coturn.yml up -d` brings up both `ponter` and `coturn` services cleanly on the host network.
 10. **CI Validation:** Both `.github/workflows/ci-docker.yml` and repository linting/formatting pass with zero errors.

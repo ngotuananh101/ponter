@@ -3,7 +3,7 @@
 # Runs the all-in-one container containing:
 #   - @ponter/server (Node.js 24 signaling & REST backend on internal 127.0.0.1:8787)
 #   - @ponter/web (Vue 3 static SPA)
-#   - Nginx (reverse proxy & static server publishing port 8080)
+#   - Nginx (reverse proxy & static server publishing port 80)
 #
 # Usage:
 #   cd docker
@@ -22,14 +22,17 @@ services:
     container_name: ponter
     restart: unless-stopped
     stop_grace_period: 15s
+    env_file:
+      - path: .env
+        required: false
     ports:
-      - '${PONTER_HTTP_PORT:-8080}:8080'
+      - '${PONTER_HTTP_PORT:-80}:80'
     environment:
       - PORT=8787
       - DATABASE_PATH=/app/data/remote.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET:?REFRESH_TOKEN_SECRET must be set}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:8080}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
       - PONTER_API_URL=${PONTER_API_URL:-}
     volumes:
       - ./data:/app/data

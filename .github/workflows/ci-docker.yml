@@ -45,16 +45,16 @@ jobs:
 
       - name: Smoke-test all-in-one container (health, spa, config, api proxy)
         run: |
-          docker run -d --name ponter-smoke -p 8080:8080 \
+          docker run -d --name ponter-smoke -p 80:80 \
             -e JWT_SECRET="smoke-jwt-secret-at-least-32-characters-long" \
             -e REFRESH_TOKEN_SECRET="smoke-refresh-secret-at-least-32-characters" \
-            -e CORS_ORIGIN="http://localhost:8080" \
+            -e CORS_ORIGIN="http://localhost" \
             ponter:ci
 
           # Poll /health for up to ~30s
           healthy=false
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+            if curl -fsS http://localhost/health >/dev/null 2>&1; then
               echo "container healthy after ${i}s"
               healthy=true
               break
@@ -74,13 +74,13 @@ jobs:
           fi
 
           echo "Verifying SPA root page..."
-          curl -fsS http://localhost:8080/ | grep -q '<div id="app"></div>'
+          curl -fsS http://localhost/ | grep -q '<div id="app"></div>'
 
           echo "Verifying runtime config injection..."
-          curl -fsS http://localhost:8080/config.js | grep -q 'window.__PONTER_CONFIG__'
+          curl -fsS http://localhost/config.js | grep -q 'window.__PONTER_CONFIG__'
 
           echo "Verifying API proxy route..."
-          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/users/me)
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/api/users/me)
           if [ "$status" != "401" ]; then
             echo "::error::expected 401 from /api/users/me proxy, got $status"
             exit 1

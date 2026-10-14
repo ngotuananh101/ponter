@@ -74,9 +74,9 @@ VOLUME /app/data
 ENV DATABASE_PATH=/app/data/remote.db
 ENV PORT=8787
 ENV HOST=127.0.0.1
-ENV PONTER_HTTP_PORT=8080
+ENV PONTER_HTTP_PORT=80
 
-EXPOSE 8080
+EXPOSE 80
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["supervisord", "-c", "/etc/supervisord.conf"]

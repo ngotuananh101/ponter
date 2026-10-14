@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Deployment guide for the Remote Access Platform. The platform runs as an all-in-one Docker container bundling the backend server (`@ponter/server`), the compiled web frontend (`@ponter/web`), and an internal Nginx reverse proxy under Supervisord, publishing a single port (`8080`).
+Deployment guide for the Remote Access Platform. The platform runs as an all-in-one Docker container bundling the backend server (`@ponter/server`), the compiled web frontend (`@ponter/web`), and an internal Nginx reverse proxy under Supervisord, publishing a single port (`80`).
 
 ---
 
@@ -37,7 +37,7 @@ The production deployment consists of the following components:
    - **Frontend Web Client (`@ponter/web`)**: Vue 3 SPA + Vite + Tailwind CSS + Pinia, compiled into static assets served by Nginx at `/usr/share/nginx/html`.
    - **Backend Server (`@ponter/server`)**: Node.js 24 LTS + Hono + `ws` library listening on internal loopback `127.0.0.1:8787`.
    - **Database**: SQLite (`/app/data/remote.db` via `better-sqlite3` + Drizzle ORM) in WAL mode, mounted from host directory `./data`.
-   - **Internal Reverse Proxy (Nginx)**: Listens on port `8080`, serves SPA assets with client-side history routing fallback (`try_files`), directly proxies health check probes (`/health`), and reverse proxies API routes (`/api/`) and WebSocket connections (`/api/ws/agent`, `/api/ws/browser`) with connection upgrade headers.
+   - **Internal Reverse Proxy (Nginx)**: Listens on port `80`, serves SPA assets with client-side history routing fallback (`try_files`), directly proxies health check probes (`/health`), and reverse proxies API routes (`/api/`) and WebSocket connections (`/api/ws/agent`, `/api/ws/browser`) with connection upgrade headers.
    - **Process Supervision**: Supervisord runs as PID 1 (`nodaemon=true`), managing Nginx as root and `@ponter/server` as an unprivileged user (`su-exec node`).
 
 2. **WebRTC Relaying (NAT Traversal)**:
@@ -53,7 +53,7 @@ All Docker packaging files reside in the `docker/` directory.
 
 ### Scenario 1: Standard All-in-One Deployment
 
-The standard deployment runs the unified container on port `8080`. Ideal for homelabs, VPS instances, or local network servers where direct peer-to-peer WebRTC connections succeed via STUN.
+The standard deployment runs the unified container on port `80`. Ideal for homelabs, VPS instances, or local network servers where direct peer-to-peer WebRTC connections succeed via STUN.
 
 ```bash
 cd docker
@@ -65,7 +65,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Access the web interface at `http://localhost:8080`.
+Access the web interface at `http://localhost`.
 
 To build the image from source instead of pulling from Docker Hub:
 
@@ -76,7 +76,7 @@ docker compose up -d --build
 **Health check:**
 
 ```bash
-curl -fsS http://localhost:8080/health
+curl -fsS http://localhost/health
 # {"status":"ok"}
 ```
 
@@ -91,7 +91,7 @@ The `docker/docker-compose.coturn.yml` file is a standalone compose configuratio
 **Step 1:** Point your domain (`A`/`CNAME`) to your VPS.
 
 **Step 2:** Ensure firewall ports are open on the VPS:
-- `8080` (TCP): Web UI and API (or custom `PONTER_HTTP_PORT`)
+- `80` (TCP): Web UI and API (or custom `PONTER_HTTP_PORT`)
 - `3478` (TCP/UDP): Coturn STUN/TURN listener
 - `49152:49200` (UDP): Coturn relay port range
 
@@ -104,7 +104,7 @@ cp .env.example .env
 #   REFRESH_TOKEN_SECRET=<32+ chars>
 #   DOMAIN=ponter.example.com
 #   TURN_SECRET=<random 32 hex chars>
-#   CORS_ORIGIN=http://localhost:8080,https://ponter.example.com
+#   CORS_ORIGIN=http://localhost,https://ponter.example.com
 ```
 
 **Step 4:** Launch services:
@@ -150,7 +150,7 @@ docker compose up -d
 Verify the update:
 
 ```bash
-curl -fsS http://localhost:8080/health
+curl -fsS http://localhost/health
 # Expected: {"status":"ok"}
 ```
 
@@ -184,7 +184,7 @@ Browser signaling uses persistent WebSockets (`/api/ws/browser`) rather than RES
 To prevent connections from dropping prematurely:
 1. **Internal Nginx Configuration**: `docker/nginx.web.conf` sets `proxy_read_timeout 86400s;` (24 hours), `proxy_send_timeout 86400s;`, and disables proxy buffering (`proxy_buffering off;`).
 2. **Graceful Shutdown**: The container specifies `stop_grace_period: 15s`. When stopping or restarting, Supervisord sends `SIGTERM` to the Node.js server, allowing it to close signaling sockets with WebSocket status code `1001` (Going Away) before terminating cleanly.
-3. **External Host Proxy**: If you run an external reverse proxy (e.g. Traefik, host Nginx, Caddy) in front of port 8080, ensure its WebSocket read timeout is set to at least 24 hours.
+3. **External Host Proxy**: If you run an external reverse proxy (e.g. Traefik, host Nginx, Caddy) in front of port 80, ensure its WebSocket read timeout is set to at least 24 hours.
 
 ---
 
@@ -197,7 +197,7 @@ Under the unified deployment, the frontend SPA is compiled once into the contain
 `apps/web/src/config.ts` resolves the API endpoint in the following order:
 1. **Runtime Injection (`window.__PONTER_CONFIG__.apiUrl`)**: Injected into `/usr/share/nginx/html/config.js` by `entrypoint.sh` from the `PONTER_API_URL` environment variable.
 2. **Build-Time Variable (`import.meta.env.VITE_API_URL`)**: Used during local development with Vite dev server (`http://localhost:8787`).
-3. **Same-Origin Fallback (`window.location.origin`)**: Default for container deployment where frontend and backend are served from the same host and port (`http://your-server:8080`).
+3. **Same-Origin Fallback (`window.location.origin`)**: Default for container deployment where frontend and backend are served from the same host and port (`http://your-server`).
 
 If Ponter is accessed via the standard published port on the same domain, leave `PONTER_API_URL` empty in `docker/.env`.
 
@@ -205,15 +205,15 @@ If Ponter is accessed via the standard published port on the same domain, leave 
 
 ## 5. Environment Variables Reference
 
-| Variable                   | Required   | Default                 | Description                                                                                                    |
-| -------------------------- | ---------- | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `PONTER_HTTP_PORT`         | No         | `8080`                  | Published host port for the web UI and reverse proxy. Set to `127.0.0.1:8080` when behind a host proxy.       |
-| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for same-origin default.                     |
-| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                                         |
-| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                                     |
-| `JWT_SECRET`               | Yes        | —                       | HS256 HMAC secret for signing access tokens. Minimum 32 characters.                                            |
-| `REFRESH_TOKEN_SECRET`     | Yes        | —                       | HS256 HMAC secret for signing refresh tokens. Minimum 32 characters.                                           |
-| `CORS_ORIGIN`              | No         | `http://localhost:8080` | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                                 |
+| Variable                   | Required   | Default                 | Description                                                                                                                                              |
+| -------------------------- | ---------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PONTER_HTTP_PORT`         | No         | `80`                    | Published host port for the web UI and reverse proxy. Set to `127.0.0.1:80` (or `127.0.0.1:8080` to avoid host port collision) when behind a host proxy. |
+| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for same-origin default.                                                               |
+| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                                                                                   |
+| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                                                                               |
+| `JWT_SECRET`               | Yes        | —                       | HS256 HMAC secret for signing access tokens. Minimum 32 characters.                                                                                      |
+| `REFRESH_TOKEN_SECRET`     | Yes        | —                       | HS256 HMAC secret for signing refresh tokens. Minimum 32 characters.                                                                                     |
+| `CORS_ORIGIN`              | No         | `http://localhost`      | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                                                                           |
 | `JWT_EXPIRES_IN`           | No         | `900` (15m)             | Access token TTL in seconds.                                                                                   |
 | `REFRESH_TOKEN_EXPIRES_IN` | No         | `604800` (7d)           | Refresh token TTL in seconds.                                                                                  |
 | `DOCKERHUB_IMAGE`          | No         | `ngotuananh2101/ponter` | Image repository name on Docker Hub.                                                                           |
@@ -246,7 +246,7 @@ The container entrypoint will automatically adjust ownership to the unprivileged
 
 **Solution**: Update `CORS_ORIGIN` in `docker/.env` to include the exact protocol, domain, and port used to access the application:
 ```env
-CORS_ORIGIN=http://localhost:8080,https://ponter.example.com
+CORS_ORIGIN=http://localhost,https://ponter.example.com
 ```
 
 ### Issue: WebRTC peer connection fails across networks
@@ -257,7 +257,7 @@ CORS_ORIGIN=http://localhost:8080,https://ponter.example.com
 1. If using Coturn (`docker-compose.coturn.yml`), ensure UDP port 3478 and UDP port range 49152-49200 are open in your host firewall.
 2. Verify TURN credentials endpoint responds:
    ```bash
-   curl -H "Authorization: Bearer <jwt>" http://localhost:8080/api/webrtc/ice-servers
+   curl -H "Authorization: Bearer <jwt>" http://localhost/api/webrtc/ice-servers
    ```
 3. Alternatively, switch to Cloudflare Calls TURN by setting `TURN_PROVIDER=cloudflare`, `TURN_KEY_ID`, and `TURN_KEY_API_TOKEN` in `.env`.
 
@@ -265,4 +265,4 @@ CORS_ORIGIN=http://localhost:8080,https://ponter.example.com
 
 **Cause**: An external host reverse proxy is terminating idle WebSocket connections prematurely.
 
-**Solution**: Configure your external reverse proxy with `proxy_read_timeout 86400s;` and verify WebSocket upgrade headers (`Upgrade` and `Connection`) are properly forwarded to port 8080.
+**Solution**: Configure your external reverse proxy with `proxy_read_timeout 86400s;` and verify WebSocket upgrade headers (`Upgrade` and `Connection`) are properly forwarded to port 80.

@@ -6,7 +6,7 @@ The unified image bundles:
 
 - **Backend Server (`@ponter/server`)**: Node.js 24 LTS, Hono REST API, SQLite database with WAL mode, and WebSocket signaling servers (`/api/ws/agent`, `/api/ws/browser`) listening internally on `127.0.0.1:8787`.
 - **Web Frontend (`@ponter/web`)**: Vue 3 SPA static assets served from `/usr/share/nginx/html`.
-- **Reverse Proxy (Nginx)**: Listens on port `8080`, serves frontend SPA assets with client-side history routing fallback (`try_files`), directly proxies `/health`, and reverse proxies `/api/` and WebSocket signaling with connection upgrade support to the backend server.
+- **Reverse Proxy (Nginx)**: Listens on port `80`, serves frontend SPA assets with client-side history routing fallback (`try_files`), directly proxies `/health`, and reverse proxies `/api/` and WebSocket signaling with connection upgrade support to the backend server.
 - **Process Supervisor (`supervisord`)**: Manages both Nginx and the Node.js backend (`su-exec node`), handling automatic restarts and graceful multi-process termination.
 
 The unified image is published to Docker Hub as `ngotuananh2101/ponter` (multi-arch `linux/amd64` and `linux/arm64`).
@@ -18,9 +18,9 @@ The unified image is published to Docker Hub as `ngotuananh2101/ponter` (multi-a
 | File                        | Description                                                                                                                                           |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Dockerfile`                | Multi-stage build (`node:24-alpine`): builder compiles `@ponter/server` and `@ponter/web` SPA; runner installs Nginx + Supervisord + production deps. |
-| `docker-compose.yml`        | Standard all-in-one deployment. Single container publishing port `8080`. Public STUN only.                                                            |
+| `docker-compose.yml`        | Standard all-in-one deployment. Single container publishing port `80`. Public STUN only.                                                              |
 | `docker-compose.coturn.yml` | Standalone production deployment bundling the `ponter` service and an integrated Coturn TURN server (`network_mode: host`) for symmetric NAT relay.   |
-| `nginx.web.conf`            | Nginx site configuration: port 8080, SPA fallback, security headers, `/config.js` no-cache, and `/api/` + WebSocket proxying.                         |
+| `nginx.web.conf`            | Nginx site configuration: port 80, SPA fallback, security headers, `/config.js` no-cache, and `/api/` + WebSocket proxying.                           |
 | `supervisord.conf`          | Supervisord configuration running Nginx and unprivileged Node.js (`su-exec node`) in foreground (`nodaemon=true`).                                    |
 | `entrypoint.sh`             | Container entrypoint: fixes `./data` volume permissions for SQLite, renders runtime `/config.js` from `PONTER_API_URL`, and execs supervisord.        |
 | `.env.example`              | Template for required and optional environment variables.                                                                                             |
@@ -32,7 +32,7 @@ The unified image is published to Docker Hub as `ngotuananh2101/ponter` (multi-a
 
 ### 1. Standard Deployment (All-in-One Container)
 
-Runs the unified platform publishing port `8080`. Uses public STUN servers for WebRTC peer-to-peer connection establishment.
+Runs the unified platform publishing port `80`. Uses public STUN servers for WebRTC peer-to-peer connection establishment.
 
 ```bash
 cd docker
@@ -44,7 +44,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Access the web interface at `http://localhost:8080`.
+Access the web interface at `http://localhost`.
 
 To build from source instead of pulling from Docker Hub:
 
@@ -58,7 +58,7 @@ For environments where clients or agents operate behind symmetric or restrictive
 
 1. Point your domain (`A`/`CNAME`) to your host machine or VPS.
 2. Ensure firewall ports are open:
-   - `8080` (TCP): Ponter Web UI & API (or your custom `PONTER_HTTP_PORT`)
+   - `80` (TCP): Ponter Web UI & API (or your custom `PONTER_HTTP_PORT`)
    - `3478` (TCP/UDP): Coturn signaling & STUN/TURN
    - `49152-49200` (UDP): Coturn media relay port range
 3. Configure `.env`:
@@ -94,7 +94,7 @@ Under the unified deployment, the web frontend SPA is compiled into static asset
    - `import.meta.env.VITE_API_URL` (build-time environment variable, used during local `vite dev`).
    - `window.location.origin` (default same-origin fallback).
 
-For standard deployments where the frontend and backend share the same domain and port (`http://your-host:8080`), leave `PONTER_API_URL` empty in `.env`.
+For standard deployments where the frontend and backend share the same domain and port (`http://your-host`), leave `PONTER_API_URL` empty in `.env`.
 
 ---
 
@@ -118,25 +118,25 @@ If your host machine already runs an external reverse proxy (e.g., Traefik, Cadd
 
 ## Environment Variables Reference
 
-| Variable                   | Required   | Default                 | Description                                                                                          |
-| -------------------------- | ---------- | ----------------------- | ---------------------------------------------------------------------------------------------------- |
-| `PONTER_HTTP_PORT`         | No         | `8080`                  | Published host port for the web UI and reverse proxy. Use `127.0.0.1:8080` when behind a host proxy. |
-| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for same-origin default.           |
-| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                               |
-| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                           |
-| `JWT_SECRET`               | Yes        | —                       | HS256 secret for signing access tokens. Minimum 32 characters.                                       |
-| `REFRESH_TOKEN_SECRET`     | Yes        | —                       | HS256 secret for signing refresh tokens. Minimum 32 characters.                                      |
-| `CORS_ORIGIN`              | No         | `http://localhost:8080` | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                       |
-| `JWT_EXPIRES_IN`           | No         | `900` (15m)             | Access token TTL in seconds.                                                                         |
-| `REFRESH_TOKEN_EXPIRES_IN` | No         | `604800` (7d)           | Refresh token TTL in seconds.                                                                        |
-| `DOCKERHUB_IMAGE`          | No         | `ngotuananh2101/ponter` | Image repository name on Docker Hub.                                                                 |
-| `DOMAIN`                   | Coturn     | —                       | Domain or hostname for the Coturn realm and TURN server.                                             |
-| `TURN_SECRET`              | Coturn     | —                       | Shared secret for Coturn RFC 5766 authentication.                                                    |
-| `TURN_URL`                 | Coturn     | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.           |
-| `STUN_URL`                 | Coturn     | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.           |
-| `TURN_PROVIDER`            | No         | `coturn`                | TURN provider: `coturn` \| `cloudflare` (Cloudflare Calls TURN relay) \| `none`.                     |
-| `TURN_KEY_ID`              | Cloudflare | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                             |
-| `TURN_KEY_API_TOKEN`       | Cloudflare | —                       | Cloudflare Calls TURN API token (required when `TURN_PROVIDER=cloudflare`).                          |
+| Variable                   | Required   | Default                 | Description                                                                                                                                           |
+| -------------------------- | ---------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PONTER_HTTP_PORT`         | No         | `80`                    | Published host port for the web UI and reverse proxy. Use `127.0.0.1:80` (or `127.0.0.1:8080` to avoid host port collision) when behind a host proxy. |
+| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for same-origin default.                                                            |
+| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                                                                                |
+| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                                                                            |
+| `JWT_SECRET`               | Yes        | —                       | HS256 secret for signing access tokens. Minimum 32 characters.                                                                                        |
+| `REFRESH_TOKEN_SECRET`     | Yes        | —                       | HS256 secret for signing refresh tokens. Minimum 32 characters.                                                                                       |
+| `CORS_ORIGIN`              | No         | `http://localhost`      | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                                                                        |
+| `JWT_EXPIRES_IN`           | No         | `900` (15m)             | Access token TTL in seconds.                                                                                                                          |
+| `REFRESH_TOKEN_EXPIRES_IN` | No         | `604800` (7d)           | Refresh token TTL in seconds.                                                                                                                         |
+| `DOCKERHUB_IMAGE`          | No         | `ngotuananh2101/ponter` | Image repository name on Docker Hub.                                                                                                                  |
+| `DOMAIN`                   | Coturn     | —                       | Domain or hostname for the Coturn realm and TURN server.                                                                                              |
+| `TURN_SECRET`              | Coturn     | —                       | Shared secret for Coturn RFC 5766 authentication.                                                                                                     |
+| `TURN_URL`                 | Coturn     | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.                                                            |
+| `STUN_URL`                 | Coturn     | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.                                                            |
+| `TURN_PROVIDER`            | No         | `coturn`                | TURN provider: `coturn` \| `cloudflare` (Cloudflare Calls TURN relay) \| `none`.                                                                      |
+| `TURN_KEY_ID`              | Cloudflare | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                                                                              |
+| `TURN_KEY_API_TOKEN`       | Cloudflare | —                       | Cloudflare Calls TURN API token (required when `TURN_PROVIDER=cloudflare`).                                                                           |
 
 ---
 
@@ -192,12 +192,12 @@ After launching the container, verify system health:
 
 ```bash
 # Verify backend readiness probe via Nginx proxy
-curl -fsS http://localhost:8080/health
+curl -fsS http://localhost/health
 # Expected: {"status":"ok"}
 
 # Verify frontend SPA asset serving
-curl -fsS http://localhost:8080/ | grep '<div id="app"></div>'
+curl -fsS http://localhost/ | grep '<div id="app"></div>'
 
 # Verify runtime configuration endpoint
-curl -fsS http://localhost:8080/config.js
+curl -fsS http://localhost/config.js
 ```
