@@ -1,192 +1,203 @@
 # Docker Packaging
 
-This directory contains the multi-stage Dockerfile and four Docker Compose setups for running the `@ponter/server` self-hosted backend.
+This directory contains the Docker packaging and Docker Compose configurations for running the unified all-in-one Ponter platform.
 
-The server image is built and published to Docker Hub by CI (`.github/workflows/docker-publish.yml`), so the three deployment setups below pull a prebuilt image instead of compiling on the host. See [Deploying a new version](#deploying-a-new-version) for the workflow.
+The unified image bundles:
+
+- **Backend Server (`@ponter/server`)**: Node.js 24 LTS, Hono REST API, SQLite database with WAL mode, and WebSocket signaling servers (`/api/ws/agent`, `/api/ws/browser`) listening internally on `127.0.0.1:8787`.
+- **Web Frontend (`@ponter/web`)**: Vue 3 SPA static assets served from `/usr/share/nginx/html`.
+- **Reverse Proxy (Nginx)**: Listens on port `8080`, serves frontend SPA assets with client-side history routing fallback (`try_files`), directly proxies `/health`, and reverse proxies `/api/` and WebSocket signaling with connection upgrade support to the backend server.
+- **Process Supervisor (`supervisord`)**: Manages both Nginx and the Node.js backend (`su-exec node`), handling automatic restarts and graceful multi-process termination.
+
+The unified image is published to Docker Hub as `ngotuananh2101/ponter` (multi-arch `linux/amd64` and `linux/arm64`).
+
+---
 
 ## Files
 
-| File                        | Description                                                                                                                                        |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile.server`         | Multi-stage build: `node:24-alpine` base → builder (full deps + native toolchain) → runner (production deps only, better-sqlite3 native bindings). |
-| `docker-compose.local.yml`  | Local LAN testing. **Builds from source.** No TURN, Google public STUN only.                                                                       |
-| `docker-compose.tunnel.yml` | Homelab behind a Cloudflare Tunnel. Pulls the published image. Public exposure via `cloudflared`.                                                  |
-| `docker-compose.prod.yml`   | Production VPS. Pulls the published image. Caddy (Let's Encrypt) + Coturn (TURN/STUN) alongside the server.                                        |
-| `docker-compose.nginx.yml`  | Production VPS with host Nginx. Pulls the published image. Binds `127.0.0.1:8787` + Coturn; host Nginx handles TLS & WebSocket proxying.           |
-| `nginx.conf.example`        | Sample Nginx configuration for reverse proxy with WebSocket upgrade support and SSL.                                                               |
-| `Caddyfile`                 | Caddy reverse proxy config for the prod setup.                                                                                                     |
-| `.env.example`              | Template for required environment variables.                                                                                                       |
+| File                        | Description                                                                                                                                           |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`                | Multi-stage build (`node:24-alpine`): builder compiles `@ponter/server` and `@ponter/web` SPA; runner installs Nginx + Supervisord + production deps. |
+| `docker-compose.yml`        | Standard all-in-one deployment. Single container publishing port `8080`. Public STUN only.                                                            |
+| `docker-compose.coturn.yml` | Standalone production deployment bundling the `ponter` service and an integrated Coturn TURN server (`network_mode: host`) for symmetric NAT relay.   |
+| `nginx.web.conf`            | Nginx site configuration: port 8080, SPA fallback, security headers, `/config.js` no-cache, and `/api/` + WebSocket proxying.                         |
+| `supervisord.conf`          | Supervisord configuration running Nginx and unprivileged Node.js (`su-exec node`) in foreground (`nodaemon=true`).                                    |
+| `entrypoint.sh`             | Container entrypoint: fixes `./data` volume permissions for SQLite, renders runtime `/config.js` from `PONTER_API_URL`, and execs supervisord.        |
+| `.env.example`              | Template for required and optional environment variables.                                                                                             |
+| `DOCKERHUB.md`              | Repository description and documentation for Docker Hub.                                                                                              |
+
+---
 
 ## Quick Start
 
-### 1. Local Development
+### 1. Standard Deployment (All-in-One Container)
 
-Ideal for LAN testing with an ephemeral SQLite database.
+Runs the unified platform publishing port `8080`. Uses public STUN servers for WebRTC peer-to-peer connection establishment.
 
 ```bash
 cd docker
 cp .env.example .env
+# Edit .env: set JWT_SECRET and REFRESH_TOKEN_SECRET
 
-# Build and start
-docker compose -f docker-compose.local.yml up --build
+# Pull published image and start
+docker compose pull
+docker compose up -d
 ```
 
-The server listens on `http://localhost:8787`.
+Access the web interface at `http://localhost:8080`.
 
-### 2. Homelab (Cloudflare Tunnel)
+To build from source instead of pulling from Docker Hub:
 
-Exposes the server to the internet through a Cloudflare Tunnel, so no port 80/443 or DNS is needed on the host.
+```bash
+docker compose up -d --build
+```
 
-1. Create a tunnel on the Cloudflare dashboard or CLI:
-   ```bash
-   cloudflared tunnel create my-tunnel
-   cloudflared tunnel token my-tunnel
-   ```
-2. Configure `.env`:
-   ```bash
-   cd docker
-   cp .env.example .env
-   # Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, CLOUDFLARE_TUNNEL_TOKEN, CORS_ORIGIN
-   ```
-3. Start:
-   ```bash
-   docker compose -f docker-compose.tunnel.yml pull
-   docker compose -f docker-compose.tunnel.yml up -d
-   ```
+### 2. Production Deployment with Coturn (TURN Relay)
 
-### 3. Production (VPS with Caddy + Coturn)
+For environments where clients or agents operate behind symmetric or restrictive NAT firewalls, use the standalone `docker-compose.coturn.yml` setup. It runs the all-in-one Ponter container alongside an integrated Coturn TURN server.
 
-Full production stack with automatic HTTPS and a native TURN relay for WebRTC NAT traversal.
-
-1. Point your domain (`A`/`CNAME`) at the VPS.
-2. Configure `.env`:
+1. Point your domain (`A`/`CNAME`) to your host machine or VPS.
+2. Ensure firewall ports are open:
+   - `8080` (TCP): Ponter Web UI & API (or your custom `PONTER_HTTP_PORT`)
+   - `3478` (TCP/UDP): Coturn signaling & STUN/TURN
+   - `49152-49200` (UDP): Coturn media relay port range
+3. Configure `.env`:
    ```bash
    cd docker
    cp .env.example .env
-   # Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, TURN_SECRET
+   # Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, and TURN_SECRET
    ```
-3. Start:
+4. Start services:
    ```bash
-   docker compose -f docker-compose.prod.yml pull
-   docker compose -f docker-compose.prod.yml up -d
+   docker compose -f docker-compose.coturn.yml pull
+   docker compose -f docker-compose.coturn.yml up -d
    ```
 
-Caddy will automatically request Let's Encrypt certificates for `DOMAIN`. The Coturn server uses `TURN_SECRET` as its RFC 5766 shared secret; the server's `GET /api/webrtc/ice-servers` endpoint mints time-limited HMAC-SHA1 TURN credentials on demand.
+Coturn runs with `network_mode: host` and authenticates relay sessions using the shared `TURN_SECRET`. The backend server's `GET /api/webrtc/ice-servers` endpoint mints time-limited HMAC-SHA1 credentials on demand for authenticated clients.
 
-### 4. Production (VPS with Existing Nginx + Coturn)
+---
 
-When your VPS already has Nginx running on ports 80/443:
+## Runtime Frontend Configuration
 
-1. Configure `.env`:
-   ```bash
-   cd docker
-   cp .env.example .env
-   # Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, TURN_SECRET, CORS_ORIGIN
+Under the unified deployment, the web frontend SPA is compiled into static assets inside the container at build time. To eliminate the need for rebuilding the image for different domains or hostnames, the frontend dynamically resolves its backend API URL at runtime.
+
+### How It Works
+
+1. On container boot, `docker/entrypoint.sh` inspects the `PONTER_API_URL` environment variable and writes `/usr/share/nginx/html/config.js`:
+   ```javascript
+   window.__PONTER_CONFIG__ = {
+     apiUrl: '', // populated if PONTER_API_URL is set
+   };
    ```
-2. Start the backend and Coturn:
-   ```bash
-   docker compose -f docker-compose.nginx.yml pull
-   docker compose -f docker-compose.nginx.yml up -d
+2. The web client (`apps/web/src/config.ts`) resolves the API endpoint with the following precedence:
+   - `window.__PONTER_CONFIG__.apiUrl` (if configured in `PONTER_API_URL`).
+   - `import.meta.env.VITE_API_URL` (build-time environment variable, used during local `vite dev`).
+   - `window.location.origin` (default same-origin fallback).
+
+For standard deployments where the frontend and backend share the same domain and port (`http://your-host:8080`), leave `PONTER_API_URL` empty in `.env`.
+
+---
+
+## Running Behind an External Host Reverse Proxy
+
+If your host machine already runs an external reverse proxy (e.g., Traefik, Caddy, or host Nginx) to terminate TLS on ports 80/443:
+
+1. Bind the container to loopback in `docker/.env`:
+   ```env
+   PONTER_HTTP_PORT=127.0.0.1:8080
+   CORS_ORIGIN=https://ponter.example.com
    ```
-   The server container binds only to `127.0.0.1:8787`.
-3. Configure Nginx on the host using `docker/nginx.conf.example` as a template:
-   - Ensure WebSocket upgrade headers are passed (`proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade;`).
-   - Increase `proxy_read_timeout` to `86400s` to avoid idle WebSocket disconnects.
-   - Reload Nginx: `sudo nginx -t && sudo systemctl reload nginx`.
-4. Ensure VPS firewall opens Coturn ports:
-   - `3478` (TCP/UDP)
-   - `49152:49200` (UDP)
+2. Configure your external reverse proxy to forward traffic to `http://127.0.0.1:8080`:
+   - Pass standard proxy headers: `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
+   - Enable WebSocket upgrade headers: `Upgrade $http_upgrade` and `Connection "upgrade"`.
+   - Set proxy read and send timeouts to at least `86400s` (24h) to prevent dropping idle WebRTC signaling connections.
+   - Disable proxy response buffering (`proxy_buffering off;`).
+   - Increase maximum request body size to at least `50M` (`client_max_body_size 50M;`) for file transfers.
 
-## Environment Variables
+---
 
-| Variable                   | Required        | Default                 | Description                                                                                           |
-| -------------------------- | --------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
-| `PORT`                     | No              | `8787`                  | Server listen port (inside container).                                                                |
-| `DATABASE_PATH`            | No              | `/app/data/remote.db`   | SQLite database file.                                                                                 |
-| `JWT_SECRET`               | Yes             | —                       | HS256 secret for access tokens. Min 32 chars.                                                         |
-| `REFRESH_TOKEN_SECRET`     | Yes             | —                       | HS256 secret for refresh tokens. Min 32 chars.                                                        |
-| `CORS_ORIGIN`              | No              | `*`                     | CORS allow-origin for the API.                                                                        |
-| `JWT_EXPIRES_IN`           | No              | `900` (15m)             | Access token TTL.                                                                                     |
-| `REFRESH_TOKEN_EXPIRES_IN` | No              | `604800` (7d)           | Refresh token TTL.                                                                                    |
-| `TURN_SECRET`              | Prod only       | —                       | Shared secret for Coturn long-term auth.                                                              |
-| `TURN_URL`                 | Prod only       | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to use an IP instead of the domain.                |
-| `STUN_URL`                 | Prod only       | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to use an IP instead of the domain.                |
-| `DOMAIN`                   | Prod only       | —                       | Your public domain for Caddy TLS + TURN realm.                                                        |
-| `TURN_PROVIDER`            | No              | `coturn`                | TURN provider: `coturn` \| `cloudflare` (first 1,000 GB/month free, then ~$0.05/GB egress) \| `none`. |
-| `TURN_KEY_ID`              | Cloudflare only | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                              |
-| `TURN_KEY_API_TOKEN`       | Cloudflare only | —                       | Cloudflare TURN API token (required when `TURN_PROVIDER=cloudflare`).                                 |
-| `CLOUDFLARE_TUNNEL_TOKEN`  | Tunnel only     | —                       | Cloudflare Tunnel token.                                                                              |
-| `DOCKERHUB_IMAGE`          | Deploy only     | `ngotuananh2101/ponter` | Image to pull, e.g. `ngotuananh2101/ponter`. Not used by `docker-compose.local.yml`, which builds.    |
+## Environment Variables Reference
+
+| Variable                   | Required   | Default                 | Description                                                                                          |
+| -------------------------- | ---------- | ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| `PONTER_HTTP_PORT`         | No         | `8080`                  | Published host port for the web UI and reverse proxy. Use `127.0.0.1:8080` when behind a host proxy. |
+| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for same-origin default.           |
+| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                               |
+| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                           |
+| `JWT_SECRET`               | Yes        | —                       | HS256 secret for signing access tokens. Minimum 32 characters.                                       |
+| `REFRESH_TOKEN_SECRET`     | Yes        | —                       | HS256 secret for signing refresh tokens. Minimum 32 characters.                                      |
+| `CORS_ORIGIN`              | No         | `http://localhost:8080` | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                       |
+| `JWT_EXPIRES_IN`           | No         | `900` (15m)             | Access token TTL in seconds.                                                                         |
+| `REFRESH_TOKEN_EXPIRES_IN` | No         | `604800` (7d)           | Refresh token TTL in seconds.                                                                        |
+| `DOCKERHUB_IMAGE`          | No         | `ngotuananh2101/ponter` | Image repository name on Docker Hub.                                                                 |
+| `DOMAIN`                   | Coturn     | —                       | Domain or hostname for the Coturn realm and TURN server.                                             |
+| `TURN_SECRET`              | Coturn     | —                       | Shared secret for Coturn RFC 5766 authentication.                                                    |
+| `TURN_URL`                 | Coturn     | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.           |
+| `STUN_URL`                 | Coturn     | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.           |
+| `TURN_PROVIDER`            | No         | `coturn`                | TURN provider: `coturn` \| `cloudflare` (Cloudflare Calls TURN relay) \| `none`.                     |
+| `TURN_KEY_ID`              | Cloudflare | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                             |
+| `TURN_KEY_API_TOKEN`       | Cloudflare | —                       | Cloudflare Calls TURN API token (required when `TURN_PROVIDER=cloudflare`).                          |
+
+---
 
 ## Building Locally
 
-You can also build the image directly without Compose:
+You can build the unified image directly from the root repository directory:
 
 ```bash
-docker build -f docker/Dockerfile.server -t ponter-server:test .
+# Build unified image with Docker
+docker build -f docker/Dockerfile -t ponter:latest .
+
+# Build using Docker Compose bake
+docker compose build
 ```
 
 Podman is also supported:
 
 ```bash
-podman build -f docker/Dockerfile.server -t ponter-server:test .
+podman build -f docker/Dockerfile -t ponter:latest .
 ```
 
-## Deploying a new version
+---
 
-The three deployment setups (tunnel / prod / nginx) pull the published image instead of building it. `docker-compose.local.yml` is the exception — it builds from source so local development reflects uncommitted edits.
+## Deploying a New Version
 
-**0. Point the deployment at your image.** The Docker Hub account is not the same identifier as the GitHub one, so the namespace comes from the `DOCKERHUB_USERNAME` secret the workflow reads, while Compose reads `DOCKERHUB_IMAGE` from `docker/.env`. The shipped default already points at the published repository; override it only when publishing under a different namespace:
+The standard compose files pull the prebuilt multi-arch image from Docker Hub.
+
+**1. Publish the image:**
+In GitHub Actions, trigger the **Docker Publish** workflow (`.github/workflows/docker-publish.yml`). The workflow builds `linux/amd64` and `linux/arm64` on dedicated native runners and publishes a multi-arch manifest.
+
+| Tag                                          | Update Condition                               | Use Case                                             |
+| -------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| `<your-dockerhub-username>/ponter:latest`    | Runs on `main` branch                          | Standard production tag referenced by compose files. |
+| `<your-dockerhub-username>/ponter:sha-<sha>` | Every run; **only the 3 most recent are kept** | Pinning a specific build or performing rollbacks.    |
+| `<your-dockerhub-username>/ponter:<tag>`     | When `tag` input is provided (retained)        | Durable versioned release tag (e.g. `v1.2.0`).       |
+
+**2. Pull and restart on the deployment host:**
 
 ```bash
 cd docker
-# in .env (created from .env.example):
-DOCKERHUB_IMAGE=ngotuananh2101/ponter
+docker compose pull
+docker compose up -d
 ```
 
-To publish your **own** image instead of pulling the upstream one, see
-[`docs/guides/self-hosting.md` §2](../docs/guides/self-hosting.md#2-docker-image-self-publish).
+**3. Rolling back:**
+If a new release causes issues, update `image: ngotuananh2101/ponter:sha-<sha>` in `docker/docker-compose.yml` to the previous SHA tag within the 3-build retention window and run `docker compose up -d`.
 
-**1. Publish the image.** In GitHub, go to Actions → _Docker Publish_ → _Run workflow_. Pick the branch to build from.
+---
 
-Optionally, set the **tag** input to also attach a named tag (e.g. `v1.2.3`) to the published manifest; leaving it empty keeps `latest`/`sha` only.
+## Smoke Test & Health Check
 
-The workflow builds `linux/amd64` and `linux/arm64` on separate native runners and merges them into one multi-arch manifest, so the same image works on an x86 VPS and an ARM machine (Oracle Cloud, Ampere, Raspberry Pi) without QEMU emulation.
-
-The image is pushed as `<your-dockerhub-username>/ponter` (currently `ngotuananh2101/ponter`). Create that repository on Docker Hub first — pushes to a name that does not exist are rejected rather than auto-created.
-
-| Tag                                          | When it moves                                  | Use                                                          |
-| -------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------ |
-| `<your-dockerhub-username>/ponter:latest`    | Only for runs on `main`                        | What the compose files point at.                             |
-| `<your-dockerhub-username>/ponter:sha-<sha>` | Every run; **only the 3 most recent are kept** | Pinning a specific build, or rolling back to an earlier one. |
-| `<your-dockerhub-username>/ponter:<tag>`     | When the `tag` input is supplied (persists)    | A durable, human-readable tag (e.g. `v1.2.3`).               |
-
-A run from a feature branch never produces `latest`, so experimenting cannot move the image production resolves. Each tag-less publish (no `tag` input) prunes older `sha-` tags, keeping only the three most recent. A custom tag that itself starts with `sha-` is indistinguishable from a build tag and falls inside the retention window — avoid the `sha-` prefix for durable tags.
-
-**2. Pull and restart on the host:**
+After launching the container, verify system health:
 
 ```bash
-cd docker
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-```
-
-**3. Verify:**
-
-```bash
-curl https://<your-domain>/health
+# Verify backend readiness probe via Nginx proxy
+curl -fsS http://localhost:8080/health
 # Expected: {"status":"ok"}
-```
 
-**Rolling back.** Because `latest` moves, a bad release is undone by pinning the previous `sha-` tag in the compose file and re-running `pull && up -d`. **Only the three most recent `sha-` tags are retained** — each tag-less publish prunes older ones, so pin a `sha-` tag only within that window, or pass an explicit `tag` input for a durable name.
+# Verify frontend SPA asset serving
+curl -fsS http://localhost:8080/ | grep '<div id="app"></div>'
 
-**Repository secrets.** The workflow needs `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub **access token** from Account Settings → Personal Access Tokens with Read/Write **and Delete** — not the account password). The publish workflow prunes old `sha-` tags through the Docker Hub API, so a token without Delete scope fails the prune step (the image is still published). The native ARM runner is only free for public repositories; this one is public, so it costs nothing.
-
-## Smoke Test
-
-After starting the container, verify it is ready:
-
-```bash
-curl http://localhost:8787/health
-# Expected: {"status":"ok"}
+# Verify runtime configuration endpoint
+curl -fsS http://localhost:8080/config.js
 ```

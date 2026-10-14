@@ -95,34 +95,40 @@ mindmap
 
 ### 2.1 Overall Architecture
 
-The Remote Access Platform uses a **self-hosted stateful server** architecture with local SQLite and in-memory WebSocket dispatch. The Vue 3 SPA frontend remains deployed on Cloudflare Pages (static hosting only).
+The Remote Access Platform uses a **self-hosted stateful server** architecture with local SQLite and in-memory WebSocket dispatch. The platform is packaged into an all-in-one Docker container publishing port 8080, where internal Nginx serves the compiled Vue 3 SPA static assets and reverse proxies API and WebSocket signaling traffic to the internal Node.js backend.
 
 ```text
                                ┌────────────────────────────────────────┐
                                │       Client (Web Browser)             │
-                               │  (Vue 3 SPA hosted on Cloudflare CDN)   │
+                               │  (Vue 3 SPA loaded from Port 8080)     │
                                └──────────────────┬─────────────────────┘
-                                                  │ HTTPS REST API
+                                                  │ HTTP / WS (Port 8080)
                                                   ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ Docker Host / VPS                                                                      │
 │                                                                                        │
 │   ┌────────────────────────────────────────────────────────────────────────────────┐   │
-│   │ apps/server (@ponter/server)                                                   │   │
+│   │ Unified Container (ngotuananh2101/ponter:latest under Supervisord)             │   │
 │   │                                                                                │   │
-│   │   • Runtime: Node.js 24 LTS + @hono/node-server + ws                           │   │
-│   │   • In-Memory WebSocket Registry: Map<agentId, AgentConnection> (RAM)          │   │
-│   │   • Instantaneous Signal Dispatch (< 1ms cross-session forwarding)             │   │
-│   │   • Database: SQLite (/app/data/remote.db via better-sqlite3 + Drizzle ORM)    │   │
-│   │   • WAL Mode: PRAGMA journal_mode = WAL (high concurrency)                     │   │
-│   │   • Token Revocation: SQLite table `revoked_tokens`                            │   │
-│   │   • ICE Servers Endpoint: GET /api/webrtc/ice-servers                          │   │
+│   │   • Front Door (Nginx on Port 8080):                                           │   │
+│   │       - Serves Vue 3 SPA static files from /usr/share/nginx/html with fallback │   │
+│   │       - Proxies /health directly to backend 127.0.0.1:8787/health              │   │
+│   │       - Proxies /api/ and WebSocket (/api/ws/*) to backend 127.0.0.1:8787      │   │
+│   │                                                                                │   │
+│   │   • Backend Server (@ponter/server on 127.0.0.1:8787 via su-exec node):       │   │
+│   │       - Runtime: Node.js 24 LTS + @hono/node-server + ws                       │   │
+│   │       - In-Memory WebSocket Registry: Map<agentId, AgentConnection> (RAM)      │   │
+│   │       - Instantaneous Signal Dispatch (< 1ms cross-session forwarding)         │   │
+│   │       - Database: SQLite (/app/data/remote.db via better-sqlite3 + Drizzle)    │   │
+│   │       - WAL Mode: PRAGMA journal_mode = WAL (high concurrency)                 │   │
+│   │       - Token Revocation: SQLite table `revoked_tokens`                        │   │
+│   │       - ICE Servers Endpoint: GET /api/webrtc/ice-servers                      │   │
 │   └───────────────────────▲────────────────────────────────▲───────────────────────┘   │
 │                           │                                │                           │
 │     WSS /api/ws/agent     │                                │ STUN/TURN Allocation      │
 │                           │                                │ (RFC 5766 Shared Secret)  │
 │   ┌───────────────────────┴───────────────┐    ┌───────────┴───────────────────────┐   │
-│   │ ponter-agent (Rust Daemon)            │    │ coturn (Dockerized STUN/TURN)     │   │
+│   │ ponter-agent (Rust Daemon)            │    │ coturn (Integrated STUN/TURN)     │   │
 │   │ (Windows / Linux)                     │    │ Port 3478, Relays: 49152-49200    │   │
 │   └───────────────────────────────────────┘    └───────────────────────────────────┘   │
 │                                                                                        │
@@ -243,7 +249,7 @@ sequenceDiagram
 
 ### 2.6 Security Architecture
 
-> **⚠️ Actual Status (2026-10-05):** The diagram below represents target defense architecture. The following controls are **not yet implemented**: IP whitelisting (B1), geo-blocking (B3), bot detection (B4), certificate pinning (C2), HSTS (C3), device match (E2). Several controls have partial implementation: rate limiting (B2/D3) applies only to login (`/api/auth/login`); TLS (C1) terminates at Caddy/Let's Encrypt but does not pin TLS 1.3+. Implemented: JWT validation (D1), scope check (D2), session validity (E1), concurrent limit (E3).
+> **⚠️ Actual Status (2026-10-05):** The diagram below represents target defense architecture. The following controls are **not yet implemented**: IP whitelisting (B1), geo-blocking (B3), bot detection (B4), certificate pinning (C2), HSTS (C3), device match (E2). Several controls have partial implementation: rate limiting (B2/D3) applies only to login (`/api/auth/login`); TLS (C1) terminates at host reverse proxy or Nginx but does not pin TLS 1.3+. Implemented: JWT validation (D1), scope check (D2), session validity (E1), concurrent limit (E3).
 
 ```mermaid
 flowchart TD
@@ -258,14 +264,14 @@ flowchart TD
     E -->|Fail| X4[Blocked - Expired/Revoked]
 
     subgraph "Layer 1: Network"
-        B1[IP Whitelisting - Docker/Caddy]
+        B1[IP Whitelisting - Host Firewall/Nginx]
         B2[Rate Limiting]
         B3[Geo-Blocking]
         B4[Bot Detection]
     end
 
     subgraph "Layer 2: Transport"
-        C1[TLS 1.3+ - Caddy managed]
+        C1[TLS 1.3+ - Host Proxy/Nginx managed]
         C2[Certificate Pinning]
         C3[HSTS]
     end
@@ -294,14 +300,13 @@ ponter/
 ├── .github/
 │   └── workflows/
 │       ├── ci-node.yml               # CI: Node/TS lint, typecheck, tests
-│       ├── ci-docker.yml             # CI: server Docker image build
+│       ├── ci-docker.yml             # CI: unified Docker image build & smoke test
 │       ├── ci-e2e.yml                # CI: cross-language terminal E2E
 │       ├── build-agent.yml           # Build/verify Rust agent (6 targets)
-│       ├── deploy.yml                # Deploy frontend to Cloudflare Pages
-│       └── docker-publish.yml        # Publish server image to Docker Hub (manual)
+│       └── docker-publish.yml        # Publish unified image to Docker Hub (multi-arch)
 │
 ├── apps/
-│   ├── web/                          # VueJS Web App (Cloudflare Pages)
+│   ├── web/                          # VueJS Web App (compiled into unified Docker image)
 │   ├── desktop/                      # Native Rust egui Desktop App
 │   ├── mobile/                       # Tauri Mobile App
 │   ├── agent/                        # Native Rust agent daemon
@@ -315,12 +320,13 @@ ponter/
 │   ├── webrtc-core/                  # WebRTC abstraction
 │   └── ui-components/                # Shared Vue components
 │
-├── docker/                           # Docker packaging for @ponter/server
-│   ├── Dockerfile.server
-│   ├── docker-compose.local.yml
-│   ├── docker-compose.tunnel.yml
-│   ├── docker-compose.prod.yml
-│   ├── Caddyfile
+├── docker/                           # Docker packaging for unified container
+│   ├── Dockerfile                    # Multi-stage all-in-one build (node:24-alpine)
+│   ├── docker-compose.yml            # Standard all-in-one deployment (port 8080)
+│   ├── docker-compose.coturn.yml     # Standalone compose with integrated Coturn TURN
+│   ├── nginx.web.conf                # Nginx reverse proxy & static SPA config
+│   ├── supervisord.conf              # Process supervisor config
+│   ├── entrypoint.sh                 # Container boot script & config generator
 │   ├── .env.example
 │   └── README.md
 │
@@ -451,15 +457,14 @@ apps/server/
 
 ### 4.3 Docker Packaging (`docker/`)
 
-**Dockerfile.server** — Multi-stage build:
-- **Stage 1 (`base`)**: `node:24-alpine` with Corepack/pnpm
-- **Stage 2 (`builder`)**: Install dependencies + compile `@ponter/server`
-- **Stage 3 (`runner`)**: Production deps only, `better-sqlite3` native bindings
+**Dockerfile** — Multi-stage all-in-one build:
+- **Stage 1 (`base`)**: `node:24-alpine` with Corepack/pnpm.
+- **Stage 2 (`builder`)**: Install full dependencies, compile `@ponter/server`, compile `@ponter/web` SPA with `VITE_BROWSER_WS_SIGNALING=true`, prune devDependencies.
+- **Stage 3 (`runner`)**: Production runtime with Nginx, Supervisord, and `su-exec`. Supervisord manages internal Nginx (listening on port 8080) and `@ponter/server` (listening on loopback 127.0.0.1:8787).
 
-**Three Compose Setups:**
-1. `docker-compose.local.yml` — Local LAN testing (Google STUN, no TURN)
-2. `docker-compose.tunnel.yml` — Homelab with Cloudflare Tunnel
-3. `docker-compose.prod.yml` — Production VPS with Caddy + Coturn
+**Two Compose Setups:**
+1. `docker-compose.yml` — Standard all-in-one deployment (Port 8080, public STUN, no TURN).
+2. `docker-compose.coturn.yml` — Standalone production VPS stack bundling `ponter` and `coturn` services.
 
 ### 4.4 Desktop Agent (Rust)
 
@@ -1041,7 +1046,11 @@ gantt
 
 > **Phase 10: Native GUI Desktop Shell (2026-10-13/14).** **ADR-79 — Native desktop shell on egui/eframe.** One Rust crate (`ponter-desktop`) replaces the legacy Tauri v2 and Vue 3 frontend; no WebKit, no GTK, no Qt, no webview, and no Node runtime; preserving identical screen flow (Server Setup, Login, Setup Wizard, Devices, Settings), credentials model (memory-only access token, OS keychain refresh token via ADR-52/107), and security posture. **ADR-80 — Rust self-updater with minisign verification.** Self-updater validates downloaded release binaries against an embedded minisign public key before invoking `self_replace`; public key and release manifest schema (`latest.json`) remain identical to maintain update continuity with deployed clients. **ADR-81 — Tray on its own thread.** Tray runs independently off the GUI thread without GTK; Linux uses StatusNotifierItem over D-Bus via `ksni` with `blocking` and `tokio` features; Windows uses Win32 notification area via `tray-icon`; tray menu actions feed directly into the Tokio channel as `Msg::Tray`. **ADR-82 — Fleet push-first with polling fallback.** Fleet state synchronization connects to `/api/ws/browser` via ticket minted from `POST /api/ws/ticket`, listening for `fleet-changed` notifications to trigger stale-while-revalidate device fetches; falls back to periodic polling (~5 s) if WebSocket is unusable (403 Origin rejection, network disconnection); exactly one synchronization layer is active at any time.
 >
-> **§8 trail (ADR-79–82):** code+CI PR #117 `62337d8` (Rust core, updater, fleet WS, CI matrix); UI+tray+deletion PR #118 (egui screens, tray thread, README rewrite, Tauri/Vue deletion, ADR-79–82; squash SHA recorded in next §8 update). Spec authored in `0b2edf9`, folded owner decisions in `9cef33d`.
+> **§8 trail (ADR-79–82):** code+CI PR #117 `62337d8` (Rust core, updater, fleet WS, CI matrix); UI+tray+deletion PR #118 `fc4754b` (egui screens, tray thread, README rewrite, Tauri/Vue deletion, ADR-79–82); PR #119 `5646ceb` (desktop UI layout fix — central panel wrap, centered cards, zinc/slate theme); PR #120 `f9d6e95` (stable 36px text input height aligned with buttons). Spec authored in `0b2edf9`, folded owner decisions in `9cef33d`.
+
+> **Phase 11: Unified Docker Deployment & Infrastructure Consolidation (2026-10-14).** **ADR-83 — Unified All-in-One Container Image (BE + FE + Nginx under Supervisord).** Consolidates `@ponter/server` (Node.js 24 + SQLite + Hono + ws) and `@ponter/web` (Vue 3 static SPA) into a single multi-stage Docker image (`ngotuananh2101/ponter`) based on `node:24-alpine`. Inside the container, Nginx acts as the front door on port `8080`, serving frontend static files at `/` with SPA fallback (`try_files $uri $uri/ /index.html`), directly proxying `/health` to backend, and reverse proxying `/api/` (including WebSocket upgrade routes `/api/ws/*`) to `@ponter/server` listening on internal loopback `127.0.0.1:8787`. Both processes run under `supervisord` (`nodaemon=true`, `su-exec node` for server). Frontend configuration is resolved dynamically at runtime via `/config.js` (`window.__PONTER_CONFIG__.apiUrl`), falling back to same-origin (`window.location.origin`). **ADR-84 — Docker-Only Unified Deployment & Cloudflare Infra Retirement.** Eliminates Cloudflare Pages deployment workflows (`.github/workflows/deploy.yml`), Cloudflare Tunnel configurations (`docker/cloudflared/`), Caddy reverse proxy (`docker/Caddyfile`), and the legacy 4-compose matrix (`docker-compose.{local,prod,nginx,tunnel}.yml`). Standardizes on exactly two compose files: `docker-compose.yml` (standard, port 8080) and `docker-compose.coturn.yml` (self-contained with integrated Coturn TURN relay on host network). Preserves `TURN_PROVIDER=cloudflare` in server code (`apps/server/src/utils/ice.ts`) and tests (`test/ice-provider.test.ts`), while removing all Cloudflare hosting and infrastructure dependencies.
+>
+> **§8 trail (ADR-83–84):** spec authored in `89326cb` / `9fcd033` (`docs/superpowers/specs/2026-10-14-unified-docker-deployment-design.md`); plan authored in `fde8183` (`docs/superpowers/plans/2026-10-14-unified-docker-deployment.md`).
 
 ---
 
@@ -1123,26 +1132,23 @@ cargo test --manifest-path apps/agent/Cargo.toml
 
 ## 10. Deployment
 
-### 10.1 Self-Hosted Backend (Docker Compose)
+### 10.1 Unified All-in-One Docker Deployment
 
-See [Deployment Guide](guides/deployment.md) for detailed instructions across three environments:
-- **Local LAN**: `docker-compose.local.yml`
-- **Homelab**: `docker-compose.tunnel.yml` (Cloudflare Tunnel)
-- **Production VPS**: `docker-compose.prod.yml` (Caddy + Coturn)
-
-### 10.2 Web Frontend (Cloudflare Pages)
-
-The web client (`apps/web`) is deployed as static assets on Cloudflare Pages:
+The platform is deployed as a single all-in-one Docker container publishing port `8080` (ADR-83, ADR-84). See the [Deployment Guide](guides/deployment.md) for detailed instructions across two setups:
+- **Standard Deployment**: `docker-compose.yml` (backend server, Vue 3 SPA, Nginx front door on port 8080)
+- **Production VPS with TURN**: `docker-compose.coturn.yml` (all-in-one container + integrated Coturn TURN relay on host network)
 
 ```bash
-# Build
-pnpm --filter @ponter/web build
+cd docker
+cp .env.example .env
+# Edit .env with JWT secrets and configuration
 
-# Deploy to Cloudflare Pages
-pnpm --filter @ponter/web exec wrangler deploy
+# Launch standard setup
+docker compose pull
+docker compose up -d
 ```
 
-### 10.3 Desktop Agent
+### 10.2 Desktop Agent
 
 ```bash
 # Build for current platform
@@ -1181,4 +1187,4 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for detailed guidelines.
 
 ## 📄 License
 
-MIT License - xem [LICENSE](./LICENSE)
+MIT License - see [LICENSE](./LICENSE)

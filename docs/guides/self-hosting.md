@@ -53,11 +53,11 @@ The shipped Compose files pull the upstream image
 (`ngotuananh2101/ponter`) via `DOCKERHUB_IMAGE`. To run your own:
 
 ```bash
-docker build -f docker/Dockerfile.server -t <your-namespace>/ponter:dev .
+docker build -f docker/Dockerfile -t <your-namespace>/ponter:dev .
 ```
 
 Then, in `docker/.env`, set `DOCKERHUB_IMAGE=<your-namespace>/ponter:dev` and
-`docker compose -f docker-compose.prod.yml up -d`. To publish a registry image
+`docker compose up -d` (or `docker compose -f docker-compose.coturn.yml up -d`). To publish a registry image
 yourself, tag and push it:
 
 ```bash
@@ -70,10 +70,9 @@ Docker Hub secrets; a fork either adds its own secrets or pushes manually.
 
 ## 3. Server / API URL
 
-The web client compiles its API URL at build time. Set `VITE_API_URL` (and
-`VITE_BROWSER_WS_SIGNALING=true` if you use WebSocket signaling) before
-`pnpm --filter @ponter/web build`, and set `CORS_ORIGIN` on the server to the
-exact origin that serves the built web app.
+Under the unified deployment, the web client determines its backend API URL dynamically at runtime via `/config.js` (`window.__PONTER_CONFIG__.apiUrl`), falling back to same-origin (`window.location.origin`). Setting `PONTER_API_URL` in `docker/.env` is only required if the frontend is accessed through a different origin or proxy than the backend.
+
+During local development with the Vite dev server, `apps/web` falls back to `VITE_API_URL` (default `http://localhost:8787`). Set `CORS_ORIGIN` in `docker/.env` to include the browser origins that access the web client.
 
 ### 3.1 Desktop app default server (build-time)
 
