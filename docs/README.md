@@ -29,7 +29,7 @@ Welcome to the Ponter technical documentation.
 ponter/
 ├── apps/
 │   ├── web/               # Vue 3 + Vite + Pinia web workspace (Xterm.js, TabBar, Sidebar)
-│   ├── desktop/           # Tauri 2.0 desktop shell (cross-platform desktop app)
+│   ├── desktop/           # Native egui/eframe desktop shell (pure Rust, cross-platform)
 │   ├── mobile/            # Tauri mobile shell (iOS, Android)
 │   ├── agent/             # Native Rust desktop agent daemon (portable-pty, webrtc-rs, tokio)
 │   └── server/            # Self-hosted backend (@ponter/server): Node.js 24 + Hono + SQLite + ws

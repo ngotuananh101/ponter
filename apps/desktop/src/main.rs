@@ -5,6 +5,9 @@
 mod app;
 pub mod autostart;
 mod core;
+pub mod theme;
+pub mod tray;
+pub mod ui;
 
 use eframe::egui;
 
@@ -27,6 +30,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Ponter Desktop",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        Box::new(|cc| {
+            let mut app = app::App::new(cc);
+            tray::spawn(app.tx.clone(), app.agent.clone());
+            app.tray_active = true;
+            Ok(Box::new(app))
+        }),
     )
 }

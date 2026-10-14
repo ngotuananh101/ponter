@@ -47,8 +47,8 @@ mindmap
         Pinia
         TailwindCSS
       Desktop
-        Tauri 2.0
-        Rust Backend
+        egui / eframe
+        Pure Rust
       Mobile
         Tauri Mobile
         iOS/Android
@@ -302,7 +302,7 @@ ponter/
 │
 ├── apps/
 │   ├── web/                          # VueJS Web App (Cloudflare Pages)
-│   ├── desktop/                      # Tauri Desktop App
+│   ├── desktop/                      # Native Rust egui Desktop App
 │   ├── mobile/                       # Tauri Mobile App
 │   ├── agent/                        # Native Rust agent daemon
 │   └── server/                       # Self-hosted Node.js backend (@ponter/server)
@@ -1037,7 +1037,11 @@ gantt
 
 > **Phase 9: Platform consolidation — macOS dropped (2026-10-13).** **ADR-78 — Drop macOS Platform Support.** macOS is removed as a supported platform for the agent and the desktop app; the repository targets **Windows (x86_64-pc-windows-msvc) and Linux (x86_64/aarch64 gnu, x86_64 musl)** only. *Rationale:* distribution on macOS requires Developer ID signing + notarization from a paid Apple Developer Program account the owner does not have; without it Gatekeeper blocks the app and unsigned binaries do not launch on Apple Silicon. Windows (SmartScreen "Run anyway") and Linux (no OS signing) ship without an account. All macOS `cfg` branches, the `apple-native-keyring-store` keyring feature, the macOS autostart (LaunchAgent) code, the `.icns` bundle icon, the macOS CI matrix legs + `.dmg`/`darwin`/`APPLE_*` handling, and the macOS option in the web register dialog are **deleted, not disabled**. *Rejected:* keeping macOS behind a default-off flag (leaves the code in the tree), keeping macOS CI (wastes runner minutes on un-shippable code). *Consequence:* re-adding macOS later requires re-authoring the deleted code; the exact deleted surface is recoverable from git history and from `docs/superpowers/specs/2026-10-13-drop-macos-support-design.md` §4. Existing server rows with `platform = 'macos'` are left untouched (the column is free-form text).
 
-> **§8 trail (ADR-78):** code+CI PR #115 `cfbfac6` (drop macOS from agent cfg, desktop keyring/autostart/wizard, CI matrices, web dialog); docs PR #116 (ADR-78 + living-doc updates; squash SHA recorded in the next §8 update).
+> **§8 trail (ADR-78):** code+CI PR #115 `cfbfac6` (drop macOS from agent cfg, desktop keyring/autostart/wizard, CI matrices, web dialog); docs PR #116 `bf2729e` (ADR-78 + living-doc updates).
+
+> **Phase 10: Native GUI Desktop Shell (2026-10-13/14).** **ADR-79 — Native desktop shell on egui/eframe.** One Rust crate (`ponter-desktop`) replaces the legacy Tauri v2 and Vue 3 frontend; no WebKit, no GTK, no Qt, no webview, and no Node runtime; preserving identical screen flow (Server Setup, Login, Setup Wizard, Devices, Settings), credentials model (memory-only access token, OS keychain refresh token via ADR-52/107), and security posture. **ADR-80 — Rust self-updater with minisign verification.** Self-updater validates downloaded release binaries against an embedded minisign public key before invoking `self_replace`; public key and release manifest schema (`latest.json`) remain identical to maintain update continuity with deployed clients. **ADR-81 — Tray on its own thread.** Tray runs independently off the GUI thread without GTK; Linux uses StatusNotifierItem over D-Bus via `ksni` with `blocking` and `tokio` features; Windows uses Win32 notification area via `tray-icon`; tray menu actions feed directly into the Tokio channel as `Msg::Tray`. **ADR-82 — Fleet push-first with polling fallback.** Fleet state synchronization connects to `/api/ws/browser` via ticket minted from `POST /api/ws/ticket`, listening for `fleet-changed` notifications to trigger stale-while-revalidate device fetches; falls back to periodic polling (~5 s) if WebSocket is unusable (403 Origin rejection, network disconnection); exactly one synchronization layer is active at any time.
+>
+> **§8 trail (ADR-79–82):** code+CI PR #117 `62337d8` (Rust core, updater, fleet WS, CI matrix); UI+tray+deletion PR #118 (egui screens, tray thread, README rewrite, Tauri/Vue deletion, ADR-79–82; squash SHA recorded in next §8 update). Spec authored in `0b2edf9`, folded owner decisions in `9cef33d`.
 
 ---
 
