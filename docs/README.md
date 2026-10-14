@@ -16,7 +16,7 @@ Welcome to the Ponter technical documentation.
 ### 2. Operational & Developer Guides
 
 - **[Local Development Guide](guides/development.md)**: Setup, running the backend (`@ponter/server`), Vue 3 web workspace, native agent, and cross-language E2E tests.
-- **[Deployment Guide](guides/deployment.md)**: All-in-one self-hosted Docker deployment publishing port 8080 (standard and Coturn TURN relay setups).
+- **[Deployment Guide](guides/deployment.md)**: All-in-one self-hosted Docker deployment publishing port 80 (standard and Coturn TURN relay setups).
 - **[Self-Hosting & Fork Guide](guides/self-hosting.md)**: Fork the repo, repoint or disable the desktop updater, and build/publish your own Docker image.
 - **[Desktop Agent Setup Guide](guides/agent-setup.md)**: Compiling, configuring CLI options, and running the native Rust daemon interactively or as a systemd background service.
 - **[Terminal Multiplexing & Wire Protocol](guides/terminal-protocol.md)**: Wire framing protocol specification for WebRTC DataChannel shell multiplexing.
@@ -42,7 +42,7 @@ ponter/
 │   └── ui-components/     # Shared Vue 3 UI component library
 ├── docker/                # All-in-one Docker packaging (Backend + Web + Nginx)
 │   ├── Dockerfile         # Multi-stage build (node:24-alpine)
-│   ├── docker-compose.yml # Standard all-in-one deployment (port 8080)
+│   ├── docker-compose.yml # Standard all-in-one deployment (port 80)
 │   ├── docker-compose.coturn.yml # Production VPS with integrated Coturn TURN
 │   ├── nginx.web.conf     # Reverse proxy & static SPA configuration
 │   ├── supervisord.conf   # Process supervisor configuration

@@ -95,14 +95,14 @@ mindmap
 
 ### 2.1 Overall Architecture
 
-The Remote Access Platform uses a **self-hosted stateful server** architecture with local SQLite and in-memory WebSocket dispatch. The platform is packaged into an all-in-one Docker container publishing port 8080, where internal Nginx serves the compiled Vue 3 SPA static assets and reverse proxies API and WebSocket signaling traffic to the internal Node.js backend.
+The Remote Access Platform uses a **self-hosted stateful server** architecture with local SQLite and in-memory WebSocket dispatch. The platform is packaged into an all-in-one Docker container publishing port 80, where internal Nginx serves the compiled Vue 3 SPA static assets and reverse proxies API and WebSocket signaling traffic to the internal Node.js backend.
 
 ```text
                                ┌────────────────────────────────────────┐
                                │       Client (Web Browser)             │
-                               │  (Vue 3 SPA loaded from Port 8080)     │
+                               │  (Vue 3 SPA loaded from Port 80)       │
                                └──────────────────┬─────────────────────┘
-                                                  │ HTTP / WS (Port 8080)
+                                                  │ HTTP / WS (Port 80)
                                                   ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ Docker Host / VPS                                                                      │
@@ -110,7 +110,7 @@ The Remote Access Platform uses a **self-hosted stateful server** architecture w
 │   ┌────────────────────────────────────────────────────────────────────────────────┐   │
 │   │ Unified Container (ngotuananh2101/ponter:latest under Supervisord)             │   │
 │   │                                                                                │   │
-│   │   • Front Door (Nginx on Port 8080):                                           │   │
+│   │   • Front Door (Nginx on Port 80):                                             │   │
 │   │       - Serves Vue 3 SPA static files from /usr/share/nginx/html with fallback │   │
 │   │       - Proxies /health directly to backend 127.0.0.1:8787/health              │   │
 │   │       - Proxies /api/ and WebSocket (/api/ws/*) to backend 127.0.0.1:8787      │   │
@@ -322,7 +322,7 @@ ponter/
 │
 ├── docker/                           # Docker packaging for unified container
 │   ├── Dockerfile                    # Multi-stage all-in-one build (node:24-alpine)
-│   ├── docker-compose.yml            # Standard all-in-one deployment (port 8080)
+│   ├── docker-compose.yml            # Standard all-in-one deployment (port 80)
 │   ├── docker-compose.coturn.yml     # Standalone compose with integrated Coturn TURN
 │   ├── nginx.web.conf                # Nginx reverse proxy & static SPA config
 │   ├── supervisord.conf              # Process supervisor config
@@ -460,10 +460,10 @@ apps/server/
 **Dockerfile** — Multi-stage all-in-one build:
 - **Stage 1 (`base`)**: `node:24-alpine` with Corepack/pnpm.
 - **Stage 2 (`builder`)**: Install full dependencies, compile `@ponter/server`, compile `@ponter/web` SPA with `VITE_BROWSER_WS_SIGNALING=true`, prune devDependencies.
-- **Stage 3 (`runner`)**: Production runtime with Nginx, Supervisord, and `su-exec`. Supervisord manages internal Nginx (listening on port 8080) and `@ponter/server` (listening on loopback 127.0.0.1:8787).
+- **Stage 3 (`runner`)**: Production runtime with Nginx, Supervisord, and `su-exec`. Supervisord manages internal Nginx (listening on port 80) and `@ponter/server` (listening on loopback 127.0.0.1:8787).
 
 **Two Compose Setups:**
-1. `docker-compose.yml` — Standard all-in-one deployment (Port 8080, public STUN, no TURN).
+1. `docker-compose.yml` — Standard all-in-one deployment (Port 80, public STUN, no TURN).
 2. `docker-compose.coturn.yml` — Standalone production VPS stack bundling `ponter` and `coturn` services.
 
 ### 4.4 Desktop Agent (Rust)
@@ -1048,7 +1048,7 @@ gantt
 >
 > **§8 trail (ADR-79–82):** code+CI PR #117 `62337d8` (Rust core, updater, fleet WS, CI matrix); UI+tray+deletion PR #118 `fc4754b` (egui screens, tray thread, README rewrite, Tauri/Vue deletion, ADR-79–82); PR #119 `5646ceb` (desktop UI layout fix — central panel wrap, centered cards, zinc/slate theme); PR #120 `f9d6e95` (stable 36px text input height aligned with buttons). Spec authored in `0b2edf9`, folded owner decisions in `9cef33d`.
 
-> **Phase 11: Unified Docker Deployment & Infrastructure Consolidation (2026-10-14).** **ADR-83 — Unified All-in-One Container Image (BE + FE + Nginx under Supervisord).** Consolidates `@ponter/server` (Node.js 24 + SQLite + Hono + ws) and `@ponter/web` (Vue 3 static SPA) into a single multi-stage Docker image (`ngotuananh2101/ponter`) based on `node:24-alpine`. Inside the container, Nginx acts as the front door on port `8080`, serving frontend static files at `/` with SPA fallback (`try_files $uri $uri/ /index.html`), directly proxying `/health` to backend, and reverse proxying `/api/` (including WebSocket upgrade routes `/api/ws/*`) to `@ponter/server` listening on internal loopback `127.0.0.1:8787`. Both processes run under `supervisord` (`nodaemon=true`, `su-exec node` for server). Frontend configuration is resolved dynamically at runtime via `/config.js` (`window.__PONTER_CONFIG__.apiUrl`), falling back to same-origin (`window.location.origin`). **ADR-84 — Docker-Only Unified Deployment & Cloudflare Infra Retirement.** Eliminates Cloudflare Pages deployment workflows (`.github/workflows/deploy.yml`), Cloudflare Tunnel configurations (`docker/cloudflared/`), Caddy reverse proxy (`docker/Caddyfile`), and the legacy 4-compose matrix (`docker-compose.{local,prod,nginx,tunnel}.yml`). Standardizes on exactly two compose files: `docker-compose.yml` (standard, port 8080) and `docker-compose.coturn.yml` (self-contained with integrated Coturn TURN relay on host network). Preserves `TURN_PROVIDER=cloudflare` in server code (`apps/server/src/utils/ice.ts`) and tests (`test/ice-provider.test.ts`), while removing all Cloudflare hosting and infrastructure dependencies.
+> **Phase 11: Unified Docker Deployment & Infrastructure Consolidation (2026-10-14).** **ADR-83 — Unified All-in-One Container Image (BE + FE + Nginx under Supervisord).** Consolidates `@ponter/server` (Node.js 24 + SQLite + Hono + ws) and `@ponter/web` (Vue 3 static SPA) into a single multi-stage Docker image (`ngotuananh2101/ponter`) based on `node:24-alpine`. Inside the container, Nginx acts as the front door on port `80`, serving frontend static files at `/` with SPA fallback (`try_files $uri $uri/ /index.html`), directly proxying `/health` to backend, and reverse proxying `/api/` (including WebSocket upgrade routes `/api/ws/*`) to `@ponter/server` listening on internal loopback `127.0.0.1:8787`. Both processes run under `supervisord` (`nodaemon=true`, `su-exec node` for server). Frontend configuration is resolved dynamically at runtime via `/config.js` (`window.__PONTER_CONFIG__.apiUrl`), falling back to same-origin (`window.location.origin`). **ADR-84 — Docker-Only Unified Deployment & Cloudflare Infra Retirement.** Eliminates Cloudflare Pages deployment workflows (`.github/workflows/deploy.yml`), Cloudflare Tunnel configurations (`docker/cloudflared/`), Caddy reverse proxy (`docker/Caddyfile`), and the legacy 4-compose matrix (`docker-compose.{local,prod,nginx,tunnel}.yml`). Standardizes on exactly two compose files: `docker-compose.yml` (standard, port 80) and `docker-compose.coturn.yml` (self-contained with integrated Coturn TURN relay on host network). Preserves `TURN_PROVIDER=cloudflare` in server code (`apps/server/src/utils/ice.ts`) and tests (`test/ice-provider.test.ts`), while removing all Cloudflare hosting and infrastructure dependencies.
 >
 > **§8 trail (ADR-83–84):** spec authored in `89326cb` / `9fcd033` (`docs/superpowers/specs/2026-10-14-unified-docker-deployment-design.md`); plan authored in `fde8183` (`docs/superpowers/plans/2026-10-14-unified-docker-deployment.md`); PR #121 (unified all-in-one container image, dual compose workflow, runtime config, Cloudflare infra retirement, ADR-83–84; squash SHA recorded in next §8 update).
 
@@ -1134,8 +1134,8 @@ cargo test --manifest-path apps/agent/Cargo.toml
 
 ### 10.1 Unified All-in-One Docker Deployment
 
-The platform is deployed as a single all-in-one Docker container publishing port `8080` (ADR-83, ADR-84). See the [Deployment Guide](guides/deployment.md) for detailed instructions across two setups:
-- **Standard Deployment**: `docker-compose.yml` (backend server, Vue 3 SPA, Nginx front door on port 8080)
+The platform is deployed as a single all-in-one Docker container publishing port `80` (ADR-83, ADR-84). See the [Deployment Guide](guides/deployment.md) for detailed instructions across two setups:
+- **Standard Deployment**: `docker-compose.yml` (backend server, Vue 3 SPA, Nginx front door on port 80)
 - **Production VPS with TURN**: `docker-compose.coturn.yml` (all-in-one container + integrated Coturn TURN relay on host network)
 
 ```bash

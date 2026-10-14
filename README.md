@@ -56,19 +56,19 @@ ponter/
 
 ## 🛠️ Tech Stack
 
-| Layer                  | Technologies                                                                 |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| **Backend Runtime**    | Node.js 24 LTS, Hono, TypeScript, `ws` (WebSocket)                           |
-| **Database**           | SQLite (better-sqlite3 + Drizzle ORM, WAL mode)                              |
-| **Token Revocation**   | SQLite `revoked_tokens` table (replaces Cloudflare KV blacklist)             |
-| **Authentication**     | PBKDF2-HMAC-SHA256, Stateless JWT (15m access / 7d refresh)                  |
-| **Web Client**         | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`                             |
-| **Desktop Agent**      | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`      |
-| **WebRTC & Transport** | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP     |
-| **TURN/STUN**          | Coturn (RFC 5766 shared secret), Google STUN (local dev)                     |
-| **Deployment**         | Unified All-in-One Docker Container (Backend + Vue 3 SPA + Nginx, port 8080) |
-| **Testing**            | Vitest, Cargo test, Cross-language E2E                                       |
-| **Build & Toolchain**  | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt                 |
+| Layer                  | Technologies                                                               |
+| ---------------------- | -------------------------------------------------------------------------- |
+| **Backend Runtime**    | Node.js 24 LTS, Hono, TypeScript, `ws` (WebSocket)                         |
+| **Database**           | SQLite (better-sqlite3 + Drizzle ORM, WAL mode)                            |
+| **Token Revocation**   | SQLite `revoked_tokens` table (replaces Cloudflare KV blacklist)           |
+| **Authentication**     | PBKDF2-HMAC-SHA256, Stateless JWT (15m access / 7d refresh)                |
+| **Web Client**         | Vue 3, Vite, Pinia, Tailwind CSS, `@xterm/xterm`                           |
+| **Desktop Agent**      | Rust (edition 2021), `tokio`, `webrtc-rs`, `portable-pty`, `serde_json`    |
+| **WebRTC & Transport** | W3C WebRTC DataChannels, `werift` (Node.js test harness), DTLS 1.2, SCTP   |
+| **TURN/STUN**          | Coturn (RFC 5766 shared secret), Google STUN (local dev)                   |
+| **Deployment**         | Unified All-in-One Docker Container (Backend + Vue 3 SPA + Nginx, port 80) |
+| **Testing**            | Vitest, Cargo test, Cross-language E2E                                     |
+| **Build & Toolchain**  | Turborepo, pnpm v12, ESLint, Prettier, Cargo Clippy, rustfmt               |
 
 ---
 
@@ -185,7 +185,7 @@ _See complete specifications in the [Terminal Multiplexing & Wire Protocol Guide
 
 ## 🐳 Deployment
 
-Ponter deploys as an all-in-one Docker container publishing a single port (`8080`), bundling the backend server (`@ponter/server`), the web frontend (`@ponter/web`), and an internal Nginx reverse proxy managed by Supervisord.
+Ponter deploys as an all-in-one Docker container publishing a single port (`80`), bundling the backend server (`@ponter/server`), the web frontend (`@ponter/web`), and an internal Nginx reverse proxy managed by Supervisord.
 
 ```bash
 cd docker
@@ -210,7 +210,7 @@ The `ngotuananh2101/ponter` multi-arch image (`linux/amd64` and `linux/arm64`) i
 - **[Documentation Index](docs/README.md)**
 - **[Master Architecture Document](docs/ARCHITECTURE.md)**: Full system architecture, security models, and roadmap.
 - **[Local Development Guide](docs/guides/development.md)**: Setup, running backend, web workspace, native agent, and testing.
-- **[Deployment Guide](docs/guides/deployment.md)**: All-in-one self-hosted Docker deployment publishing port 8080 (standard and Coturn TURN relay setups).
+- **[Deployment Guide](docs/guides/deployment.md)**: All-in-one self-hosted Docker deployment publishing port 80 (standard and Coturn TURN relay setups).
 - **[Desktop Agent Setup Guide](docs/guides/agent-setup.md)**: Building and configuring the Rust daemon as a systemd service.
 - **[Terminal Multiplexing Protocol](docs/guides/terminal-protocol.md)**: Detailed wire specification for WebRTC DataChannels.
 
