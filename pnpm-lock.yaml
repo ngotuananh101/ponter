@@ -261,6 +261,9 @@ importers:
       '@ponter/terminal-core':
         specifier: workspace:*
         version: link:../../packages/terminal-core
+      '@ponter/ui-components':
+        specifier: workspace:*
+        version: link:../../packages/ui-components
       '@ponter/webrtc-core':
         specifier: workspace:*
         version: link:../../packages/webrtc-core
