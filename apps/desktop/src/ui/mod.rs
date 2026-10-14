@@ -2,6 +2,7 @@
 //! the Vue `App.vue`: server setup -> login -> wizard -> devices, with the
 //! Settings screen reachable as a manual override.
 
+pub mod components;
 pub mod devices;
 pub mod login;
 pub mod server_setup;

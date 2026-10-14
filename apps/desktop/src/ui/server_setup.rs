@@ -16,36 +16,84 @@ pub fn validate(url: &str) -> Result<(), String> {
 }
 
 pub fn render(app: &mut App, ui: &mut egui::Ui) {
-    ui.heading("Connect to your server");
-    let mut url = app.server_url_input.clone();
-    if ui.text_edit_singleline(&mut url).changed() {
-        app.server_url_input = url;
-    }
-    if ui.button("Test connection").clicked() && validate(&app.server_url_input).is_ok() {
-        app.send(Command::ProbeServer {
-            url: app.server_url_input.clone(),
+    crate::ui::components::centered_card(ui, 440.0, |ui| {
+        let is_editing = app.editing_server;
+        let title = if is_editing {
+            "Edit server URL"
+        } else {
+            "Connect to your server"
+        };
+        let subtitle = if is_editing {
+            "Update the address of your Ponter server instance"
+        } else {
+            "Enter the base URL of your Ponter server instance to get started"
+        };
+        crate::ui::components::card_header(ui, title, Some(subtitle));
+
+        crate::ui::components::field_label(ui, "Server URL");
+        let mut url = app.server_url_input.clone();
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut url)
+                    .hint_text("http://localhost:8787 or https://...")
+                    .desired_width(f32::INFINITY),
+            )
+            .changed()
+        {
+            app.server_url_input = url;
+        }
+        ui.add_space(16.0);
+
+        // Action buttons
+        ui.horizontal(|ui| {
+            if ui
+                .add_sized(
+                    [(ui.available_width() - 8.0) / 2.0, 36.0],
+                    egui::Button::new("Test connection"),
+                )
+                .clicked()
+                && validate(&app.server_url_input).is_ok()
+            {
+                app.send(Command::ProbeServer {
+                    url: app.server_url_input.clone(),
+                });
+            }
+
+            let save_btn = crate::ui::components::primary_button(ui, "Save and continue");
+            if save_btn.clicked() && validate(&app.server_url_input).is_ok() {
+                app.send(Command::SaveServer {
+                    url: app.server_url_input.clone(),
+                });
+            }
         });
-    }
-    if let Some(Msg::ServerProbed(res)) = app.last_probe.as_ref() {
-        ui.colored_label(
+
+        // Cancel / Back button if editing
+        if is_editing {
+            ui.add_space(8.0);
+            if ui
+                .add_sized([ui.available_width(), 28.0], egui::Button::new("Back"))
+                .clicked()
+            {
+                app.editing_server = false;
+            }
+        }
+
+        if let Some(Msg::ServerProbed(res)) = app.last_probe.as_ref() {
+            ui.add_space(16.0);
             if res.ok {
-                egui::Color32::GREEN
+                crate::ui::components::success_banner(ui, &res.message);
             } else {
-                egui::Color32::RED
-            },
-            &res.message,
-        );
-    }
-    if ui.button("Save and continue").clicked() && validate(&app.server_url_input).is_ok() {
-        app.send(Command::SaveServer {
-            url: app.server_url_input.clone(),
-        });
-    }
-    // The `SaveServer` arm reports through `Msg::ConfigSaved`; the fold stores a
-    // failure in the shell's single inline-error slot (`login_error`).
-    if let Some(err) = &app.login_error {
-        ui.colored_label(egui::Color32::RED, err);
-    }
+                crate::ui::components::error_banner(ui, &res.message);
+            }
+        }
+
+        // The `SaveServer` arm reports through `Msg::ConfigSaved`; the fold stores a
+        // failure in the shell's single inline-error slot (`login_error`).
+        if let Some(err) = &app.login_error {
+            ui.add_space(16.0);
+            crate::ui::components::error_banner(ui, err);
+        }
+    });
 }
 
 #[cfg(test)]

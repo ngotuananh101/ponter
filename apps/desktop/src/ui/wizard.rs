@@ -38,49 +38,193 @@ pub fn progress_label(step: usize) -> String {
 }
 
 pub fn render(app: &mut App, ui: &mut egui::Ui) {
-    ui.heading(progress_label(app.wizard_step));
-    match app.wizard_step {
-        0 => {
-            // Step 1: Capture. Advancing requires an `ok` capture probe.
-            if ui.button("Verify Capture").clicked() {
-                app.send(Command::ProbeCapture);
+    crate::ui::components::centered_card(ui, 480.0, |ui| {
+        let step = app.wizard_step;
+        let subtitle = match step {
+            0 => "Step 1 of 3: Verify screen capture capability",
+            1 => "Step 2 of 3: Remote input admission gate",
+            2 => "Step 3 of 3: System startup preference",
+            _ => "Setup completed",
+        };
+        crate::ui::components::card_header(ui, &progress_label(step), Some(subtitle));
+
+        // Step progress pill bar
+        ui.horizontal(|ui| {
+            for i in 0..step_count() {
+                let is_current = i == step;
+                let is_done = i < step;
+                let (fill, stroke_color) = if is_current {
+                    (
+                        ui.visuals().selection.bg_fill,
+                        ui.visuals().selection.stroke.color,
+                    )
+                } else if is_done {
+                    (
+                        egui::Color32::from_rgba_unmultiplied(34, 197, 94, 40),
+                        egui::Color32::from_rgb(34, 197, 94),
+                    )
+                } else {
+                    (
+                        ui.visuals().faint_bg_color,
+                        ui.visuals().widgets.noninteractive.bg_stroke.color,
+                    )
+                };
+
+                egui::Frame::new()
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, stroke_color))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(10, 4))
+                    .show(ui, |ui| {
+                        let text = format!("{}. {}", i + 1, step_label(i));
+                        let color = if is_current || is_done {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            ui.visuals().text_color().gamma_multiply(0.5)
+                        };
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(text).size(11.0).strong().color(color),
+                        ));
+                    });
+            }
+        });
+        ui.add_space(20.0);
+
+        match step {
+            0 => {
+                // Step 1: Capture. Advancing requires an `ok` capture probe.
+                ui.add(egui::Label::new(
+                    egui::RichText::new(
+                        "Ponter needs screen capture permissions to stream your desktop \
+                         to authorized remote clients. Click below to verify availability.",
+                    )
+                    .size(13.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.8)),
+                ));
+                ui.add_space(16.0);
+
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::new(
+                            egui::RichText::new("Verify Capture Capability").strong(),
+                        ),
+                    )
+                    .clicked()
+                {
+                    app.send(Command::ProbeCapture);
+                }
+
+                if app.capture_probe_ok {
+                    ui.add_space(16.0);
+                    crate::ui::components::success_banner(
+                        ui,
+                        "Screen capture verified and ready. You may proceed.",
+                    );
+                } else if let Some(crate::app::Msg::CaptureProbed(res)) = app.last_probe.as_ref() {
+                    if !res.ok {
+                        ui.add_space(16.0);
+                        crate::ui::components::error_banner(ui, &res.message);
+                    }
+                }
+            }
+            1 => {
+                // Step 2: Input gate. The checkbox is bound to `allow_input`
+                // (default off); it is Gate A of the two-gate model (ADR-42).
+                ui.add(egui::Label::new(
+                    egui::RichText::new(
+                        "Configure whether remote operators are permitted to send mouse, \
+                         keyboard, and touch input to this machine.",
+                    )
+                    .size(13.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.8)),
+                ));
+                ui.add_space(16.0);
+
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        let mut allow = app.allow_input;
+                        if ui
+                            .checkbox(
+                                &mut allow,
+                                egui::RichText::new("Allow remote input").strong(),
+                            )
+                            .changed()
+                        {
+                            app.send(Command::ToggleAllowInput { enabled: allow });
+                        }
+                        ui.add_space(4.0);
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(
+                                "When disabled, remote viewers can only observe your screen \
+                                 in read-only mode.",
+                            )
+                            .size(12.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.7)),
+                        ));
+                    });
+            }
+            _ => {
+                // Step 3: Auto-start. The checkbox reflects the real OS entry.
+                ui.add(egui::Label::new(
+                    egui::RichText::new(
+                        "Set up system autostart so Ponter Desktop runs in the background \
+                         when you log in.",
+                    )
+                    .size(13.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.8)),
+                ));
+                ui.add_space(16.0);
+
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        let mut autostart = app.autostart_enabled;
+                        if ui
+                            .checkbox(
+                                &mut autostart,
+                                egui::RichText::new("Open at login").strong(),
+                            )
+                            .changed()
+                        {
+                            app.send(Command::SetAutostart { enabled: autostart });
+                        }
+                    });
+                ui.add_space(20.0);
+
+                if crate::ui::components::primary_button(ui, "Finish Setup").clicked() {
+                    app.send(Command::SaveServer {
+                        url: app.server_url_input.clone(),
+                    });
+                    app.handle_msg(crate::app::Msg::WizardCompleted);
+                }
             }
         }
-        1 => {
-            // Step 2: Input gate. The checkbox is bound to `allow_input`
-            // (default off); it is Gate A of the two-gate model (ADR-42).
-            let mut allow = app.allow_input;
-            if ui.checkbox(&mut allow, "Allow remote input").changed() {
-                app.send(Command::ToggleAllowInput { enabled: allow });
+
+        // Navigation button (Next for steps 0 & 1)
+        if step < 2 {
+            ui.add_space(20.0);
+            let can_go = can_advance(step, app.capture_probe_ok);
+            if ui
+                .add_enabled(
+                    can_go,
+                    egui::Button::new(egui::RichText::new("Next →").strong().size(14.0))
+                        .min_size(egui::vec2(ui.available_width(), 36.0))
+                        .corner_radius(egui::CornerRadius::same(6)),
+                )
+                .clicked()
+            {
+                app.handle_msg(crate::app::Msg::WizardAdvanced);
             }
         }
-        _ => {
-            // Step 3: Auto-start. The checkbox reflects the real OS entry.
-            let mut autostart = app.autostart_enabled;
-            if ui.checkbox(&mut autostart, "Open at login").changed() {
-                app.send(Command::SetAutostart { enabled: autostart });
-            }
-            if ui.button("Done").clicked() {
-                app.send(Command::SaveServer {
-                    url: app.server_url_input.clone(),
-                });
-                app.handle_msg(crate::app::Msg::WizardCompleted);
-            }
-        }
-    }
-    if ui
-        .add_enabled(
-            can_advance(app.wizard_step, app.capture_probe_ok),
-            egui::Button::new("Next"),
-        )
-        .clicked()
-    {
-        // Advance through the fold, exactly as "Done" does with
-        // `WizardCompleted`: the UI calls `handle_msg` directly for the
-        // synchronous step transition, so `Msg::WizardAdvanced` has a producer
-        // (spec §5 lists it among the Wizard's outputs).
-        app.handle_msg(crate::app::Msg::WizardAdvanced);
-    }
+    });
 }
 
 #[cfg(test)]
