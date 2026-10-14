@@ -17,9 +17,9 @@
 **This plan has two halves.**
 
 - **Runnable now (Tasks 1–6):** all changes are inside `packages/**`. Sub-project A is in flight on `apps/web` + `packages/ui-components`; none of Tasks 1–6 touch either, so they can be implemented, tested, and reviewed immediately.
-- **BLOCKED on sub-project A merging to `main` (Tasks 7–8):** both touch `apps/web/src/services/**`, which A is rewriting. **Do not start Tasks 7–8 until A is merged.** A was blocked on a SonarCloud quality-gate failure at plan-write time; PM owns clearing it.
+- **Tasks 7–8 — UNBLOCKED (sub-project A merged 2026-10-15, `main` @ `55f3441`).** At plan-write time these were held pending A, on the prediction that A would rewrite `apps/web/src/services/**`. **A did not** — its `apps/web` scope was `components/auth/`, `views/`, `composables/`, `__tests__/`, `main.ts`, `style.css`, plus `packages/ui-components/**`. No file Tasks 7–8 touch was modified by A, so every line citation below was re-verified against `55f3441` and still resolves. Proceed normally.
 
-If a reviewer is asked to sign off the whole branch, they must verify Tasks 7–8 landed **after** A's merge commit (i.e. the branch's merge-base with `main` includes A).
+A reviewer signing off the whole branch verifies Tasks 7–8 landed **after** A's merge commit `55f3441` (the branch's merge-base with `main` includes it).
 
 ## Global Constraints
 
@@ -912,9 +912,9 @@ git commit -m "ci(api-client): gate raw fetch/axios out of app code (ADR-89 6.1)
 
 ---
 
-### Task 7: Rewire `FleetSocket` onto the shared ladder — **BLOCKED on sub-project A**
+### Task 7: Rewire `FleetSocket` onto the shared ladder — **UNBLOCKED (A merged `55f3441`)**
 
-> **Do not start until sub-project A is merged to `main`.** This edits `apps/web/src/services/fleet-socket.ts`, which A rewrites. Confirm `git merge-base HEAD origin/main` includes A's merge commit first.
+> **Sub-project A merged 2026-10-15 (`main` @ `55f3441`); safe to start.** A did not modify `apps/web/src/services/fleet-socket.ts` — the citations below were re-verified against `55f3441`. Confirm `git merge-base HEAD origin/main` includes `55f3441` before starting.
 
 **Files:**
 - Modify: `apps/web/src/services/fleet-socket.ts` (constants `:18-19`, `randomUnit` `:28-32`, field `:70`, `:138`, `scheduleReconnect` `:201-214`)
@@ -1012,9 +1012,9 @@ git commit -m "refactor(web): use shared ReconnectBackoff in FleetSocket (ADR-89
 
 ---
 
-### Task 8: Route the web client through `createApiClient` — **BLOCKED on sub-project A**
+### Task 8: Route the web client through `createApiClient` — **UNBLOCKED (A merged `55f3441`)**
 
-> **Do not start until sub-project A is merged to `main`.** Confirm the merge-base first, as in Task 7.
+> **Sub-project A merged 2026-10-15 (`main` @ `55f3441`); safe to start.** A did not modify `apps/web/src/services/client.ts` — its citations were re-verified against `55f3441`. Confirm the merge-base first, as in Task 7.
 
 **Files:**
 - Modify: `apps/web/src/services/client.ts`
@@ -1123,5 +1123,5 @@ git commit -m "refactor(web): build the api client through createApiClient (ADR-
 **Known spec deviations / rulings, recorded for the reviewer:**
 1. Task 5 removes the two `BrowserErrorCode` members (spec §5.3's first choice) rather than marking them reserved — recorded, with the alternative noted in the task.
 2. The shared base-URL resolver is **documentation-only** (URL-2 precedence tables stay per-app), per the spec's "where feasible" and the FE pin — G2 shares only the scheme rewrite + trim, not the precedence chains.
-3. Tasks 7–8 are blocked on sub-project A; Tasks 1–6 are not.
+3. Tasks 7–8 were held pending sub-project A; A merged 2026-10-15 (`main` @ `55f3441`) and **did not touch** `apps/web/src/services/**`, so they are now unblocked with citations re-verified. Tasks 1–6 were never blocked.
 4. `@types/node` is added to `packages/api-client` (dev-only) **and** `"types": ["node"]` to its tsconfig — both are load-bearing (devDep alone still yields TS2591; the field is what pulls `@types/node` into the program), and `pnpm-lock.yaml` changes. This is required for the gate test's `node:fs`/`node:path` imports to typecheck. (Note: the `types` field also suppresses automatic inclusion of other `@types/*` packages — see Task 6 prerequisite 2.)
