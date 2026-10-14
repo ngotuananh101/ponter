@@ -32,6 +32,90 @@ pub fn to_ws_url(base: &str) -> Result<String> {
     }
 }
 
+/// Fallback code when a server response carries no `code`
+/// (mirrors TS `data.code || 'API_ERROR'`, `errors.ts:31`).
+pub const API_ERROR: &str = "API_ERROR";
+/// Code for a transport/parse failure with no usable HTTP response
+/// (mirrors TS `NETWORK_ERROR`, `errors.ts:38`).
+pub const NETWORK_ERROR: &str = "NETWORK_ERROR";
+
+/// The server failure envelope `{ error, code, details }`, mirroring the TS
+/// `ApiError` (`packages/api-client/src/errors.ts:7-10`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiError {
+    /// HTTP status, or `None` when the failure had no HTTP response.
+    pub status: Option<u16>,
+    /// Stable server code, or one of the two client sentinels.
+    pub code: String,
+    /// Human-readable message (the envelope's `error` field).
+    pub message: String,
+    /// The envelope's `details`. `Option<serde_json::Value>` -- NOT
+    /// `Option<String>` -- so a server-sent object deserializes (RS-2, D6).
+    pub details: Option<serde_json::Value>,
+}
+
+impl ApiError {
+    /// Parse a non-2xx response body into the envelope.
+    ///
+    /// Falls back to `API_ERROR` when the body has no `code`, and to
+    /// `"Unknown API Error"` when it has no `error`. A body that is not JSON
+    /// still has an HTTP status, so it maps to `API_ERROR`, not
+    /// `NETWORK_ERROR` -- the spec defines `NETWORK_ERROR` as *no HTTP
+    /// response* (§5.3).
+    pub fn from_response(status: u16, body: &str) -> Self {
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            error: Option<String>,
+            code: Option<String>,
+            details: Option<serde_json::Value>,
+        }
+        let (code, message, details) = match serde_json::from_str::<Payload>(body) {
+            Ok(p) => (
+                p.code.filter(|c| !c.is_empty()),
+                p.error.filter(|e| !e.is_empty()),
+                p.details,
+            ),
+            Err(_) => (None, None, None),
+        };
+        Self {
+            status: Some(status),
+            code: code.unwrap_or_else(|| API_ERROR.to_string()),
+            message: message.unwrap_or_else(|| "Unknown API Error".to_string()),
+            details,
+        }
+    }
+
+    /// A failure with no usable HTTP response (transport error). `status` is
+    /// `None`, code `NETWORK_ERROR`.
+    pub fn network(message: impl Into<String>) -> Self {
+        Self {
+            status: None,
+            code: NETWORK_ERROR.to_string(),
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// Whether the failure means the credential is dead and retrying cannot
+    /// help: HTTP 401, or a server `UNAUTHORIZED` code (issue-#107 rule,
+    /// PR #110). A 403 is deliberately NOT fatal -- the only 403 the agent
+    /// path sees is `AGENT_LIMIT_REACHED`, which re-auth cannot fix.
+    pub fn is_auth_fatal(&self) -> bool {
+        self.status == Some(401) || self.code == "UNAUTHORIZED"
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(s) => write!(f, "{} (HTTP {}): {}", self.code, s, self.message),
+            None => write!(f, "{}: {}", self.code, self.message),
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +160,73 @@ mod tests {
     fn rejects_an_unknown_scheme() {
         assert!(to_ws_url("ftp://h/p").is_err());
         assert!(to_ws_url("").is_err());
+    }
+
+    // --- ApiError::from_response (D6) ---
+
+    #[test]
+    fn parses_the_error_envelope() {
+        let e = ApiError::from_response(
+            404,
+            r#"{"error":"Agent not found","code":"NOT_FOUND","details":null}"#,
+        );
+        assert_eq!(e.status, Some(404));
+        assert_eq!(e.code, "NOT_FOUND");
+        assert_eq!(e.message, "Agent not found");
+        assert_eq!(e.details, None);
+    }
+
+    #[test]
+    fn parses_an_object_details_field() {
+        // D6: the server sends `details` as an object; it must survive.
+        let e = ApiError::from_response(
+            429,
+            r#"{"error":"slow down","code":"TOO_MANY_REQUESTS","details":{"retryAfter":30}}"#,
+        );
+        assert_eq!(e.details, Some(serde_json::json!({ "retryAfter": 30 })));
+    }
+
+    #[test]
+    fn falls_back_to_api_error_when_code_is_absent() {
+        let e = ApiError::from_response(400, r#"{"error":"nope"}"#);
+        assert_eq!(e.code, "API_ERROR");
+        assert_eq!(e.message, "nope");
+    }
+
+    #[test]
+    fn non_json_body_with_a_status_is_api_error_not_network_error() {
+        // Spec §5.3: NETWORK_ERROR means *no HTTP response*. A 500 with an
+        // HTML body still has a response, so it maps to API_ERROR.
+        let e = ApiError::from_response(500, "<html>oops</html>");
+        assert_eq!(e.status, Some(500));
+        assert_eq!(e.code, "API_ERROR");
+    }
+
+    // --- ApiError::network ---
+
+    #[test]
+    fn network_has_no_status_and_the_network_sentinel() {
+        let e = ApiError::network("connection reset");
+        assert_eq!(e.status, None);
+        assert_eq!(e.code, "NETWORK_ERROR");
+        assert_eq!(e.message, "connection reset");
+        assert_eq!(e.details, None);
+    }
+
+    // --- is_auth_fatal (issue #107, PR #110) ---
+
+    #[test]
+    fn auth_fatal_on_401_or_unauthorized_code() {
+        assert!(ApiError::from_response(401, "{}").is_auth_fatal());
+        assert!(ApiError::from_response(403, r#"{"code":"UNAUTHORIZED"}"#).is_auth_fatal());
+    }
+
+    #[test]
+    fn not_auth_fatal_on_other_failures() {
+        assert!(!ApiError::from_response(403, r#"{"code":"AGENT_LIMIT_REACHED"}"#).is_auth_fatal());
+        assert!(!ApiError::from_response(500, "{}").is_auth_fatal());
+        assert!(!ApiError::from_response(429, "{}").is_auth_fatal());
+        assert!(!ApiError::from_response(400, "{}").is_auth_fatal());
+        assert!(!ApiError::network("down").is_auth_fatal());
     }
 }
