@@ -19,6 +19,9 @@ services:
     container_name: ponter
     restart: unless-stopped
     stop_grace_period: 15s
+    env_file:
+      - path: .env
+        required: false
     ports:
       - '${PONTER_HTTP_PORT:-80}:80'
     environment:
