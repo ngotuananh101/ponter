@@ -20,6 +20,7 @@ mod e2ee;
 // is compiled out. The musl artifact has no desktop session to inject into
 // (ADR-15), so nothing here is reachable on musl. `--allow-input` still exists
 // on every target (spec §6.4) — it lives in the CLI's `Cli`, not in this module.
+pub mod api;
 mod files;
 pub mod identity;
 #[cfg(not(target_env = "musl"))]
