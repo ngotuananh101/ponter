@@ -28,7 +28,7 @@ Run the desktop client in development:
 cargo run --manifest-path apps/desktop/Cargo.toml
 ```
 
-Run test suite (152 unit tests):
+Run test suite (160 unit tests):
 
 ```bash
 cargo test --locked --manifest-path apps/desktop/Cargo.toml

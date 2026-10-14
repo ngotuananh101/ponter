@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ponter Desktop
+Comment=Ponter Remote Desktop Client
+Exec=ponter-desktop
+Icon=ponter-desktop
+Terminal=false
+Categories=Utility;Network;RemoteAccess;
+StartupWMClass=ponter-desktop
+Keywords=remote;desktop;ponter;

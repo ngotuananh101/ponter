@@ -17,6 +17,25 @@ pub fn resolve(theme: Option<&str>) -> ThemeChoice {
     }
 }
 
+/// Font data for Inter-Regular embedded statically in the binary.
+pub const INTER_REGULAR_FONT: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+
+/// Configure custom crisp typography for the egui context.
+/// Installs Inter as the primary proportional font, falling back to built-in fonts.
+pub fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(INTER_REGULAR_FONT)),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "Inter".to_owned());
+    ctx.set_fonts(fonts);
+}
+
 /// Apply the chosen theme to the egui context.
 pub fn apply(ctx: &egui::Context, theme: Option<&str>) {
     let choice = resolve(theme);
@@ -24,6 +43,13 @@ pub fn apply(ctx: &egui::Context, theme: Option<&str>) {
         ThemeChoice::Dark => egui::Visuals::dark(),
         ThemeChoice::Light => egui::Visuals::light(),
     };
+
+    // Optimize text rendering for sharpness on dark/light backgrounds:
+    // 1. Disable sub-pixel binning: sub-pixel binning renders glyphs at fractional
+    //    horizontal offsets, which causes text blurriness.
+    // 2. Enable font hinting to snap stems to integer pixel coordinates.
+    visuals.text_options.subpixel_binning = false;
+    visuals.text_options.font_hinting = true;
 
     match choice {
         ThemeChoice::Dark => {
@@ -37,6 +63,7 @@ pub fn apply(ctx: &egui::Context, theme: Option<&str>) {
             visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(38, 43, 58));
             visuals.window_corner_radius = egui::CornerRadius::same(10);
             visuals.override_text_color = None;
+            visuals.weak_text_color = Some(egui::Color32::from_rgb(148, 163, 184)); // slate-400
             visuals.hyperlink_color = egui::Color32::from_rgb(96, 165, 250); // blue-400
             visuals.warn_fg_color = egui::Color32::from_rgb(251, 191, 36); // amber-400
             visuals.error_fg_color = egui::Color32::from_rgb(248, 113, 113); // red-400
@@ -86,6 +113,7 @@ pub fn apply(ctx: &egui::Context, theme: Option<&str>) {
             visuals.window_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(226, 232, 240)); // slate-200
             visuals.window_corner_radius = egui::CornerRadius::same(10);
             visuals.override_text_color = None;
+            visuals.weak_text_color = Some(egui::Color32::from_rgb(100, 116, 139)); // slate-500
             visuals.hyperlink_color = egui::Color32::from_rgb(37, 99, 235); // blue-600
             visuals.warn_fg_color = egui::Color32::from_rgb(217, 119, 6); // amber-600
             visuals.error_fg_color = egui::Color32::from_rgb(220, 38, 38); // red-600
@@ -135,6 +163,14 @@ pub fn apply(ctx: &egui::Context, theme: Option<&str>) {
         style.spacing.item_spacing = egui::vec2(8.0, 10.0);
         style.spacing.button_padding = egui::vec2(14.0, 8.0);
         style.spacing.interact_size.y = 30.0;
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+        );
     });
 }
 
@@ -160,5 +196,35 @@ mod tests {
     #[test]
     fn resolve_unknown_falls_back() {
         assert_eq!(resolve(Some("solarized")), ThemeChoice::Light);
+    }
+
+    #[test]
+    fn setup_fonts_installs_inter_as_primary_proportional_font() {
+        let ctx = egui::Context::default();
+        setup_fonts(&ctx);
+
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        let fonts = ctx.fonts(|f| f.definitions().clone());
+        assert!(fonts.font_data.contains_key("Inter"));
+        let prop = fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .expect("proportional family exists");
+        assert_eq!(prop.first().map(String::as_str), Some("Inter"));
+    }
+
+    #[test]
+    fn apply_disables_subpixel_binning_and_enables_hinting_for_sharp_text() {
+        let ctx = egui::Context::default();
+        apply(&ctx, Some("dark"));
+
+        let visuals = &ctx.style_of(egui::Theme::Dark).visuals;
+        assert!(!visuals.text_options.subpixel_binning);
+        assert!(visuals.text_options.font_hinting);
+        assert_eq!(
+            visuals.weak_text_color(),
+            egui::Color32::from_rgb(148, 163, 184)
+        );
     }
 }

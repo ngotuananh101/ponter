@@ -61,7 +61,7 @@ pub fn card_header(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>) {
             ui.add(egui::Label::new(
                 egui::RichText::new(sub)
                     .size(13.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.7)),
+                    .color(ui.visuals().weak_text_color()),
             ));
         }
     });

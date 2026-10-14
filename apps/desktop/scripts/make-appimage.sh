@@ -8,15 +8,12 @@ install -Dm644 icons/128x128@2x.png \
   "$appdir/usr/share/icons/hicolor/256x256/apps/ponter-desktop.png"
 cp icons/128x128@2x.png "$appdir/ponter-desktop.png"
 cp icons/128x128@2x.png "$appdir/.DirIcon"
-cat > "$appdir/ponter-desktop.desktop" <<'DESKTOP'
-[Desktop Entry]
-Type=Application
-Name=Ponter Desktop
-Exec=ponter-desktop
-Icon=ponter-desktop
-Categories=Utility;Network;
-DESKTOP
-cp "$appdir/ponter-desktop.desktop" "$appdir/usr/share/applications/"
+desktop_file="ponter-desktop.desktop"
+if [ ! -f "$desktop_file" ]; then
+  desktop_file="$(dirname "$0")/../ponter-desktop.desktop"
+fi
+cp "$desktop_file" "$appdir/ponter-desktop.desktop"
+cp "$desktop_file" "$appdir/usr/share/applications/ponter-desktop.desktop"
 cat > "$appdir/AppRun" <<'APPRUN'
 #!/usr/bin/env bash
 exec "$(dirname "$0")/usr/bin/ponter-desktop" "$@"

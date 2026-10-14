@@ -197,7 +197,7 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
                     ui.add(egui::Label::new(
                         egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
                             .size(12.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.7)),
+                            .color(ui.visuals().weak_text_color()),
                     ));
                     ui.add_space(12.0);
                     if ui

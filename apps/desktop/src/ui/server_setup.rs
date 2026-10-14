@@ -46,24 +46,35 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
 
         // Action buttons
         ui.horizontal(|ui| {
-            if ui
+            let test_clicked = ui
                 .add_sized(
                     [(ui.available_width() - 8.0) / 2.0, 36.0],
                     egui::Button::new("Test connection"),
                 )
-                .clicked()
-                && validate(&app.server_url_input).is_ok()
-            {
-                app.send(Command::ProbeServer {
-                    url: app.server_url_input.clone(),
-                });
-            }
+                .clicked();
+            let save_clicked =
+                crate::ui::components::primary_button(ui, "Save and continue").clicked();
 
-            let save_btn = crate::ui::components::primary_button(ui, "Save and continue");
-            if save_btn.clicked() && validate(&app.server_url_input).is_ok() {
-                app.send(Command::SaveServer {
-                    url: app.server_url_input.clone(),
-                });
+            // Validate once for both actions and surface the failure inline.
+            // Checking `validate(..).is_ok()` without an else branch left the
+            // button dead and the UI silent on an invalid URL.
+            if test_clicked || save_clicked {
+                match validate(&app.server_url_input) {
+                    Ok(()) => {
+                        app.login_error = None;
+                        if test_clicked {
+                            app.send(Command::ProbeServer {
+                                url: app.server_url_input.clone(),
+                            });
+                        }
+                        if save_clicked {
+                            app.send(Command::SaveServer {
+                                url: app.server_url_input.clone(),
+                            });
+                        }
+                    }
+                    Err(err) => app.login_error = Some(err),
+                }
             }
         });
 

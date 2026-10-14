@@ -97,6 +97,25 @@ pub enum Msg {
     Tray(TrayRequest),
 }
 
+/// Persist the server URL from the Setup screen.
+///
+/// Reads `allow_input` and `theme` into locals BEFORE calling
+/// `save_config_impl`, which re-locks both mutexes. Holding the guards across
+/// the call would deadlock the tokio worker (and freeze the UI thread on its
+/// next `theme` lock) — the `SaveServer` freeze.
+pub(crate) fn save_server_config(
+    state: &crate::core::state::CoreState,
+    url: &str,
+) -> Result<(), String> {
+    // Read both guarded values into locals FIRST so their `MutexGuard`s drop at
+    // each `;`. Passing the locks inline as call arguments would keep the guards
+    // alive across `save_config_impl`, which re-locks `allow_input` and `theme`
+    // and self-deadlocks the non-reentrant `std::sync::Mutex`.
+    let allow_input = *state.allow_input.lock().unwrap();
+    let theme = state.theme.lock().unwrap().clone();
+    crate::core::wizard::save_config_impl(state, Some(url), allow_input, theme.as_deref())
+}
+
 /// The shell's root object.
 pub struct App {
     pub state: Arc<crate::core::state::CoreState>,
@@ -147,6 +166,8 @@ impl App {
         } else {
             Screen::Login
         };
+
+        crate::theme::setup_fonts(&cc.egui_ctx);
 
         let allow_input = *state.allow_input.lock().unwrap();
         let app = Self {
@@ -239,12 +260,7 @@ impl App {
             }
             Command::SaveServer { url } => {
                 self.rt.spawn(async move {
-                    let res = crate::core::wizard::save_config_impl(
-                        &state,
-                        Some(url.as_str()),
-                        *state.allow_input.lock().unwrap(),
-                        state.theme.lock().unwrap().clone().as_deref(),
-                    );
+                    let res = save_server_config(&state, url.as_str());
                     if res.is_ok() {
                         state.set_has_server_url(true);
                     }
@@ -502,5 +518,69 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             crate::ui::render(self, ui);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Regression: "Save and continue" must not deadlock.
+    ///
+    /// The original `SaveServer` arm passed `*state.allow_input.lock()` and
+    /// `state.theme.lock()` as call arguments, so the guards were held across
+    /// `save_config_impl`, which re-locks both `std::sync::Mutex`es — a
+    /// non-reentrant self-deadlock that froze the whole app. The save runs on a
+    /// watchdog thread so a regression hangs the test into a clean failure
+    /// instead of blocking the suite forever.
+    #[test]
+    fn save_server_config_does_not_deadlock() {
+        let dir = std::env::temp_dir().join(format!("ponter-saveserver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::core::state::CoreState::with_config(Some(dir.join("config.json")));
+
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let res = save_server_config(&state, "http://localhost:8787");
+            let _ = tx.send(res);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(res) => {
+                res.expect("save must succeed");
+                handle.join().expect("worker thread should not panic");
+            }
+            Err(_) => panic!("save_server_config deadlocked (no result within 10s)"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The save must mirror the URL and the gate/theme preferences into
+    /// `CoreState` and the persisted config — proving the helper's local
+    /// captures are the values actually written.
+    #[test]
+    fn save_server_config_persists_url_and_prefs() {
+        let dir =
+            std::env::temp_dir().join(format!("ponter-saveserver-pre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let state = crate::core::state::CoreState::with_config(Some(path.clone()));
+        *state.allow_input.lock().unwrap() = true;
+        *state.theme.lock().unwrap() = Some("dark".to_string());
+
+        save_server_config(&state, "http://new:1/").expect("save must succeed");
+
+        assert_eq!(*state.server_url.lock().unwrap(), "http://new:1");
+        assert!(state.has_server_url());
+        let reloaded = crate::core::config::load_config(&path);
+        assert_eq!(reloaded.server_url.as_deref(), Some("http://new:1"));
+        assert!(reloaded.allow_input);
+        assert_eq!(reloaded.theme.as_deref(), Some("dark"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
