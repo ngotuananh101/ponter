@@ -81,21 +81,27 @@ The desktop client resolves its server URL in this order: the runtime
 app config file, then a **build-time default** compiled from
 `PONTER_DEFAULT_SERVER_URL`, then `http://localhost:8787`.
 
-To bake your server into an installer, set the repository variable
-`PONTER_DEFAULT_SERVER_URL` before building (Settings → Secrets and variables →
-Actions → Variables):
+The build-time default is compiled in with
+`option_env!("PONTER_DEFAULT_SERVER_URL")` (ADR-67), so the variable must be
+present in the environment of the `cargo build` that produces the binary.
+When unset it is a no-op and the app falls back to the user's saved value or
+`http://localhost:8787`.
+
+The CI source for this value is the repository variable
+`PONTER_DEFAULT_SERVER_URL` (Settings → Secrets and variables → Actions →
+Variables):
 
 ```text
 PONTER_DEFAULT_SERVER_URL = https://ponter.example.com
 ```
 
-The CI workflow passes it into `tauri build`; when unset it is a no-op and the
-app falls back to the user's saved value or localhost. A source build can set
-it directly:
+The CI workflow (`.github/workflows/build-desktop.yml`) reads that variable and
+exposes it as `PONTER_DEFAULT_SERVER_URL` to its `cargo test` step. A source
+build sets it inline on the build command itself:
 
 ```bash
 PONTER_DEFAULT_SERVER_URL=https://ponter.example.com \
-  pnpm --filter @ponter/desktop tauri build
+  cargo build --release --manifest-path apps/desktop/Cargo.toml
 ```
 
 End users can still change the server from the app's first screen (or via
