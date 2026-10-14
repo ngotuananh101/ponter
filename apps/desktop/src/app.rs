@@ -148,6 +148,8 @@ impl App {
             Screen::Login
         };
 
+        crate::theme::setup_fonts(&cc.egui_ctx);
+
         let allow_input = *state.allow_input.lock().unwrap();
         let app = Self {
             state,

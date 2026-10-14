@@ -31,6 +31,7 @@ fn main() -> eframe::Result<()> {
         "Ponter Desktop",
         native_options,
         Box::new(|cc| {
+            theme::setup_fonts(&cc.egui_ctx);
             let mut app = app::App::new(cc);
             tray::spawn(app.tx.clone(), app.agent.clone());
             app.tray_active = true;
