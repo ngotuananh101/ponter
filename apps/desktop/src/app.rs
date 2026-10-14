@@ -499,6 +499,8 @@ impl eframe::App for App {
             crate::ui::route(&self.state, self.editing_server)
         };
         crate::theme::apply(ui.ctx(), self.state.theme.lock().unwrap().as_deref());
-        crate::ui::render(self, ui);
+        egui::CentralPanel::default().show(ui, |ui| {
+            crate::ui::render(self, ui);
+        });
     }
 }
