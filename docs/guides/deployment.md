@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Deployment guide for the Remote Access Platform. The backend (`@ponter/server`) is a self-hosted Node.js application running in Docker. The web frontend (`apps/web`) is a Vue 3 SPA deployed to Cloudflare Pages.
+Deployment guide for the Remote Access Platform. The platform runs as an all-in-one Docker container bundling the backend server (`@ponter/server`), the compiled web frontend (`@ponter/web`), and an internal Nginx reverse proxy under Supervisord, publishing a single port (`8080`).
 
 ---
 
@@ -8,16 +8,12 @@ Deployment guide for the Remote Access Platform. The backend (`@ponter/server`) 
 
 1. [Prerequisites](#1-prerequisites)
 2. [Architecture Overview](#2-architecture-overview)
-3. [Docker Deployment (Backend Server)](#3-docker-deployment-backend-server)
-   - [Scenario 1: Local LAN](#scenario-1-local-lan)
-   - [Scenario 2: Homelab (Cloudflare Tunnel)](#scenario-2-homelab-cloudflare-tunnel)
-   - [Scenario 3: Production VPS (Caddy + Coturn)](#scenario-3-production-vps-caddy--coturn)
-   - [Deploying New Versions](#31-deploying-new-versions)
-   - [Browser WebSocket Signaling (proxy & idle timeouts)](#32-browser-websocket-signaling-proxy--idle-timeouts)
-4. [Deploying the Web Frontend to Cloudflare Pages](#4-deploying-the-web-frontend-to-cloudflare-pages)
-   - [Configure Environment Variables](#41-configure-environment-variables)
-   - [Build and Deploy](#42-build-and-deploy)
-   - [Verify Web Deployment](#43-verify-web-deployment)
+3. [Docker Deployment](#3-docker-deployment)
+   - [Scenario 1: Standard All-in-One Deployment](#scenario-1-standard-all-in-one-deployment)
+   - [Scenario 2: Production VPS with Coturn TURN Relay](#scenario-2-production-vps-with-coturn-turn-relay)
+   - [Deploying New Versions & Rollbacks](#31-deploying-new-versions--rollbacks)
+   - [Browser WebSocket Signaling & Proxy Timeouts](#32-browser-websocket-signaling--proxy-timeouts)
+4. [Runtime Frontend Configuration](#4-runtime-frontend-configuration)
 5. [Environment Variables Reference](#5-environment-variables-reference)
 6. [Troubleshooting](#6-troubleshooting)
 
@@ -27,333 +23,246 @@ Deployment guide for the Remote Access Platform. The backend (`@ponter/server`) 
 
 Before deploying, ensure you have:
 
-- **Docker**: `>= 25.0.0` ([installation](https://docs.docker.com/get-docker/))
-- **Docker Compose**: `>= 2.20.0` (bundled with Docker Desktop; use `docker compose` on Linux)
-- **Cloudflare Account**: [Sign up](https://dash.cloudflare.com/sign-up) (required only for frontend deployment)
-- **pnpm**: `>= 12.0.0` (required only for frontend deployment)
-- **Node.js**: `>= 24.0.0` (required only for frontend deployment)
+- **Docker Engine**: `>= 25.0.0` ([installation instructions](https://docs.docker.com/get-docker/))
+- **Docker Compose**: `>= 2.20.0` (bundled with Docker Desktop; invoke via `docker compose` on Linux)
+- A Linux or Windows host with internet connectivity.
 
 ---
 
 ## 2. Architecture Overview
 
-Production deployment consists of the following components:
+The production deployment consists of the following components:
 
-1. **Frontend Web Client (`apps/web`)**:
-   - **Hosting**: Cloudflare Pages (static CDN hosting, runs no backend logic)
-   - **Framework**: Vue 3 SPA + Vite + Tailwind CSS + Pinia
-   - **Backend Connection**: Configured via `VITE_API_URL` pointing to the self-hosted server
+1. **Unified Container Image (`ngotuananh2101/ponter`)**:
+   - **Frontend Web Client (`@ponter/web`)**: Vue 3 SPA + Vite + Tailwind CSS + Pinia, compiled into static assets served by Nginx at `/usr/share/nginx/html`.
+   - **Backend Server (`@ponter/server`)**: Node.js 24 LTS + Hono + `ws` library listening on internal loopback `127.0.0.1:8787`.
+   - **Database**: SQLite (`/app/data/remote.db` via `better-sqlite3` + Drizzle ORM) in WAL mode, mounted from host directory `./data`.
+   - **Internal Reverse Proxy (Nginx)**: Listens on port `8080`, serves SPA assets with client-side history routing fallback (`try_files`), directly proxies health check probes (`/health`), and reverse proxies API routes (`/api/`) and WebSocket connections (`/api/ws/agent`, `/api/ws/browser`) with connection upgrade headers.
+   - **Process Supervision**: Supervisord runs as PID 1 (`nodaemon=true`), managing Nginx as root and `@ponter/server` as an unprivileged user (`su-exec node`).
 
-2. **Backend Server (`@ponter/server`)**:
-   - **Runtime**: Node.js 24 LTS + @hono/node-server + `ws` library
-   - **Database**: SQLite (better-sqlite3 + Drizzle ORM) with WAL mode
-   - **WebSocket**: Two channels — `/api/ws/agent` (agent ↔ server) and `/api/ws/browser` (browser signaling, push instead of poll)
-   - **Token Revocation**: SQLite table `revoked_tokens` (replaces Cloudflare KV)
-   - **ICE Servers**: Dynamic STUN/TURN credentials via `GET /api/webrtc/ice-servers`
-   - **Containerization**: Docker multi-stage image
-
-3. **TURN Server (Production)**: Coturn for WebRTC NAT traversal (symmetric NAT)
+2. **WebRTC Relaying (NAT Traversal)**:
+   - **Public STUN**: Default for direct peer-to-peer connections when peers are not behind symmetric NAT.
+   - **Coturn TURN Server**: Standalone deployment option via `docker-compose.coturn.yml` for environments requiring a dedicated relay server.
+   - **Cloudflare Calls TURN**: Supported hosted TURN relay option via `TURN_PROVIDER=cloudflare`.
 
 ---
 
-## 3. Docker Deployment (Backend Server)
+## 3. Docker Deployment
 
-All Docker files reside in the `docker/` directory.
+All Docker packaging files reside in the `docker/` directory.
 
-### Scenario 1: Local LAN
+### Scenario 1: Standard All-in-One Deployment
 
-Intended for testing on a local LAN. The server listens on `http://localhost:8787` with an ephemeral SQLite database and Google's public STUN server. No TURN relay is used.
+The standard deployment runs the unified container on port `8080`. Ideal for homelabs, VPS instances, or local network servers where direct peer-to-peer WebRTC connections succeed via STUN.
 
 ```bash
 cd docker
-docker compose -f docker-compose.local.yml up --build
+cp .env.example .env
+# Edit .env: configure JWT_SECRET and REFRESH_TOKEN_SECRET
+
+# Pull published image and launch
+docker compose pull
+docker compose up -d
 ```
 
-The server will run at `http://localhost:8787`.
+Access the web interface at `http://localhost:8080`.
 
-> **Scenario 1 is the only exception that builds from source.** Images are prebuilt and published by CI to Docker Hub (`<your-dockerhub-user>/ponter:latest`), and Scenarios 2/3 only `pull` that image — eliminating the need to rebuild on deployment hosts. Scenario 1 keeps `--build` to reflect local code changes, including uncommitted edits. See [Deploying New Versions](#31-deploying-new-versions).
+To build the image from source instead of pulling from Docker Hub:
+
+```bash
+docker compose up -d --build
+```
 
 **Health check:**
+
 ```bash
-curl http://localhost:8787/health
+curl -fsS http://localhost:8080/health
 # {"status":"ok"}
 ```
 
-### Scenario 2: Homelab (Cloudflare Tunnel)
+---
 
-Exposes the server to the internet via Cloudflare Tunnel. Ideal for home servers needing remote access without opening router ports or configuring public DNS.
+### Scenario 2: Production VPS with Coturn TURN Relay
 
-**Step 1:** Create Cloudflare Tunnel:
-```bash
-cloudflared tunnel create my-tunnel
-cloudflared tunnel token my-tunnel
-```
+When agents or browser clients reside behind symmetric NAT firewalls (e.g. mobile networks, corporate intranets), WebRTC cannot establish direct peer-to-peer connections without a TURN relay.
 
-**Step 2:** Configure `.env`:
-```bash
-cd docker
-cp .env.example .env
-# Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, CLOUDFLARE_TUNNEL_TOKEN, CORS_ORIGIN
-```
+The `docker/docker-compose.coturn.yml` file is a standalone compose configuration that runs the `ponter` container alongside an integrated Coturn TURN server on the host network.
 
-**Step 3:** Start containers:
-```bash
-docker compose -f docker-compose.tunnel.yml pull
-docker compose -f docker-compose.tunnel.yml up -d
-```
+**Step 1:** Point your domain (`A`/`CNAME`) to your VPS.
 
-### Scenario 3: Production VPS (Caddy + Coturn)
+**Step 2:** Ensure firewall ports are open on the VPS:
+- `8080` (TCP): Web UI and API (or custom `PONTER_HTTP_PORT`)
+- `3478` (TCP/UDP): Coturn STUN/TURN listener
+- `49152:49200` (UDP): Coturn relay port range
 
-Full production deployment on a VPS with automated HTTPS (Caddy + Let's Encrypt) and a Coturn TURN server for WebRTC NAT traversal.
-
-**Step 1:** Point your domain (`A`/`CNAME`) to the VPS.
-
-**Step 2:** Configure `.env`:
+**Step 3:** Configure `docker/.env`:
 ```bash
 cd docker
 cp .env.example .env
-# Edit .env: set JWT_SECRET, REFRESH_TOKEN_SECRET, DOMAIN, TURN_SECRET
+# Edit .env:
+#   JWT_SECRET=<32+ chars>
+#   REFRESH_TOKEN_SECRET=<32+ chars>
+#   DOMAIN=ponter.example.com
+#   TURN_SECRET=<random 32 hex chars>
+#   CORS_ORIGIN=http://localhost:8080,https://ponter.example.com
 ```
 
-**Step 3:** Start containers:
+**Step 4:** Launch services:
 ```bash
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.coturn.yml pull
+docker compose -f docker-compose.coturn.yml up -d
 ```
 
-Caddy automatically requests Let's Encrypt certificates for `DOMAIN`. The Coturn server uses `TURN_SECRET` as an RFC 5766 shared secret; the server's `GET /api/webrtc/ice-servers` endpoint mints time-limited HMAC-SHA1 credentials for each user.
+Coturn authenticates relay connections using the shared `TURN_SECRET`. The backend server's `GET /api/webrtc/ice-servers` endpoint mints time-limited HMAC-SHA1 credentials on demand for each authenticated user session.
 
 #### Selecting a TURN Provider
 
-The server selects a TURN provider via the `TURN_PROVIDER` environment variable:
+The backend server selects its WebRTC ICE/TURN provider via the `TURN_PROVIDER` environment variable:
 
-| Value | Description |
-|---|---|
-| `coturn` (default) | Self-hosted Coturn, RFC 5766 credentials derived from `TURN_SECRET` + `TURN_URL`. Preserves behavior from earlier phases. |
-| `cloudflare` | Cloudflare Calls TURN (hosted). Requires `TURN_KEY_ID` + `TURN_KEY_API_TOKEN`. Server mints credentials via Cloudflare API and caches per TTL. **Note:** media flows through Cloudflare infrastructure (third-party). Cloudflare provides **1,000 GB egress/month free tier** (shared across Cloudflare Realtime services), then ~$0.05/GB egress; STUN `stun.cloudflare.com` is free. Differs from self-hosted model. |
-| `none` | STUN only, no relay. Peers behind symmetric NAT may fail to connect. |
+| Value              | Description                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coturn` (default) | Self-hosted Coturn relay. RFC 5766 HMAC-SHA1 credentials derived dynamically from `TURN_SECRET` and `TURN_URL`.                                                                                                                                                                                                                                                   |
+| `cloudflare`       | Hosted Cloudflare Calls TURN relay. Requires `TURN_KEY_ID` and `TURN_KEY_API_TOKEN`. The server requests short-lived credentials from the Cloudflare API and caches them for their TTL. Media relays through Cloudflare's global anycast network (1,000 GB/month egress free tier, then ~$0.05/GB egress). Automatic fallback to STUN-only if the API is down. |
+| `none`             | Public STUN only (no TURN relay). WebRTC connections will fail between peers when both sit behind symmetric NAT firewalls.                                                                                                                                                                                                                                         |
 
-When Cloudflare fails (missing configuration, non-2xx response, network error), the server automatically falls back to STUN-only and logs a warning — connections are not blocked.
-
----
-
-## 3.1 Deploying New Versions
-
-Scenarios 2 and 3 run prebuilt images published by the **Docker Publish** workflow (`.github/workflows/docker-publish.yml`).
-
-**Step 0 — Point compose to your image.** Docker Hub account names do not match GitHub usernames, so the namespace is read from the `DOCKERHUB_USERNAME` secret in the workflow, while Compose reads `DOCKERHUB_IMAGE` in `docker/.env`. The default already points to the published repository; override only when publishing under a different namespace:
-
-```bash
-cd docker
-# in .env (created from .env.example):
-DOCKERHUB_IMAGE=ngotuananh2101/ponter
-```
-
-### 3.1.1 Publish your own image (fork)
-
-The shipped `DOCKERHUB_IMAGE` points at the upstream image. To deploy an image
-you built yourself:
-
-```bash
-docker build -f docker/Dockerfile.server -t <your-namespace>/ponter:latest .
-docker push <your-namespace>/ponter:latest
-# then set DOCKERHUB_IMAGE=<your-namespace>/ponter:latest in docker/.env
-```
-
-See `docs/guides/self-hosting.md` §2 for the full fork walkthrough.
-
-**Step 1 — Publish image:** on GitHub, navigate to Actions → *Docker Publish* → *Run workflow*, selecting the target branch.
-
-The workflow builds `linux/amd64` and `linux/arm64` on dedicated native runners and merges them into a multi-arch manifest, allowing the same image to run on x86 VPS and ARM machines (Oracle Cloud, Ampere, Raspberry Pi) without QEMU.
-
-The image is pushed to `<your-dockerhub-user>/ponter` (currently `ngotuananh2101/ponter`). **You must create this repository on Docker Hub first** — Docker Hub will not automatically create repositories on push to non-existent names and returns an authorization error.
-
-Three tags may be generated:
-
-| Tag | Update Condition | Purpose |
-| --- | --- | --- |
-| `<your-dockerhub-user>/ponter:latest` | Only on `main` branch runs | Tag referenced by compose files. |
-| `<your-dockerhub-user>/ponter:sha-<sha>` | Every run; **keeps only the 3 most recent builds** | Pins a specific build, or enables rollback to a previous version. |
-| `<your-dockerhub-user>/ponter:<tag>` | When input `tag` is provided (retained indefinitely) | Human-readable release tag (e.g. `v1.2.3`). |
-
-Runs from feature branches never produce the `latest` tag, ensuring experimental builds cannot displace production images. Each publish without a `tag` input prunes old `sha-` tags, preserving only the three most recent builds.
-
-**Step 2 — Pull and restart on deployment host:**
-```bash
-cd docker
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-```
-
-**Step 3 — Verify:**
-```bash
-curl https://<your-domain>/health
-# {"status":"ok"}
-```
-
-**Rollback:** Because `latest` is a mutable tag, if a new release causes issues, update the `image:` line in your compose file to the `sha-` tag of the previous build, then run `pull && up -d`.
-
-> **Repository secrets:** The workflow requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (Docker Hub **access token** from Account Settings → Personal Access Tokens, with Read/Write **and Delete** permissions — not your account password). The prune step deletes old `sha-` tags via the Docker Hub API, so a token lacking Delete permission will cause the prune step to fail (the image will still publish successfully).
-
----
-
-## 3.2 Browser WebSocket Signaling (proxy & idle timeouts)
-
-Browser signaling uses WebSocket instead of REST polling. The browser tab mints a ticket via `POST /api/ws/ticket` (TTL 15s, single-use) and opens `GET /api/ws/browser?ticket=...`; the server pushes signals directly to the tab as soon as they are recorded, eliminating 200ms–2000ms polling loops. REST (`/api/signal/*`) remains active as a fallback if WebSocket connection fails.
-
-Enable WebSocket signaling for web using the build-time variable `VITE_BROWSER_WS_SIGNALING` (default `false`):
+When using `TURN_PROVIDER=cloudflare`, configure your Cloudflare Calls credentials in `docker/.env`:
 
 ```env
-# apps/web/.env.production
-VITE_API_URL=https://your-domain.com
-VITE_BROWSER_WS_SIGNALING=true
-```
-
-This is a **build-time** variable: a single bundle carries one setting for all users, so toggling it requires rebuilding and redeploying the frontend (see [Section 4](#4-deploying-the-web-frontend-to-cloudflare-pages)).
-
-### Why Proxy and Docker Configuration is Required
-
-The signaling socket is **silent when no signals are in transit** — which is normal while a terminal session is open. Intermediate layers (reverse proxy, Cloudflare Tunnel, Docker) have default idle timeouts, cutting sockets prematurely mid-session. Three configurations are pre-tuned in the repository:
-
-| Layer | Configuration | File |
-|---|---|---|
-| Caddy (Scenario 3) | matcher `path /api/ws/*` + `transport http { read_buffer 65536; keepalive 300s }` | `docker/Caddyfile` |
-| Cloudflare Tunnel (Scenario 2) | `originRequest.maxIdleDuration: 300s` | `docker/cloudflared/config.yml` (mounted read-only, passed via `--config`) |
-| Docker (all 3 scenarios) | `stop_grace_period: 15s` for service `server` | `docker/docker-compose.*.yml` |
-
-- **Caddy** must isolate the `/api/ws/*` block to apply `keepalive 300s`; Caddy defaults are lower and would silently terminate idle sockets.
-- **Cloudflare Tunnel**: `maxIdleDuration` **has no equivalent environment variable** — it must reside in `config.yml` and cloudflared must run with `--config /etc/cloudflared/config.yml`. Using `TUNNEL_TOKEN` alone (without `--config`) ignores this configuration.
-- **Docker**: defaults to 10s before issuing `SIGKILL`. The server implements graceful shutdown (closing all signaling sockets with close code 1001 before draining via `server.close`); `stop_grace_period: 15s` allows sufficient completion time, ensuring redeployments do not resemble network drops to connected clients or agents.
-
-### Verification
-
-After deployment, confirm the socket survives an idle period (leave terminal open without interaction for ~2 minutes), then check that the tab remains connected in DevTools → Network → WS (`/api/ws/browser`). If the socket disconnects periodically, increase `maxIdleDuration`/`keepalive` accordingly and ensure the proxy uses the correct configuration file.
-
-Test graceful shutdown manually:
-
-```bash
-docker compose -f docker-compose.prod.yml stop server
-docker compose -f docker-compose.prod.yml logs server | tail -20
-# Logs should show sockets closing with code 1001; container exits with 0 without SIGKILL.
+TURN_PROVIDER=cloudflare
+TURN_KEY_ID=your_cloudflare_turn_key_id
+TURN_KEY_API_TOKEN=your_cloudflare_turn_api_token
 ```
 
 ---
 
-## 4. Deploying the Web Frontend to Cloudflare Pages
+## 3.1 Deploying New Versions & Rollbacks
 
-The `apps/web` frontend is a Vue 3 SPA deployed as static assets to Cloudflare Pages. This is the only system component utilizing Cloudflare.
+The platform uses prebuilt multi-arch images (`linux/amd64` and `linux/arm64`) published to Docker Hub (`ngotuananh2101/ponter`) by GitHub Actions (`.github/workflows/docker-publish.yml`).
 
-### 4.1 Configure Environment Variables
-
-The web frontend communicates with the self-hosted backend via the `VITE_API_URL` environment variable.
-
-1. Copy template:
-   ```bash
-   pnpm --filter @ponter/web exec cp .env.production.example .env.production
-   ```
-   (`.env.production` is gitignored to keep local configuration private)
-
-2. Update `VITE_API_URL` with your self-hosted server URL:
-   ```env
-   VITE_API_URL=https://your-domain.com
-   ```
-
-### 4.2 Build and Deploy
+### Updating to the Latest Release
 
 ```bash
-# Build web application
-pnpm --filter @ponter/web build
-
-# Deploy to Cloudflare Pages
-pnpm --filter @ponter/web exec wrangler deploy
+cd docker
+docker compose pull
+docker compose up -d
 ```
 
-### 4.3 Verify Web Deployment
+Verify the update:
 
-1. Open `https://<your-pages-project>.pages.dev` in a browser
-2. Register an account or log in
-3. Test SPA reloading: navigate to `/dashboard` and press `F5`. The page must reload cleanly without 404 errors.
-4. Open Developer Tools (`F12`) to verify network requests route to the backend server.
+```bash
+curl -fsS http://localhost:8080/health
+# Expected: {"status":"ok"}
+```
+
+### Rollback Strategy
+
+The Docker Publish workflow publishes three tags:
+- `ngotuananh2101/ponter:latest`: Points to the newest build from `main`.
+- `ngotuananh2101/ponter:sha-<sha>`: Retains the **3 most recent builds**.
+- `ngotuananh2101/ponter:<tag>`: Created when a specific tag input (e.g. `v1.2.0`) is supplied.
+
+To roll back a problematic release, update the image tag in `docker/docker-compose.yml`:
+
+```yaml
+services:
+  ponter:
+    image: ngotuananh2101/ponter:sha-previous_sha
+```
+
+Then execute:
+
+```bash
+docker compose up -d
+```
+
+---
+
+## 3.2 Browser WebSocket Signaling & Proxy Timeouts
+
+Browser signaling uses persistent WebSockets (`/api/ws/browser`) rather than REST polling. When a terminal session is open but idle, the signaling socket remains open without data transit.
+
+To prevent connections from dropping prematurely:
+1. **Internal Nginx Configuration**: `docker/nginx.web.conf` sets `proxy_read_timeout 86400s;` (24 hours), `proxy_send_timeout 86400s;`, and disables proxy buffering (`proxy_buffering off;`).
+2. **Graceful Shutdown**: The container specifies `stop_grace_period: 15s`. When stopping or restarting, Supervisord sends `SIGTERM` to the Node.js server, allowing it to close signaling sockets with WebSocket status code `1001` (Going Away) before terminating cleanly.
+3. **External Host Proxy**: If you run an external reverse proxy (e.g. Traefik, host Nginx, Caddy) in front of port 8080, ensure its WebSocket read timeout is set to at least 24 hours.
+
+---
+
+## 4. Runtime Frontend Configuration
+
+Under the unified deployment, the frontend SPA is compiled once into the container image. The web client dynamically determines its backend API endpoint at runtime, rather than baking a URL at build time.
+
+### Resolution Precedence
+
+`apps/web/src/config.ts` resolves the API endpoint in the following order:
+1. **Runtime Injection (`window.__PONTER_CONFIG__.apiUrl`)**: Injected into `/usr/share/nginx/html/config.js` by `entrypoint.sh` from the `PONTER_API_URL` environment variable.
+2. **Build-Time Variable (`import.meta.env.VITE_API_URL`)**: Used during local development with Vite dev server (`http://localhost:8787`).
+3. **Same-Origin Fallback (`window.location.origin`)**: Default for container deployment where frontend and backend are served from the same host and port (`http://your-server:8080`).
+
+If Ponter is accessed via the standard published port on the same domain, leave `PONTER_API_URL` empty in `docker/.env`.
 
 ---
 
 ## 5. Environment Variables Reference
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `PORT` | No | `8787` | Server listen port (inside container). |
-| `DATABASE_PATH` | No | `/app/data/remote.db` | SQLite database file path. |
-| `JWT_SECRET` | Yes | — | HMAC secret for access tokens. Minimum 32 characters. |
-| `REFRESH_TOKEN_SECRET` | Yes | — | HMAC secret for refresh tokens. Minimum 32 characters. |
-| `CORS_ORIGIN` | No | `*` | CORS allow-origin for API. **Explicitly set in production**: `*` permits all origins via CORS while also **disabling** WebSocket signaling Origin check (`/api/ws/browser` — CSWSH defense, see [Section 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts)). |
-| `JWT_EXPIRES_IN` | No | `900` (15m) | Access token TTL (seconds). |
-| `REFRESH_TOKEN_EXPIRES_IN` | No | `604800` (7d) | Refresh token TTL (seconds). |
-| `TURN_SECRET` | Prod only | — | Shared secret for Coturn long-term authentication. |
-| `TURN_URL` | Prod only | `turn:${DOMAIN}:3478` | TURN URL advertised to clients. Override in `.env` to use IP instead of domain. |
-| `STUN_URL` | Prod only | `stun:${DOMAIN}:3478` | STUN URL advertised to clients. Override in `.env` to use IP instead of domain. |
-| `DOMAIN` | Prod only | — | Public domain for Caddy TLS and TURN realm. |
-| `TURN_PROVIDER` | No | `coturn` | TURN provider: `coturn` \| `cloudflare` \| `none`. |
-| `TURN_KEY_ID` | Cloudflare only | — | Cloudflare Calls TURN key ID. Required when `TURN_PROVIDER=cloudflare`. |
-| `TURN_KEY_API_TOKEN` | Cloudflare only | — | Cloudflare TURN API token (Bearer). Required when `TURN_PROVIDER=cloudflare`. |
-| `CLOUDFLARE_TUNNEL_TOKEN` | Tunnel only | — | Cloudflare Tunnel token. |
-| `VITE_API_URL` | Web only | `http://localhost:8787` | API URL for web frontend. |
-| `VITE_BROWSER_WS_SIGNALING` | Web only | `false` | Enable WebSocket signaling (`/api/ws/browser`) instead of REST polling. Build-time — rebuild to change. See [Section 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts). |
+| Variable                   | Required   | Default                 | Description                                                                                                    |
+| -------------------------- | ---------- | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `PONTER_HTTP_PORT`         | No         | `8080`                  | Published host port for the web UI and reverse proxy. Set to `127.0.0.1:8080` when behind a host proxy.       |
+| `PONTER_API_URL`           | No         | —                       | Optional API URL override injected into `/config.js`. Leave empty for same-origin default.                     |
+| `PORT`                     | No         | `8787`                  | Internal Node.js backend port (bound to `127.0.0.1` inside container).                                         |
+| `DATABASE_PATH`            | No         | `/app/data/remote.db`   | SQLite database file path.                                                                                     |
+| `JWT_SECRET`               | Yes        | —                       | HS256 HMAC secret for signing access tokens. Minimum 32 characters.                                            |
+| `REFRESH_TOKEN_SECRET`     | Yes        | —                       | HS256 HMAC secret for signing refresh tokens. Minimum 32 characters.                                           |
+| `CORS_ORIGIN`              | No         | `http://localhost:8080` | Allowed browser origins for CORS and WebSocket CSWSH defense. Comma-separated.                                 |
+| `JWT_EXPIRES_IN`           | No         | `900` (15m)             | Access token TTL in seconds.                                                                                   |
+| `REFRESH_TOKEN_EXPIRES_IN` | No         | `604800` (7d)           | Refresh token TTL in seconds.                                                                                  |
+| `DOCKERHUB_IMAGE`          | No         | `ngotuananh2101/ponter` | Image repository name on Docker Hub.                                                                           |
+| `DOMAIN`                   | Coturn     | —                       | Domain or hostname for the Coturn realm and TURN server.                                                       |
+| `TURN_SECRET`              | Coturn     | —                       | Shared secret for Coturn RFC 5766 authentication.                                                              |
+| `TURN_URL`                 | Coturn     | `turn:${DOMAIN}:3478`   | TURN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.                     |
+| `STUN_URL`                 | Coturn     | `stun:${DOMAIN}:3478`   | STUN URL advertised to clients. Override in `.env` to advertise an IP instead of a domain.                     |
+| `TURN_PROVIDER`            | No         | `coturn`                | TURN provider: `coturn` \| `cloudflare` \| `none`.                                                             |
+| `TURN_KEY_ID`              | Cloudflare | —                       | Cloudflare Calls TURN key ID (required when `TURN_PROVIDER=cloudflare`).                                       |
+| `TURN_KEY_API_TOKEN`       | Cloudflare | —                       | Cloudflare Calls TURN API token (required when `TURN_PROVIDER=cloudflare`).                                    |
 
 ---
 
 ## 6. Troubleshooting
 
-### Issue: Container fails to start with "permission denied" on SQLite file
+### Issue: Container fails to start with "permission denied" on SQLite database
 
-**Cause**: Volume mount permissions too restrictive or `data` directory does not exist.
+**Cause**: Host directory permissions on `./data` do not allow the container to create or write to the database file.
 
-**Solution**: Ensure the `data` directory exists with write permissions:
+**Solution**: Ensure the `data` directory exists with appropriate permissions. On Linux:
 ```bash
 mkdir -p docker/data
 chmod 755 docker/data
 ```
+The container entrypoint will automatically adjust ownership to the unprivileged `node` user when running as root.
 
-### Issue: CORS error when web app calls API
+### Issue: Web application cannot connect to the backend (CORS or Network Error)
 
-**Cause**: `CORS_ORIGIN` does not match the web app domain.
+**Cause**: `CORS_ORIGIN` does not match the origin in the browser address bar.
 
-**Solution**: Update `CORS_ORIGIN` in `.env` to match your production domain:
+**Solution**: Update `CORS_ORIGIN` in `docker/.env` to include the exact protocol, domain, and port used to access the application:
 ```env
-CORS_ORIGIN=https://your-app.pages.dev
+CORS_ORIGIN=http://localhost:8080,https://ponter.example.com
 ```
 
-### Issue: WebRTC connection fails in production
+### Issue: WebRTC peer connection fails across networks
 
-**Cause**: TURN server misconfigured or UDP firewall blocking ports.
-
-**Solution**:
-1. Ensure `TURN_SECRET` is set in `.env`
-2. Open UDP port 3478 and UDP port range 49152-49200 on firewall
-3. Verify ICE servers endpoint:
-   ```bash
-   curl -H "Authorization: Bearer <jwt>" https://your-domain.com/api/webrtc/ice-servers
-   ```
-
-### Issue: Agent cannot connect to WebSocket
-
-**Cause**: Agent is connecting to the wrong URL or providing invalid credentials.
+**Cause**: Both peers are behind restrictive or symmetric NAT firewalls, and no TURN relay is available.
 
 **Solution**:
-1. Ensure agent connects to `ws://<host>:8787/api/ws/agent` (or `wss://` via tunnel/Caddy)
-2. Verify agent credentials in database:
+1. If using Coturn (`docker-compose.coturn.yml`), ensure UDP port 3478 and UDP port range 49152-49200 are open in your host firewall.
+2. Verify TURN credentials endpoint responds:
    ```bash
-   sqlite3 data/remote.db "SELECT id, user_id FROM agents;"
+   curl -H "Authorization: Bearer <jwt>" http://localhost:8080/api/webrtc/ice-servers
    ```
-3. Review server logs for authentication failures.
+3. Alternatively, switch to Cloudflare Calls TURN by setting `TURN_PROVIDER=cloudflare`, `TURN_KEY_ID`, and `TURN_KEY_API_TOKEN` in `.env`.
 
-### Issue: Browser signaling socket (`/api/ws/browser`) keeps disconnecting
+### Issue: Browser signaling socket (`/api/ws/browser`) disconnects when idle
 
-**Cause**: Intermediate proxy/tunnel drops idle connections based on default timeouts.
+**Cause**: An external host reverse proxy is terminating idle WebSocket connections prematurely.
 
-**Solution**: See [Section 3.2](#32-browser-websocket-signaling-proxy--idle-timeouts). Verify Caddy uses the `/api/ws/*` block with `keepalive 300s`, and Cloudflare Tunnel runs with `--config /etc/cloudflared/config.yml` (using `TUNNEL_TOKEN` alone ignores `maxIdleDuration`).
-
-### Issue: GitHub Actions deploy fails with "This Worker does not exist"
-
-**Cause**: Error applies only to legacy Cloudflare Workers backend. Under the self-hosted Docker architecture, the backend no longer deploys to Cloudflare Workers.
-
-**Solution**: Deploy frontend to Cloudflare Pages and backend via Docker Compose. See [GitHub Actions workflow](../.github/workflows/deploy.yml) for CI/CD configuration.
+**Solution**: Configure your external reverse proxy with `proxy_read_timeout 86400s;` and verify WebSocket upgrade headers (`Upgrade` and `Connection`) are properly forwarded to port 8080.

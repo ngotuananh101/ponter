@@ -107,7 +107,7 @@ jobs:
           # images that make up the final manifest. Kept in sync with the
           # labels block in the merge job.
           labels: |
-            org.opencontainers.image.title=ponter-server
+            org.opencontainers.image.title=ponter
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - name: Build and push by digest
@@ -115,7 +115,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: docker/Dockerfile.server
+          file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
           # Push to a digest-addressed ref, NOT to the final tags. Both matrix
           # jobs run concurrently; pushing the same tag from two jobs is a race

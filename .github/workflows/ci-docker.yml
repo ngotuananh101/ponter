@@ -1,13 +1,7 @@
 name: CI (Docker)
 
-# Build verification for the self-hosted server image. Split out of the old
-# monolithic `ci.yml` so it only runs when the image's inputs change.
-#
-# The path filter mirrors exactly what `docker/Dockerfile.server` COPYs from
-# the build context (repo root): the workspace manifests, every `packages/*`,
-# `apps/server`, and `docker/`. It intentionally omits `turbo.json`, the
-# eslint/prettier configs, and the agent/web apps — the Dockerfile never reads
-# them, so touching them cannot change the image.
+# Build verification for the unified all-in-one container image.
+# Covers backend (@ponter/server), frontend SPA (@ponter/web), and Nginx reverse proxy.
 
 on:
   push:
@@ -15,6 +9,7 @@ on:
     paths:
       - 'docker/**'
       - 'apps/server/**'
+      - 'apps/web/**'
       - 'packages/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -26,6 +21,7 @@ on:
     paths:
       - 'docker/**'
       - 'apps/server/**'
+      - 'apps/web/**'
       - 'packages/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -41,35 +37,56 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Build server Docker image
-        run: docker build -f docker/Dockerfile.server -t ponter-server:ci .
+      - name: Build all-in-one Docker image
+        run: docker build -f docker/Dockerfile -t ponter:ci .
 
       - name: Verify image exists
-        run: docker image inspect ponter-server:ci
+        run: docker image inspect ponter:ci
 
-      - name: Smoke-test the image (server must boot and answer /health)
+      - name: Smoke-test all-in-one container (health, spa, config, api proxy)
         run: |
-          docker run -d --name ponter-smoke -p 8787:8787 \
+          docker run -d --name ponter-smoke -p 8080:8080 \
             -e JWT_SECRET="smoke-jwt-secret-at-least-32-characters-long" \
             -e REFRESH_TOKEN_SECRET="smoke-refresh-secret-at-least-32-characters" \
-            -e CORS_ORIGIN="http://localhost:5173" \
-            ponter-server:ci
-          # Poll /health for up to ~30s. A non-booting image (e.g. an
-          # ERR_MODULE_NOT_FOUND at startup) exits and curl never succeeds.
+            -e CORS_ORIGIN="http://localhost:8080" \
+            ponter:ci
+
+          # Poll /health for up to ~30s
+          healthy=false
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8787/health >/dev/null 2>&1; then
-              echo "server healthy after ${i}s"
-              curl -fsS http://localhost:8787/health
-              exit 0
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+              echo "container healthy after ${i}s"
+              healthy=true
+              break
             fi
             if [ "$(docker inspect -f '{{.State.Running}}' ponter-smoke)" != "true" ]; then
-              echo "::error::container exited before becoming healthy"
+              echo "::error::container exited prematurely"
+              docker logs ponter-smoke
               exit 1
             fi
             sleep 1
           done
-          echo "::error::server did not become healthy within 30s"
-          exit 1
+
+          if [ "$healthy" != "true" ]; then
+            echo "::error::container did not become healthy within 30s"
+            docker logs ponter-smoke
+            exit 1
+          fi
+
+          echo "Verifying SPA root page..."
+          curl -fsS http://localhost:8080/ | grep -q '<div id="app"></div>'
+
+          echo "Verifying runtime config injection..."
+          curl -fsS http://localhost:8080/config.js | grep -q 'window.__PONTER_CONFIG__'
+
+          echo "Verifying API proxy route..."
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/users/me)
+          if [ "$status" != "401" ]; then
+            echo "::error::expected 401 from /api/users/me proxy, got $status"
+            exit 1
+          fi
+
+          echo "All smoke tests passed successfully."
 
       - name: Container logs on failure
         if: always()
