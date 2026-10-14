@@ -1,6 +1,7 @@
 //! Server Setup: enter the server URL, probe `/health`, then persist.
 
 use crate::app::{App, Command, Msg};
+use crate::ui::components;
 use eframe::egui;
 
 /// Validate a server URL before probing.
@@ -16,7 +17,7 @@ pub fn validate(url: &str) -> Result<(), String> {
 }
 
 pub fn render(app: &mut App, ui: &mut egui::Ui) {
-    crate::ui::components::centered_card(ui, 440.0, |ui| {
+    components::centered_card(ui, 440.0, |ui| {
         let is_editing = app.editing_server;
         let title = if is_editing {
             "Edit server URL"
@@ -28,32 +29,28 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
         } else {
             "Enter the base URL of your Ponter server instance to get started"
         };
-        crate::ui::components::card_header(ui, title, Some(subtitle));
+        components::card_header(ui, title, Some(subtitle));
 
-        crate::ui::components::field_label(ui, "Server URL");
+        components::field_label(ui, "Server URL");
         let mut url = app.server_url_input.clone();
-        if crate::ui::components::text_input(
-            ui,
-            &mut url,
-            "http://localhost:8787 or https://...",
-            false,
-        )
-        .changed()
+        if components::text_input(ui, &mut url, "http://localhost:8787 or https://...", false)
+            .changed()
         {
             app.server_url_input = url;
         }
         ui.add_space(16.0);
 
-        // Action buttons
+        // Action buttons: Test (secondary) on the left, Connect (primary) on the right.
         ui.horizontal(|ui| {
+            let gap = 8.0;
+            let half = (ui.available_width() - gap) / 2.0;
             let test_clicked = ui
                 .add_sized(
-                    [(ui.available_width() - 8.0) / 2.0, 36.0],
+                    [half, components::CONTROL_HEIGHT],
                     egui::Button::new("Test connection"),
                 )
                 .clicked();
-            let save_clicked =
-                crate::ui::components::primary_button(ui, "Save and continue").clicked();
+            let save_clicked = components::primary_button(ui, "Save and continue").clicked();
 
             // Validate once for both actions and surface the failure inline.
             // Checking `validate(..).is_ok()` without an else branch left the
@@ -81,10 +78,7 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
         // Cancel / Back button if editing
         if is_editing {
             ui.add_space(8.0);
-            if ui
-                .add_sized([ui.available_width(), 28.0], egui::Button::new("Back"))
-                .clicked()
-            {
+            if components::secondary_button(ui, "Back").clicked() {
                 app.editing_server = false;
             }
         }
@@ -92,9 +86,9 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
         if let Some(Msg::ServerProbed(res)) = app.last_probe.as_ref() {
             ui.add_space(16.0);
             if res.ok {
-                crate::ui::components::success_banner(ui, &res.message);
+                components::success_banner(ui, &res.message);
             } else {
-                crate::ui::components::error_banner(ui, &res.message);
+                components::error_banner(ui, &res.message);
             }
         }
 
@@ -102,7 +96,7 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
         // failure in the shell's single inline-error slot (`login_error`).
         if let Some(err) = &app.login_error {
             ui.add_space(16.0);
-            crate::ui::components::error_banner(ui, err);
+            components::error_banner(ui, err);
         }
     });
 }

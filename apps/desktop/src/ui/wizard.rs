@@ -1,6 +1,7 @@
 //! Setup wizard: three steps — capture, input gate, auto-start (spec §5.2).
 
 use crate::app::{App, Command};
+use crate::ui::components;
 use eframe::egui;
 
 pub fn step_count() -> usize {
@@ -37,169 +38,91 @@ pub fn progress_label(step: usize) -> String {
     format!("Setup — step {} of {}", step + 1, step_count())
 }
 
+/// Human-readable step names for the visual stepper.
+fn step_names() -> [&'static str; 3] {
+    ["Screen capture", "Input gate", "Auto-start"]
+}
+
 pub fn render(app: &mut App, ui: &mut egui::Ui) {
-    crate::ui::components::centered_card(ui, 480.0, |ui| {
+    components::centered_card(ui, 520.0, |ui| {
         let step = app.wizard_step;
-        let subtitle = match step {
-            0 => "Step 1 of 3: Verify screen capture capability",
-            1 => "Step 2 of 3: Remote input admission gate",
-            2 => "Step 3 of 3: System startup preference",
-            _ => "Setup completed",
-        };
-        crate::ui::components::card_header(ui, &progress_label(step), Some(subtitle));
 
-        // Step progress pill bar
-        ui.horizontal(|ui| {
-            for i in 0..step_count() {
-                let is_current = i == step;
-                let is_done = i < step;
-                let (fill, stroke_color) = if is_current {
-                    (
-                        ui.visuals().selection.bg_fill,
-                        ui.visuals().selection.stroke.color,
-                    )
-                } else if is_done {
-                    (
-                        egui::Color32::from_rgba_unmultiplied(34, 197, 94, 40),
-                        egui::Color32::from_rgb(34, 197, 94),
-                    )
-                } else {
-                    (
-                        ui.visuals().faint_bg_color,
-                        ui.visuals().widgets.noninteractive.bg_stroke.color,
-                    )
-                };
+        components::page_title(ui, "Set up this machine", Some(&progress_label(step)));
+        ui.add_space(14.0);
 
-                egui::Frame::new()
-                    .fill(fill)
-                    .stroke(egui::Stroke::new(1.0, stroke_color))
-                    .corner_radius(egui::CornerRadius::same(4))
-                    .inner_margin(egui::Margin::symmetric(10, 4))
-                    .show(ui, |ui| {
-                        let text = format!("{}. {}", i + 1, step_label(i));
-                        let color = if is_current || is_done {
-                            ui.visuals().strong_text_color()
-                        } else {
-                            ui.visuals().text_color().gamma_multiply(0.5)
-                        };
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(text).size(11.0).strong().color(color),
-                        ));
-                    });
-            }
-        });
+        // Visual stepper (replaces the pill row).
+        let names = step_names();
+        components::stepper(ui, &names, step);
         ui.add_space(20.0);
 
         match step {
             0 => {
                 // Step 1: Capture. Advancing requires an `ok` capture probe.
-                ui.add(egui::Label::new(
-                    egui::RichText::new(
-                        "Ponter needs screen capture permissions to stream your desktop \
-                         to authorized remote clients. Click below to verify availability.",
-                    )
-                    .size(13.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.8)),
-                ));
+                components::muted_text(
+                    ui,
+                    "Ponter needs screen capture permission to stream this desktop to \
+                     authorized remote clients. Verify availability to continue.",
+                );
                 ui.add_space(16.0);
 
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::new(
-                            egui::RichText::new("Verify Capture Capability").strong(),
-                        ),
-                    )
-                    .clicked()
-                {
+                if components::secondary_button(ui, "Verify capture capability").clicked() {
                     app.send(Command::ProbeCapture);
                 }
 
                 if app.capture_probe_ok {
                     ui.add_space(16.0);
-                    crate::ui::components::success_banner(
+                    components::success_banner(
                         ui,
-                        "Screen capture verified and ready. You may proceed.",
+                        "Screen capture verified and ready. You may continue.",
                     );
                 } else if let Some(crate::app::Msg::CaptureProbed(res)) = app.last_probe.as_ref() {
                     if !res.ok {
                         ui.add_space(16.0);
-                        crate::ui::components::error_banner(ui, &res.message);
+                        components::error_banner(ui, &res.message);
                     }
                 }
             }
             1 => {
-                // Step 2: Input gate. The checkbox is bound to `allow_input`
-                // (default off); it is Gate A of the two-gate model (ADR-42).
-                ui.add(egui::Label::new(
-                    egui::RichText::new(
-                        "Configure whether remote operators are permitted to send mouse, \
-                         keyboard, and touch input to this machine.",
-                    )
-                    .size(13.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.8)),
-                ));
+                // Step 2: Input gate — Gate A of the two-gate model (ADR-42).
+                components::muted_text(
+                    ui,
+                    "Decide whether remote operators may send mouse, keyboard, and touch \
+                     input to this machine.",
+                );
                 ui.add_space(16.0);
 
-                egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
-                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(egui::Margin::same(12))
-                    .show(ui, |ui| {
-                        let mut allow = app.allow_input;
-                        if ui
-                            .checkbox(
-                                &mut allow,
-                                egui::RichText::new("Allow remote input").strong(),
-                            )
-                            .changed()
-                        {
-                            app.send(Command::ToggleAllowInput { enabled: allow });
-                        }
-                        ui.add_space(4.0);
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(
-                                "When disabled, remote viewers can only observe your screen \
-                                 in read-only mode.",
-                            )
-                            .size(12.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.7)),
-                        ));
-                    });
+                let mut allow = app.allow_input;
+                let changed = components::pref_row(
+                    ui,
+                    "Allow remote input",
+                    "When off, remote viewers can only observe your screen.",
+                    |ui| ui.checkbox(&mut allow, "").changed(),
+                );
+                if changed {
+                    app.send(Command::ToggleAllowInput { enabled: allow });
+                }
             }
             _ => {
                 // Step 3: Auto-start. The checkbox reflects the real OS entry.
-                ui.add(egui::Label::new(
-                    egui::RichText::new(
-                        "Set up system autostart so Ponter Desktop runs in the background \
-                         when you log in.",
-                    )
-                    .size(13.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.8)),
-                ));
+                components::muted_text(
+                    ui,
+                    "Run Ponter Desktop in the background automatically when you log in.",
+                );
                 ui.add_space(16.0);
 
-                egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
-                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(egui::Margin::same(12))
-                    .show(ui, |ui| {
-                        let mut autostart = app.autostart_enabled;
-                        if ui
-                            .checkbox(
-                                &mut autostart,
-                                egui::RichText::new("Open at login").strong(),
-                            )
-                            .changed()
-                        {
-                            app.send(Command::SetAutostart { enabled: autostart });
-                        }
-                    });
+                let mut autostart = app.autostart_enabled;
+                let changed = components::pref_row(
+                    ui,
+                    "Open at login",
+                    "Start the agent automatically when this machine boots.",
+                    |ui| ui.checkbox(&mut autostart, "").changed(),
+                );
+                if changed {
+                    app.send(Command::SetAutostart { enabled: autostart });
+                }
                 ui.add_space(20.0);
 
-                if crate::ui::components::primary_button(ui, "Finish Setup").clicked() {
+                if components::primary_button(ui, "Finish setup").clicked() {
                     app.send(Command::SaveServer {
                         url: app.server_url_input.clone(),
                     });
@@ -208,19 +131,11 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
             }
         }
 
-        // Navigation button (Next for steps 0 & 1)
+        // Navigation button (Continue for steps 0 & 1).
         if step < 2 {
             ui.add_space(20.0);
             let can_go = can_advance(step, app.capture_probe_ok);
-            if ui
-                .add_enabled(
-                    can_go,
-                    egui::Button::new(egui::RichText::new("Next →").strong().size(14.0))
-                        .min_size(egui::vec2(ui.available_width(), 36.0))
-                        .corner_radius(egui::CornerRadius::same(6)),
-                )
-                .clicked()
-            {
+            if components::primary_button_enabled(ui, "Continue", can_go).clicked() {
                 app.handle_msg(crate::app::Msg::WizardAdvanced);
             }
         }
