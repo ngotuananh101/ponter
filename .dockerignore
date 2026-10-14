@@ -56,7 +56,6 @@ docs/
 # Workspace members the server image does not need. The Dockerfile never
 # COPYs them; excluding them keeps apps/agent/target (2.6GB) out of context.
 apps/agent/
-apps/web/
 apps/mobile/
 apps/desktop/
 tests/
