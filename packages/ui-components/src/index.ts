@@ -13,3 +13,12 @@ export * from './components/ui/scroll-area';
 export * from './components/ui/sonner';
 
 export { cn } from './lib/utils';
+
+export {
+  configureThemeStorage,
+  useTheme,
+  resetTheme,
+  type Theme,
+  type ThemeStorage,
+  type UseTheme,
+} from './composables/useTheme';
