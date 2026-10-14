@@ -10,8 +10,8 @@ const read = (rel: string) =>
 // match is case-insensitive so a badge reading `ZERO-TRUST` is caught too.
 const FILES = [
   'components/layout/AppHeader.vue',
-  'components/auth/RegisterForm.vue',
-  'components/auth/LoginForm.vue',
+  '../../../packages/ui-components/src/components/app/RegisterForm.vue',
+  '../../../packages/ui-components/src/components/app/LoginForm.vue',
 ];
 
 describe('no false E2EE claims in the UI', () => {
@@ -76,7 +76,7 @@ describe('security disclosure (G2 upgraded)', () => {
 // identity", "end-to-end identity").
 const WS2_FILES = [
   'components/layout/AppHeader.vue',
-  'components/auth/RegisterForm.vue',
+  '../../../packages/ui-components/src/components/app/RegisterForm.vue',
   'views/DashboardView.vue',
 ];
 

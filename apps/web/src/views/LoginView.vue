@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { safeRedirect } from '@/lib/safe-redirect';
 import { isApiError } from '@ponter/api-client';
-import LoginForm from '@/components/auth/LoginForm.vue';
+import { LoginForm } from '@ponter/ui-components';
 import { toast } from 'vue-sonner';
 
 const route = useRoute();

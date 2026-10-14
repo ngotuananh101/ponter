@@ -22,3 +22,6 @@ export {
   type ThemeStorage,
   type UseTheme,
 } from './composables/useTheme';
+
+export { default as LoginForm } from './components/app/LoginForm.vue';
+export { default as RegisterForm } from './components/app/RegisterForm.vue';

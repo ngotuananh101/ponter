@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
-import LoginForm from '@/components/auth/LoginForm.vue';
+import LoginForm from './LoginForm.vue';
 
 vi.mock('vue-sonner', () => ({
   toast: {

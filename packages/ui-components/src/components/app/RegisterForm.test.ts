@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
-import RegisterForm from '@/components/auth/RegisterForm.vue';
+import RegisterForm from './RegisterForm.vue';
 
 vi.mock('vue-sonner', () => ({
   toast: {
