@@ -21,13 +21,21 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 /// **No path is appended**: the agent's `--server` is already a complete WS URL
 /// (`apps/agent/src/main.rs:29`), so appending would double the path.
 pub fn to_ws_url(base: &str) -> Result<String> {
-    let trimmed = base.trim_end_matches('/');
+    // Split off any query/fragment suffix *before* trimming path-ending slashes
+    // (URL-3/4 + G3-W1: a query value such as `?next=/` must survive byte-for-byte).
+    // Split at the first `?` or `#`, whichever comes first, and reattach the
+    // suffix unchanged after scheme rewriting and path trimming.
+    let (head, suffix) = match base.find(['?', '#']) {
+        Some(idx) => (&base[..idx], &base[idx..]),
+        None => (base, ""),
+    };
+    let trimmed = head.trim_end_matches('/');
     if let Some(rest) = trimmed.strip_prefix("https://") {
-        Ok(format!("wss://{rest}"))
+        Ok(format!("wss://{rest}{suffix}"))
     } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        Ok(format!("ws://{rest}"))
+        Ok(format!("ws://{rest}{suffix}"))
     } else if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
-        Ok(trimmed.to_string())
+        Ok(format!("{trimmed}{suffix}"))
     } else {
         anyhow::bail!("unsupported URL scheme in {base:?}: expected http(s):// or ws(s)://")
     }
@@ -166,6 +174,43 @@ mod tests {
         // double `/api/ws/agent`.
         let out = to_ws_url("http://h:8787/api/ws/agent").unwrap();
         assert_eq!(out.matches("/api/ws/agent").count(), 1);
+    }
+
+    // --- G3-W1: query/fragment values must survive scheme rewrite + trim ---
+
+    #[test]
+    fn preserves_a_ws_query_value_ending_in_slash() {
+        // wss://... is already a complete signing URL; its query value `next=/`
+        // must be byte-for-byte preserved (the previous trim_end_matches ran over
+        // the whole URL and dropped the trailing slash in the value).
+        assert_eq!(
+            to_ws_url("wss://signal.example/api/ws/agent?next=/").unwrap(),
+            "wss://signal.example/api/ws/agent?next=/"
+        );
+    }
+
+    #[test]
+    fn rewrites_https_with_a_query_value_ending_in_slash() {
+        // The slash-trim must apply to the path only, so a query value ending
+        // in `/` (e.g. `?scope=/`) is preserved through the https->wss rewrite.
+        assert_eq!(
+            to_ws_url("https://signal.example/api/ws/agent?scope=/").unwrap(),
+            "wss://signal.example/api/ws/agent?scope=/"
+        );
+    }
+
+    #[test]
+    fn trims_a_path_slash_before_the_query_without_altering_it() {
+        // Path normalization (URL-4) still trims a trailing path slash, but
+        // only the pre-suffix portion; the query `?q=1/` is untouched.
+        assert_eq!(to_ws_url("http://h/p/?q=1/").unwrap(), "ws://h/p?q=1/");
+    }
+
+    #[test]
+    fn preserves_a_fragment_suffix_unchanged() {
+        // Any `#`-fragment is preserved byte-for-byte; only the leading path
+        // trailing slash (if any) is trimmed.
+        assert_eq!(to_ws_url("http://h/p/#frag").unwrap(), "ws://h/p#frag");
     }
 
     #[test]

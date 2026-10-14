@@ -95,7 +95,7 @@ jobs:
           # The envelope's distinguishing field is `details`, which has zero
           # occurrences in src/ today (a `struct ...Error` name alone would
           # false-positive on files.rs's legitimate FilesError).
-          if grep -rn --include='*.rs' '\bdetails\b' src | grep -v '^src/api.rs'; then
+          if grep -rn --include='*.rs' '\bdetails\b' src | grep -vE '^src/api\.rs:'; then
             echo "::error::ad-hoc error envelope outside src/api.rs (use ponter_agent::api::ApiError)"
             exit 1
           fi
@@ -108,7 +108,7 @@ jobs:
           # clap config default (main.rs) and the shared module itself (api.rs),
           # whose own unit tests must carry literal URLs to pin the scheme
           # rewrite (URL-3 is a rewrite, so inputs/outputs are literals).
-          if grep -rn --include='*.rs' -E '"https?://|"wss?://' src | grep -vE '^src/(main|api)\.rs'; then
+          if grep -rn --include='*.rs' -E '"https?://|"wss?://' src | grep -vE '^src/(main|api)\.rs:'; then
             echo "::error::literal server URL outside src/main.rs or src/api.rs (use ponter_agent::api::to_ws_url)"
             exit 1
           fi
