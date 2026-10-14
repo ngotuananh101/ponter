@@ -186,12 +186,19 @@ Two **client-side sentinels** are not server codes and exist only in the TS clie
 | `DATABASE_ERROR` | 500 | `routes/auth.ts:177` |
 | `INTERNAL_SERVER_ERROR` | 500 | `middleware/error.ts:57`; `routes/agents.ts:107`; `utils/env.ts:16,28` |
 
-**28 distinct server codes.** The shared WS unions in `packages/shared/src/types/signaling.ts` are a **subset** and are the typed contract for the sockets:
+**28 distinct server codes.** The shared WS unions in `packages/shared/src/types/signaling.ts` are the typed contract for the two sockets. **They are two independent sets — neither is a superset of the other:**
 
 - `AgentErrorCode` (`signaling.ts:61-66`): `MALFORMED_JSON`, `VALIDATION_ERROR`, `NOT_FOUND`, `INTERNAL_SERVER_ERROR`, `SESSION_NOT_ACTIVE`.
-- `BrowserErrorCode` (`signaling.ts:86-93`): the above plus `UNAUTHORIZED`, `TICKET_EXPIRED`, `SESSION_TERMINATED`.
+- `BrowserErrorCode` (`signaling.ts:86-93`): `MALFORMED_JSON`, `VALIDATION_ERROR`, `NOT_FOUND`, `UNAUTHORIZED`, `TICKET_EXPIRED`, `SESSION_TERMINATED`, `INTERNAL_SERVER_ERROR`.
 
-**Over-declared union member (finding):** `TICKET_EXPIRED` is declared in `BrowserErrorCode` but is **never emitted by the server** — a bad/expired/consumed ticket is rejected as an **HTTP 401 at the upgrade** (`routes/ws.ts:650-663`), not as a WS error frame — and it is **never read by any client** (no reference in `apps/web/src` or `packages/webrtc-core/src`). The typed union therefore over-states the wire contract by one member. G2 **SHOULD** either remove it or document it as reserved; leaving it silently in the union is the kind of drift this standard exists to stop.
+The asymmetry is intentional and correct in one direction: `SESSION_NOT_ACTIVE` is **agent-only** (the agent socket is told its session is not active; a browser is told `SESSION_TERMINATED` instead — the doc comment at `signaling.ts:82-85` says exactly this).
+
+**Over-declared union members (finding) — `BrowserErrorCode` over-states the wire contract by 2 members:**
+
+- **`UNAUTHORIZED`** — appears **0 times** in `apps/server/src/routes/ws.ts`. A rejected/expired/consumed WS ticket is an **HTTP 401 at the upgrade** (`routes/ws.ts:650-663`), never a frame. `UNAUTHORIZED` is an HTTP-only code (`middleware/auth.ts:12,17,53`).
+- **`TICKET_EXPIRED`** — never emitted by the server (same 401-at-upgrade path) and never read by any client.
+
+The browser socket's **actual** emit-set is exactly `{MALFORMED_JSON, VALIDATION_ERROR, NOT_FOUND, SESSION_TERMINATED, INTERNAL_SERVER_ERROR}` (`routes/ws.ts:413,425,433,439,468,488,493,499,536` via `sendError`/`send`, plus `routes/sessions.ts:148-150`), i.e. **5 of the 7 declared members**. The agent socket's emit-set (`routes/ws.ts:1013,1023,1030,1054,1062,1076,1083,1091` in `handleInboundMessage`) is exactly its 5 declared members — `AgentErrorCode` is accurate, no over-declaration. G2 **SHOULD** remove the two over-declared browser members or mark them reserved; leaving them silently in the union is the kind of drift this standard exists to stop.
 
 ### 5.4 Drift to fix (D6)
 
