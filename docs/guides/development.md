@@ -316,17 +316,17 @@ Output: `apps/agent/target/release/ponter-agent`. See
 
 ### 7.4 Desktop (`apps/desktop`)
 
-The desktop app is Tauri v2. A self-built copy inherits the author's updater
-key/endpoint from `apps/desktop/src-tauri/tauri.conf.json` unless you change it —
-read `docs/guides/self-hosting.md` first.
+The desktop app is a native Rust shell built with `eframe` and `egui` (ADR-79).
+A self-built copy inherits the author's updater public key and endpoint from
+`apps/desktop/src/core/updater.rs` (ADR-80) unless you change it — read
+`docs/guides/self-hosting.md` first.
 
 ```bash
-pnpm --filter @ponter/desktop build          # frontend assets -> apps/desktop/dist
-pnpm --filter @ponter/desktop tauri build    # native bundle
+cargo run --manifest-path apps/desktop/Cargo.toml        # run locally
+cargo test --locked --manifest-path apps/desktop/Cargo.toml # run unit tests
+cargo build --release --manifest-path apps/desktop/Cargo.toml # release binary
 ```
 
-Output: installers under `apps/desktop/src-tauri/target/release/bundle/`
+Output: standalone binary and packages under `apps/desktop/target/release/`
 (`.deb` + `.AppImage` + `.rpm` on Linux, `.msi` + `.exe` on Windows).
-Building a signed auto-update bundle requires your own signing key; building
-without one is supported (auto-update simply stays inert). `pnpm tauri build`
-needs the platform's Tauri prerequisites (system webkit/gtk packages on Linux).
+No WebKit, GTK, webview, or Node runtime dependencies required.

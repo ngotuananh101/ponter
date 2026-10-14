@@ -9,43 +9,43 @@ decide about. Building the four apps is covered in
 > Docker Hub image, and the desktop updater key belong to the upstream author.
 > A fork overrides them in its own copy; upstream does not remove them.
 
-## 1. Desktop auto-update (ADR-61)
+## 1. Desktop auto-update (ADR-61, ADR-80)
 
-A self-built desktop app inherits the upstream updater `pubkey` and `endpoints`
-compiled into `apps/desktop/src-tauri/tauri.conf.json`. That means an
-unmodified self-build would poll the **upstream** release channel and reject
-any binary not signed by the upstream key. Pick one of two paths.
+A self-built desktop app inherits the upstream updater `UPDATER_PUBKEY_B64` and
+`UPDATE_ENDPOINT` compiled into `apps/desktop/src/core/updater.rs` (ADR-80). That
+means an unmodified self-build polls the **upstream** release channel and
+rejects any binary not signed by the upstream minisign key. Pick one of two paths.
 
 ### Path A — disable auto-update (recommended, no signing key)
 
-Edit your fork's `apps/desktop/src-tauri/tauri.conf.json` and **remove the
-`plugins.updater` block** (or set it to an empty object):
+To disable update checks in your self-build, simply do not invoke the updater
+check, or point `UPDATE_ENDPOINT` in `apps/desktop/src/core/updater.rs` to an
+empty or non-existent endpoint.
 
-```jsonc
-"plugins": {
-  // "updater": { "pubkey": "...", "endpoints": ["..."], "requireSignedVersion": true }
-}
+Build normally:
+
+```bash
+cargo build --release --manifest-path apps/desktop/Cargo.toml
 ```
 
-Build normally (`pnpm --filter @ponter/desktop tauri build`). No signing key is
-required and the app never checks for updates.
+No signing key is required and the app functions normally without auto-update.
 
 ### Path B — repoint to your own update channel (optional)
 
 If you publish your own signed releases, point the app at your manifest and
-public key. Tauri v2 does **not** interpolate environment variables inside
-`tauri.conf.json`, so use a build-time config overlay — `apps/desktop/scripts/build-self.sh`
-does this for you:
+minisign public key by updating `apps/desktop/src/core/updater.rs`:
+
+- Set `UPDATE_ENDPOINT` to your release manifest URL (e.g. `https://github.com/<you>/<fork>/releases/latest/download/latest.json`).
+- Set `UPDATER_PUBKEY_B64` to your base64-encoded minisign public key.
+
+Build and package your release:
 
 ```bash
-export PONTER_UPDATE_ENDPOINT="https://github.com/<you>/<fork>/releases/latest/download/latest.json"
-export PONTER_UPDATE_PUBKEY="$(cat ~/.tauri/my-updater.key.pub)"
-bash apps/desktop/scripts/build-self.sh
+cargo build --release --manifest-path apps/desktop/Cargo.toml
 ```
 
-The script merges the overlay over the committed config; the committed
-`tauri.conf.json` is untouched. You are responsible for signing your own
-release artifacts with your own key.
+You are responsible for signing your own release artifacts with minisign matching
+your configured public key.
 
 ## 2. Docker image (self-publish)
 
