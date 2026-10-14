@@ -1,83 +1,41 @@
-import { ref, computed, watchEffect, type Ref, type ComputedRef } from 'vue';
-
-export type Theme = 'light' | 'dark';
-
-export interface UseTheme {
-  theme: Ref<Theme>;
-  isDark: ComputedRef<boolean>;
-  toggle(): void;
-  set(theme: Theme): void;
-}
+/**
+ * Web binding for the shared theme composable.
+ *
+ * Supplies the localStorage adapter and re-exports the shared API so existing
+ * imports (`@/composables/useTheme`) keep working unchanged. Importing this
+ * module configures the shared core's storage as a side effect, so a runtime
+ * import is REQUIRED for web theme persistence (see main.ts).
+ */
+import {
+  configureThemeStorage,
+  resetTheme,
+  useTheme,
+  type Theme,
+  type ThemeStorage,
+  type UseTheme,
+} from '@ponter/ui-components';
 
 const STORAGE_KEY = 'remote.theme';
 
-function getInitialTheme(): Theme {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark') {
-      return stored;
+const localStorageThemeStorage: ThemeStorage = {
+  get() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      return stored === 'light' || stored === 'dark' ? stored : null;
+    } catch {
+      return null;
     }
-  } catch {
-    // Ignore localStorage failures
-  }
+  },
+  set(theme) {
+    try {
+      localStorage.setItem(STORAGE_KEY, theme);
+    } catch {
+      // Ignore storage failure (e.g. private mode / quota).
+    }
+  },
+};
 
-  // `typeof` guard is required: optional chaining does not protect against an
-  // undeclared identifier (SSR), only against null/undefined values.
-  if (
-    typeof window !== 'undefined' &&
-    window.matchMedia?.('(prefers-color-scheme: dark)').matches
-  ) {
-    return 'dark';
-  }
-  return 'light';
-}
+configureThemeStorage(localStorageThemeStorage);
 
-// Module-level singleton state
-const theme = ref<Theme>(getInitialTheme());
-const isDark = computed(() => theme.value === 'dark');
-
-// Apply class to <html> element
-if (typeof document !== 'undefined') {
-  watchEffect(
-    () => {
-      const el = document.documentElement;
-      if (theme.value === 'dark') {
-        el.classList.add('dark');
-      } else {
-        el.classList.remove('dark');
-      }
-    },
-    { flush: 'sync' },
-  );
-}
-
-function setTheme(newTheme: Theme): void {
-  theme.value = newTheme;
-  try {
-    localStorage.setItem(STORAGE_KEY, newTheme);
-  } catch {
-    // Ignore storage failure (e.g. private mode)
-  }
-}
-
-function toggleTheme(): void {
-  setTheme(theme.value === 'dark' ? 'light' : 'dark');
-}
-
-export function useTheme(): UseTheme {
-  return {
-    theme,
-    isDark,
-    toggle: toggleTheme,
-    set: setTheme,
-  };
-}
-
-/** Reset theme state for tests.
- * Only resets the in-memory theme ref; the caller (beforeEach) is responsible
- * for clearing localStorage. This allows tests to set a stored preference and
- * then call resetTheme() to re-read it via getInitialTheme().
- */
-export function resetTheme(): void {
-  theme.value = getInitialTheme();
-}
+export { useTheme, resetTheme };
+export type { Theme, UseTheme };

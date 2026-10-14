@@ -2,7 +2,7 @@
 import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
-import RegisterForm from '@/components/auth/RegisterForm.vue';
+import { RegisterForm } from '@ponter/ui-components';
 import { toast } from 'vue-sonner';
 
 const router = useRouter();
