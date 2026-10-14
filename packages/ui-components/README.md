@@ -11,7 +11,8 @@ renderer next). ADR-88.
 - `src/components/ui/**` — generated shadcn-vue primitives. Do not hand-edit
   (the directory is `.prettierignore`d and kept byte-identical to the registry).
 - `src/components/app/**` — environment-independent presentational components
-  (props/emits only; no store, router, or API client).
+  (props/emits only; no store/router/API-client **import**). They may use a
+  globally-registered `<router-link>`, which the host app must provide or stub.
 - `src/composables/useTheme.ts` — the storage-agnostic theme composable.
 
 ## How an app consumes it
@@ -42,4 +43,6 @@ renderer next). ADR-88.
 ## Adding a component to `app/`
 
 Only lift a component that communicates purely through props and emits. If it
-imports a store, `vue-router`, or an API client, it stays in its app.
+imports a store, `vue-router`, or an API client, it stays in its app. Using a
+globally-registered `<router-link>` (no import) is fine — the host app supplies
+it, and the component's tests stub it.
