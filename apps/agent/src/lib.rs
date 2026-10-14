@@ -626,6 +626,7 @@ async fn run_with_reconnect(
         identity: config.identity.clone(),
     };
 
+    let signaling_url = api::to_ws_url(&config.server).context("invalid signaling server URL")?;
     let mut delay = signal::BACKOFF_INITIAL;
     let mut supervisor: Option<tokio::task::JoinHandle<Result<()>>> = None;
 
@@ -642,7 +643,7 @@ async fn run_with_reconnect(
         // answers the upgrade). Racing the connect against the signal keeps a
         // listener live for the whole attempt.
         let connect = SignalClient::connect(
-            &config.server,
+            &signaling_url,
             &config.credential,
             inbound_tx.clone(),
             ice_tx.clone(),

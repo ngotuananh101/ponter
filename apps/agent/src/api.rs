@@ -265,4 +265,13 @@ mod tests {
             .unwrap();
         assert!(with_bearer(&mut request, "bad\nvalue").is_err());
     }
+
+    #[test]
+    fn the_cli_default_normalizes_to_itself() {
+        // apps/agent/src/main.rs:29 default_value = "ws://localhost:8787/api/ws/agent"
+        assert_eq!(
+            to_ws_url("ws://localhost:8787/api/ws/agent").unwrap(),
+            "ws://localhost:8787/api/ws/agent"
+        );
+    }
 }
