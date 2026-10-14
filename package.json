@@ -14,7 +14,6 @@
     "test": "turbo run test",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
-    "deploy:web": "pnpm --filter @ponter/web deploy",
     "dev:web": "pnpm --filter @ponter/web dev",
     "dev:server": "pnpm --filter @ponter/server dev",
     "test:server": "pnpm --filter @ponter/server test"
