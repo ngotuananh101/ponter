@@ -73,18 +73,21 @@ pub enum TrayRequest {
 }
 
 /// A result reported back from a background task (or the tray) to the app.
-///
-/// Variants referencing types from `core::{wizard, auth, devices, updater}`
-/// are added as those modules are ported in subsequent tasks (spec §4, plan Task 1 Interfaces).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Msg {
+    ServerProbed(crate::core::wizard::ProbeResult),
     ConfigSaved(Result<(), String>),
+    LoggedIn(crate::core::auth::UserProfile),
     LoginFailed(String),
+    CaptureProbed(crate::core::wizard::ProbeResult),
     WizardAdvanced,
     WizardCompleted,
     AutostartToggled(bool),
+    DevicesLoaded(Result<Vec<crate::core::devices::DesktopDevice>, String>),
     FleetChanged,
+    DeviceRegistered(Result<crate::core::devices::DesktopDevice, String>),
     DeviceDeleted(Result<String, String>),
+    UpdateChecked(Result<Option<crate::core::updater::UpdateInfo>, String>),
     UpdateApplied(Result<(), String>),
     AgentStarted(Result<(), String>),
     AgentStopped(Result<(), String>),
@@ -104,6 +107,11 @@ pub struct App {
     pub screen: Screen,
     /// Manual override: return to Server Setup from Settings.
     pub editing_server: bool,
+    pub server_url_input: String,
+    pub last_probe: Option<Msg>,
+    pub login_error: Option<String>,
+    pub username_input: String,
+    pub password_input: String,
 }
 
 impl App {
@@ -128,7 +136,17 @@ impl App {
             rt,
             screen,
             editing_server: false,
+            server_url_input: String::new(),
+            last_probe: None,
+            login_error: None,
+            username_input: String::new(),
+            password_input: String::new(),
         }
+    }
+
+    /// Dispatch a user intent. Stub for Task 15; Task 16 fills this in with the real spawn table.
+    pub fn send(&self, cmd: Command) {
+        let _ = cmd;
     }
 
     /// Fold one background message into the app state.
