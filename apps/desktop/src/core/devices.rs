@@ -177,11 +177,11 @@ pub fn generate_device_id(hostname: &str, random: [u8; 4]) -> String {
     format!("{sanitized}-{suffix}")
 }
 
-fn device_hostname() -> String {
+pub(crate) fn device_hostname() -> String {
     resolve_hostname()
 }
 
-fn device_platform() -> String {
+pub(crate) fn device_platform() -> String {
     match std::env::consts::OS {
         "linux" => "linux".to_string(),
         "windows" => "windows".to_string(),

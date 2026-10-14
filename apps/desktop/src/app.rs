@@ -149,6 +149,10 @@ pub struct App {
     pub fleet_started: Arc<AtomicBool>,
     pub fleet_shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub agent: Arc<Mutex<Option<ponter_agent::RuntimeHandle>>>,
+    /// This machine's hostname, resolved once at startup (the Machine strip).
+    pub machine_hostname: String,
+    /// This machine's platform slug (`linux` / `windows`), for the Machine strip.
+    pub machine_platform: String,
 }
 
 impl App {
@@ -198,6 +202,8 @@ impl App {
             fleet_started: Arc::new(AtomicBool::new(false)),
             fleet_shutdown_tx,
             agent: Arc::new(Mutex::new(None)),
+            machine_hostname: crate::core::devices::device_hostname(),
+            machine_platform: crate::core::devices::device_platform(),
         };
 
         // Start the fleet task exactly once for the app's lifetime (guard (g)).
@@ -261,6 +267,8 @@ impl App {
             fleet_started: Arc::new(AtomicBool::new(false)),
             fleet_shutdown_tx,
             agent: Arc::new(Mutex::new(None)),
+            machine_hostname: crate::core::devices::device_hostname(),
+            machine_platform: crate::core::devices::device_platform(),
         }
     }
 
