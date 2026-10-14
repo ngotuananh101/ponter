@@ -212,6 +212,58 @@ impl App {
         app
     }
 
+    /// Build an `App` for headless tests: identical field wiring to [`App::new`]
+    /// (so the command-dispatch arms under test are the ones the real app runs)
+    /// but WITHOUT spawning the fleet task or calling `setup_fonts` — neither is
+    /// needed without a window, and the fleet task would only add noise.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(state: Arc<crate::core::state::CoreState>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        // The fleet task is deliberately NOT spawned; the receiver is dropped so
+        // the shutdown channel's only sender lives in the returned struct.
+        let (fleet_shutdown_tx, _fleet_shutdown_rx) = tokio::sync::watch::channel(false);
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("building the tokio runtime");
+        let screen = if !state.has_server_url() {
+            Screen::ServerSetup
+        } else {
+            Screen::Login
+        };
+        let allow_input = *state.allow_input.lock().unwrap();
+        Self {
+            state,
+            tx,
+            rx,
+            rt,
+            screen,
+            ctx: egui::Context::default(),
+            username_input: String::new(),
+            password_input: String::new(),
+            login_error: None,
+            server_url_input: String::new(),
+            last_probe: None,
+            devices: Vec::new(),
+            wizard_step: 0,
+            capture_probe_ok: false,
+            // Not `is_autostart_enabled()`: tests must not touch real system state.
+            autostart_enabled: false,
+            allow_input,
+            editing_server: false,
+            show_window: false,
+            showing_settings: false,
+            username: String::new(),
+            register_capabilities: vec!["terminal".to_string(), "desktop".to_string()],
+            pending_delete: None,
+            available_update: None,
+            tray_active: false,
+            fleet_started: Arc::new(AtomicBool::new(false)),
+            fleet_shutdown_tx,
+            agent: Arc::new(Mutex::new(None)),
+        }
+    }
+
     /// Dispatch a user intent to the tokio runtime.
     pub fn send(&self, cmd: Command) {
         let tx = self.tx.clone();
@@ -581,6 +633,75 @@ mod tests {
         assert_eq!(reloaded.server_url.as_deref(), Some("http://new:1"));
         assert!(reloaded.allow_input);
         assert_eq!(reloaded.theme.as_deref(), Some("dark"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Arm-level regression for `Command::SaveServer`.
+    ///
+    /// `save_server_config_does_not_deadlock` covers the extracted helper, but
+    /// NOT the dispatch arm that actually runs in the app. If a future edit
+    /// re-inlines the locks into the `Command::SaveServer` arm, the helper test
+    /// stays green while the freeze returns — this test closes that gap by
+    /// driving `App::send(Command::SaveServer)` and asserting the arm produces
+    /// `Msg::ConfigSaved(Ok(()))`.
+    ///
+    /// The `App` runs on a watchdog thread. On timeout the watchdog
+    /// `std::mem::forget`s the `App` so the deadlocked tokio task cannot block
+    /// `Runtime::drop` and hang the suite; the main thread never `join`s the
+    /// watchdog on the failure path.
+    #[test]
+    fn save_server_command_reaches_config_saved() {
+        let dir = std::env::temp_dir().join(format!("ponter-savecmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = std::sync::Arc::new(crate::core::state::CoreState::with_config(Some(
+            dir.join("config.json"),
+        )));
+
+        let (tx, rx) = mpsc::channel::<bool>();
+        let handle = std::thread::spawn(move || {
+            let mut app = App::new_for_test(state);
+            app.send(Command::SaveServer {
+                url: "http://new:1".into(),
+            });
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                while let Ok(msg) = app.rx.try_recv() {
+                    if matches!(msg, Msg::ConfigSaved(Ok(()))) {
+                        let _ = tx.send(true);
+                        // Success: the spawned task already finished, so the
+                        // runtime drops cleanly.
+                        return;
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            // Timed out: the arm is wedged (locks held across `save_config_impl`).
+            // Leak the App so dropping the tokio runtime — which would wait on the
+            // deadlocked worker task — cannot hang this watchdog thread.
+            let _ = tx.send(false);
+            std::mem::forget(app);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(20)) {
+            Ok(true) => {
+                handle.join().expect("watchdog thread should not panic");
+            }
+            Ok(false) => panic!(
+                "Command::SaveServer did not produce Msg::ConfigSaved(Ok(())) within 15s — \
+                 the arm likely holds allow_input/theme locks across save_config_impl (deadlock)"
+            ),
+            Err(_) => panic!(
+                "Command::SaveServer watchdog produced no result within 20s — the tokio \
+                 worker is likely deadlocked"
+            ),
+        }
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
