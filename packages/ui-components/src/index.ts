@@ -13,3 +13,16 @@ export * from './components/ui/scroll-area';
 export * from './components/ui/sonner';
 
 export { cn } from './lib/utils';
+
+export {
+  configureThemeStorage,
+  useTheme,
+  resetTheme,
+  type Theme,
+  type ThemeStorage,
+  type UseTheme,
+} from './composables/useTheme';
+
+export { default as LoginForm } from './components/app/LoginForm.vue';
+export { default as RegisterForm } from './components/app/RegisterForm.vue';
+export { default as ThemeToggle } from './components/app/ThemeToggle.vue';

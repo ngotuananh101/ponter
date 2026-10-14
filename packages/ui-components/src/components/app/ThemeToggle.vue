@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { useTheme } from '@/composables/useTheme';
-import { Button } from '@/components/ui/button';
+import { useTheme } from '../../composables/useTheme';
+import { Button } from '../ui/button';
 
 const { isDark, toggle } = useTheme();
 </script>
