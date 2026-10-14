@@ -34,7 +34,7 @@ Managed with **Turborepo** and **pnpm workspaces**:
 ponter/
 ├── apps/
 │   ├── web/               # Vue 3 + Vite + Pinia workspace (Xterm.js, TabBar, Sidebar)
-│   ├── desktop/           # Tauri 2.0 cross-platform desktop shell (Linux, Windows)
+│   ├── desktop/           # Native Rust egui/eframe desktop shell (Linux, Windows)
 │   ├── mobile/            # Tauri mobile client shell (iOS, Android)
 │   ├── agent/             # Native Rust desktop agent daemon (portable-pty, webrtc-rs, tokio)
 │   └── server/            # Self-hosted backend (@ponter/server): Node.js 24 + Hono + SQLite + ws
