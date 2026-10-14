@@ -46,14 +46,7 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
                 ui.add_space(8.0);
 
                 let mut url = app.server_url_input.clone();
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut url)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("Server URL"),
-                    )
-                    .changed()
-                {
+                if crate::ui::components::text_input(ui, &mut url, "Server URL", false).changed() {
                     app.server_url_input = url;
                 }
                 ui.add_space(8.0);

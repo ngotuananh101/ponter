@@ -32,13 +32,13 @@ pub fn render(app: &mut App, ui: &mut egui::Ui) {
 
         crate::ui::components::field_label(ui, "Server URL");
         let mut url = app.server_url_input.clone();
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut url)
-                    .hint_text("http://localhost:8787 or https://...")
-                    .desired_width(f32::INFINITY),
-            )
-            .changed()
+        if crate::ui::components::text_input(
+            ui,
+            &mut url,
+            "http://localhost:8787 or https://...",
+            false,
+        )
+        .changed()
         {
             app.server_url_input = url;
         }
