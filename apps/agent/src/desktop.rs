@@ -34,6 +34,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use crate::pty::MAX_FRAME_BYTES;
 use crate::StreamProfile;
 
+pub mod warm_capture;
+pub use warm_capture::{WarmCaptureStatus, WarmStateTracker, WarmTransitionAction};
+
 /// One frame, RGBA8, `width * height * 4` bytes.
 ///
 /// `seq` is a per-stream monotonic counter that tags the frame so telemetry
