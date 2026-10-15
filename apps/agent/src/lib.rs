@@ -568,6 +568,10 @@ struct SessionConfig {
     /// The agent's persistent Ed25519 peer identity, used to sign WS2 proofs
     /// that bind the offer SPD/ex to this agent (full wiring in Task 9).
     identity: std::sync::Arc<identity::AgentIdentity>,
+    /// Process-wide warm capture manager for Wayland PipeWire reuse (ADR-90).
+    #[cfg(not(target_env = "musl"))]
+    #[allow(dead_code)]
+    pub warm_capture: std::sync::Arc<desktop::WarmCaptureManager>,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -611,6 +615,9 @@ async fn run_with_reconnect(
     let mut outbound_tx = Some(outbound_tx);
     let mut ice_rx = Some(ice_rx);
 
+    #[cfg(not(target_env = "musl"))]
+    let warm_capture = std::sync::Arc::new(desktop::WarmCaptureManager::new(None));
+
     let cfg = SessionConfig {
         stun: config.stun.clone(),
         cols: config.cols,
@@ -624,6 +631,8 @@ async fn run_with_reconnect(
         allow_input: config.allow_input,
         files_root: config.files_root.clone(),
         identity: config.identity.clone(),
+        #[cfg(not(target_env = "musl"))]
+        warm_capture: warm_capture.clone(),
     };
 
     let signaling_url = api::to_ws_url(&config.server).context("invalid signaling server URL")?;
@@ -656,6 +665,8 @@ async fn run_with_reconnect(
                 if matches!(stop, StopRequest::Signal) {
                     tracing::info!("shutdown signal received while connecting");
                 }
+                #[cfg(not(target_env = "musl"))]
+                warm_capture.shutdown();
                 return Ok(());
             }
         };
@@ -696,6 +707,8 @@ async fn run_with_reconnect(
                                     "the server closed this connection for good; not reconnecting"
                                 );
                                 supervisor.as_ref().expect("started").abort(); // ADR-12 teardown
+                                #[cfg(not(target_env = "musl"))]
+                                warm_capture.shutdown();
                                 return Ok(());
                             }
                             Ok(signal::RunEnd::Transient) => {}
@@ -706,6 +719,8 @@ async fn run_with_reconnect(
                     }
                     // The supervisor only returns on a fatal internal error.
                     result = sessions => {
+                        #[cfg(not(target_env = "musl"))]
+                        warm_capture.shutdown();
                         return result.context("the session supervisor panicked")?;
                     }
                     stop = wait_for_stop(&mut stop_rx) => {
@@ -713,6 +728,8 @@ async fn run_with_reconnect(
                         if matches!(stop, StopRequest::Signal) {
                             tracing::info!("shutdown signal received");
                         }
+                        #[cfg(not(target_env = "musl"))]
+                        warm_capture.shutdown();
                         return Ok(());
                     }
                 }
@@ -736,6 +753,8 @@ async fn run_with_reconnect(
                 if matches!(stop, StopRequest::Signal) {
                     tracing::info!("shutdown signal received while backing off");
                 }
+                #[cfg(not(target_env = "musl"))]
+                warm_capture.shutdown();
                 return Ok(());
             }
         }
@@ -1873,6 +1892,11 @@ async fn handle_files_frame(session: &mut files::FilesSession, raw: &[u8]) -> Ve
 #[cfg(not(target_env = "musl"))]
 const CONTROL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[cfg(not(target_env = "musl"))]
+pub(crate) fn should_use_warm_capture(desktop_default_source: &str) -> bool {
+    desktop_default_source.is_empty() || desktop_default_source == "primary"
+}
+
 /// Serve a desktop offer end to end: create the source, attach the track,
 /// answer, wait for the connection, stream, and tear down.
 ///
@@ -1917,19 +1941,50 @@ async fn run_desktop_session(
             return Ok(());
         }
     };
-    let source: Box<dyn desktop::FrameSource> =
-        match desktop::source_for(&default_id, cfg.desktop_profile).await {
+    let source: Box<dyn desktop::FrameSource> = match cfg.desktop_source {
+        DesktopSource::Test => match desktop::source_for(&default_id, cfg.desktop_profile).await {
             Ok(source) => source,
             Err(e) => {
-                // `?e` (Debug) prints anyhow's full chain; `%e` (Display) would
-                // show only the outermost context ("opening the video recorder")
-                // and hide the platform error underneath it.
-                tracing::warn!(error = ?e, "desktop capture unavailable; refusing the offer");
+                tracing::warn!(error = ?e, "desktop test capture unavailable; refusing the offer");
                 rtc::refuse_offer(peer, offer, outbound, &cfg.identity).await?;
                 let _ = peer.close().await;
                 return Ok(());
             }
-        };
+        },
+        DesktopSource::Screen => {
+            // Attempt to acquire from the warm capture manager first (ADR-90).
+            // Warm capture manager is dedicated to primary display capture (zero-prompt reconnects).
+            // If an explicit non-primary default source is configured (e.g. "window:X", "monitor:2"),
+            // bypass warm capture and acquire the configured source directly (F-02).
+            let warm_source = if should_use_warm_capture(&cfg.desktop_default_source) {
+                match cfg.warm_capture.acquire_lease().await {
+                    Ok(source) => Some(Box::new(source) as Box<dyn desktop::FrameSource>),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = ?e,
+                            "warm capture lease acquisition failed; falling back to direct source_for"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            match warm_source {
+                Some(source) => source,
+                None => match desktop::source_for(&default_id, cfg.desktop_profile).await {
+                    Ok(source) => source,
+                    Err(e) => {
+                        tracing::warn!(error = ?e, "desktop capture unavailable; refusing the offer");
+                        rtc::refuse_offer(peer, offer, outbound, &cfg.identity).await?;
+                        let _ = peer.close().await;
+                        return Ok(());
+                    }
+                },
+            }
+        }
+    };
 
     let media = rtc::attach_desktop_track(peer).await?;
     rtc::send_desktop_answer(peer, offer, outbound, &cfg.identity).await?;
@@ -3548,5 +3603,60 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("id.json"));
         let _ = std::fs::remove_file(dir.join("browser.json"));
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    mod warm_capture_lib_tests {
+        use super::*;
+
+        #[test]
+        fn session_config_carries_warm_capture_manager() {
+            let warm_capture = std::sync::Arc::new(desktop::WarmCaptureManager::new(None));
+            assert_eq!(
+                warm_capture.status(),
+                desktop::WarmCaptureStatus::Uninitialized
+            );
+            assert_eq!(warm_capture.active_leases(), 0);
+
+            let temp_id_path =
+                std::env::temp_dir().join(format!("ponter-cfg-test-{}", std::process::id()));
+            let id = identity::AgentIdentity::load_or_generate(&temp_id_path).unwrap();
+            let _ = std::fs::remove_file(&temp_id_path);
+
+            let cfg = SessionConfig {
+                stun: "stun:test".to_string(),
+                cols: 80,
+                rows: 24,
+                shell: "/bin/sh".to_string(),
+                shell_policy: std::sync::Arc::new(shell_policy::ShellPolicy::from_config(
+                    "/bin/sh",
+                )),
+                desktop_source: DesktopSource::Screen,
+                desktop_profile: StreamProfile::DEFAULT_1080P30,
+                desktop_default_source: "".to_string(),
+                desktop_select_timeout: Duration::from_secs(5),
+                allow_input: false,
+                files_root: None,
+                identity: std::sync::Arc::new(id),
+                warm_capture: warm_capture.clone(),
+            };
+            assert_eq!(
+                cfg.warm_capture.status(),
+                desktop::WarmCaptureStatus::Uninitialized
+            );
+        }
+
+        #[test]
+        fn should_use_warm_capture_only_for_primary_or_empty_default_source() {
+            // Empty string defaults to primary monitor capture
+            assert!(should_use_warm_capture(""));
+            // Explicit primary monitor
+            assert!(should_use_warm_capture("primary"));
+            // Non-primary monitors or windows must bypass warm capture (F-02)
+            assert!(!should_use_warm_capture("monitor:1"));
+            assert!(!should_use_warm_capture("monitor:2"));
+            assert!(!should_use_warm_capture("window:100"));
+            assert!(!should_use_warm_capture("window:arbitrary"));
+        }
     }
 }

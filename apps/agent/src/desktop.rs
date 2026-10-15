@@ -34,6 +34,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use crate::pty::MAX_FRAME_BYTES;
 use crate::StreamProfile;
 
+pub mod warm_capture;
+#[allow(unused_imports)]
+pub use warm_capture::{
+    WarmCaptureManager, WarmCaptureStatus, WarmScreenSource, WarmStateTracker, WarmTransitionAction,
+};
+
 /// One frame, RGBA8, `width * height * 4` bytes.
 ///
 /// `seq` is a per-stream monotonic counter that tags the frame so telemetry
@@ -391,7 +397,7 @@ pub struct ScreenSource {
 /// in that case, which is exactly how a denied capture used to become a silent
 /// black stream instead of a refusal. This ceiling is well under the browser's
 /// 20 s track timeout so the refusal reaches the user first.
-const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Waits for the first frame from a freshly started recorder.
 ///
@@ -400,7 +406,7 @@ const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// `timeout`, which is the signal that capture is not actually permitted.
 /// Split out from the capture thread so both branches are unit-testable
 /// without a live display or a real portal.
-fn await_first_frame(
+pub(crate) fn await_first_frame(
     frames: &Receiver<xcap::Frame>,
     frame_tx: &std::sync::mpsc::Sender<xcap::Frame>,
     timeout: Duration,
@@ -425,7 +431,7 @@ fn await_first_frame(
 /// Exists so the capture loop's *behaviour* — refuse when the recorder starts
 /// but never feeds, stream once it does, always stop — can be tested with a
 /// fake, because `xcap::VideoRecorder` is a concrete type with no seam.
-trait CaptureRecorder {
+pub(crate) trait CaptureRecorder: Send + 'static {
     fn start(&self) -> std::result::Result<(), String>;
     fn stop(&self) -> std::result::Result<(), String>;
 }
@@ -903,7 +909,7 @@ pub async fn source_for(id: &str, _profile: StreamProfile) -> Result<Box<dyn Fra
 /// `move` closure — it is created inside the thread that uses it instead
 /// (spec §6.2). Distinct from `primary_monitor`, which resolves the *default*
 /// source by preference order rather than by id.
-fn find_monitor(wanted: u32) -> Result<xcap::Monitor> {
+pub(crate) fn find_monitor(wanted: u32) -> Result<xcap::Monitor> {
     xcap::Monitor::all()
         .context("listing monitors")?
         .into_iter()
@@ -914,7 +920,7 @@ fn find_monitor(wanted: u32) -> Result<xcap::Monitor> {
 /// The monitor at the origin, else the explicitly primary one, else any
 /// (Week 7's `primary_recorder` preference order, split out so both the default
 /// source and `source_for` pick the same monitor).
-fn primary_monitor() -> Result<xcap::Monitor> {
+pub(crate) fn primary_monitor() -> Result<xcap::Monitor> {
     if let Ok(monitor) = xcap::Monitor::from_point(0, 0) {
         return Ok(monitor);
     }
@@ -1583,7 +1589,7 @@ pub async fn run_stream(
 /// This is the drop-oldest policy: superseded frames are discarded at the
 /// source, so a lagging encoder can never build a backlog — the loop below can
 /// only ever see the freshest frame the recorder produced.
-fn drain_latest(receiver: &Receiver<xcap::Frame>) -> Option<xcap::Frame> {
+pub(crate) fn drain_latest(receiver: &Receiver<xcap::Frame>) -> Option<xcap::Frame> {
     let mut newest = None;
     while let Ok(frame) = receiver.try_recv() {
         newest = Some(frame);
