@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { nextTick } from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
-import { resetPonterMock, getPonterMock, MockedPonterApi } from './setup';
+import { resetPonterMock, getPonterMock } from './setup';
 
 import { useWizardStore } from '@/stores/wizard';
 import { useConfigStore } from '@/stores/config';
