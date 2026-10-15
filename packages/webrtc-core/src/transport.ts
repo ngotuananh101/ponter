@@ -5,6 +5,7 @@ import type {
   SignalMessage,
 } from '@ponter/shared';
 import { buildBrowserWsUrl, mintWsTicket } from './ws-ticket';
+import { ReconnectBackoff } from './backoff';
 
 export interface RESTPollingTransportOptions {
   baseUrl: string;
@@ -326,23 +327,6 @@ export interface WebSocketSignalTransportOptions {
   maxRetries?: number;
 }
 
-/** Trần của backoff — trùng `maxIntervalMs` của `RESTPollingTransport`. */
-const WS_MAX_BACKOFF_MS = 2000;
-const WS_INITIAL_BACKOFF_MS = 200;
-
-/**
- * A uniform value in [0, 1) drawn from the platform CSPRNG.
- *
- * `Math.random()` is flagged by static analysis even where the value is only a
- * reconnect jitter; `crypto.getRandomValues` is available in every target
- * browser and in Node, and gives the same uniform distribution.
- */
-function randomUnit(): number {
-  const buffer = new Uint32Array(1);
-  crypto.getRandomValues(buffer);
-  return (buffer[0] ?? 0) / 2 ** 32;
-}
-
 /**
  * The WebSocket signaling transport for the browser tab.
  *
@@ -376,7 +360,7 @@ export class WebSocketSignalTransport implements SignalTransport {
   private ws: WebSocket | null = null;
   /** Signals never handed to a socket. Never cleared on close (D6). */
   private pending: SignalMessage[] = [];
-  private retries = 0;
+  private readonly backoff: ReconnectBackoff;
   /** UUID of the last signal frame delivered, sent as `after` on subscribe. */
   private lastCursor: string | null = null;
   private readonly subscribers: Array<(msg: SignalMessage) => void> = [];
@@ -405,6 +389,12 @@ export class WebSocketSignalTransport implements SignalTransport {
     this.fallback = options.fallback;
     this.customFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.maxRetries = options.maxRetries ?? 5;
+    this.backoff = new ReconnectBackoff({
+      initialMs: 200,
+      maxMs: 2000,
+      jitterMs: 50,
+      maxRetries: this.maxRetries,
+    });
   }
 
   subscribe(handler: (msg: SignalMessage) => void): () => void {
@@ -533,7 +523,7 @@ export class WebSocketSignalTransport implements SignalTransport {
       // never arrives, and every later `send()` queues forever.
       if (this.isClosed || socket !== this.ws) return;
       this.open = true;
-      this.retries = 0;
+      this.backoff.reset();
       this.sendSubscribeFrame(socket);
     };
     socket.onmessage = (event: MessageEvent) => {
@@ -678,17 +668,12 @@ export class WebSocketSignalTransport implements SignalTransport {
   private scheduleReconnect(): void {
     if (this.isClosed || this.activeTransport) return;
 
-    if (!this.reconnectEnabled || this.retries >= this.maxRetries) {
+    if (!this.reconnectEnabled || !this.backoff.canRetry()) {
       this.handOffToFallback();
       return;
     }
 
-    // Jitter is an integer millisecond offset: `setTimeout` has no use for a
-    // fractional delay, and rounding keeps the ladder assertions exact.
-    const delay =
-      Math.min(WS_INITIAL_BACKOFF_MS * 2 ** this.retries, WS_MAX_BACKOFF_MS) +
-      Math.round(randomUnit() * 100 - 50);
-    this.retries += 1;
+    const delay = this.backoff.next();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();
