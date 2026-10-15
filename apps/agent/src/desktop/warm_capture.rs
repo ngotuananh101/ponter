@@ -911,3 +911,135 @@ mod manager_tests {
         drop(source1);
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::desktop::FrameSource;
+    use std::sync::atomic::Ordering;
+
+    async fn poll_frame(source: &mut WarmScreenSource) -> RawFrame {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(500) {
+            if let Some(frame) = source.next_frame().unwrap() {
+                return frame;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for frame from WarmScreenSource");
+    }
+
+    #[tokio::test]
+    async fn simulated_webrtc_client_reconnect_retains_single_recorder() {
+        let recorder = worker_tests::FakeRecorder::default();
+        let (frames_in_tx, frames_in_rx) = mpsc::channel();
+        let manager = WarmCaptureManager::from_recorder_for_test(
+            recorder.clone(),
+            frames_in_rx,
+            Duration::from_millis(500),
+        );
+
+        // Warmup frame
+        frames_in_tx
+            .send(xcap::Frame::new(800, 600, vec![1; 800 * 600 * 4]))
+            .unwrap();
+        assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+
+        // --- Client 1 Connects ---
+        {
+            let mut client1_source = manager.acquire_lease().await.expect("client 1 acquires");
+            assert_eq!(manager.status(), WarmCaptureStatus::ActiveStreaming);
+            assert_eq!(recorder.start_count.load(Ordering::Relaxed), 2); // 1 warmup + 1 acquire
+
+            frames_in_tx
+                .send(xcap::Frame::new(800, 600, vec![10; 800 * 600 * 4]))
+                .unwrap();
+            let frame = poll_frame(&mut client1_source).await;
+            assert_eq!(frame.rgba[0], 10);
+
+            // Client 1 disconnects (e.g. browser closes)
+            client1_source.stop();
+        }
+
+        let start = std::time::Instant::now();
+        while recorder.stop_count.load(Ordering::Relaxed) < 2
+            && start.elapsed() < Duration::from_millis(500)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+        assert_eq!(recorder.stop_count.load(Ordering::Relaxed), 2); // 1 idle warmup + 1 release
+
+        // --- Client 2 Reconnects ---
+        {
+            let mut client2_source = manager
+                .acquire_lease()
+                .await
+                .expect("client 2 acquires without prompt");
+            assert_eq!(manager.status(), WarmCaptureStatus::ActiveStreaming);
+            assert_eq!(recorder.start_count.load(Ordering::Relaxed), 3); // resumed existing stream
+
+            frames_in_tx
+                .send(xcap::Frame::new(800, 600, vec![20; 800 * 600 * 4]))
+                .unwrap();
+            let frame = poll_frame(&mut client2_source).await;
+            assert_eq!(frame.rgba[0], 20);
+
+            client2_source.stop();
+        }
+
+        let start = std::time::Instant::now();
+        while recorder.stop_count.load(Ordering::Relaxed) < 3
+            && start.elapsed() < Duration::from_millis(500)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+        assert_eq!(recorder.stop_count.load(Ordering::Relaxed), 3);
+
+        manager.shutdown();
+        assert_eq!(manager.status(), WarmCaptureStatus::Shutdown);
+    }
+
+    #[tokio::test]
+    async fn rapid_reconnect_loop_cycles_cleanly() {
+        let recorder = worker_tests::FakeRecorder::default();
+        let (frames_in_tx, frames_in_rx) = mpsc::channel();
+        let manager = WarmCaptureManager::from_recorder_for_test(
+            recorder.clone(),
+            frames_in_rx,
+            Duration::from_millis(500),
+        );
+
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![0; 40000]))
+            .unwrap();
+
+        for i in 1..=5 {
+            let mut source = manager.acquire_lease().await.expect("acquire iteration");
+            assert_eq!(manager.status(), WarmCaptureStatus::ActiveStreaming);
+
+            frames_in_tx
+                .send(xcap::Frame::new(100, 100, vec![i as u8; 40000]))
+                .unwrap();
+            let frame = poll_frame(&mut source).await;
+            assert_eq!(frame.rgba[0], i as u8);
+
+            drop(source);
+
+            let start = std::time::Instant::now();
+            while recorder.stop_count.load(Ordering::Relaxed) < i + 1
+                && start.elapsed() < Duration::from_millis(500)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+        }
+
+        assert_eq!(recorder.start_count.load(Ordering::Relaxed), 6); // 1 warmup + 5 acquires
+        assert_eq!(recorder.stop_count.load(Ordering::Relaxed), 6); // 1 idle warmup + 5 drops
+        manager.shutdown();
+    }
+}
