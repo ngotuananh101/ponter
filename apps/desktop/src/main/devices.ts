@@ -1,22 +1,20 @@
+import type { ApiClient } from '@ponter/api-client';
 import type { SessionManager } from './session';
 import type { KeychainService } from './keychain';
 import type { Agent } from '@ponter/shared';
 import type { DesktopDevice } from '../shared/ipc-types';
 
-export interface DeviceRegistrationResult {
-  device: DesktopDevice;
-  credential?: string;
-}
-
 /**
  * Device management service for the desktop app.
  *
- * Wraps authenticated agent/device API calls through SessionManager's
+ * Wraps authenticated agent API calls through SessionManager's
  * retryOnceOn401, and persists device credentials to the keychain
  * (Issue #107: 401 is auth-fatal, 403 is non-fatal).
+ * ADR-13/ADR-52/R8: device credentials stored via safeStorage.
  */
 export class DeviceManager {
   constructor(
+    private apiClient: ApiClient,
     private session: SessionManager,
     private keychain: KeychainService,
   ) {}
@@ -25,16 +23,10 @@ export class DeviceManager {
    * List agents (devices) registered for the current user.
    */
   async listDevices(): Promise<DesktopDevice[]> {
-    const resp = await this.session.retryOnceOn401(async () => {
-      const agents: Agent[] = await this.fetchAgents();
-      return this.mapAgentsToDevices(agents);
-    });
-    return resp;
-  }
-
-  private async fetchAgents(): Promise<Agent[]> {
-    // Would use the apiClient.agents.list() via session context
-    return [];
+    const agents = await this.session.retryOnceOn401(() =>
+      this.apiClient.agents.list(),
+    );
+    return this.mapAgentsToDevices(agents);
   }
 
   private mapAgentsToDevices(agents: Agent[]): DesktopDevice[] {
@@ -64,92 +56,62 @@ export class DeviceManager {
     hostname?: string;
     capabilities?: string[];
   }): Promise<DesktopDevice> {
-    const result = await this.session.retryOnceOn401(async () => {
-      const resp: any = await this.createAgent({
-        id: this.generateDeviceId(),
+    const deviceId = `dev_${crypto.randomUUID().slice(0, 8)}`;
+
+    const result = await this.session.retryOnceOn401(() =>
+      this.apiClient.agents.create({
+        id: deviceId,
         hostname: payload.hostname,
         platform: this.detectPlatform(),
-        osVersion: this.detectOsVersion() ?? undefined,
-        agentVersion: this.getAgentVersion(),
         capabilities: payload.capabilities,
-      });
-      return resp;
-    });
+      }),
+    );
 
-    // Persist the device credential to keychain (ADR-13: device_credential_${device.id})
+    // Persist the device credential to keychain
+    // (ADR-13: device_credential_${device.id})
     if (result?.credential) {
       this.keychain.storeSecret(
-        `device_credential_${result.device.id}`,
+        `device_credential_${result.agent.id}`,
         result.credential,
       );
     }
 
     // Strip credential from response before returning to renderer
-    const { credential: _credential, ...device } = result;
-    return device as DesktopDevice;
+    const { credential: _credential, ...device } = result.agent;
+    return this.mapAgentToDesktopDevice(result.agent);
   }
 
-  private async createAgent(input: {
-    id: string;
-    hostname?: string;
-    platform?: string;
-    osVersion?: string;
-    agentVersion?: string;
-    capabilities?: string[];
-  }): Promise<DeviceRegistrationResult & { device: DesktopDevice }> {
-    // Would call apiClient.agents.create via session.retryOnceOn401
+  private mapAgentToDesktopDevice(agent: Agent): DesktopDevice {
     return {
-      device: {
-        id: input.id,
-        userId: '',
-        hostname: input.hostname ?? '',
-        platform: input.platform ?? null,
-        osVersion: input.osVersion ?? null,
-        agentVersion: input.agentVersion ?? null,
-        publicKey: '',
-        signingPublicKey: null,
-        isOnline: false,
-        lastHeartbeat: null,
-        capabilities: input.capabilities ?? [],
-        createdAt: new Date().toISOString(),
-      },
-      credential: '',
+      id: agent.id,
+      userId: agent.userId,
+      hostname: agent.hostname ?? '',
+      platform: agent.platform ?? null,
+      osVersion: agent.osVersion ?? null,
+      agentVersion: agent.agentVersion ?? null,
+      publicKey: agent.publicKey,
+      signingPublicKey: agent.signingPublicKey ?? null,
+      isOnline: agent.isOnline,
+      lastHeartbeat: agent.lastHeartbeat ?? null,
+      capabilities: agent.capabilities ?? [],
+      createdAt: agent.createdAt,
     };
-  }
-
-  private generateDeviceId(): string {
-    return `desktop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  private detectPlatform(): string {
-    return process.platform;
-  }
-
-  private detectOsVersion(): string | null {
-    return process.getSystemVersion ? process.getSystemVersion() : null;
-  }
-
-  private getAgentVersion(): string {
-    return '1.0.0';
   }
 
   /**
    * Delete a device (agent) by ID.
+   * Also removes the stored device credential from the keychain.
    */
   async deleteDevice(agentId: string): Promise<boolean> {
     try {
-      await this.session.retryOnceOn401(async () => {
-        await this.deleteAgent(agentId);
-        return true;
-      });
+      await this.session.retryOnceOn401(() =>
+        this.apiClient.agents.delete(agentId),
+      );
+      this.keychain.deleteSecret(`device_credential_${agentId}`);
       return true;
     } catch {
       return false;
     }
-  }
-
-  private async deleteAgent(id: string): Promise<void> {
-    // Would call apiClient.agents.delete(id) via session.retryOnceOn401
   }
 
   /**
@@ -157,5 +119,9 @@ export class DeviceManager {
    */
   getDeviceCredential(deviceId: string): string | null {
     return this.keychain.getSecret(`device_credential_${deviceId}`);
+  }
+
+  private detectPlatform(): string {
+    return process.platform === 'win32' ? 'windows' : 'linux';
   }
 }

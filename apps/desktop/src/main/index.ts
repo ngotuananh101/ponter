@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import { ConfigManager } from './config';
 import { KeychainService } from './keychain';
-import { SessionManager } from './session';
+import { SessionManager, SessionTokenStorage } from './session';
 import { DeviceManager } from './devices';
 import { AutostartManager } from './autostart';
 import { TrayManager } from './tray';
@@ -15,7 +15,11 @@ import { createApiClient } from '@ponter/api-client';
  *
  * Initializes all core services: config, keychain, session, devices,
  * autostart, tray, window, fleet, and IPC handlers.
+ *
+ * ADR-78: macOS is not supported (native GUI Windows + Linux only).
  */
+
+// Module-level state for this process instance.
 let config: ConfigManager;
 let keychain: KeychainService;
 let session: SessionManager;
@@ -31,34 +35,28 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.whenReady().then(async () => {
-    // Initialize config
+    // Initialize config (ADR-64: server URL resolution precedence)
     config = new ConfigManager();
     const cfg = config.load();
 
-    // Initialize keychain (ADR-13: uses Electron safeStorage)
+    // Initialize keychain (ADR-13/ADR-52/R8: uses Electron safeStorage)
     keychain = new KeychainService();
 
-    // Initialize session with API client
+    // Initialize session token storage:
+    // - Access tokens: in-memory only (never written to keychain/disk)
+    // - Refresh tokens: via keychain.safeStorage
+    const tokenStorage = new SessionTokenStorage(keychain);
+
+    // Initialize API client with secure storage adapter
     const apiClient = createApiClient({
       baseUrl: cfg.serverUrl ?? 'http://localhost:8787',
-      storage: {
-        getAccessToken: async () => keychain.getSecret('access_token'),
-        getRefreshToken: async () => keychain.getSecret('refresh_token'),
-        setTokens: async (tokens) => {
-          keychain.storeSecret('access_token', tokens.accessToken);
-          keychain.storeSecret('refresh_token', tokens.refreshToken);
-        },
-        clearTokens: async () => {
-          keychain.deleteSecret('access_token');
-          keychain.deleteSecret('refresh_token');
-        },
-      },
+      storage: tokenStorage,
     });
 
-    session = new SessionManager(apiClient as any, keychain);
+    session = new SessionManager(apiClient, keychain);
 
     // Initialize devices
-    devices = new DeviceManager(session, keychain);
+    devices = new DeviceManager(apiClient, session, keychain);
 
     // Initialize autostart
     autostart = new AutostartManager();
@@ -78,7 +76,7 @@ if (!gotTheLock) {
     tray.createTray();
 
     // Initialize fleet (dual-layer: WebSocket + polling fallback, ADR-82)
-    fleet = new FleetManager(apiClient as any, session, {
+    fleet = new FleetManager(apiClient, session, {
       baseUrl: cfg.serverUrl ?? '',
     });
     fleet.start();
@@ -101,11 +99,10 @@ if (!gotTheLock) {
     });
 
     app.on('window-all-closed', () => {
-      // On macOS, keep the app running unless explicitly quit
-      if (process.platform !== 'darwin') {
-        fleet?.destroy();
-        tray?.destroy();
-      }
+      // ADR-78: macOS not supported — quit on all remaining platforms
+      fleet?.destroy();
+      tray?.destroy();
+      app.quit();
     });
   });
 }

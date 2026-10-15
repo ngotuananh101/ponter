@@ -1,3 +1,4 @@
+import type { ApiClient } from '@ponter/api-client';
 import type { SessionManager } from './session';
 import type { Agent } from '@ponter/shared';
 import { BrowserWindow } from 'electron';
@@ -10,7 +11,15 @@ export interface FleetManagerOptions {
 
 const POLLING_INTERVAL_MS = 5000;
 
+/**
+ * Fleet synchronization manager (ADR-82).
+ *
+ * Dual-layer synchronization: primary WebSocket with ticket from
+ * `/api/ws/ticket`, fallback polling (~5s interval). Emits
+ * `desktop:fleet-changed` to renderer window on updates.
+ */
 export class FleetManager {
+  private apiClient: ApiClient;
   private session: SessionManager;
   private baseUrl: string;
   private wsTicketPath: string;
@@ -21,10 +30,11 @@ export class FleetManager {
   private destroyed = false;
 
   constructor(
-    _apiClient: unknown,
+    apiClient: ApiClient,
     session: SessionManager,
     options?: Partial<FleetManagerOptions>,
   ) {
+    this.apiClient = apiClient;
     this.session = session;
     this.baseUrl = options?.baseUrl ?? '';
     this.wsTicketPath = options?.wsTicketPath ?? '/api/ws/ticket';
@@ -32,23 +42,18 @@ export class FleetManager {
 
   /**
    * Fetch the current fleet (agents) list via authenticated request.
+   * Uses session.retryOnceOn401 for 401 handling.
    */
   async refresh(): Promise<void> {
     try {
-      const resp = await this.session.retryOnceOn401(() => this.fetchFleet());
-      if (resp && typeof resp === 'object' && 'agents' in resp) {
-        this.currentAgents = (resp as { agents: Agent[] }).agents;
-      }
+      const agents = await this.session.retryOnceOn401(() =>
+        this.apiClient.agents.list(),
+      );
+      this.currentAgents = agents ?? [];
       this.emitFleetChanged();
     } catch (err) {
       // Network errors are non-fatal: keep last-known fleet.
     }
-  }
-
-  private async fetchFleet(): Promise<{ agents: Agent[] } | null> {
-    // The apiClient would normally be used here for the REST fallback.
-    // Uses session.retryOnceOn401 which handles auth.
-    return { agents: this.currentAgents };
   }
 
   /**
@@ -56,12 +61,18 @@ export class FleetManager {
    */
   private async connectWebSocket(): Promise<void> {
     const ticket = await this.session.retryOnceOn401(async () => {
-      // Mint a WS ticket from the server.
-      return await this.requestWsTicket();
+      const token = await this.apiClient.http.storage.getAccessToken();
+      if (!token) return null;
+      const response = await fetch(`${this.baseUrl}${this.wsTicketPath}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return null;
+      const body = (await response.json()) as { ticket?: string };
+      return body.ticket ?? null;
     });
 
     if (!ticket) {
-      // Fall back to polling when no ticket is available.
       this.startPolling();
       return;
     }
@@ -69,25 +80,18 @@ export class FleetManager {
     const wsUrl = `${toWsUrl(this.baseUrl)}/api/ws/fleet?ticket=${encodeURIComponent(ticket)}`;
     this.ws = new WebSocket(wsUrl);
 
-    this.ws.onmessage = (_event: MessageEvent) => {
-      // Process fleet update messages from the server.
-      this.emitFleetChanged();
+    this.ws.onmessage = () => {
+      // Re-fetch fleet on WebSocket updates.
+      void this.refresh();
     };
 
     this.ws.onerror = () => {
-      // On error, fall back to polling.
       this.startPolling();
     };
 
     this.ws.onclose = () => {
-      // On close, fall back to polling.
       this.startPolling();
     };
-  }
-
-  private async requestWsTicket(): Promise<string | null> {
-    // Returns a ticket string from the server.
-    return null;
   }
 
   private startPolling(): void {
@@ -108,12 +112,10 @@ export class FleetManager {
     for (const listener of this.listeners) {
       listener();
     }
-    // Also notify the renderer window.
-    const windows = BrowserWindow.getAllWindows?.();
-    if (windows) {
-      for (const win of windows) {
-        win.webContents?.send('desktop:fleet-changed');
-      }
+    // Notify all renderer windows.
+    const windows = BrowserWindow.getAllWindows();
+    for (const win of windows) {
+      win.webContents?.send('desktop:fleet-changed');
     }
   }
 
@@ -125,7 +127,11 @@ export class FleetManager {
   }
 
   start(): void {
-    void this.connectWebSocket();
+    if (this.baseUrl) {
+      void this.connectWebSocket();
+    } else {
+      this.startPolling();
+    }
   }
 
   stop(): void {
@@ -140,5 +146,10 @@ export class FleetManager {
     this.destroyed = true;
     this.stop();
     this.listeners.clear();
+  }
+
+  /** Current fleet state, or last-known if fetch fails. */
+  getAgents(): Agent[] {
+    return this.currentAgents;
   }
 }

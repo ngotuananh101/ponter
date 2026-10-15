@@ -6,25 +6,48 @@ vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn(), on: vi.fn() },
 }));
 
+import { FleetManager } from '../fleet';
+
+/**
+ * Mock factory for ApiClient. The real ApiClient exposes:
+ *  - `agents.list()` → Agent[]
+ *  - `http.storage.getAccessToken()` → string | null
+ */
+function createApiClientMock() {
+  return {
+    agents: {
+      list: vi.fn(),
+    },
+    http: {
+      storage: {
+        getAccessToken: vi.fn(),
+      },
+    },
+  };
+}
+
+interface SessionMock {
+  retryOnceOn401: ReturnType<typeof vi.fn>;
+}
+
 describe('FleetManager', () => {
+  let apiClientMock: ReturnType<typeof createApiClientMock>;
+  let sessionMock: SessionMock;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    apiClientMock = createApiClientMock();
+    sessionMock = { retryOnceOn401: vi.fn() };
   });
 
-  it('constructs with apiClient and session', async () => {
-    const { FleetManager } = await import('../fleet');
-    const sessionMock = { retryOnceOn401: vi.fn() };
-    const manager = new FleetManager({} as any, sessionMock as any);
+  it('constructs with apiClient and session', () => {
+    const manager = new FleetManager(apiClientMock as any, sessionMock as any);
     expect(manager).toBeDefined();
     manager.destroy();
   });
 
-  it('emits fleet-changed event via subscription', async () => {
-    const { FleetManager } = await import('../fleet');
-    const sessionMock = {
-      retryOnceOn401: vi.fn().mockResolvedValue({ agents: [] }),
-    };
-    const manager = new FleetManager({} as any, sessionMock as any);
+  it('emits fleet-changed event via subscription', () => {
+    const manager = new FleetManager(apiClientMock as any, sessionMock as any);
 
     const handler = manager.onFleetChanged(() => {});
     expect(typeof handler).toBe('function');
@@ -32,24 +55,19 @@ describe('FleetManager', () => {
   });
 
   it('fetches agents via session.retryOnceOn401', async () => {
-    const { FleetManager } = await import('../fleet');
     const agents = [{ id: 'agent-1', hostname: 'test-host' }];
-    const sessionMock = {
-      retryOnceOn401: vi.fn().mockResolvedValue({ agents }),
-    };
-    const manager = new FleetManager({} as any, sessionMock as any);
+    sessionMock.retryOnceOn401.mockResolvedValue(agents);
 
+    const manager = new FleetManager(apiClientMock as any, sessionMock as any);
     await manager.refresh();
+
     expect(sessionMock.retryOnceOn401).toHaveBeenCalled();
+    expect(manager.getAgents()).toEqual(agents);
     manager.destroy();
   });
 
-  it('destroys cleanly without errors', async () => {
-    const { FleetManager } = await import('../fleet');
-    const sessionMock = {
-      retryOnceOn401: vi.fn().mockResolvedValue({ agents: [] }),
-    };
-    const manager = new FleetManager({} as any, sessionMock as any);
+  it('destroys cleanly without errors', () => {
+    const manager = new FleetManager(apiClientMock as any, sessionMock as any);
     expect(() => manager.destroy()).not.toThrow();
   });
 });

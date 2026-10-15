@@ -1,4 +1,4 @@
-import { Tray, app, BrowserWindow, Menu } from 'electron';
+import { Tray, Menu } from 'electron';
 import * as path from 'path';
 
 export interface TrayOptions {
@@ -8,6 +8,9 @@ export interface TrayOptions {
 
 /**
  * Manages the system tray icon and context menu.
+ *
+ * ADR-78: macOS is not supported (native GUI Windows + Linux only).
+ * Uses standard icon for Windows (.ico) and Linux (.png).
  */
 export class TrayManager {
   private tray: Tray | null = null;
@@ -16,11 +19,7 @@ export class TrayManager {
 
   createTray(): Tray {
     const iconName =
-      process.platform === 'linux'
-        ? 'ponter-tray.png'
-        : process.platform === 'darwin'
-          ? 'ponter-tray.png'
-          : 'ponter-tray.ico';
+      process.platform === 'win32' ? 'ponter-tray.ico' : 'ponter-tray.png';
 
     this.tray = new Tray(path.join(__dirname, '../../resources', iconName));
     this.tray.setToolTip('Ponter Desktop');
@@ -34,7 +33,7 @@ export class TrayManager {
 
     const { onShowWindow, onQuit } = this.options;
 
-    const menu = Menu.buildFromTemplate([
+    const template = [
       {
         label: 'Show Window',
         click: () => {
@@ -44,11 +43,11 @@ export class TrayManager {
       {
         label: 'Status',
         click: () => {
-          // Shows runtime status
+          // Shows runtime status in the main window
         },
       },
       {
-        type: 'separator',
+        type: 'separator' as const,
       },
       {
         label: 'Quit',
@@ -56,8 +55,9 @@ export class TrayManager {
           onQuit();
         },
       },
-    ]);
+    ];
 
+    const menu = Menu.buildFromTemplate(template);
     this.tray.setContextMenu(menu);
   }
 

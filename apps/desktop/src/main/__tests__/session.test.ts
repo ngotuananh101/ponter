@@ -1,29 +1,66 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SessionManager } from '../session';
+import { ApiError } from '@ponter/api-client';
+
+vi.mock('electron', () => ({
+  safeStorage: {
+    isEncryptionAvailable: vi.fn(() => true),
+    encryptString: vi.fn((s: string) => Buffer.from(s)),
+    decryptString: vi.fn((buf: Buffer) => buf.toString()),
+  },
+}));
+
+vi.mock('fs', () => ({
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+}));
+
+/**
+ * Mock factory for ApiClient. The real ApiClient exposes:
+ *  - `auth.login(username, password)` → LoginResponse `{ token, refreshToken, user }`
+ *  - `auth.logout()` → `{ success: boolean }`
+ *  - `http.request(method, path, options)` → typed response
+ *  - `http.storage` → TokenStorageAdapter
+ */
+function createApiClientMock() {
+  return {
+    auth: {
+      login: vi.fn(),
+      logout: vi.fn(),
+    },
+    http: {
+      request: vi.fn(),
+      storage: {
+        getAccessToken: vi.fn(),
+        getRefreshToken: vi.fn(),
+        setTokens: vi.fn(),
+        clearTokens: vi.fn(),
+      },
+    },
+  };
+}
+
+const keychainMock = {
+  getSecret: vi.fn(),
+  storeSecret: vi.fn(),
+  deleteSecret: vi.fn(),
+};
 
 describe('SessionManager & Auth Classification (Issue #107)', () => {
-  const apiClientMock = {
-    post: vi.fn(),
-    setToken: vi.fn(),
-    clearToken: vi.fn(),
-  };
-
-  const keychainMock = {
-    getSecret: vi.fn(),
-    storeSecret: vi.fn(),
-    deleteSecret: vi.fn(),
-  };
+  let apiClientMock: ReturnType<typeof createApiClientMock>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    apiClientMock = createApiClientMock();
   });
 
   it('classifies 401 UNAUTHORIZED as auth-fatal and purges keychain', async () => {
     keychainMock.getSecret.mockReturnValue('valid-refresh-token');
-    apiClientMock.post.mockRejectedValue({
-      status: 401,
-      data: { message: 'Session expired' },
-    });
+    apiClientMock.http.request.mockRejectedValue(
+      new ApiError('Unauthorized', 401, 'UNAUTHORIZED'),
+    );
 
     const session = new SessionManager(
       apiClientMock as any,
@@ -35,12 +72,11 @@ describe('SessionManager & Auth Classification (Issue #107)', () => {
     expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
   });
 
-  it('treats 403 as non-fatal without wiping keychain (e.g. AGENT_LIMIT_REACHED)', async () => {
+  it('treats 403 as non-fatal without wiping keychain', async () => {
     keychainMock.getSecret.mockReturnValue('valid-refresh-token');
-    apiClientMock.post.mockRejectedValue({
-      status: 403,
-      data: { message: 'AGENT_LIMIT_REACHED' },
-    });
+    apiClientMock.http.request.mockRejectedValue(
+      new ApiError('AGENT_LIMIT_REACHED', 403, 'AGENT_LIMIT_REACHED'),
+    );
 
     const session = new SessionManager(
       apiClientMock as any,
@@ -57,16 +93,14 @@ describe('SessionManager & Auth Classification (Issue #107)', () => {
     const mockRequest = vi.fn().mockImplementation(async () => {
       callCount++;
       if (callCount === 1) {
-        const err: any = new Error('Unauthorized');
-        err.status = 401;
-        throw err;
+        throw new ApiError('Unauthorized', 401, 'UNAUTHORIZED');
       }
       return { success: true };
     });
 
     keychainMock.getSecret.mockReturnValue('refresh-token');
-    apiClientMock.post.mockResolvedValueOnce({
-      accessToken: 'new-access-token',
+    apiClientMock.http.request.mockResolvedValueOnce({
+      token: 'new-access-token',
       refreshToken: 'rotated-refresh-token',
       user: { id: 'u1', username: 'alice', role: 'admin' },
     });
