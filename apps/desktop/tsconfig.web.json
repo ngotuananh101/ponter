@@ -8,6 +8,8 @@
     "jsx": "preserve",
     "strict": true,
     "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
     "paths": {
       "@/*": ["src/renderer/*"],
       "@/lib/utils": ["../../packages/ui-components/src/lib/utils"],
