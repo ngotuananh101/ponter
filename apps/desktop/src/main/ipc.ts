@@ -68,8 +68,8 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     async (_event, url: string): Promise<ProbeResult> => {
       // ADR-85 / tssecurity:S5144: `url` arrives from the renderer, so it is
       // untrusted. Parse it and reject any non-http(s) scheme (file:, gopher:,
-      // data:, ...) before building the request target from the parsed origin
-      // rather than concatenating raw input.
+      // data:, ...) before building the request target from the parsed URL
+      // (path prefix preserved) rather than concatenating raw input.
       const healthUrl = buildHealthUrl(url);
       if (!healthUrl) {
         return {
