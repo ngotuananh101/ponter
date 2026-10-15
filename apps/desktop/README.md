@@ -10,10 +10,12 @@ Desktop client for the Ponter remote-desktop platform, built with Electron 35 an
 
 The desktop shell implements:
 
-- **ADR-85 (Electron Desktop Shell with Vue 3 Renderer):** Replaces legacy egui shell with an Electron architecture pairing a Node.js 24 ESM main process with a Vue 3 renderer leveraging `@ponter/ui-components` and Pinia stores.
+- **ADR-85 (Electron Desktop Shell with Vue 3 Renderer):** Replaces legacy egui shell with an Electron architecture pairing a Node.js 24 ESM main process with a Vue 3 renderer leveraging `@ponter/ui-components` and Pinia stores. Strictly-typed IPC bridge exposes `window.ponter` (`PonterDesktopApi`) via Electron `contextBridge` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`).
 - **ADR-86 (Rust Agent Binary Sidecar Supervision):** Spawns and supervises the native `ponter-agent` binary sidecar with bounded exponential backoff (1s -> 2s -> 4s -> 8s -> 16s -> max 30s) and graceful SIGTERM/SIGKILL termination.
-- **ADR-87 (Strictly-Typed IPC Bridge):** Exposes `window.ponter` (`PonterDesktopApi`) via Electron `contextBridge` with `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`. Zero Node.js primitives or native modules leak into the renderer.
-- **ADR-88 (Token & Secret Keychain via safeStorage):** Access tokens are stored strictly in memory (`inMemoryAccessToken`). Refresh tokens and agent credentials (`device_credential_${id}`) are encrypted with Electron `safeStorage`. Sidecar credentials are provided exclusively via the `AGENT_CREDENTIAL` environment variable to prevent disclosure in process lists (ADR-13).
+- **ADR-87 (electron-updater Replaces minisign Self-Updater):** Releases publish `latest.yml` manifests for electron-updater on GitHub Releases, replacing legacy minisign and `latest.json`.
+- **ADR-88 (Shared Design Layer Integration):** Desktop renderer directly consumes shared `@ponter/ui-components` design tokens (`tokens.css`), presentational components (`LoginForm`, `RegisterForm`, `ThemeToggle`), and shared `useTheme` with an IPC-backed storage adapter.
+- **Keychain & Credential Isolation (ADR-13, ADR-52, R8):** Access tokens are stored strictly in memory (`inMemoryAccessToken`). Refresh tokens and agent credentials (`device_credential_${id}`) are encrypted with Electron `safeStorage`. Sidecar credentials are provided exclusively via the `AGENT_CREDENTIAL` environment variable to prevent disclosure in process lists (ADR-13).
+- **Fleet Synchronization & Polling Fallback (ADR-82):** Primary WebSocket push via `/api/ws/ticket` with automatic failover to 5s polling upon connection drop or 403 Origin rejection.
 - **Issue #107 (Auth-Death Classification):** Stable 401 classification clears refresh tokens, while non-fatal errors (e.g. 403 `AGENT_LIMIT_REACHED` or transient network errors) preserve session state and retry via `retryOnceOn401`.
 
 ## Prerequisites
@@ -30,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (14 test suites, 120 tests):
+Run the Vitest test suite (15 test suites, 126 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
