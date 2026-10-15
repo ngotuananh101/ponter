@@ -7,8 +7,8 @@ files:
   - out/**/*
   - package.json
 extraResources:
-  - from: resources/ponter-agent
-    to: ponter-agent
+  - from: resources
+    to: .
 linux:
   target:
     - target: AppImage

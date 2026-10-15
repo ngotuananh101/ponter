@@ -1,90 +1,105 @@
 # Ponter Desktop
 
-Native GUI desktop client for the Ponter remote-desktop platform, built with pure Rust using [`eframe`](https://github.com/emilk/egui/tree/master/crates/eframe) and [`egui`](https://github.com/emilk/egui).
+Desktop client for the Ponter remote-desktop platform, built with Electron 35 and Vue 3. The Electron main process supervises a bundled Rust `ponter-agent` binary sidecar for high-performance screen capture, WebRTC media streaming, and input injection.
 
-- **Crate:** `ponter-desktop` — standalone Rust binary (no WebKit, GTK, webview, or Node runtime).
+- **Package:** `@ponter/desktop`
 - **Identifier:** `com.ponter.desktop` · **Version:** `0.1.0`
 - **Supported Platforms:** Linux (x86_64) and Windows (x86_64) (ADR-78).
 
 ## Architecture & ADRs
 
-The native shell implements:
+The desktop shell implements:
 
-- **ADR-79 (Native egui/eframe Desktop Shell):** Replaces legacy Tauri v2 and Vue 3 frontend with a pure Rust crate, eliminating webview and Node runtime dependencies.
-- **ADR-80 (Minisign-Verified Self-Updater):** Verifies cryptographic signatures against embedded public keys prior to binary replacement via `self_replace`.
-- **ADR-81 (Independent Tray Thread):** Runs tray icon and context menus on a dedicated thread (StatusNotifierItem over D-Bus via `ksni` on Linux without GTK; Win32 notification area via `tray-icon` on Windows).
-- **ADR-82 (Push-Primary Fleet with Polling Fallback):** Connects to `/api/ws/browser` via ticket minted from `POST /api/ws/ticket` listening for `fleet-changed` notifications, with automatic fallback to periodic polling if WebSocket is unavailable.
+- **ADR-85 (Electron Desktop Shell with Vue 3 Renderer):** Replaces legacy egui shell with an Electron architecture pairing a Node.js 24 ESM main process with a Vue 3 renderer leveraging `@ponter/ui-components` and Pinia stores.
+- **ADR-86 (Rust Agent Binary Sidecar Supervision):** Spawns and supervises the native `ponter-agent` binary sidecar with bounded exponential backoff (1s -> 2s -> 4s -> 8s -> 16s -> max 30s) and graceful SIGTERM/SIGKILL termination.
+- **ADR-87 (Strictly-Typed IPC Bridge):** Exposes `window.ponter` (`PonterDesktopApi`) via Electron `contextBridge` with `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`. Zero Node.js primitives or native modules leak into the renderer.
+- **ADR-88 (Token & Secret Keychain via safeStorage):** Access tokens are stored strictly in memory (`inMemoryAccessToken`). Refresh tokens and agent credentials (`device_credential_${id}`) are encrypted with Electron `safeStorage`. Sidecar credentials are provided exclusively via the `AGENT_CREDENTIAL` environment variable to prevent disclosure in process lists (ADR-13).
+- **Issue #107 (Auth-Death Classification):** Stable 401 classification clears refresh tokens, while non-fatal errors (e.g. 403 `AGENT_LIMIT_REACHED` or transient network errors) preserve session state and retry via `retryOnceOn401`.
 
 ## Prerequisites
 
-- **Rust toolchain:** `>= 1.85.0` (stable).
-- **Linux system dependencies:** `libx11-dev`, `libxcb1-dev` (or distro equivalent) for native windowing. No GTK or WebKit required.
+- **Node.js:** `>= 24.0.0`
+- **pnpm:** `>= 10.0.0`
+- **Rust toolchain:** `>= 1.85.0` (to build the `ponter-agent` binary in `apps/agent/`)
 
 ## Development
 
-Run the desktop client in development:
+Run the desktop client in development with hot module replacement (HMR):
 
 ```bash
-cargo run --manifest-path apps/desktop/Cargo.toml
+pnpm --filter @ponter/desktop dev
 ```
 
-Run test suite (164 unit tests):
+Run the Vitest test suite (14 test suites, 120 tests):
 
 ```bash
-cargo test --locked --manifest-path apps/desktop/Cargo.toml
+pnpm --filter @ponter/desktop test
 ```
 
-Check formatting and linter:
+Typecheck main, preload, and renderer processes:
 
 ```bash
-cargo fmt --manifest-path apps/desktop/Cargo.toml --check
-cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets --locked -- -D warnings
+pnpm --filter @ponter/desktop typecheck
 ```
 
-## Building Artifacts
+Format checking:
+
+```bash
+pnpm format:check
+```
+
+## Packaging & Building Installers
+
+Before packaging, ensure the Rust `ponter-agent` sidecar binary is compiled and copied into `apps/desktop/resources/`:
 
 ### Linux
 
-- **AppImage:**
-  ```bash
-  apps/desktop/scripts/make-appimage.sh
-  ```
-- **Debian package (.deb):**
-  ```bash
-  cargo deb --manifest-path apps/desktop/Cargo.toml
-  ```
-- **RPM package (.rpm):**
-  ```bash
-  cargo generate-rpm --manifest-path apps/desktop/Cargo.toml
-  ```
+```bash
+# Build Rust agent sidecar
+cargo build --release --locked --manifest-path apps/agent/Cargo.toml
+mkdir -p apps/desktop/resources
+cp apps/agent/target/release/ponter-agent apps/desktop/resources/ponter-agent
+
+# Build & package Electron installers (.deb, .rpm, .AppImage)
+pnpm --filter @ponter/desktop build
+pnpm --filter @ponter/desktop package
+```
+
+Outputs in `apps/desktop/dist/`:
+
+- `ponter-desktop_<version>_amd64.deb`
+- `ponter-desktop-<version>.x86_64.rpm`
+- `ponter-desktop-<version>.AppImage`
 
 ### Windows
 
-- **Portable executable:**
-  ```bash
-  cargo build --release --manifest-path apps/desktop/Cargo.toml
-  ```
-- **NSIS Installer:**
-  ```bash
-  makensis apps/desktop/installer.nsi
-  ```
-- **MSI Installer (WiX):**
-  ```bash
-  cargo wix --manifest-path apps/desktop/Cargo.toml
-  ```
+```powershell
+# Build Rust agent sidecar
+cargo build --release --locked --manifest-path apps/agent/Cargo.toml
+mkdir -p apps/desktop/resources
+copy apps/agent/target/release/ponter-agent.exe apps/desktop/resources/ponter-agent.exe
 
-## Configuration & Continuity Invariants
+# Build & package Electron installers (.exe)
+pnpm --filter @ponter/desktop build
+pnpm --filter @ponter/desktop package
+```
 
-User preferences and connection state are persisted in `config.json` inside the standard application config directory for `com.ponter.desktop`. Only non-secret settings are stored on disk; access tokens remain in memory, and the refresh token and agent credentials are kept in the OS keychain (ADR-52):
+Outputs in `apps/desktop/dist/`:
+
+- `ponter-desktop Setup <version>.exe`
+
+## Configuration & Precedence
+
+Non-secret user preferences are persisted in `config.json` inside the platform application data directory:
 
 - **Linux:** `~/.config/com.ponter.desktop/config.json`
 - **Windows:** `%APPDATA%\com.ponter.desktop\config.json`
 
-Server URL resolution follows the four-level precedence chain:
+Server URL resolution follows the four-level precedence chain (ADR-64):
 
 1. Runtime environment variable `PONTER_SERVER_URL`
 2. Persisted setting in `config.json`
 3. Build-time default `PONTER_DEFAULT_SERVER_URL`
 4. Fallback default `http://localhost:8787`
 
-Agent identity keys are stored in `ponter/agent-identity.pkcs8` under `XDG_CONFIG_HOME` (or `~/.config`).
+Credentials and tokens are never stored in `config.json` or renderer web storage (localStorage/sessionStorage/IndexedDB).

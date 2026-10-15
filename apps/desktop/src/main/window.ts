@@ -29,12 +29,10 @@ export class WindowManager {
 
     if (options.url) {
       this.mainWindow.loadURL(options.url);
-    } else if (app.isPackaged) {
-      this.mainWindow.loadFile(
-        path.join(__dirname, '../../renderer/index.html'),
-      );
+    } else if (process.env.ELECTRON_RENDERER_URL) {
+      this.mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
     } else {
-      this.mainWindow.loadURL('http://localhost:5173');
+      this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
     }
 
     if (process.env.NODE_ENV !== 'production' || !app.isPackaged) {

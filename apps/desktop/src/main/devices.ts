@@ -76,8 +76,7 @@ export class DeviceManager {
       );
     }
 
-    // Strip credential from response before returning to renderer
-    const { credential: _credential, ...device } = result.agent;
+    // Strip credential from response before returning to renderer (credential stored in keychain only)
     return this.mapAgentToDesktopDevice(result.agent);
   }
 

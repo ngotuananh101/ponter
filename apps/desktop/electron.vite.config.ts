@@ -25,9 +25,16 @@ export default defineConfig({
     },
   },
   renderer: {
+    root: '.',
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'index.html'),
+        },
+      },
+    },
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src/renderer'),
         '@/lib/utils': resolve(
           __dirname,
           '../../packages/ui-components/src/lib/utils',
@@ -36,6 +43,7 @@ export default defineConfig({
           __dirname,
           '../../packages/ui-components/src/components/ui',
         ),
+        '@': resolve(__dirname, 'src/renderer'),
       },
     },
     plugins: [vue(), tailwindcss()],
