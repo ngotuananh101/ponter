@@ -66,8 +66,20 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(
     'desktop:probe-server',
     async (_event, url: string): Promise<ProbeResult> => {
+      // ADR-85 / tssecurity:S5144: `url` arrives from the renderer, so it is
+      // untrusted. Parse it and reject any non-http(s) scheme (file:, gopher:,
+      // data:, ...) before building the request target from the parsed origin
+      // rather than concatenating raw input.
+      const healthUrl = buildHealthUrl(url);
+      if (!healthUrl) {
+        return {
+          ok: false,
+          message: 'Only http:// and https:// URLs are allowed',
+        };
+      }
+
       try {
-        const response = await net.fetch(`${url}/api/health`, {
+        const response = await net.fetch(healthUrl, {
           signal: AbortSignal.timeout(5000),
         });
         if (response.ok) {
@@ -149,6 +161,28 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle('desktop:get-runtime-status', (): string => {
     return supervisor.getStatus();
   });
+}
+
+/**
+ * Build the `/api/health` probe target from an untrusted renderer-supplied URL.
+ *
+ * tssecurity:S5144 (SSRF): the renderer controls `rawUrl`, so we parse it and
+ * only allow the http/https schemes. Any other scheme (`file:`, `gopher:`,
+ * `data:`, ...) yields `null` and the caller refuses the probe. The target is
+ * rebuilt from the parsed origin so no raw input is string-concatenated into
+ * the request URL.
+ */
+function buildHealthUrl(rawUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return null;
+  }
+  return `${parsed.origin}/api/health`;
 }
 
 /**

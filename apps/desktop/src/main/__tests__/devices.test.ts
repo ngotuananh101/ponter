@@ -149,11 +149,14 @@ describe('DeviceManager', () => {
         capabilities: ['control'],
       });
 
-      // Verify agents.create was called with generated device ID format
+      // Verify agents.create was called with generated device ID format.
+      // `platform` is produced by DeviceManager.detectPlatform() from
+      // process.platform, so the expectation must track the runtime OS
+      // (CI runs both ubuntu-latest and windows-latest).
       expect(apiClientMock.agents.create).toHaveBeenCalledWith({
         id: expect.stringMatching(/^dev_[a-f0-9]{8}$/),
         hostname: 'my-host',
-        platform: 'linux',
+        platform: process.platform === 'win32' ? 'windows' : 'linux',
         capabilities: ['control'],
       });
 

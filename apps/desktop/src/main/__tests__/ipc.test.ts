@@ -120,4 +120,28 @@ describe('IPC Handlers (Main Process)', () => {
     );
     expect(result).toEqual({ ok: false, message: 'HTTP 503' });
   });
+
+  it('rejects non-http(s) URLs before fetching (SSRF, tssecurity:S5144)', async () => {
+    registerIpcHandlers(deps);
+
+    const result = await handlers['desktop:probe-server'](
+      {},
+      'file:///etc/passwd',
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'Only http:// and https:// URLs are allowed',
+    });
+    expect(net.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unparseable URLs before fetching', async () => {
+    registerIpcHandlers(deps);
+
+    const result = await handlers['desktop:probe-server']({}, 'not a url');
+
+    expect(result.ok).toBe(false);
+    expect(net.fetch).not.toHaveBeenCalled();
+  });
 });
