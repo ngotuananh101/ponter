@@ -1593,7 +1593,7 @@ git commit -m "feat(desktop): complete Electron migration, rewrite CI workflow, 
 - **Candidate Branch:** `feat/subproject-b-electron-desktop-shell` (tip `7b715c7`).
 - **Independent Code Review (BE):** PASS 100% (`f238f43`).
 - **Independent QA Binding Verification:** RECOMMEND MERGE 100% (`7b715c7`):
-  - 130/130 unit/integration tests passing across 15 test files in `apps/desktop` (8 main/preload suites + 7 renderer suites).
+  - 126/126 unit/integration tests passing across 15 test files in `apps/desktop` (8 main/preload suites + 7 renderer suites).
   - 30/30 unit tests passing in `@ponter/api-client` (including strict CI boundary gate).
   - 336/336 unit tests passing in `apps/agent` (330 lib + 6 main).
   - Clean TypeScript typecheck across all desktop targets (`typecheck:node` and `typecheck:web`).
