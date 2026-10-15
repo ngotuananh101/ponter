@@ -21,6 +21,7 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
+  renameSync: vi.fn(),
 }));
 
 describe('KeychainService', () => {
@@ -39,7 +40,7 @@ describe('KeychainService', () => {
     );
   });
 
-  it('encrypts and stores secrets to file', () => {
+  it('encrypts and stores secrets to file via atomic write', () => {
     vi.mocked(safeStorage.encryptString).mockReturnValue(
       Buffer.from('encrypted:secret'),
     );
@@ -49,9 +50,13 @@ describe('KeychainService', () => {
     keychain.storeSecret('refresh_token', 'my-refresh-token');
 
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      '/tmp/test-secrets.enc',
+      expect.stringContaining('/tmp/test-secrets.enc.tmp.'),
       expect.stringContaining('refresh_token'),
       'utf-8',
+    );
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      expect.stringContaining('/tmp/test-secrets.enc.tmp.'),
+      '/tmp/test-secrets.enc',
     );
   });
 
@@ -91,6 +96,10 @@ describe('KeychainService', () => {
     keychain.deleteSecret('key1');
 
     expect(fs.writeFileSync).toHaveBeenCalled();
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      expect.stringContaining('/tmp/test-secrets.enc.tmp.'),
+      '/tmp/test-secrets.enc',
+    );
     const writtenContent = JSON.parse(
       vi.mocked(fs.writeFileSync).mock.calls[0][1] as string,
     );

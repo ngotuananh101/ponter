@@ -5,6 +5,7 @@ import type { DeviceManager } from './devices';
 import type { AutostartManager } from './autostart';
 import type { FleetManager } from './fleet';
 import type { WindowManager } from './window';
+import type { AgentSupervisor } from './agent-supervisor';
 import type {
   AppConfig,
   SaveConfigPayload,
@@ -21,6 +22,7 @@ export interface IpcDependencies {
   autostart: AutostartManager;
   fleet: FleetManager;
   window: WindowManager;
+  supervisor: AgentSupervisor;
 }
 
 /**
@@ -41,7 +43,11 @@ export interface IpcDependencies {
  * 12. desktop:get-runtime-status
  */
 export function registerIpcHandlers(deps: IpcDependencies): void {
-  const { config, session, devices, autostart, fleet, window } = deps;
+  const { config, session, devices, autostart, fleet, window, supervisor } =
+    deps;
+
+  // Listen for agent sidecar runtime status changes and broadcast to renderer windows
+  supervisor.onStatusChange(notifyRuntimeStatus);
 
   // 1. desktop:get-config
   ipcMain.handle('desktop:get-config', (): AppConfig => {
@@ -141,7 +147,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
 
   // 12. desktop:get-runtime-status
   ipcMain.handle('desktop:get-runtime-status', (): string => {
-    return 'running';
+    return supervisor.getStatus();
   });
 }
 

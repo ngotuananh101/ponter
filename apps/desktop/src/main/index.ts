@@ -7,6 +7,7 @@ import { AutostartManager } from './autostart';
 import { TrayManager } from './tray';
 import { WindowManager } from './window';
 import { FleetManager } from './fleet';
+import { AgentSupervisor } from './agent-supervisor';
 import { registerIpcHandlers } from './ipc';
 import { createApiClient } from '@ponter/api-client';
 
@@ -14,7 +15,7 @@ import { createApiClient } from '@ponter/api-client';
  * Main process entry point for the Ponter desktop shell (ADR-79).
  *
  * Initializes all core services: config, keychain, session, devices,
- * autostart, tray, window, fleet, and IPC handlers.
+ * autostart, tray, window, fleet, supervisor, and IPC handlers.
  *
  * ADR-78: macOS is not supported (native GUI Windows + Linux only).
  */
@@ -28,6 +29,7 @@ let autostart: AutostartManager;
 let tray: TrayManager;
 let window: WindowManager;
 let fleet: FleetManager;
+let supervisor: AgentSupervisor;
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -41,6 +43,9 @@ if (!gotTheLock) {
 
     // Initialize keychain (ADR-13/ADR-52/R8: uses Electron safeStorage)
     keychain = new KeychainService();
+
+    // Initialize agent sidecar supervisor (ADR-86)
+    supervisor = new AgentSupervisor(config, keychain);
 
     // Initialize session token storage:
     // - Access tokens: in-memory only (never written to keychain/disk)
@@ -67,7 +72,8 @@ if (!gotTheLock) {
     // Initialize tray (single-click to restore window)
     tray = new TrayManager({
       onShowWindow: () => window.restore(),
-      onQuit: () => {
+      onQuit: async () => {
+        await supervisor?.stop();
         fleet?.destroy();
         tray?.destroy();
         app.quit();
@@ -85,7 +91,15 @@ if (!gotTheLock) {
     window.createWindow();
 
     // Register all IPC handlers (12 desktop:* channels)
-    registerIpcHandlers({ config, session, devices, autostart, fleet, window });
+    registerIpcHandlers({
+      config,
+      session,
+      devices,
+      autostart,
+      fleet,
+      window,
+      supervisor,
+    });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -93,13 +107,15 @@ if (!gotTheLock) {
       }
     });
 
-    app.on('before-quit', () => {
+    app.on('before-quit', async () => {
+      await supervisor?.stop();
       fleet?.destroy();
       tray?.destroy();
     });
 
-    app.on('window-all-closed', () => {
+    app.on('window-all-closed', async () => {
       // ADR-78: macOS not supported — quit on all remaining platforms
+      await supervisor?.stop();
       fleet?.destroy();
       tray?.destroy();
       app.quit();

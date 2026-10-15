@@ -60,4 +60,23 @@ describe('AgentSupervisor (ADR-86 Sidecar Contract)', () => {
     expect(env.AGENT_FILES_ROOT).toBeUndefined();
     expect(env.AGENT_ALLOW_INPUT).toBe('false');
   });
+
+  it('supports construction with (config, keychain) and reports stopped when idle', () => {
+    const configMock = { load: vi.fn() };
+    const supervisor = new AgentSupervisor(
+      configMock as any,
+      keychainMock as any,
+    );
+    expect(supervisor.getStatus()).toBe('stopped');
+  });
+
+  it('registers status listeners via onStatusChange and emits on stop', async () => {
+    const supervisor = new AgentSupervisor(keychainMock as any);
+    const listener = vi.fn();
+    supervisor.onStatusChange(listener);
+
+    await supervisor.stop();
+    expect(listener).toHaveBeenCalledWith('stopped');
+    expect(supervisor.getStatus()).toBe('stopped');
+  });
 });

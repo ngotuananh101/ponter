@@ -24,8 +24,14 @@ export class WindowManager {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     });
+
+    // ADR-85: Deny unexpected window/popup opens to prevent external navigation
+    this.mainWindow.webContents.setWindowOpenHandler(() => ({
+      action: 'deny',
+    }));
 
     if (options.url) {
       this.mainWindow.loadURL(options.url);

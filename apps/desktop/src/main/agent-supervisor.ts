@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { toWsUrl } from '@ponter/webrtc-core';
 import type { KeychainService } from './keychain';
+import type { ConfigManager } from './config';
 
 export interface AgentSupervisorOptions {
   spawn?: typeof spawn;
@@ -20,21 +21,54 @@ export interface SupervisorConfig {
 }
 
 export class AgentSupervisor {
+  private config?: ConfigManager;
   private keychain: KeychainService;
   private spawnFn: typeof spawn;
   private binaryPath: string;
-  private onStatusChange?: (status: string) => void;
+  private statusCallbacks: ((status: string) => void)[] = [];
   private child: ChildProcess | null = null;
   private restartCount = 0;
   private restartTimeout: any = null;
   private isIntentionallyStopped = true;
   private currentConfig: SupervisorConfig | null = null;
 
-  constructor(keychain: KeychainService, options?: AgentSupervisorOptions) {
-    this.keychain = keychain;
-    this.spawnFn = options?.spawn || spawn;
-    this.onStatusChange = options?.onStatusChange;
-    this.binaryPath = options?.binaryPath || this.resolveBinaryPath();
+  constructor(
+    configOrKeychain: ConfigManager | KeychainService,
+    keychainOrOptions?: KeychainService | AgentSupervisorOptions,
+    options?: AgentSupervisorOptions,
+  ) {
+    if (
+      keychainOrOptions &&
+      typeof (keychainOrOptions as any).getSecret === 'function'
+    ) {
+      this.config = configOrKeychain as ConfigManager;
+      this.keychain = keychainOrOptions as KeychainService;
+      this.spawnFn = options?.spawn || spawn;
+      this.binaryPath = options?.binaryPath || this.resolveBinaryPath();
+      if (options?.onStatusChange) {
+        this.statusCallbacks.push(options.onStatusChange);
+      }
+    } else {
+      this.keychain = configOrKeychain as KeychainService;
+      const opts = keychainOrOptions as AgentSupervisorOptions | undefined;
+      this.spawnFn = opts?.spawn || spawn;
+      this.binaryPath = opts?.binaryPath || this.resolveBinaryPath();
+      if (opts?.onStatusChange) {
+        this.statusCallbacks.push(opts.onStatusChange);
+      }
+    }
+  }
+
+  onStatusChange(callback: (status: string) => void): void {
+    this.statusCallbacks.push(callback);
+  }
+
+  private emitStatus(status: string): void {
+    for (const cb of this.statusCallbacks) {
+      try {
+        cb(status);
+      } catch {}
+    }
   }
 
   private resolveBinaryPath(): string {
@@ -120,16 +154,16 @@ export class AgentSupervisor {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      this.onStatusChange?.('connected');
+      this.emitStatus('connected');
 
       this.child.on('exit', (code) => {
         this.child = null;
         if (this.isIntentionallyStopped) {
-          this.onStatusChange?.('stopped');
+          this.emitStatus('stopped');
           return;
         }
 
-        this.onStatusChange?.('error');
+        this.emitStatus('error');
         const delay = this.getBackoffDelay(this.restartCount++);
         this.restartTimeout = setTimeout(() => {
           if (!this.isIntentionallyStopped) {
@@ -138,7 +172,7 @@ export class AgentSupervisor {
         }, delay);
       });
     } catch {
-      this.onStatusChange?.('error');
+      this.emitStatus('error');
     }
   }
 
@@ -150,7 +184,7 @@ export class AgentSupervisor {
     }
 
     if (!this.child) {
-      this.onStatusChange?.('stopped');
+      this.emitStatus('stopped');
       return Promise.resolve();
     }
 
@@ -168,7 +202,7 @@ export class AgentSupervisor {
       child.once('exit', () => {
         clearTimeout(killTimeout);
         this.child = null;
-        this.onStatusChange?.('stopped');
+        this.emitStatus('stopped');
         resolve();
       });
 

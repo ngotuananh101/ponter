@@ -28,7 +28,9 @@ export class KeychainService {
   private writeStore(store: Record<string, string>): void {
     const dir = path.dirname(this.storeFile);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.storeFile, JSON.stringify(store, null, 2), 'utf-8');
+    const tempPath = `${this.storeFile}.tmp.${Date.now()}`;
+    fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), 'utf-8');
+    fs.renameSync(tempPath, this.storeFile);
   }
 
   storeSecret(key: string, secret: string): void {

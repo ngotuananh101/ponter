@@ -1,0 +1,86 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const handlers: Record<string, (...args: any[]) => any> = {};
+
+vi.mock('electron', () => ({
+  ipcMain: {
+    handle: vi.fn((channel: string, handler: (...args: any[]) => any) => {
+      handlers[channel] = handler;
+    }),
+  },
+  BrowserWindow: {
+    getAllWindows: vi.fn(() => []),
+  },
+}));
+
+import { ipcMain, BrowserWindow } from 'electron';
+import { registerIpcHandlers } from '../ipc';
+
+describe('IPC Handlers (Main Process)', () => {
+  let deps: any;
+  let statusListener: ((status: string) => void) | null = null;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const key of Object.keys(handlers)) {
+      delete handlers[key];
+    }
+    statusListener = null;
+
+    deps = {
+      config: {
+        load: vi.fn(() => ({ serverUrl: 'http://localhost:8787' })),
+        save: vi.fn(),
+      },
+      session: {
+        login: vi.fn(),
+        logout: vi.fn(),
+      },
+      devices: {
+        listDevices: vi.fn(),
+        registerDevice: vi.fn(),
+        deleteDevice: vi.fn(),
+      },
+      autostart: {
+        setEnabled: vi.fn(),
+        isEnabled: vi.fn(() => true),
+      },
+      fleet: {},
+      window: {},
+      supervisor: {
+        getStatus: vi.fn(() => 'connected'),
+        onStatusChange: vi.fn((cb: (status: string) => void) => {
+          statusListener = cb;
+        }),
+      },
+    };
+  });
+
+  it('registers all 12 desktop:* channels including get-runtime-status', () => {
+    registerIpcHandlers(deps);
+
+    expect(ipcMain.handle).toHaveBeenCalledWith(
+      'desktop:get-runtime-status',
+      expect.any(Function),
+    );
+    expect(handlers['desktop:get-runtime-status']).toBeDefined();
+    expect(handlers['desktop:get-runtime-status']()).toBe('connected');
+    expect(deps.supervisor.getStatus).toHaveBeenCalled();
+  });
+
+  it('connects supervisor onStatusChange to broadcast runtime status to windows', () => {
+    const sendMock = vi.fn();
+    const mockWindow = { webContents: { send: sendMock } };
+    vi.mocked(BrowserWindow.getAllWindows).mockReturnValue([mockWindow as any]);
+
+    registerIpcHandlers(deps);
+
+    expect(deps.supervisor.onStatusChange).toHaveBeenCalledWith(
+      expect.any(Function),
+    );
+    expect(statusListener).toBeDefined();
+
+    statusListener!('error');
+    expect(sendMock).toHaveBeenCalledWith('desktop:runtime-status', 'error');
+  });
+});
