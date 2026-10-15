@@ -82,13 +82,17 @@ export type AgentSocketMessage =
  * `SESSION_TERMINATED` exists only here: the agent socket has no reason to
  * hear that its own session ended, while a browser tab must be told to stop
  * waiting on a handshake that can no longer complete.
+ *
+ * The set is the server's actual browser emit-set (`routes/ws.ts` via
+ * `sendError`/`send`, plus `routes/sessions.ts`). `UNAUTHORIZED` is an HTTP-only
+ * code (a rejected ticket is a 401 at the upgrade, `ws.ts:650-663`), and
+ * `TICKET_EXPIRED` is never emitted — both were over-declared and are removed
+ * (ADR-89 §5.3).
  */
 export type BrowserErrorCode =
   | 'MALFORMED_JSON'
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
-  | 'UNAUTHORIZED'
-  | 'TICKET_EXPIRED'
   | 'SESSION_TERMINATED'
   | 'INTERNAL_SERVER_ERROR';
 

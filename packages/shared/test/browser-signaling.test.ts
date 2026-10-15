@@ -33,6 +33,25 @@ describe('BrowserSocketMessage types', () => {
     const msg: BrowserSocketMessage = { type: 'error', code };
     expect(msg.code).toBe('SESSION_TERMINATED');
   });
+
+  it('BrowserErrorCode is exactly the server browser emit-set (no over-declared members)', () => {
+    // Compile-time: a value outside the emit-set must not be assignable.
+    const allowed: BrowserErrorCode[] = [
+      'MALFORMED_JSON',
+      'VALIDATION_ERROR',
+      'NOT_FOUND',
+      'SESSION_TERMINATED',
+      'INTERNAL_SERVER_ERROR',
+    ];
+    expect(allowed).toHaveLength(5);
+    // The two HTTP-only / never-emitted members must be gone from the union.
+    // @ts-expect-error UNAUTHORIZED is an HTTP code, never a WS frame.
+    const a: BrowserErrorCode = 'UNAUTHORIZED';
+    // @ts-expect-error TICKET_EXPIRED is never emitted by the server.
+    const b: BrowserErrorCode = 'TICKET_EXPIRED';
+    void a;
+    void b;
+  });
 });
 
 describe('parseBrowserMessage', () => {
