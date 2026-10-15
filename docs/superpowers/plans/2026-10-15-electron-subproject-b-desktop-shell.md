@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the native Rust `egui`/`eframe` desktop client in `apps/desktop` with an Electron application whose renderer is Vue 3 built on the shared `@ponter/ui-components` design system, supervising `ponter-agent` as a bundled child sidecar process, with native capabilities (keychain, config, updater, tray, autostart, single-instance) implemented via Electron APIs.
+**Goal:** Replace the native Rust `egui`/`eframe` desktop client in `apps/desktop` with an Electron application whose renderer is Vue 3 built on the shared `@ponter/ui-components` design system, supervising `ponter-agent` as a bundled child sidecar process, with native capabilities (keychain, config, tray, autostart, single-instance) implemented via Electron APIs. Auto-update is **DEFERRED / not yet implemented** (follow-up issue #136): the migration removed the legacy minisign updater and did not yet ship its `electron-updater` replacement.
 
-**Architecture:** Electron main process (Node 24 ESM) owns window management, native OS integrations, and child process supervision of the bundled `ponter-agent` binary. The renderer is a Vue 3 + Vite Single Page Application importing design tokens and presentational components directly from `@ponter/ui-components`. Preload script exposes a strictly typed `contextBridge` (`window.ponter`) with `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and a rigid Content Security Policy. Auto-update is governed by `electron-updater` reading `latest.yml` from GitHub Releases.
+**Architecture:** Electron main process (Node 24 ESM) owns window management, native OS integrations, and child process supervision of the bundled `ponter-agent` binary. The renderer is a Vue 3 + Vite Single Page Application importing design tokens and presentational components directly from `@ponter/ui-components`. Preload script exposes a strictly typed `contextBridge` (`window.ponter`) with `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and a rigid Content Security Policy. Auto-update via `electron-updater` reading `latest.yml` from GitHub Releases is **DEFERRED / not yet implemented** (follow-up issue #136).
 
 **Tech Stack:** Electron 35.0.0, electron-vite 4.0.0, electron-builder 25.1.8, Vue 3.5.43, Pinia 4.0.3, Tailwind CSS 4.3.3, `@tailwindcss/vite` 4.3.3, `@ponter/ui-components` (workspace), `@ponter/api-client` (workspace), `@ponter/shared` (workspace), `@ponter/webrtc-core` (workspace), Vitest 5.0.3, `@vue/test-utils` 2.5.1, happy-dom 20.14.5, TypeScript 6.0.3, pnpm 12.6.0, Node 24.
 
@@ -47,15 +47,15 @@
 ### TEST-INTEGRITY Declaration
 
 - **Before:** `apps/desktop` native `egui`/`eframe` suite = **164 Rust unit tests**.
-- **After (Actual Implemented):** **126 Vitest unit/integration tests** across 15 test files in `apps/desktop` (47 tests across 8 main/preload suites + 79 tests across 7 renderer suites), plus shared UI tests in `@ponter/ui-components` (15 tests) and 336 unit tests in `apps/agent`. Total passing tests across all related suites = **477 tests**.
-- **Reason:** The 164 Rust tests are removed **strictly together with the `egui` shell code they test**. All product and architectural requirements (ADR-52 keychain, ADR-64/65 config, ADR-66 route gate, ADR-78 platform, ADR-81 tray, ADR-82 fleet push, Issue #107 auth-fatal rules, and PR #96..98 flicker/polling semantics) are re-established with 100% parity in Vitest.
+- **After (Actual Implemented):** **130 Vitest unit/integration tests** across 15 test files in `apps/desktop` (41 tests across 8 main/preload suites + 89 tests across 7 renderer suites), plus shared UI tests in `@ponter/ui-components` (13 tests) and 336 unit tests in `apps/agent`. Total passing tests across all related suites = **479 tests**.
+- **Reason:** The 164 Rust tests are removed **strictly together with the `egui` shell code they test**. Most product and architectural requirements (ADR-52 keychain, ADR-64/65 config, ADR-66 route gate, ADR-78 platform, ADR-82 fleet push, Issue #107 auth-fatal rules, and PR #96..98 flicker/polling semantics) are re-established in Vitest. **Parity is NOT 100%:** three Rust areas are not covered — the updater (ADR-87, not implemented), and the main-process tray (ADR-81) and autostart logic, which are implemented but have no direct Vitest coverage (autostart is exercised only indirectly through the renderer wizard). These gaps are tracked as a follow-up (issue #136).
 
 ### Comprehensive Test Mapping Table
 
 | Rust Test Module (`apps/desktop/src/`) | Tests | Target Vitest Suite | Covered Behaviors & Invariants |
 |---|---|---|---|
 | `app::tests` | 3 | `src/main/__tests__/config.test.ts`<br>`src/renderer/__tests__/serverSetup.test.ts` | Server config persistence, deadlock prevention, navigation transition to saved state. |
-| `autostart::tests` | 13 | `src/main/__tests__/autostart.test.ts`<br>`src/renderer/__tests__/wizard.test.ts` | Autostart directory resolution (XDG vs home), desktop file generation, spaced path quoting, round-trip enable/disable. |
+| `autostart::tests` | 13 | `src/renderer/__tests__/wizard.test.ts` (indirect only) | **NOT ported — deferred (follow-up issue #136).** `apps/desktop/src/main/autostart.ts` is implemented and wired in `index.ts`, but has **no direct Vitest coverage**; autostart is exercised only indirectly through the renderer wizard (`setAutostart` / `isAutostartEnabled` IPC calls). |
 | `core::agent_host::tests` | 6 | `src/main/__tests__/agent-supervisor.test.ts` | Sidecar environment configuration assembly, missing credential validation, identity path resolution. |
 | `core::auth::tests` | 6 | `src/main/__tests__/session.test.ts`<br>`src/renderer/__tests__/login.test.ts` | Keychain key names, refresh token storage via `safeStorage`, server error parsing, logout cleanup. |
 | `core::config::tests` | 13 | `src/main/__tests__/config.test.ts` | Default input gate closed, fallback on corrupt/missing JSON, 4-tier precedence resolution, slash/whitespace trimming. |
@@ -65,10 +65,10 @@
 | `core::keychain::tests` | 2 | `src/main/__tests__/keychain.test.ts` | `safeStorage` secret round-trip, missing key handling (`null` return). |
 | `core::session::tests` | 9 | `src/main/__tests__/session.test.ts` | 401/403 fatal classification, transient error bypass, refresh token rotation, `retryOnceOn401` recovery. |
 | `core::state::tests` | 3 | `src/main/__tests__/config.test.ts` | App identifier `com.ponter.desktop`, persisted server URL resolution, localhost fallback. |
-| `core::updater::tests` | 10 | `src/main/__tests__/updater.test.ts` | Platform asset selection, semver evaluation (`should_apply`), update rejection on older or equal versions. |
+| `core::updater::tests` | 10 | (none) | **NOT ported — deferred (follow-up issue #136).** The updater is **not implemented** in the Electron app (ADR-87 DEFERRED); `updater.ts` does not exist. |
 | `core::wizard::tests` | 17 | `src/main/__tests__/config.test.ts`<br>`src/renderer/__tests__/wizard.test.ts`<br>`src/renderer/__tests__/serverSetup.test.ts` | `allowInput` default false, health probe body validation, network error handling, config persistence. |
 | `theme::tests` | 8 | `src/renderer/__tests__/theme.test.ts`<br>`packages/ui-components/.../useTheme.test.ts` | Light/dark resolution, system theme detection, token differences, persistence adapter dispatch. |
-| `tray::tests` | 12 | `src/main/__tests__/tray.test.ts` | Menu action mapping, WebSocket URL derivation, hide-on-close toggle, runtime status formatting. |
+| `tray::tests` | 12 | (none) | **NOT ported — deferred (follow-up issue #136).** `apps/desktop/src/main/tray.ts` is implemented and wired in `index.ts`, but has **no Vitest coverage**. |
 | `ui::components::tests` | 4 | `packages/ui-components/.../LoginForm.test.ts`<br>`packages/ui-components/.../RegisterForm.test.ts` | Input height parity, headless DOM rendering. |
 | `ui::devices::tests` | 2 | `src/renderer/__tests__/devices.test.ts` | Online/offline device status badge labels. |
 | `ui::login::tests` | 4 | `src/renderer/__tests__/login.test.ts` | Form validation, whitespace trimming, empty password rejection. |
@@ -76,7 +76,7 @@
 | `ui::settings::tests` | 1 | `src/renderer/__tests__/wizard.test.ts` | Autostart UI label matching active state. |
 | `ui::tests` | 1 | `src/renderer/__tests__/app.test.ts` | Gate-based view progression: ServerSetup -> Login -> SetupWizard -> Devices. |
 | `ui::wizard::tests` | 10 | `src/renderer/__tests__/wizard.test.ts` | 3-step sequence, capture gate enforcement, boundary clamping. |
-| **Total Rust Tests** | **164** | **Total Actual Tests** | **126 Vitest in apps/desktop** (15 files) + **15 Vitest in ui-components** + **336 Cargo in agent** |
+| **Total Rust Tests** | **164** | **Total Actual Tests** | **130 Vitest in apps/desktop** (15 files) + **13 Vitest in ui-components** + **336 Cargo in agent** = **479 tests** (updater + tray + direct autostart coverage deferred — issue #136) |
 
 ---
 
@@ -153,6 +153,8 @@
   }
 }
 ```
+
+> **Note (as-built):** `electron-updater` is declared here but is currently an **unused dependency** — the auto-update implementation is **DEFERRED / not yet implemented** (follow-up issue #136). The shipped `0.1.0` build has no auto-update path.
 
 - [x] **Step 2: Create `apps/desktop/electron.vite.config.ts`**
 
@@ -1520,7 +1522,7 @@ Update `.github/workflows/build-desktop.yml` to:
    pnpm --filter @ponter/desktop build
    pnpm --filter @ponter/desktop package
    ```
-8. Remove the old webview guard (`cargo tree | grep webkit`), `cargo deb`, `cargo generate-rpm`, `wix`, and minisign signing steps.
+8. Remove the old webview guard (`cargo tree | grep webkit`), `cargo deb`, `cargo generate-rpm`, `wix`, and minisign signing steps. **No updater replacement is added in this migration** — the legacy minisign updater is removed and `electron-updater` is **DEFERRED / not yet implemented** (follow-up issue #136), so the shipped build has no auto-update path.
 
 - [x] **Step 2: Delete legacy `egui` Rust source code and artifacts**
 
@@ -1591,7 +1593,7 @@ git commit -m "feat(desktop): complete Electron migration, rewrite CI workflow, 
 - **Candidate Branch:** `feat/subproject-b-electron-desktop-shell` (tip `7b715c7`).
 - **Independent Code Review (BE):** PASS 100% (`f238f43`).
 - **Independent QA Binding Verification:** RECOMMEND MERGE 100% (`7b715c7`):
-  - 126/126 unit/integration tests passing across 15 test files in `apps/desktop` (8 main/preload suites + 7 renderer suites).
+  - 130/130 unit/integration tests passing across 15 test files in `apps/desktop` (8 main/preload suites + 7 renderer suites).
   - 30/30 unit tests passing in `@ponter/api-client` (including strict CI boundary gate).
   - 336/336 unit tests passing in `apps/agent` (330 lib + 6 main).
   - Clean TypeScript typecheck across all desktop targets (`typecheck:node` and `typecheck:web`).
