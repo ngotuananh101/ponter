@@ -164,13 +164,21 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
 }
 
 /**
- * Build the `/api/health` probe target from an untrusted renderer-supplied URL.
+ * Build the `/health` probe target from an untrusted renderer-supplied URL.
+ *
+ * The server exposes its liveness route at `/health` (see
+ * `apps/server/src/app.ts`), not `/api/health`.
  *
  * tssecurity:S5144 (SSRF): the renderer controls `rawUrl`, so we parse it and
  * only allow the http/https schemes. Any other scheme (`file:`, `gopher:`,
  * `data:`, ...) yields `null` and the caller refuses the probe. The target is
- * rebuilt from the parsed origin so no raw input is string-concatenated into
- * the request URL.
+ * rebuilt from the parsed URL — mutating `pathname` and serialising with
+ * `toString()` — so no raw input is string-concatenated into the request URL.
+ *
+ * Any path prefix is preserved: a server mounted under a sub-path (e.g.
+ * `https://host/ponter`) probes `https://host/ponter/health`. The path is
+ * trailing-slash-trimmed first, matching `config.cleanUrl`'s convention, and
+ * the query/fragment are dropped so the target is exactly the health endpoint.
  */
 function buildHealthUrl(rawUrl: string): string | null {
   let parsed: URL;
@@ -182,7 +190,11 @@ function buildHealthUrl(rawUrl: string): string | null {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return null;
   }
-  return `${parsed.origin}/api/health`;
+  const basePath = parsed.pathname.replace(/\/+$/, '');
+  parsed.pathname = `${basePath}/health`;
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
 }
 
 /**

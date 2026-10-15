@@ -100,10 +100,36 @@ describe('IPC Handlers (Main Process)', () => {
       'http://localhost:8787',
     );
     expect(net.fetch).toHaveBeenCalledWith(
-      'http://localhost:8787/api/health',
+      'http://localhost:8787/health',
       expect.objectContaining({ signal: expect.anything() }),
     );
     expect(result).toEqual({ ok: true, message: 'Server reachable' });
+  });
+
+  it('preserves the server path prefix when building the health probe URL', async () => {
+    vi.mocked(net.fetch).mockResolvedValue({ ok: true, status: 200 } as any);
+
+    registerIpcHandlers(deps);
+
+    await handlers['desktop:probe-server']({}, 'https://example.com/ponter');
+
+    expect(net.fetch).toHaveBeenCalledWith(
+      'https://example.com/ponter/health',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+  });
+
+  it('trims a trailing slash before appending the health path', async () => {
+    vi.mocked(net.fetch).mockResolvedValue({ ok: true, status: 200 } as any);
+
+    registerIpcHandlers(deps);
+
+    await handlers['desktop:probe-server']({}, 'https://example.com/ponter/');
+
+    expect(net.fetch).toHaveBeenCalledWith(
+      'https://example.com/ponter/health',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
 
   it('handles server probe failure via net.fetch', async () => {

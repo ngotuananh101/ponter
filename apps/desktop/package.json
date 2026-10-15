@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "description": "Ponter Desktop Application (Electron + Vue 3)",
+  "homepage": "https://github.com/ngotuananh101/ponter",
+  "author": "Ngo Tuan Anh <ngotuananh2101@gmail.com>",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
