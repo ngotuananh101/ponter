@@ -69,4 +69,12 @@ describe('Preload contextBridge API', () => {
       expect.any(Function),
     );
   });
+
+  it('imports without error (auto-invocation guard is safe in test env)', async () => {
+    // The preload module auto-invokes exposePonterApi under a renderer process
+    // guard at import time. In the test environment, this safely no-ops because
+    // process.type !== 'renderer' and the try/catch swallows any contextBridge
+    // errors. Verify the module loads cleanly.
+    await expect(import('../index')).resolves.toBeDefined();
+  });
 });

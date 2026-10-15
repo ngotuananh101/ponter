@@ -45,3 +45,12 @@ export function exposePonterApi(
   bridge.exposeInMainWorld('ponter', api);
   return api;
 }
+
+// In Electron preload runtime:
+if (typeof process !== 'undefined' && process.type === 'renderer') {
+  try {
+    exposePonterApi();
+  } catch {
+    // In test or non-isolated environments where contextBridge cannot expose
+  }
+}
