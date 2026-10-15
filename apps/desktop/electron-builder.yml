@@ -1,0 +1,46 @@
+appId: com.ponter.desktop
+productName: Ponter Desktop
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources
+    to: .
+linux:
+  target:
+    - target: AppImage
+    - target: deb
+    - target: rpm
+  category: Utility
+  icon: icons/icon.png
+# The workspace package name is scoped (`@ponter/desktop`), and electron-builder
+# expands the `${name}` macro in the deb/rpm default filename patterns
+# (`${name}_${version}_${arch}.${ext}`) to that raw name — the `/` is then treated
+# as a path separator, so fpm tries to write into a non-existent `dist/@ponter/`
+# directory. Override the artifact name with the sanitized `${productName}` so the
+# installers land directly in `dist/`. AppImage/NSIS already default to
+# `${productName}` and are unaffected.
+deb:
+  # `packageName` must be a single token: rpm's `Name:` tag rejects the space in
+  # the derived `Ponter Desktop`, and a space-free name is also the correct
+  # Debian package identifier.
+  packageName: ponter-desktop
+  artifactName: ${productName}_${version}_${arch}.${ext}
+rpm:
+  packageName: ponter-desktop
+  artifactName: ${productName}-${version}.${arch}.${ext}
+win:
+  target:
+    - target: nsis
+    - target: portable
+  icon: icons/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+publish:
+  provider: github
+  owner: ngotuananh101
+  repo: ponter

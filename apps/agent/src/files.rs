@@ -3552,9 +3552,15 @@ mod tests_week11 {
         std::fs::write(&stale_part, b"stale").unwrap();
         std::fs::write(&fresh_part, b"fresh").unwrap();
 
-        // Set mtime of stale_part to 25 hours ago
+        // Set mtime of stale_part to 25 hours ago.
+        // Open with write access (no create/truncate) so `set_times` works on
+        // Windows, where FILE_WRITE_ATTRIBUTES is required and a read-only
+        // handle from `File::open` cannot update file times.
         let twenty_five_hours_ago = std::time::SystemTime::now() - Duration::from_secs(25 * 3600);
-        let stale = std::fs::File::open(&stale_part).unwrap();
+        let stale = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale_part)
+            .unwrap();
         let times = filetime_from_system_time(twenty_five_hours_ago);
         stale.set_times(times).unwrap();
 

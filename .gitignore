@@ -5,6 +5,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+out/
 target/
 .turbo/
 
@@ -50,3 +51,6 @@ wrangler.*.local.toml
 # Test outputs
 test-results/
 playwright-report/
+
+# TypeScript build info
+*.tsbuildinfo

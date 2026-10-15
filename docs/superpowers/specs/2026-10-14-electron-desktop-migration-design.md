@@ -54,6 +54,8 @@ The following decisions were approved by the owner and are non-negotiable:
 
 ### ADR-87: electron-updater Replaces the minisign Self-Updater (amends ADR-80)
 
+> **Status: DEFERRED / not yet implemented (follow-up issue #136).** This ADR records the *design intent* for the Electron migration. The migration removed the legacy minisign self-updater but did **not** ship the `electron-updater` replacement in this PR: there is no updater module under `apps/desktop/src`, `electron-updater` is an unused `package.json` dependency, and the release workflow uploads installers plus `SHA256SUMS.txt` but no `latest.yml`. The shipped `0.1.0` build therefore has **no auto-update path**; implementing the intent below is a follow-up.
+
 - **Decision:** Auto-update is handled by `electron-updater` against a release feed (`latest.yml`), replacing the minisign manifest (`latest.json`) and `self_replace`. The existing GitHub Releases pipeline keeps producing per-platform installers; the updater manifest format changes from the Tauri-compatible `latest.json` to electron-builder's `latest.yml`.
 - **Rationale:** Electron's packaging toolchain and updater are a single coherent unit; `electron-updater` verifies the downloaded artifact and applies it per platform without a bespoke self-replace step.
 - **Alternatives Rejected:**
@@ -87,7 +89,7 @@ The following decisions were approved by the owner and are non-negotiable:
 apps/desktop/
 ├── package.json                 @ponter/desktop (private, type: module)
 ├── electron.vite.config.ts      builds three targets: main / preload / renderer
-├── electron-builder.yml         packaging, updater feed, extraResources (agent binary)
+├── electron-builder.yml         packaging, updater feed (DEFERRED — follow-up issue #136), extraResources (agent binary)
 ├── tsconfig.json / tsconfig.node.json
 ├── components.json              shadcn-vue config, aliases to @ponter/ui-components
 ├── index.html                   renderer entry + strict CSP
@@ -107,7 +109,7 @@ apps/desktop/
     │   ├── agent-supervisor.ts  spawn/supervise ponter-agent; health + restart
     │   ├── tray.ts              Electron Tray + context menu
     │   ├── autostart.ts         app.setLoginItemSettings
-    │   └── updater.ts           electron-updater check/apply
+    │   └── updater.ts           electron-updater check/apply (DEFERRED — not yet implemented, follow-up issue #136)
     ├── preload/
     │   └── index.ts             contextBridge → window.ponter (typed)
     ├── renderer/                Vue 3 + Vite
@@ -146,7 +148,7 @@ packages/ui-components/src/
 | Agent runtime (ADR-55) | in-process `AgentRuntime::start` | sidecar `ponter-agent` (spawn + supervise) |
 | Keychain (ADR-52) | `keyring` crate | `safeStorage` |
 | Config (ADR-64/65) | `config.json` at `com.ponter.desktop` | same path, main process |
-| Updater (ADR-80) | minisign + `self_replace` | `electron-updater` (+ `latest.yml`) |
+| Updater (ADR-80) | minisign + `self_replace` | `electron-updater` (+ `latest.yml`) — DEFERRED, follow-up issue #136 |
 | Tray (ADR-81) | `ksni` / `tray-icon` | Electron `Tray` |
 | Autostart | registry / `.desktop` | `app.setLoginItemSettings` |
 | Single-instance | `single-instance` crate | `app.requestSingleInstanceLock` |
@@ -195,7 +197,7 @@ Components may be lifted to `components/app/**` only when they are **environment
 ## 7. Packaging & Release
 
 - **electron-builder** produces: Linux AppImage, `.deb`, `.rpm`; Windows NSIS and portable `.exe`. The `ponter-agent` binary is added via `extraResources` and resolved at runtime from `process.resourcesPath`.
-- **Auto-update:** `electron-updater` reads `latest.yml` from GitHub Releases. The release workflow publishes installers plus `latest.yml`.
+- **Auto-update (DEFERRED — not yet implemented, follow-up issue #136):** the design intent is for `electron-updater` to read `latest.yml` from GitHub Releases, with the release workflow publishing installers plus `latest.yml`. This is **not shipped** in the migration: the legacy minisign updater was removed and no `electron-updater` code or `latest.yml` manifest exists yet.
 - **Identifiers:** app id `com.ponter.desktop`, product name "Ponter Desktop", version from the same source as today.
 
 ---
@@ -206,14 +208,14 @@ Components may be lifted to `components/app/**` only when they are **environment
 
 1. Matrix: `ubuntu-latest`, `windows-latest`.
 2. Steps: checkout → Node 24 + pnpm → install → **build `ponter-agent` (Rust)** → build renderer + main (electron-vite) → **Vitest (renderer + main)** and **`cargo test` (agent)** → `electron-builder` → upload artifacts.
-3. **Removed:** `cargo deb`/`cargo generate-rpm`, `cargo wix`, NSIS-via-chocolatey, `appimagetool`, the minisign signing step, the `latest.json` assembly, and the **"no webview/GTK/Qt in the dependency graph" guard** (Electron intentionally ships Chromium).
+3. **Removed:** `cargo deb`/`cargo generate-rpm`, `cargo wix`, NSIS-via-chocolatey, `appimagetool`, the minisign signing step, the `latest.json` assembly, and the **"no webview/GTK/Qt in the dependency graph" guard** (Electron intentionally ships Chromium). No `electron-updater` release step (`latest.yml` publication) is added in this migration — it is **DEFERRED / not yet implemented** (follow-up issue #136).
 
 ---
 
 ## 9. Testing
 
 - **Renderer:** Vitest + `@vue/test-utils` + happy-dom. The ~1815 lines of legacy Vue desktop tests (recoverable from `git show fc4754b^:apps/desktop/src/__tests__/`) are ported and adapted to the new IPC surface.
-- **Main:** Vitest for pure logic — config read/write shape, updater decision (`should_apply`), agent-supervisor argument/env assembly, server-URL derivation, devices error mapping.
+- **Main:** Vitest for pure logic — config read/write shape, updater decision (`should_apply`, **DEFERRED — not yet implemented, follow-up issue #136**), agent-supervisor argument/env assembly, server-URL derivation, devices error mapping.
 - **Agent:** the existing `cargo test` suite is retained unchanged.
 - **Shared package:** `@ponter/ui-components` gains tests for the `useTheme` composable (both adapters) and any lifted presentational component.
 
@@ -222,7 +224,7 @@ Components may be lifted to `components/app/**` only when they are **environment
 Replacing the egui shell **removes ~164 Rust unit tests** from `apps/desktop`. This is declared explicitly:
 
 - **Before:** `apps/desktop` egui suite ≈ 164 Rust tests.
-- **After:** the same behavioral coverage is re-established as Vitest tests in `apps/desktop` (renderer + main), ported from the legacy Vue suite plus new main-process tests; the agent's Rust tests are untouched.
+- **After:** the same behavioral coverage is re-established as Vitest tests in `apps/desktop` (renderer + main), ported from the legacy Vue suite plus new main-process tests; the agent's Rust tests are untouched. **Exception (deferred):** the updater, the main-process tray, and the main-process autostart logic are **not** re-covered by direct Vitest tests in this migration (follow-up issue #136).
 - **Reason:** the tests are removed **together with the code they test** (the egui shell is deleted). No test is skipped or weakened; coverage moves to the new stack. The exact before/after `it()`/`expect()` counts are pinned in the implementation plan.
 
 ---
@@ -231,7 +233,7 @@ Replacing the egui shell **removes ~164 Rust unit tests** from `apps/desktop`. T
 
 - **Installer size ~150–250 MB** (owner-accepted): Chromium + Node + the agent binary.
 - **Chromium CVE surface:** Electron must be version-pinned and watched with Dependabot; this is the cost of bundling a real webview.
-- **One-time manual upgrade:** an installed minisign-updated egui build cannot auto-update to the Electron build; users reinstall once.
+- **One-time manual upgrade:** an installed minisign-updated egui build cannot auto-update to the Electron build; users reinstall once. Because the Electron build itself ships with **no auto-update path** (ADR-87 DEFERRED, follow-up issue #136), every subsequent upgrade is also manual until the updater is implemented.
 - **Two runtimes** (Node + Rust sidecar): packaging and CI are heavier (Chromium download per OS, agent build).
 - **ADR-79 reversal:** the "~27.5 MB, zero webview/Node" advantage is lost; regained as web-UI parity and reuse.
 - **Web app touched:** mitigated by extracting tokens **verbatim** (no visual change) and adding rather than moving primitives; the web app's runtime code (stores, router, `/config.js`) is unchanged.

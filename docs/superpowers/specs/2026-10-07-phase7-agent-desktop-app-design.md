@@ -61,7 +61,7 @@ Phases 1-6 delivered the backend, web client, terminal, desktop streaming, file 
 ### ADR-53: The setup wizard verifies real capability, not just collects strings
 
 - **Decision.** The wizard has explicit steps and each has a **verification**, not only an input field:
-  1. **Server** — enter the signaling/server URL; the wizard probes reachability (`GET /api/health` or equivalent) and reports success/failure before continuing.
+  1. **Server** — enter the signaling/server URL; the wizard probes reachability (`GET /health` or equivalent) and reports success/failure before continuing.
   2. **Screen permission** — trigger a real capture probe through the same `desktop` code path the agent uses (X11 direct; Wayland via the portal path, which is the recorded limitation — see §4.4); report the observed result. On macOS, guide the user to grant Screen Recording in System Settings and re-probe.
   3. **Input gate** — a clearly-worded toggle mirroring `--allow-input` (Gate A of ADR-42), defaulting **off**, with the two-gate explanation (Gate A here + Gate B peer identity at admission) shown verbatim from the ADR-42 posture.
   4. **Auto-start** — opt-in; installs the platform auto-start entry (ADR-55). Task 5 shipped this step informational only; **Task 8 landed the wiring** — the wizard's step 4 now reads the real OS state (`is_autostart_enabled`), applies the entry (`set_autostart`), and is the step that sets `completed`.
