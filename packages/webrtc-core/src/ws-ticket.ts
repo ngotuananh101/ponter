@@ -1,6 +1,7 @@
+import { toWsUrl } from './url';
+
 export function buildBrowserWsUrl(baseUrl: string, ticket: string): string {
-  const wsBase = baseUrl.replace(/^http/, 'ws');
-  return `${wsBase}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
+  return `${toWsUrl(baseUrl)}/api/ws/browser?ticket=${encodeURIComponent(ticket)}`;
 }
 
 export interface MintWsTicketOptions {

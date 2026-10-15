@@ -5,6 +5,7 @@ import type {
   SignalMessage,
 } from '@ponter/shared';
 import { buildBrowserWsUrl, mintWsTicket } from './ws-ticket';
+import { stripTrailingSlashes } from './url';
 import { ReconnectBackoff } from './backoff';
 
 export interface RESTPollingTransportOptions {
@@ -38,18 +39,6 @@ interface RawPollItem {
 interface RawPollResponse {
   signals: RawPollItem[];
   cursor: string | null;
-}
-
-/**
- * Drop every trailing `/` from a base URL.
- *
- * A loop rather than `replace(/\/+$/, '')`: the regex backtracks super-linearly
- * on a long run of slashes (S8786), and the URL is caller-supplied input.
- */
-function stripTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url.codePointAt(end - 1) === 47 /* '/' */) end -= 1;
-  return url.slice(0, end);
 }
 
 export class RESTPollingTransport implements SignalTransport {
