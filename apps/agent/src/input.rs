@@ -332,6 +332,20 @@ pub fn apply_if_allowed(
     }
 }
 
+/// Create the default input injector for this platform (ADR-90 Task 5).
+/// Falls back to fail-soft error on musl or headless hosts without a display.
+pub fn create_default_injector() -> Result<Box<dyn InputInjector>> {
+    #[cfg(not(target_env = "musl"))]
+    {
+        let p = platform::PlatformInjector::try_new()?;
+        Ok(Box::new(p))
+    }
+    #[cfg(target_env = "musl")]
+    {
+        anyhow::bail!("synthetic input injection is unsupported on musl builds");
+    }
+}
+
 /// The concrete injector, chosen by the ADR-27 spike (Task 1: **enigo**).
 /// Non-musl only: the musl artifact is terminal-only and never opens a desktop
 /// session (spec §1.2, ADR-15). Enigo is `Send`, so it fits `InputInjector`

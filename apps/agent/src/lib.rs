@@ -26,6 +26,7 @@ pub mod identity;
 #[cfg(not(target_env = "musl"))]
 mod input;
 pub mod logging;
+pub mod portal;
 mod pty;
 mod rtc;
 mod shell_policy;
@@ -572,6 +573,13 @@ struct SessionConfig {
     #[cfg(not(target_env = "musl"))]
     #[allow(dead_code)]
     pub warm_capture: std::sync::Arc<desktop::WarmCaptureManager>,
+    /// Persistent restore_token from RemoteDesktop portal session (ADR-90).
+    #[cfg(not(target_env = "musl"))]
+    #[allow(dead_code)]
+    pub portal_token: Option<portal::token_store::StoredToken>,
+    /// Active portal session state for Wayland RemoteDesktop input injection (ADR-90 §5.3).
+    #[cfg(not(target_env = "musl"))]
+    pub portal_session: Option<std::sync::Arc<portal::PortalSessionHolder>>,
 }
 
 /// Connect, serve, and reconnect with exponential backoff until told to stop.
@@ -617,6 +625,66 @@ async fn run_with_reconnect(
 
     #[cfg(not(target_env = "musl"))]
     let warm_capture = std::sync::Arc::new(desktop::WarmCaptureManager::new(None));
+    #[cfg(not(target_env = "musl"))]
+    let (portal_token, portal_session) = if std::env::var("WAYLAND_DISPLAY").is_ok() {
+        let loaded_token = portal::token_store::load_token();
+        let stored_restore_token = loaded_token.as_ref().map(|t| t.restore_token.as_str());
+
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        {
+            match portal::remote_desktop::ZbusRemoteDesktopPortal::new() {
+                Ok(portal) => {
+                    match portal::remote_desktop::initialize_portal_session(
+                        &portal,
+                        3, // Keyboard (1) | Pointer (2)
+                        stored_restore_token,
+                    ) {
+                        Ok(res) => {
+                            let (stream_id, width, height) =
+                                if let Some(first_stream) = res.streams.first() {
+                                    (
+                                        first_stream.node_id,
+                                        first_stream.width.unwrap_or(1920) as u32,
+                                        first_stream.height.unwrap_or(1080) as u32,
+                                    )
+                                } else {
+                                    (0, 1920, 1080)
+                                };
+                            let holder = std::sync::Arc::new(portal::PortalSessionHolder {
+                                session_handle: res.session_handle,
+                                stream_id,
+                                display_width: width,
+                                display_height: height,
+                            });
+                            let current_token = portal::token_store::load_token().or(loaded_token);
+                            (current_token, Some(holder))
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                error = %e,
+                                "portal initialization failed; proceeding without portal session"
+                            );
+                            (loaded_token, None)
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "cannot connect to D-Bus for portal; proceeding without portal session"
+                    );
+                    (loaded_token, None)
+                }
+            }
+        }
+
+        #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
+        {
+            (loaded_token, None)
+        }
+    } else {
+        (None, None)
+    };
 
     let cfg = SessionConfig {
         stun: config.stun.clone(),
@@ -633,6 +701,10 @@ async fn run_with_reconnect(
         identity: config.identity.clone(),
         #[cfg(not(target_env = "musl"))]
         warm_capture: warm_capture.clone(),
+        #[cfg(not(target_env = "musl"))]
+        portal_token,
+        #[cfg(not(target_env = "musl"))]
+        portal_session,
     };
 
     let signaling_url = api::to_ws_url(&config.server).context("invalid signaling server URL")?;
@@ -2207,6 +2279,8 @@ async fn run_desktop_session(
     // The task is `'static`, so clone the Arc identity into it (same reason as
     // `allow_input` being copied out of `cfg`).
     let cfg_identity = std::sync::Arc::clone(&cfg.identity);
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    let portal_session = cfg.portal_session.clone();
     // ADR-47 / BE-T12: `last_input_seq` is shared between the control task
     // (writes the last applied browser input seq) and the cursor task (reads
     // it to stamp `lastInputSeq` on each cursor frame). Hoisted before the
@@ -2339,9 +2413,31 @@ async fn run_desktop_session(
                                     continue;
                                 }
                                 if injector.is_none() {
-                                    match input::platform::PlatformInjector::try_new() {
-                                        Ok(i) => injector = Some(Box::new(i)),
-                                        Err(e) => tracing::debug!(error = %e, "input enabled but the injector is unavailable"),
+                                    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+                                    if let Some(ref ps) = portal_session {
+                                        match portal::injector::create_portal_injector(
+                                            ps.session_handle.clone(),
+                                            ps.stream_id,
+                                            ps.display_width,
+                                            ps.display_height,
+                                        ) {
+                                            Ok(i) => injector = Some(i),
+                                            Err(e) => {
+                                                tracing::debug!(
+                                                    error = %e,
+                                                    "portal injector creation failed, falling back to default injector"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    if injector.is_none() {
+                                        match input::create_default_injector() {
+                                            Ok(i) => injector = Some(i),
+                                            Err(e) => tracing::debug!(
+                                                error = %e,
+                                                "input enabled but default injector is unavailable"
+                                            ),
+                                        }
                                     }
                                 }
                                 if let Some(injector) = injector.as_mut() {
@@ -3639,6 +3735,8 @@ mod tests {
                 files_root: None,
                 identity: std::sync::Arc::new(id),
                 warm_capture: warm_capture.clone(),
+                portal_token: None,
+                portal_session: None,
             };
             assert_eq!(
                 cfg.warm_capture.status(),
@@ -3657,6 +3755,88 @@ mod tests {
             assert!(!should_use_warm_capture("monitor:2"));
             assert!(!should_use_warm_capture("window:100"));
             assert!(!should_use_warm_capture("window:arbitrary"));
+        }
+    }
+
+    #[test]
+    fn portal_token_integration_lifecycle() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("ponter-agent-portal-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let token_path = temp_dir.join("remote-desktop.token");
+
+        // Initially no token exists
+        assert!(portal::token_store::load_token_from_path(&token_path).is_none());
+
+        // Save token on grant
+        portal::token_store::save_token_to_path(&token_path, "mock-grant-token", 3).unwrap();
+        let loaded = portal::token_store::load_token_from_path(&token_path).unwrap();
+        assert_eq!(loaded.restore_token, "mock-grant-token");
+
+        // Revoke token
+        portal::token_store::clear_token_at_path(&token_path).unwrap();
+        assert!(portal::token_store::load_token_from_path(&token_path).is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn session_config_carries_portal_token() {
+        let temp_id_path =
+            std::env::temp_dir().join(format!("ponter-cfg-portal-test-{}", std::process::id()));
+        let id = identity::AgentIdentity::load_or_generate(&temp_id_path).unwrap();
+        let _ = std::fs::remove_file(&temp_id_path);
+
+        let cfg = SessionConfig {
+            stun: "stun:test".to_string(),
+            cols: 80,
+            rows: 24,
+            shell: "/bin/sh".to_string(),
+            shell_policy: std::sync::Arc::new(shell_policy::ShellPolicy::from_config("/bin/sh")),
+            desktop_source: DesktopSource::Screen,
+            desktop_profile: StreamProfile::DEFAULT_1080P30,
+            desktop_default_source: "".to_string(),
+            desktop_select_timeout: Duration::from_secs(5),
+            allow_input: true,
+            files_root: None,
+            identity: std::sync::Arc::new(id),
+            #[cfg(not(target_env = "musl"))]
+            warm_capture: std::sync::Arc::new(desktop::WarmCaptureManager::new(None)),
+            #[cfg(not(target_env = "musl"))]
+            portal_token: Some(portal::token_store::StoredToken {
+                version: 1,
+                restore_token: "test-token-123".to_string(),
+                granted_at: 1000,
+                device_mask: 3,
+                session_type: "RemoteDesktop".to_string(),
+            }),
+            #[cfg(not(target_env = "musl"))]
+            portal_session: Some(std::sync::Arc::new(portal::PortalSessionHolder {
+                session_handle: "/org/freedesktop/portal/desktop/session/mock/session1".to_string(),
+                stream_id: 42,
+                display_width: 1920,
+                display_height: 1080,
+            })),
+        };
+        #[cfg(not(target_env = "musl"))]
+        {
+            assert_eq!(cfg.portal_token.unwrap().restore_token, "test-token-123");
+            let ps = cfg.portal_session.unwrap();
+            assert_eq!(ps.stream_id, 42);
+            assert_eq!(ps.display_width, 1920);
+            assert_eq!(ps.display_height, 1080);
+        }
+    }
+
+    #[test]
+    fn create_default_injector_compiles_and_matches_platform() {
+        #[cfg(not(target_env = "musl"))]
+        {
+            let _ = input::create_default_injector();
+        }
+        #[cfg(target_env = "musl")]
+        {
+            assert!(input::create_default_injector().is_err());
         }
     }
 }
