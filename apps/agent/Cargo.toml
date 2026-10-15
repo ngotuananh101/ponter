@@ -89,6 +89,11 @@ windows = { version = "0.62", features = [
     "Win32_System_LibraryLoader",
 ] }
 
+[target.'cfg(all(not(target_env = "musl"), target_os = "linux"))'.dependencies.zbus]
+version = "5"
+default-features = false
+features = ["tokio", "blocking-api"]
+
 # `xcap` 0.9.8 drops the portal ScreenCast session at the end of
 # `WaylandVideoRecorder::new()`, which tears the session down before PipeWire
 # ever attaches — the Wayland capture then delivers zero frames (black stream).
