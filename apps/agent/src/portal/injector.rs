@@ -159,6 +159,25 @@ impl DbusInputNotifier for ZbusInputNotifier {
     }
 }
 
+/// Create a `PortalInputInjector` backed by an active D-Bus session and stream ID (ADR-90 Task 5).
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+pub fn create_portal_injector(
+    session_handle: String,
+    stream_id: u32,
+    display_width: u32,
+    display_height: u32,
+) -> Result<Box<dyn InputInjector>> {
+    let connection = zbus::blocking::Connection::session()
+        .context("connecting to D-Bus session bus for portal input")?;
+    let notifier = ZbusInputNotifier::new(connection, session_handle);
+    Ok(Box::new(PortalInputInjector::new(
+        stream_id,
+        display_width,
+        display_height,
+        notifier,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
