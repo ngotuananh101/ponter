@@ -35,6 +35,7 @@ use crate::pty::MAX_FRAME_BYTES;
 use crate::StreamProfile;
 
 pub mod warm_capture;
+#[allow(unused_imports)]
 pub use warm_capture::{WarmCaptureStatus, WarmStateTracker, WarmTransitionAction};
 
 /// One frame, RGBA8, `width * height * 4` bytes.
@@ -394,7 +395,7 @@ pub struct ScreenSource {
 /// in that case, which is exactly how a denied capture used to become a silent
 /// black stream instead of a refusal. This ceiling is well under the browser's
 /// 20 s track timeout so the refusal reaches the user first.
-const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Waits for the first frame from a freshly started recorder.
 ///
@@ -403,7 +404,7 @@ const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// `timeout`, which is the signal that capture is not actually permitted.
 /// Split out from the capture thread so both branches are unit-testable
 /// without a live display or a real portal.
-fn await_first_frame(
+pub(crate) fn await_first_frame(
     frames: &Receiver<xcap::Frame>,
     frame_tx: &std::sync::mpsc::Sender<xcap::Frame>,
     timeout: Duration,
@@ -428,7 +429,7 @@ fn await_first_frame(
 /// Exists so the capture loop's *behaviour* — refuse when the recorder starts
 /// but never feeds, stream once it does, always stop — can be tested with a
 /// fake, because `xcap::VideoRecorder` is a concrete type with no seam.
-trait CaptureRecorder {
+pub(crate) trait CaptureRecorder: Send + 'static {
     fn start(&self) -> std::result::Result<(), String>;
     fn stop(&self) -> std::result::Result<(), String>;
 }
