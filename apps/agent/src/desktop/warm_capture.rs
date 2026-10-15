@@ -331,6 +331,252 @@ pub(crate) fn run_warm_capture_worker<R: CaptureRecorder>(
     }
 }
 
+use crate::desktop::{drain_latest, FrameSource, RawFrame};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
+#[allow(dead_code)]
+struct WarmCaptureInner {
+    monitor_id: Option<u32>,
+    tracker: WarmStateTracker,
+    cmd_tx: Option<Sender<WorkerCommand>>,
+    worker_thread: Option<JoinHandle<()>>,
+}
+
+/// Thread-safe manager for the process-wide warm screen capture session.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct WarmCaptureManager {
+    inner: Arc<Mutex<WarmCaptureInner>>,
+}
+
+impl std::fmt::Debug for WarmCaptureManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmCaptureManager")
+            .field("status", &self.status())
+            .field("active_leases", &self.active_leases())
+            .finish()
+    }
+}
+
+#[allow(dead_code)]
+impl WarmCaptureManager {
+    pub fn new(monitor_id: Option<u32>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(WarmCaptureInner {
+                monitor_id,
+                tracker: WarmStateTracker::new(),
+                cmd_tx: None,
+                worker_thread: None,
+            })),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_recorder_for_test<R: CaptureRecorder>(
+        recorder: R,
+        frames: Receiver<xcap::Frame>,
+        first_frame_timeout: Duration,
+    ) -> Self {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (ready_tx, _ready_rx) = oneshot::channel();
+        let worker_thread = std::thread::spawn(move || {
+            run_warm_capture_worker(recorder, frames, cmd_rx, ready_tx, first_frame_timeout);
+        });
+
+        let manager = Self::new(None);
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.cmd_tx = Some(cmd_tx);
+            inner.worker_thread = Some(worker_thread);
+            inner.tracker.status = WarmCaptureStatus::IdlePaused;
+        }
+        manager
+    }
+
+    pub fn status(&self) -> WarmCaptureStatus {
+        self.inner.lock().unwrap().tracker.status()
+    }
+
+    pub fn active_leases(&self) -> usize {
+        self.inner.lock().unwrap().tracker.active_leases()
+    }
+
+    /// Acquires a streaming lease for an incoming WebRTC session.
+    pub async fn acquire_lease(&self) -> Result<WarmScreenSource> {
+        let (needs_spawn, monitor_id, existing_cmd_tx) = {
+            let mut inner = self.inner.lock().unwrap();
+            let _action = inner.tracker.transition_on_acquire()?;
+            if inner.cmd_tx.is_none() {
+                (true, inner.monitor_id, None)
+            } else {
+                (false, None, inner.cmd_tx.clone())
+            }
+        };
+
+        let cmd_tx = if needs_spawn {
+            let (tx, rx) = mpsc::channel();
+            let (ready_tx, ready_rx) = oneshot::channel();
+
+            let handle = std::thread::Builder::new()
+                .name("desktop-warm-capture".into())
+                .spawn(move || {
+                    let monitor = match monitor_id {
+                        Some(id) => crate::desktop::find_monitor(id),
+                        None => crate::desktop::primary_monitor(),
+                    };
+                    let monitor = match monitor {
+                        Ok(m) => m,
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(format!("finding monitor: {e:#}")));
+                            return;
+                        }
+                    };
+                    let (recorder, frames) = match monitor.video_recorder() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(format!("opening video recorder: {e}")));
+                            return;
+                        }
+                    };
+                    run_warm_capture_worker(
+                        recorder,
+                        frames,
+                        rx,
+                        ready_tx,
+                        crate::desktop::FIRST_FRAME_TIMEOUT,
+                    );
+                })
+                .map_err(|e| anyhow::anyhow!("spawning warm capture thread: {e}"))?;
+
+            match ready_rx.await {
+                Ok(Ok(())) => {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.cmd_tx = Some(tx.clone());
+                    inner.worker_thread = Some(handle);
+                    tx
+                }
+                Ok(Err(msg)) => {
+                    let _ = handle.join();
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.tracker.status = WarmCaptureStatus::Uninitialized;
+                    inner.tracker.active_leases = 0;
+                    bail!("warm capture initialization failed: {msg}");
+                }
+                Err(_) => {
+                    let _ = handle.join();
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.tracker.status = WarmCaptureStatus::Uninitialized;
+                    inner.tracker.active_leases = 0;
+                    bail!("warm capture thread exited during initialization");
+                }
+            }
+        } else {
+            existing_cmd_tx.unwrap()
+        };
+
+        let (frame_tx, frame_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+
+        cmd_tx
+            .send(WorkerCommand::Acquire { frame_tx, ready_tx })
+            .map_err(|_| {
+                anyhow::anyhow!("failed to send acquire command to warm capture worker")
+            })?;
+
+        match ready_rx.await {
+            Ok(Ok(())) => Ok(WarmScreenSource {
+                manager: self.clone(),
+                frames: Some(frame_rx),
+                seq: 0,
+                stopped: false,
+            }),
+            Ok(Err(msg)) => {
+                self.release_lease();
+                bail!("warm capture worker failed to resume: {msg}");
+            }
+            Err(_) => {
+                self.release_lease();
+                bail!("warm capture worker died while acquiring lease");
+            }
+        }
+    }
+
+    /// Releases an active streaming lease, transitioning the stream to IDLE_PAUSED.
+    pub fn release_lease(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Ok(action) = inner.tracker.transition_on_release() {
+            if action == WarmTransitionAction::PauseStream {
+                if let Some(ref cmd_tx) = inner.cmd_tx {
+                    let _ = cmd_tx.send(WorkerCommand::Release);
+                }
+            }
+        }
+    }
+
+    /// Cleanly shuts down the warm capture session.
+    pub fn shutdown(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        let _ = inner.tracker.transition_on_shutdown();
+        if let Some(cmd_tx) = inner.cmd_tx.take() {
+            let _ = cmd_tx.send(WorkerCommand::Shutdown);
+        }
+        if let Some(handle) = inner.worker_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// A `FrameSource` backed by the warm capture session lease.
+#[allow(dead_code)]
+pub struct WarmScreenSource {
+    manager: WarmCaptureManager,
+    frames: Option<Receiver<xcap::Frame>>,
+    seq: u64,
+    stopped: bool,
+}
+
+impl std::fmt::Debug for WarmScreenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmScreenSource")
+            .field("seq", &self.seq)
+            .field("stopped", &self.stopped)
+            .finish()
+    }
+}
+
+impl FrameSource for WarmScreenSource {
+    fn next_frame(&mut self) -> Result<Option<RawFrame>> {
+        let Some(frames) = self.frames.as_ref() else {
+            return Ok(None);
+        };
+        Ok(drain_latest(frames).map(|frame| {
+            let seq = self.seq;
+            self.seq += 1;
+            RawFrame {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.raw,
+                seq,
+            }
+        }))
+    }
+
+    fn stop(&mut self) {
+        if !self.stopped {
+            self.stopped = true;
+            self.frames = None;
+            self.manager.release_lease();
+        }
+    }
+}
+
+impl Drop for WarmScreenSource {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[cfg(test)]
 mod worker_tests {
     use super::*;
@@ -563,5 +809,105 @@ mod worker_tests {
         assert!(ready_res.unwrap_err().contains("simulated start failure"));
 
         handle.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod manager_tests {
+    use super::*;
+    use crate::desktop::FrameSource;
+
+    async fn poll_frame(source: &mut WarmScreenSource) -> RawFrame {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_millis(500) {
+            if let Some(frame) = source.next_frame().unwrap() {
+                return frame;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for frame from WarmScreenSource");
+    }
+
+    #[tokio::test]
+    async fn warm_capture_manager_acquire_and_deliver_frames() {
+        let recorder = worker_tests::FakeRecorder::default();
+        let (frames_in_tx, frames_in_rx) = mpsc::channel();
+        let manager = WarmCaptureManager::from_recorder_for_test(
+            recorder.clone(),
+            frames_in_rx,
+            Duration::from_millis(500),
+        );
+
+        // Feed warmup frame
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![1; 40000]))
+            .unwrap();
+
+        // 1. Acquire lease
+        let mut source = manager.acquire_lease().await.expect("lease should acquire");
+        assert_eq!(manager.status(), WarmCaptureStatus::ActiveStreaming);
+        assert_eq!(manager.active_leases(), 1);
+
+        // Push streaming frame
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![99; 40000]))
+            .unwrap();
+        let frame = poll_frame(&mut source).await;
+        assert_eq!(frame.width, 100);
+        assert_eq!(frame.height, 100);
+        assert_eq!(frame.rgba[0], 99);
+        assert_eq!(frame.seq, 0);
+
+        // Next frame increment sequence
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![100; 40000]))
+            .unwrap();
+        let frame2 = poll_frame(&mut source).await;
+        assert_eq!(frame2.seq, 1);
+
+        // 2. Drop source releases lease
+        drop(source);
+        assert_eq!(manager.active_leases(), 0);
+        assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+
+        // 3. Re-acquire lease (reconnect without creating new thread)
+        let mut source2 = manager
+            .acquire_lease()
+            .await
+            .expect("re-acquire should succeed");
+        assert_eq!(manager.active_leases(), 1);
+        assert_eq!(manager.status(), WarmCaptureStatus::ActiveStreaming);
+
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![101; 40000]))
+            .unwrap();
+        let frame3 = poll_frame(&mut source2).await;
+        assert_eq!(frame3.rgba[0], 101);
+
+        // 4. Shutdown
+        manager.shutdown();
+        assert_eq!(manager.status(), WarmCaptureStatus::Shutdown);
+    }
+
+    #[tokio::test]
+    async fn warm_capture_manager_refuses_second_concurrent_lease() {
+        let recorder = worker_tests::FakeRecorder::default();
+        let (frames_in_tx, frames_in_rx) = mpsc::channel();
+        let manager = WarmCaptureManager::from_recorder_for_test(
+            recorder.clone(),
+            frames_in_rx,
+            Duration::from_millis(500),
+        );
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![0; 40000]))
+            .unwrap();
+
+        let source1 = manager.acquire_lease().await.unwrap();
+        assert_eq!(manager.active_leases(), 1);
+
+        let err = manager.acquire_lease().await.unwrap_err();
+        assert!(err.to_string().contains("lease already active"));
+
+        drop(source1);
     }
 }
