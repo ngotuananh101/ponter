@@ -1,6 +1,6 @@
 # Linux Upfront Consent & Persistent RemoteDesktop Portal (Phase 2) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Implement Phase 2 of ADR-90 (Persistent RemoteDesktop Portal), establishing a unified `org.freedesktop.portal.RemoteDesktop` session combining screen capture with native Wayland input injection, persisting authorizations via `persist_mode: 2` and cached `restore_token`, and eliminating fragmented OS consent dialogs across agent restarts.
 
@@ -58,7 +58,7 @@
   pub fn clear_token() -> anyhow::Result<()>;
   ```
 
-- [ ] **Step 1: Write the failing tests for `token_store`**
+- [x] **Step 1: Write the failing tests for `token_store`**
 
 Create `apps/agent/src/portal/token_store.rs`:
 
@@ -122,12 +122,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::token_store::tests`
 Expected: FAIL with compilation error (module `portal` not found).
 
-- [ ] **Step 3: Implement `token_store`**
+- [x] **Step 3: Implement `token_store`**
 
 Create `apps/agent/src/portal.rs`:
 
@@ -282,12 +282,12 @@ Add module declaration in `apps/agent/src/lib.rs`:
 pub mod portal;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::token_store::tests`
 Expected: PASS (3 passed, 0 failed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/portal.rs apps/agent/src/portal/token_store.rs apps/agent/src/lib.rs
@@ -315,7 +315,7 @@ git commit -m "feat(agent): persistent restore_token storage engine for RemoteDe
   pub fn char_to_keysym(ch: char) -> u32;
   ```
 
-- [ ] **Step 1: Write the failing tests for `evdev_map`**
+- [x] **Step 1: Write the failing tests for `evdev_map`**
 
 Create `apps/agent/src/portal/evdev_map.rs`:
 
@@ -381,12 +381,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::evdev_map::tests`
 Expected: FAIL with functions not defined.
 
-- [ ] **Step 3: Implement `evdev_map`**
+- [x] **Step 3: Implement `evdev_map`**
 
 Update `apps/agent/src/portal.rs`:
 
@@ -524,12 +524,12 @@ pub fn char_to_keysym(ch: char) -> u32 {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::evdev_map::tests`
 Expected: PASS (6 passed, 0 failed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/portal/evdev_map.rs apps/agent/src/portal.rs
@@ -571,7 +571,7 @@ git commit -m "feat(agent): evdev keycode and keysym translation table (ADR-90 T
   }
   ```
 
-- [ ] **Step 1: Write the failing tests for `remote_desktop` abstraction**
+- [x] **Step 1: Write the failing tests for `remote_desktop` abstraction**
 
 Create `apps/agent/src/portal/remote_desktop.rs`:
 
@@ -640,12 +640,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::remote_desktop::tests`
 Expected: FAIL with traits/structs undefined.
 
-- [ ] **Step 3: Implement `remote_desktop` abstraction and zbus proxies**
+- [x] **Step 3: Implement `remote_desktop` abstraction and zbus proxies**
 
 Modify `apps/agent/Cargo.toml` to add zbus under Linux target dependencies:
 
@@ -883,12 +883,12 @@ impl RemoteDesktopPortal for ZbusRemoteDesktopPortal {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::remote_desktop::tests`
 Expected: PASS (2 passed, 0 failed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/portal/remote_desktop.rs apps/agent/src/portal.rs apps/agent/Cargo.toml
@@ -926,7 +926,7 @@ git commit -m "feat(agent): zbus RemoteDesktop and ScreenCast D-Bus interface (A
   impl<N: DbusInputNotifier> InputInjector for PortalInputInjector<N> { ... }
   ```
 
-- [ ] **Step 1: Write the failing tests for `PortalInputInjector`**
+- [x] **Step 1: Write the failing tests for `PortalInputInjector`**
 
 Create `apps/agent/src/portal/injector.rs`:
 
@@ -1032,12 +1032,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::injector::tests`
 Expected: FAIL with `PortalInputInjector` undefined.
 
-- [ ] **Step 3: Implement `PortalInputInjector`**
+- [x] **Step 3: Implement `PortalInputInjector`**
 
 Update `apps/agent/src/portal.rs`:
 
@@ -1125,12 +1125,12 @@ impl<N: DbusInputNotifier> InputInjector for PortalInputInjector<N> {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml portal::injector::tests`
 Expected: PASS (5 passed, 0 failed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/portal/injector.rs apps/agent/src/portal.rs
@@ -1151,7 +1151,7 @@ git commit -m "feat(agent): PortalInputInjector for native Wayland input forward
 - Consumes: `token_store`, `remote_desktop`, `PortalInputInjector`, `PlatformInjector`.
 - Produces: Transparent persistent upfront authorization across agent reconnects with automatic fallback.
 
-- [ ] **Step 1: Write the failing tests for agent portal wiring**
+- [x] **Step 1: Write the failing tests for agent portal wiring**
 
 Add test to `apps/agent/src/lib.rs` under `mod tests`:
 
@@ -1178,12 +1178,12 @@ fn portal_token_integration_lifecycle() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails/compiles**
+- [x] **Step 2: Run test to verify it fails/compiles**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml tests::portal_token_integration_lifecycle`
 Expected: PASS (or compile if types aligned).
 
-- [ ] **Step 3: Wire portal token and session lifecycle into `apps/agent/src/lib.rs` and `apps/agent/src/input.rs`**
+- [x] **Step 3: Wire portal token and session lifecycle into `apps/agent/src/lib.rs` and `apps/agent/src/input.rs`**
 
 In `apps/agent/src/input.rs`:
 Export a helper function `create_injector_with_fallback`:
@@ -1230,12 +1230,12 @@ if injector.is_none() {
 }
 ```
 
-- [ ] **Step 4: Run full agent test suite to verify zero regressions**
+- [x] **Step 4: Run full agent test suite to verify zero regressions**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml`
 Expected: PASS (all tests pass, 0 failed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/input.rs apps/agent/src/lib.rs
@@ -1260,3 +1260,20 @@ git commit -m "feat(agent): wire persistent portal token and injector fallback i
    - Evdev mapping completeness: Tested in Task 2.
    - Coordinate clamping: Handled in Task 4 (`x.clamp(0, width)`).
    - Non-Wayland/headless safety: Handled in Task 5 (checked via `WAYLAND_DISPLAY`).
+
+---
+
+## Execution & Merge Record
+
+- **Tasks 1–5 Completed:** All 5 tasks implemented via subagent-driven development (TDD RED→GREEN per task) on branch `feat/adr90-persistent-remote-desktop-phase2`.
+- **Review Findings Addressed:** Subsequent commit `f64ed1c` resolved all review findings:
+  - **F-01 (Spec §5.1 / §6 Runtime Wiring):** Wired portal session lifecycle and `PortalInputInjector` directly into the live WebRTC desktop session runtime in `apps/agent/src/lib.rs` (`run_with_reconnect` and `run_desktop_session`), with automatic fallback to `EnigoInputInjector` on X11 or portal unavailability.
+  - **F-02 (Spec §5.1 Persistence Parity):** Extended `SelectDevices` in `remote_desktop.rs` to include `persist_mode: 2` and pass `restore_token` matching `SelectSources` on the unified D-Bus session handle.
+  - **F-03 (Spec §5.3 Coordinate Geometry):** Extracted stream width and height from D-Bus stream properties (`a(ua{sv})`) during `Start` to properly dimension `PortalInputInjector` absolute coordinate scaling.
+  - **F-04 (Spec §5.2 Atomic Persistence):** Implemented atomic token storage via temporary file creation with `0600` permissions and atomic rename (`std::fs::rename`) in `token_store.rs`, preventing corrupted token records on abrupt termination.
+- **Candidate Branch:** `feat/adr90-persistent-remote-desktop-phase2` (tip `f64ed1c`).
+- **Independent Code & Docs Audit (BA):** PASS (`RECOMMEND MERGE`) — Verified 100% compliance with living spec ADR-90 (`docs/superpowers/specs/2026-10-15-linux-upfront-consent-design.md`) and Phase 2 plan. Zero new external crate dependencies (reuses existing transitive `zbus 5.19`), zero dynamic C dependencies (`libei`/`libxkbcommon`), clean musl compilation (`x86_64-unknown-linux-musl`), and zero regressions across all agent tests.
+- **Independent Re-Review (Subagent):** PASS (commit `f64ed1c`).
+- **QA Binding Verdict:** PASS (`RECOMMEND MERGE`) — 336/336 unit tests passing (330 lib + 6 main, 4 live display ignored), clippy 0 warnings, formatting clean, musl static build verified, desktop 3-OS packaging verified, E2E terminal suite verified.
+- **SonarCloud Quality Gate:** Passed with 0 bugs, 0 vulnerabilities, 0 security hotspots, 0 code smells.
+- **Merged to `main`:** Squash-merged by PM @ `2642e55b946911436d8d906708423dd59c89193f` ([PR #133](https://github.com/ngotuananh101/ponter/pull/133)).
