@@ -1,6 +1,7 @@
 import {
   useTheme as useSharedTheme,
   configureThemeStorage,
+  resetTheme,
   type Theme,
 } from '@ponter/ui-components';
 
@@ -21,6 +22,8 @@ export function initDesktopTheme(initialTheme?: Theme | null): void {
     },
   });
 }
+
+export { resetTheme };
 
 export function useTheme() {
   return useSharedTheme();
