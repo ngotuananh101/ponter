@@ -1892,6 +1892,11 @@ async fn handle_files_frame(session: &mut files::FilesSession, raw: &[u8]) -> Ve
 #[cfg(not(target_env = "musl"))]
 const CONTROL_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[cfg(not(target_env = "musl"))]
+pub(crate) fn should_use_warm_capture(desktop_default_source: &str) -> bool {
+    desktop_default_source.is_empty() || desktop_default_source == "primary"
+}
+
 /// Serve a desktop offer end to end: create the source, attach the track,
 /// answer, wait for the connection, stream, and tear down.
 ///
@@ -1948,23 +1953,35 @@ async fn run_desktop_session(
         },
         DesktopSource::Screen => {
             // Attempt to acquire from the warm capture manager first (ADR-90).
-            match cfg.warm_capture.acquire_lease().await {
-                Ok(warm_source) => Box::new(warm_source),
-                Err(e) => {
-                    tracing::warn!(
-                        error = ?e,
-                        "warm capture lease acquisition failed; falling back to direct source_for"
-                    );
-                    match desktop::source_for(&default_id, cfg.desktop_profile).await {
-                        Ok(source) => source,
-                        Err(e) => {
-                            tracing::warn!(error = ?e, "desktop capture unavailable; refusing the offer");
-                            rtc::refuse_offer(peer, offer, outbound, &cfg.identity).await?;
-                            let _ = peer.close().await;
-                            return Ok(());
-                        }
+            // Warm capture manager is dedicated to primary display capture (zero-prompt reconnects).
+            // If an explicit non-primary default source is configured (e.g. "window:X", "monitor:2"),
+            // bypass warm capture and acquire the configured source directly (F-02).
+            let warm_source = if should_use_warm_capture(&cfg.desktop_default_source) {
+                match cfg.warm_capture.acquire_lease().await {
+                    Ok(source) => Some(Box::new(source) as Box<dyn desktop::FrameSource>),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = ?e,
+                            "warm capture lease acquisition failed; falling back to direct source_for"
+                        );
+                        None
                     }
                 }
+            } else {
+                None
+            };
+
+            match warm_source {
+                Some(source) => source,
+                None => match desktop::source_for(&default_id, cfg.desktop_profile).await {
+                    Ok(source) => source,
+                    Err(e) => {
+                        tracing::warn!(error = ?e, "desktop capture unavailable; refusing the offer");
+                        rtc::refuse_offer(peer, offer, outbound, &cfg.identity).await?;
+                        let _ = peer.close().await;
+                        return Ok(());
+                    }
+                },
             }
         }
     };
@@ -3627,6 +3644,19 @@ mod tests {
                 cfg.warm_capture.status(),
                 desktop::WarmCaptureStatus::Uninitialized
             );
+        }
+
+        #[test]
+        fn should_use_warm_capture_only_for_primary_or_empty_default_source() {
+            // Empty string defaults to primary monitor capture
+            assert!(should_use_warm_capture(""));
+            // Explicit primary monitor
+            assert!(should_use_warm_capture("primary"));
+            // Non-primary monitors or windows must bypass warm capture (F-02)
+            assert!(!should_use_warm_capture("monitor:1"));
+            assert!(!should_use_warm_capture("monitor:2"));
+            assert!(!should_use_warm_capture("window:100"));
+            assert!(!should_use_warm_capture("window:arbitrary"));
         }
     }
 }

@@ -343,6 +343,15 @@ struct WarmCaptureInner {
     worker_thread: Option<JoinHandle<()>>,
 }
 
+impl WarmCaptureInner {
+    fn reset_on_worker_death(&mut self) -> Option<JoinHandle<()>> {
+        self.tracker.status = WarmCaptureStatus::Uninitialized;
+        self.tracker.active_leases = 0;
+        self.cmd_tx = None;
+        self.worker_thread.take()
+    }
+}
+
 /// Thread-safe manager for the process-wide warm screen capture session.
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -418,7 +427,7 @@ impl WarmCaptureManager {
             let (tx, rx) = mpsc::channel();
             let (ready_tx, ready_rx) = oneshot::channel();
 
-            let handle = std::thread::Builder::new()
+            let handle = match std::thread::Builder::new()
                 .name("desktop-warm-capture".into())
                 .spawn(move || {
                     let monitor = match monitor_id {
@@ -446,8 +455,14 @@ impl WarmCaptureManager {
                         ready_tx,
                         crate::desktop::FIRST_FRAME_TIMEOUT,
                     );
-                })
-                .map_err(|e| anyhow::anyhow!("spawning warm capture thread: {e}"))?;
+                }) {
+                Ok(h) => h,
+                Err(e) => {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.reset_on_worker_death();
+                    bail!("spawning warm capture thread: {e}");
+                }
+            };
 
             match ready_rx.await {
                 Ok(Ok(())) => {
@@ -459,15 +474,13 @@ impl WarmCaptureManager {
                 Ok(Err(msg)) => {
                     let _ = handle.join();
                     let mut inner = self.inner.lock().unwrap();
-                    inner.tracker.status = WarmCaptureStatus::Uninitialized;
-                    inner.tracker.active_leases = 0;
+                    inner.reset_on_worker_death();
                     bail!("warm capture initialization failed: {msg}");
                 }
                 Err(_) => {
                     let _ = handle.join();
                     let mut inner = self.inner.lock().unwrap();
-                    inner.tracker.status = WarmCaptureStatus::Uninitialized;
-                    inner.tracker.active_leases = 0;
+                    inner.reset_on_worker_death();
                     bail!("warm capture thread exited during initialization");
                 }
             }
@@ -478,11 +491,16 @@ impl WarmCaptureManager {
         let (frame_tx, frame_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        cmd_tx
-            .send(WorkerCommand::Acquire { frame_tx, ready_tx })
-            .map_err(|_| {
-                anyhow::anyhow!("failed to send acquire command to warm capture worker")
-            })?;
+        if let Err(e) = cmd_tx.send(WorkerCommand::Acquire { frame_tx, ready_tx }) {
+            let handle = {
+                let mut inner = self.inner.lock().unwrap();
+                inner.reset_on_worker_death()
+            };
+            if let Some(h) = handle {
+                let _ = h.join();
+            }
+            bail!("failed to send acquire command to warm capture worker: {e}");
+        }
 
         match ready_rx.await {
             Ok(Ok(())) => Ok(WarmScreenSource {
@@ -496,7 +514,13 @@ impl WarmCaptureManager {
                 bail!("warm capture worker failed to resume: {msg}");
             }
             Err(_) => {
-                self.release_lease();
+                let handle = {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.reset_on_worker_death()
+                };
+                if let Some(h) = handle {
+                    let _ = h.join();
+                }
                 bail!("warm capture worker died while acquiring lease");
             }
         }
@@ -504,11 +528,23 @@ impl WarmCaptureManager {
 
     /// Releases an active streaming lease, transitioning the stream to IDLE_PAUSED.
     pub fn release_lease(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Ok(action) = inner.tracker.transition_on_release() {
-            if action == WarmTransitionAction::PauseStream {
-                if let Some(ref cmd_tx) = inner.cmd_tx {
-                    let _ = cmd_tx.send(WorkerCommand::Release);
+        let (cmd_tx, action) = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.tracker.transition_on_release() {
+                Ok(action) => (inner.cmd_tx.clone(), action),
+                Err(_) => return,
+            }
+        };
+        if action == WarmTransitionAction::PauseStream {
+            if let Some(cmd_tx) = cmd_tx {
+                if cmd_tx.send(WorkerCommand::Release).is_err() {
+                    let handle = {
+                        let mut inner = self.inner.lock().unwrap();
+                        inner.reset_on_worker_death()
+                    };
+                    if let Some(h) = handle {
+                        let _ = h.join();
+                    }
                 }
             }
         }
@@ -516,12 +552,15 @@ impl WarmCaptureManager {
 
     /// Cleanly shuts down the warm capture session.
     pub fn shutdown(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let _ = inner.tracker.transition_on_shutdown();
-        if let Some(cmd_tx) = inner.cmd_tx.take() {
+        let (cmd_tx, worker_thread) = {
+            let mut inner = self.inner.lock().unwrap();
+            let _ = inner.tracker.transition_on_shutdown();
+            (inner.cmd_tx.take(), inner.worker_thread.take())
+        };
+        if let Some(cmd_tx) = cmd_tx {
             let _ = cmd_tx.send(WorkerCommand::Shutdown);
         }
-        if let Some(handle) = inner.worker_thread.take() {
+        if let Some(handle) = worker_thread {
             let _ = handle.join();
         }
     }
@@ -909,6 +948,141 @@ mod manager_tests {
         assert!(err.to_string().contains("lease already active"));
 
         drop(source1);
+    }
+
+    #[tokio::test]
+    async fn warm_capture_manager_self_heals_when_worker_dies() {
+        use std::sync::atomic::Ordering;
+
+        let recorder = worker_tests::FakeRecorder::default();
+        let (frames_in_tx, frames_in_rx) = mpsc::channel();
+        let manager = WarmCaptureManager::from_recorder_for_test(
+            recorder.clone(),
+            frames_in_rx,
+            Duration::from_millis(500),
+        );
+        frames_in_tx
+            .send(xcap::Frame::new(100, 100, vec![0; 40000]))
+            .unwrap();
+
+        // Wait for warmup to complete (recorder.stop() called)
+        while recorder.stop_count.load(Ordering::Relaxed) < 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+        assert_eq!(manager.active_leases(), 0);
+
+        // Terminate worker by sending Shutdown command directly to worker channel.
+        let worker_tx = manager.inner.lock().unwrap().cmd_tx.clone().unwrap();
+        worker_tx.send(WorkerCommand::Shutdown).unwrap();
+
+        let handle = manager.inner.lock().unwrap().worker_thread.take().unwrap();
+        handle.join().unwrap();
+
+        // Put dead channel back into manager to test recovery
+        manager.inner.lock().unwrap().cmd_tx = Some(worker_tx);
+
+        // Acquire lease should fail because worker is dead, but it MUST rollback state.
+        let err = manager.acquire_lease().await.unwrap_err();
+        assert!(
+            err.to_string().contains("failed to send acquire command")
+                || err.to_string().contains("worker died"),
+            "unexpected error message: {err}"
+        );
+
+        // Verify rollback: state must NOT be stuck in ActiveStreaming with 1 lease!
+        assert_eq!(manager.status(), WarmCaptureStatus::Uninitialized);
+        assert_eq!(manager.active_leases(), 0);
+        assert!(manager.inner.lock().unwrap().cmd_tx.is_none());
+        assert!(manager.inner.lock().unwrap().worker_thread.is_none());
+
+        // Subsequent acquire_lease should NOT fail with "lease already active"!
+        // It self-heals: either spawns a new worker or fails for reasons other than lease deadlock.
+        match manager.acquire_lease().await {
+            Ok(new_source) => {
+                assert_eq!(manager.status(), WarmCaptureStatus::ActiveStreaming);
+                assert_eq!(manager.active_leases(), 1);
+                drop(new_source);
+                assert_eq!(manager.status(), WarmCaptureStatus::IdlePaused);
+                assert_eq!(manager.active_leases(), 0);
+            }
+            Err(err2) => {
+                assert!(
+                    !err2.to_string().contains("lease already active"),
+                    "reconnect after worker crash should not fail with lease already active: {err2}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn warm_capture_manager_rolls_back_when_worker_drops_ready_channel() {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            // Read acquire command and immediately drop ready_tx without responding
+            if let Ok(WorkerCommand::Acquire { ready_tx, .. }) = cmd_rx.recv() {
+                drop(ready_tx);
+            }
+        });
+
+        let manager = WarmCaptureManager::new(None);
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.cmd_tx = Some(cmd_tx);
+            inner.worker_thread = Some(handle);
+            inner.tracker.status = WarmCaptureStatus::IdlePaused;
+        }
+
+        let err = manager.acquire_lease().await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("worker died while acquiring lease"));
+        assert_eq!(manager.status(), WarmCaptureStatus::Uninitialized);
+        assert_eq!(manager.active_leases(), 0);
+        assert!(manager.inner.lock().unwrap().cmd_tx.is_none());
+        assert!(manager.inner.lock().unwrap().worker_thread.is_none());
+    }
+
+    #[test]
+    fn warm_capture_manager_shutdown_releases_lock_before_join() {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        let handle = std::thread::spawn(move || {
+            let _cmd = cmd_rx.recv();
+            // Block until test thread verifies lock is released
+            barrier_clone.wait();
+        });
+
+        let manager = WarmCaptureManager::new(None);
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.cmd_tx = Some(cmd_tx);
+            inner.worker_thread = Some(handle);
+            inner.tracker.status = WarmCaptureStatus::IdlePaused;
+        }
+
+        let mgr_clone = manager.clone();
+        let shutdown_thread = std::thread::spawn(move || {
+            mgr_clone.shutdown();
+        });
+
+        // Small pause to allow shutdown thread to reach handle.join()
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Attempt to lock manager from another thread while worker thread is waiting on barrier
+        let lock_acquired = manager.inner.try_lock().is_ok();
+        assert!(
+            lock_acquired,
+            "shutdown should have released mutex before joining worker thread"
+        );
+
+        // Release worker thread and wait for shutdown to complete
+        barrier.wait();
+        shutdown_thread.join().unwrap();
+        assert_eq!(manager.status(), WarmCaptureStatus::Shutdown);
     }
 }
 
