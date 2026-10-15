@@ -4,6 +4,8 @@ export * from './adapter';
 export * from './media-channel';
 export * from './signal-handler';
 export * from './transport';
+export * from './backoff';
 export * from './data-channel';
 export * from './connection';
 export * from './ws-ticket';
+export * from './url';

@@ -12,24 +12,11 @@
  */
 
 import type { BrowserMessageInit, BrowserSocketMessage } from '@ponter/shared';
-import { buildBrowserWsUrl, mintWsTicket } from '@ponter/webrtc-core';
-
-/** Backoff ceiling — identical to `WebSocketSignalTransport`. */
-const WS_MAX_BACKOFF_MS = 2000;
-const WS_INITIAL_BACKOFF_MS = 200;
-
-/**
- * A uniform value in [0, 1) drawn from the platform CSPRNG.
- *
- * `Math.random()` is flagged by static analysis even where the value is only a
- * reconnect jitter; `crypto.getRandomValues` is available in every target
- * browser and in Node, and gives the same uniform distribution.
- */
-function randomUnit(): number {
-  const buffer = new Uint32Array(1);
-  crypto.getRandomValues(buffer);
-  return (buffer[0] ?? 0) / 2 ** 32;
-}
+import {
+  ReconnectBackoff,
+  buildBrowserWsUrl,
+  mintWsTicket,
+} from '@ponter/webrtc-core';
 
 /**
  * Narrow an inbound frame to the fleet invalidation.
@@ -67,7 +54,12 @@ export class FleetSocket {
   private readonly customFetch: typeof fetch;
 
   private ws: WebSocket | null = null;
-  private retries = 0;
+  private readonly backoff = new ReconnectBackoff({
+    initialMs: 200,
+    maxMs: 2000,
+    jitterMs: 50,
+    maxRetries: Infinity, // fleet never gives up; the 60s poll is the durability net
+  });
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
@@ -135,7 +127,7 @@ export class FleetSocket {
     this.ws = socket;
     socket.onopen = () => {
       if (this.stopped || socket !== this.ws) return;
-      this.retries = 0;
+      this.backoff.reset();
       const frame: BrowserMessageInit = { type: 'subscribe-fleet' };
       socket.send(JSON.stringify(frame));
     };
@@ -203,10 +195,7 @@ export class FleetSocket {
 
     // No max-retries/hard handoff for fleet: keep backing off until stopped;
     // the 60s poll outside the socket is the durability net.
-    const delay =
-      Math.min(WS_INITIAL_BACKOFF_MS * 2 ** this.retries, WS_MAX_BACKOFF_MS) +
-      Math.round(randomUnit() * 100 - 50);
-    this.retries += 1;
+    const delay = this.backoff.next();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();

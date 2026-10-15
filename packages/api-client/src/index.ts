@@ -1,6 +1,7 @@
 export * from './types';
 export * from './errors';
 export * from './client';
+export * from './factory';
 export * from './resources/auth';
 export * from './resources/admin';
 export * from './resources/users';

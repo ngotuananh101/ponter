@@ -1,8 +1,8 @@
-import { ApiClient } from '@ponter/api-client';
+import { createApiClient } from '@ponter/api-client';
 import { getApiBaseUrl } from '../config';
 import { tokenStorage } from './token-storage';
 
-export const apiClient = new ApiClient({
+export const apiClient = createApiClient({
   baseUrl: getApiBaseUrl(),
   storage: tokenStorage,
 });
