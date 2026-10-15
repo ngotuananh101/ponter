@@ -1,9 +1,11 @@
 //! D-Bus `org.freedesktop.portal.RemoteDesktop` & `ScreenCast` client (ADR-90 §5.1).
 
-use anyhow::Result;
+use anyhow::{bail, Result};
+
+use crate::portal::token_store;
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-use anyhow::{bail, Context};
+use anyhow::Context;
 
 #[cfg(all(target_os = "linux", not(target_env = "musl")))]
 use std::{
@@ -42,7 +44,12 @@ pub struct RemoteDesktopSessionResult {
 
 pub trait RemoteDesktopPortal: Send + Sync {
     fn create_session(&self) -> Result<String>;
-    fn select_devices(&self, session: &str, device_mask: u32) -> Result<()>;
+    fn select_devices(
+        &self,
+        session: &str,
+        device_mask: u32,
+        restore_token: Option<&str>,
+    ) -> Result<()>;
     fn select_sources(&self, session: &str, restore_token: Option<&str>) -> Result<()>;
     fn start(
         &self,
@@ -136,7 +143,12 @@ impl RemoteDesktopPortal for ZbusRemoteDesktopPortal {
         Ok(session_handle)
     }
 
-    fn select_devices(&self, session: &str, device_mask: u32) -> Result<()> {
+    fn select_devices(
+        &self,
+        session: &str,
+        device_mask: u32,
+        restore_token: Option<&str>,
+    ) -> Result<()> {
         let proxy = zbus::blocking::Proxy::new(
             &self.connection,
             "org.freedesktop.portal.Desktop",
@@ -150,6 +162,10 @@ impl RemoteDesktopPortal for ZbusRemoteDesktopPortal {
         let mut options = HashMap::new();
         options.insert("handle_token", zbus::zvariant::Value::from(&handle_token));
         options.insert("types", zbus::zvariant::Value::from(device_mask));
+        options.insert("persist_mode", zbus::zvariant::Value::from(2_u32));
+        if let Some(token) = restore_token {
+            options.insert("restore_token", zbus::zvariant::Value::from(token));
+        }
 
         let mut signals = req_proxy.receive_signal("Response")?;
         let session_path = zbus::zvariant::ObjectPath::try_from(session)?;
@@ -245,6 +261,49 @@ impl RemoteDesktopPortal for ZbusRemoteDesktopPortal {
             .and_then(|v| v.downcast_ref::<&str>().ok())
             .map(|s| s.to_string());
 
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        fn parse_stream_size(val: &zbus::zvariant::Value) -> (Option<i32>, Option<i32>) {
+            if let Ok(dict) = val.downcast_ref::<zbus::zvariant::Dict>() {
+                let mut width = None;
+                let mut height = None;
+                for (k, v) in dict.iter() {
+                    if let Ok(key) = k.downcast_ref::<&str>() {
+                        match key {
+                            "size" => {
+                                if let Ok(st) = v.downcast_ref::<zbus::zvariant::Structure>() {
+                                    let f = st.fields();
+                                    if f.len() >= 2 {
+                                        width = f[0].downcast_ref::<i32>().ok().or_else(|| {
+                                            f[0].downcast_ref::<u32>().ok().map(|x| x as i32)
+                                        });
+                                        height = f[1].downcast_ref::<i32>().ok().or_else(|| {
+                                            f[1].downcast_ref::<u32>().ok().map(|x| x as i32)
+                                        });
+                                    }
+                                }
+                            }
+                            "width" if width.is_none() => {
+                                width = v
+                                    .downcast_ref::<i32>()
+                                    .ok()
+                                    .or_else(|| v.downcast_ref::<u32>().ok().map(|x| x as i32));
+                            }
+                            "height" if height.is_none() => {
+                                height = v
+                                    .downcast_ref::<i32>()
+                                    .ok()
+                                    .or_else(|| v.downcast_ref::<u32>().ok().map(|x| x as i32));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                (width, height)
+            } else {
+                (None, None)
+            }
+        }
+
         // Parse streams
         let mut streams = Vec::new();
         if let Some(raw_streams) = dict.get("streams") {
@@ -255,10 +314,15 @@ impl RemoteDesktopPortal for ZbusRemoteDesktopPortal {
                         if let Some(node_id) =
                             fields.first().and_then(|f| f.downcast_ref::<u32>().ok())
                         {
+                            let (width, height) = if fields.len() > 1 {
+                                parse_stream_size(&fields[1])
+                            } else {
+                                (None, None)
+                            };
                             streams.push(RemoteDesktopStreamInfo {
                                 node_id,
-                                width: None,
-                                height: None,
+                                width,
+                                height,
                             });
                         }
                     }
@@ -275,6 +339,89 @@ impl RemoteDesktopPortal for ZbusRemoteDesktopPortal {
     }
 }
 
+/// Unified portal session initialization with self-healing token retry (ADR-90 §5.2, §8.3).
+///
+/// If `stored_token` is provided, attempts to initialize with it. If the portal rejects the
+/// call (e.g. user revoked permission in settings), clears the stored token from disk and
+/// retries once without a token to trigger a fresh prompt.
+pub fn initialize_portal_session<P: RemoteDesktopPortal>(
+    portal: &P,
+    device_mask: u32,
+    stored_token: Option<&str>,
+) -> Result<RemoteDesktopSessionResult> {
+    let mut current_token = stored_token;
+    let mut tried_stored = false;
+
+    loop {
+        let session_handle = match portal.create_session() {
+            Ok(handle) => handle,
+            Err(e) => {
+                if !tried_stored && current_token.is_some() {
+                    tracing::debug!(
+                        error = %e,
+                        "create_session failed with token, clearing and retrying once without token"
+                    );
+                    let _ = token_store::clear_token();
+                    current_token = None;
+                    tried_stored = true;
+                    continue;
+                }
+                bail!("portal create_session failed: {e}");
+            }
+        };
+
+        if let Err(e) = portal.select_devices(&session_handle, device_mask, current_token) {
+            if !tried_stored && current_token.is_some() {
+                tracing::debug!(
+                    error = %e,
+                    "select_devices failed with token, clearing and retrying once without token"
+                );
+                let _ = token_store::clear_token();
+                current_token = None;
+                tried_stored = true;
+                continue;
+            }
+            bail!("portal select_devices failed: {e}");
+        }
+
+        if let Err(e) = portal.select_sources(&session_handle, current_token) {
+            if !tried_stored && current_token.is_some() {
+                tracing::debug!(
+                    error = %e,
+                    "select_sources failed with token, clearing and retrying once without token"
+                );
+                let _ = token_store::clear_token();
+                current_token = None;
+                tried_stored = true;
+                continue;
+            }
+            bail!("portal select_sources failed: {e}");
+        }
+
+        match portal.start(&session_handle, current_token) {
+            Ok(res) => {
+                if let Some(ref new_token) = res.restore_token {
+                    let _ = token_store::save_token(new_token, device_mask);
+                }
+                return Ok(res);
+            }
+            Err(e) => {
+                if !tried_stored && current_token.is_some() {
+                    tracing::debug!(
+                        error = %e,
+                        "portal start failed with token, clearing and retrying once without token"
+                    );
+                    let _ = token_store::clear_token();
+                    current_token = None;
+                    tried_stored = true;
+                    continue;
+                }
+                bail!("portal start failed: {e}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,7 +435,12 @@ mod tests {
             Ok("/org/freedesktop/portal/desktop/session/mock/session1".to_string())
         }
 
-        fn select_devices(&self, _session: &str, _device_mask: u32) -> Result<()> {
+        fn select_devices(
+            &self,
+            _session: &str,
+            _device_mask: u32,
+            _restore_token: Option<&str>,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -324,7 +476,7 @@ mod tests {
         };
         let session = portal.create_session().expect("create_session succeeds");
         portal
-            .select_devices(&session, 3)
+            .select_devices(&session, 3, Some("cached-token"))
             .expect("select_devices succeeds");
         portal
             .select_sources(&session, Some("cached-token"))
@@ -345,10 +497,31 @@ mod tests {
             should_fail_token: true,
         };
         let session = portal.create_session().unwrap();
-        let _ = portal.select_devices(&session, 3);
+        let _ = portal.select_devices(&session, 3, Some("bad-token"));
         let _ = portal.select_sources(&session, Some("bad-token"));
         let err = portal.start(&session, Some("bad-token")).unwrap_err();
         assert!(err.to_string().contains("revoked or invalid restore_token"));
+    }
+
+    #[test]
+    fn initialize_portal_session_recovers_from_revoked_token() {
+        let portal = MockRemoteDesktopPortal {
+            should_fail_token: true,
+        };
+        let res = initialize_portal_session(&portal, 3, Some("bad-token"))
+            .expect("should recover and succeed on retry without token");
+        assert_eq!(res.devices, 3);
+        assert_eq!(res.restore_token.as_deref(), Some("new-minted-token-67890"));
+    }
+
+    #[test]
+    fn initialize_portal_session_succeeds_directly_without_token() {
+        let portal = MockRemoteDesktopPortal {
+            should_fail_token: false,
+        };
+        let res = initialize_portal_session(&portal, 3, None)
+            .expect("should succeed directly without token");
+        assert_eq!(res.devices, 3);
     }
 
     #[test]

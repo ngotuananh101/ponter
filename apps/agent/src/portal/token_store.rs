@@ -87,6 +87,8 @@ pub fn save_token_to_path(path: &Path, restore_token: &str, device_mask: u32) ->
 
     let serialized = serde_json::to_string_pretty(&record).context("serializing StoredToken")?;
 
+    let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -95,10 +97,12 @@ pub fn save_token_to_path(path: &Path, restore_token: &str, device_mask: u32) ->
             .write(true)
             .truncate(true)
             .mode(0o600)
-            .open(path)
-            .with_context(|| format!("opening token file {:?}", path))?;
+            .open(&tmp_path)
+            .with_context(|| format!("opening temporary token file {:?}", tmp_path))?;
         file.write_all(serialized.as_bytes())
-            .with_context(|| format!("writing token file {:?}", path))?;
+            .with_context(|| format!("writing temporary token file {:?}", tmp_path))?;
+        file.sync_all()
+            .with_context(|| format!("syncing temporary token file {:?}", tmp_path))?;
     }
 
     #[cfg(not(unix))]
@@ -107,11 +111,20 @@ pub fn save_token_to_path(path: &Path, restore_token: &str, device_mask: u32) ->
             .create(true)
             .write(true)
             .truncate(true)
-            .open(path)
-            .with_context(|| format!("opening token file {:?}", path))?;
+            .open(&tmp_path)
+            .with_context(|| format!("opening temporary token file {:?}", tmp_path))?;
         file.write_all(serialized.as_bytes())
-            .with_context(|| format!("writing token file {:?}", path))?;
+            .with_context(|| format!("writing temporary token file {:?}", tmp_path))?;
+        file.sync_all()
+            .with_context(|| format!("syncing temporary token file {:?}", tmp_path))?;
     }
+
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "atomically replacing token file {:?} with {:?}",
+            path, tmp_path
+        )
+    })?;
 
     Ok(())
 }
@@ -193,6 +206,28 @@ mod tests {
             !token_path.exists(),
             "corrupted token file should be automatically removed"
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn save_token_atomic_write_leaves_no_tmp_file() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("ponter-atomic-test-{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let token_path = temp_dir.join("remote-desktop.token");
+        let tmp_path = token_path.with_extension(format!("tmp.{}", std::process::id()));
+
+        save_token_to_path(&token_path, "atomic-test-token", 3).expect("save should succeed");
+
+        assert!(token_path.exists(), "target token file must exist");
+        assert!(
+            !tmp_path.exists(),
+            "temporary file must be cleanly renamed away"
+        );
+
+        let loaded = load_token_from_path(&token_path).expect("loaded token");
+        assert_eq!(loaded.restore_token, "atomic-test-token");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
