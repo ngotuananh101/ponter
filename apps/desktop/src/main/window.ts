@@ -1,0 +1,77 @@
+import { BrowserWindow, app } from 'electron';
+import * as path from 'path';
+
+export interface WindowOptions {
+  width?: number;
+  height?: number;
+  url?: string;
+}
+
+/**
+ * Manages the main BrowserWindow for the desktop app.
+ */
+export class WindowManager {
+  private mainWindow: BrowserWindow | null = null;
+
+  createWindow(options: WindowOptions = {}): BrowserWindow {
+    const width = options.width ?? 1280;
+    const height = options.height ?? 800;
+
+    this.mainWindow = new BrowserWindow({
+      width,
+      height,
+      webPreferences: {
+        preload: path.join(__dirname, '../preload/index.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    if (options.url) {
+      this.mainWindow.loadURL(options.url);
+    } else if (app.isPackaged) {
+      this.mainWindow.loadFile(
+        path.join(__dirname, '../../renderer/index.html'),
+      );
+    } else {
+      this.mainWindow.loadURL('http://localhost:5173');
+    }
+
+    if (process.env.NODE_ENV !== 'production' || !app.isPackaged) {
+      this.mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
+
+    this.mainWindow.on('closed', () => {
+      this.mainWindow = null;
+    });
+
+    return this.mainWindow;
+  }
+
+  getWindow(): BrowserWindow | null {
+    return this.mainWindow;
+  }
+
+  restore(): void {
+    if (this.mainWindow) {
+      if (this.mainWindow.isMinimized()) {
+        this.mainWindow.restore();
+      }
+      this.mainWindow.show();
+      this.mainWindow.focus();
+    }
+  }
+
+  hide(): void {
+    if (this.mainWindow) {
+      this.mainWindow.hide();
+    }
+  }
+
+  close(): void {
+    if (this.mainWindow) {
+      this.mainWindow.close();
+      this.mainWindow = null;
+    }
+  }
+}
