@@ -26,6 +26,7 @@ pub mod identity;
 #[cfg(not(target_env = "musl"))]
 mod input;
 pub mod logging;
+pub mod portal;
 mod pty;
 mod rtc;
 mod shell_policy;
