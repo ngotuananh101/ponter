@@ -1,0 +1,30 @@
+appId: com.ponter.desktop
+productName: Ponter Desktop
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/ponter-agent
+    to: ponter-agent
+linux:
+  target:
+    - target: AppImage
+    - target: deb
+    - target: rpm
+  category: Utility
+  icon: icons/icon.png
+win:
+  target:
+    - target: nsis
+    - target: portable
+  icon: icons/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+publish:
+  provider: github
+  owner: ngotuananh101
+  repo: ponter

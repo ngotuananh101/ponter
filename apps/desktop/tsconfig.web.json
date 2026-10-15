@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "strict": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@/*": ["src/renderer/*"],
+      "@/lib/utils": ["../../packages/ui-components/src/lib/utils"],
+      "@/components/ui/*": ["../../packages/ui-components/src/components/ui/*"]
+    }
+  },
+  "include": ["src/renderer/**/*", "src/shared/**/*"]
+}

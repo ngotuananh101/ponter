@@ -15,6 +15,7 @@ allowBuilds:
   # which fails in network-restricted Docker builds. Deny the build so pnpm
   # skips the script entirely; the shipped prebuilt is used at runtime.
   better-sqlite3: false
+  electron: true
 
 minimumReleaseAgeExclude:
   - miniflare@5.20260923.0-alpha
