@@ -55,7 +55,7 @@ Failure modes the spec implies that a naive implementation gets wrong; each is p
 - Consumes: `ApiClient` (`packages/api-client/src/client.ts:202`), `ApiClientConfig` (`packages/api-client/src/types.ts:17-22`).
 - Produces: `export function createApiClient(config: ApiClientConfig): ApiClient`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `packages/api-client/test/factory.test.ts`:
 
@@ -99,12 +99,12 @@ describe('createApiClient', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm --filter @ponter/api-client exec vitest run factory`
 Expected: FAIL — `Failed to resolve import "../src/factory"`.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Create `packages/api-client/src/factory.ts`:
 
@@ -135,12 +135,12 @@ export * from './factory';
 export * from './resources/auth';
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm --filter @ponter/api-client exec vitest run factory`
 Expected: PASS — 2 tests pass.
 
-- [ ] **Step 5: Typecheck, format, commit**
+- [x] **Step 5: Typecheck, format, commit**
 
 Run:
 ```bash
@@ -165,7 +165,7 @@ git commit -m "feat(api-client): add createApiClient factory (ADR-89 TS-3)"
 
 Defaults: `initialMs = 200`, `maxMs = 2000`, `jitterMs = 50`, `maxRetries = Infinity`, `random = <CSPRNG unit>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `packages/webrtc-core/test/backoff.test.ts`:
 
@@ -242,12 +242,12 @@ describe('ReconnectBackoff', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run backoff`
 Expected: FAIL — `Failed to resolve import "../src/backoff"`.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Create `packages/webrtc-core/src/backoff.ts`:
 
@@ -347,12 +347,12 @@ export * from './backoff';
 export * from './data-channel';
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run backoff`
 Expected: PASS — 4 tests pass.
 
-- [ ] **Step 5: Typecheck, format, commit**
+- [x] **Step 5: Typecheck, format, commit**
 
 Run:
 ```bash
@@ -375,12 +375,12 @@ git commit -m "feat(webrtc-core): add shared ReconnectBackoff ladder (ADR-89 WS-
 
 **This task changes NO behavior.** The existing `ws-transport.test.ts` ladder assertions (`mockRandomUnit(0.5)` → 200/400/800/1600/2000-capped; `mockRandomUnit(0.99)` → +49ms; reset-on-open; handoff after `maxRetries`) must pass **without edits**. If any requires an edit, the refactor is wrong — stop.
 
-- [ ] **Step 1: Confirm the regression net is green before touching anything**
+- [x] **Step 1: Confirm the regression net is green before touching anything**
 
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run ws-transport`
 Expected: PASS (record the test count; it must not change).
 
-- [ ] **Step 2: Replace the local ladder with the shared module**
+- [x] **Step 2: Replace the local ladder with the shared module**
 
 In `packages/webrtc-core/src/transport.ts`:
 
@@ -448,12 +448,12 @@ function randomUnit(): number {
   }
 ```
 
-- [ ] **Step 3: Run the ladder tests to verify behavior is unchanged**
+- [x] **Step 3: Run the ladder tests to verify behavior is unchanged**
 
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run ws-transport`
 Expected: PASS — the **same** test count as Step 1, zero test-body edits.
 
-- [ ] **Step 4: Run the whole webrtc-core suite + typecheck + format**
+- [x] **Step 4: Run the whole webrtc-core suite + typecheck + format**
 
 Run:
 ```bash
@@ -461,7 +461,7 @@ pnpm --filter @ponter/webrtc-core typecheck && pnpm --filter @ponter/webrtc-core
 ```
 Expected: all PASS (no unused-symbol lint failure — the removed constants/function are gone).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/webrtc-core/src/transport.ts
@@ -484,7 +484,7 @@ git commit -m "refactor(webrtc-core): use shared ReconnectBackoff in the WS tran
   - `export function stripTrailingSlashes(url: string): string`
   - `export function toWsUrl(baseUrl: string): string`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `packages/webrtc-core/test/url.test.ts`:
 
@@ -549,12 +549,12 @@ describe('buildBrowserWsUrl', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run url`
 Expected: FAIL — `Failed to resolve import "../src/url"`.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 Create `packages/webrtc-core/src/url.ts`:
 
@@ -612,12 +612,12 @@ export * from './ws-ticket';
 export * from './url';
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run url`
 Expected: PASS — 8 tests pass.
 
-- [ ] **Step 5: Run the full suite to prove no caller regressed**
+- [x] **Step 5: Run the full suite to prove no caller regressed**
 
 Run:
 ```bash
@@ -625,7 +625,7 @@ pnpm --filter @ponter/webrtc-core typecheck && pnpm --filter @ponter/webrtc-core
 ```
 Expected: all PASS — `transport.ts` and `fleet-socket.ts` callers are unaffected (both already pass trimmed HTTP base URLs).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add packages/webrtc-core/src/url.ts packages/webrtc-core/src/ws-ticket.ts packages/webrtc-core/src/transport.ts packages/webrtc-core/src/index.ts packages/webrtc-core/test/url.test.ts
@@ -647,7 +647,7 @@ git commit -m "refactor(webrtc-core): extract shared toWsUrl + stripTrailingSlas
 
 **Spec alternative:** §5.3 permits "remove … **or mark them reserved**". This task removes them (the spec's first choice, and the drift-stopping one). If the reviewer prefers the lower-risk marking, replace the removal with a `// reserved, never emitted` comment block — but then the drift survives and the spec's intent is not met; prefer removal.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `packages/shared/test/browser-signaling.test.ts` (inside the existing `describe('BrowserSocketMessage types', ...)`):
 
@@ -672,12 +672,12 @@ Append to `packages/shared/test/browser-signaling.test.ts` (inside the existing 
   });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `pnpm --filter @ponter/shared test`
 Expected: FAIL — the two `@ts-expect-error` lines report *"Unused '@ts-expect-error' directive"* (because the members still exist), and `tsc --noEmit` (run by the `test` script) exits non-zero.
 
-- [ ] **Step 3: Remove the two members**
+- [x] **Step 3: Remove the two members**
 
 In `packages/shared/src/types/signaling.ts`, replace lines 86-93 with:
 
@@ -700,12 +700,12 @@ Extend the doc comment above it (lines 79-85) to record the narrowing, e.g. appe
  * (ADR-89 §5.3).
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm --filter @ponter/shared test`
 Expected: PASS — `tsc --noEmit` clean and the new assertion green.
 
-- [ ] **Step 5: Prove no consumer broke**
+- [x] **Step 5: Prove no consumer broke**
 
 Run:
 ```bash
@@ -713,7 +713,7 @@ pnpm typecheck && pnpm --filter @ponter/webrtc-core test && pnpm format:check
 ```
 Expected: all PASS — `transport.ts` casts `frame.code as BrowserErrorCode` (a cast, not a construction) and only compares `'SESSION_TERMINATED'`, which remains a member.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add packages/shared/src/types/signaling.ts packages/shared/test/browser-signaling.test.ts
@@ -739,7 +739,7 @@ git commit -m "fix(shared): narrow BrowserErrorCode to the server browser emit-s
 2. **The gate test needs `node:fs`/`node:path`, which `@ponter/api-client`'s tsconfig currently rejects — and the fix is the `types` field.** Verified: a probe importing `node:fs` makes `pnpm --filter @ponter/api-client typecheck` fail with `error TS2591: Cannot find name 'node:fs'. … add 'node' to the types field in your tsconfig`. The load-bearing change is `"types": ["node"]`: without the field, `@types/node/index.d.ts` is **absent** from api-client's program (`tsc --explainFiles` shows 0 of its files), so `node:fs` cannot resolve; with the field it is present. Adding `@types/node` to `devDependencies` **alone** does not fix it (still TS2591) — the field is what pulls it into the program. The devDep is still required, to declare the dependency explicitly instead of relying on pnpm's root hoisting (today `@types/node` is hoisted to the repo root by other packages, so the field alone happens to resolve it — the devDep removes that fragility). Do **not** justify the fix by "matching `webrtc-core`/`shared`" — **neither has a `types` field**, and `@ponter/shared` **also fails** the identical probe. `@ponter/webrtc-core` passes only **incidentally**: `@types/node` enters its program transitively via `werift`'s `.d.ts` (`Imported via "./imports/common" from …/werift/…/utils.d.ts`), an accident of its dependency graph, not a config pattern. `api-client` has no such transitive path, so the explicit `types` field is required here.
    - **Consequence to note:** setting `"types": ["node"]` disables automatic inclusion of *all* other `@types/*` packages for this project. Today that is safe — the gate test imports `describe/it/expect` from `vitest` explicitly (no reliance on ambient globals for types), and `vitest.config.ts` sets `globals: true` at runtime. If a future test here needs another ambient type package (e.g. `@types/happy-dom`), it must be added to the `types` array explicitly.
 
-- [ ] **Step 1: Add the two prerequisites**
+- [x] **Step 1: Add the two prerequisites**
 
 Set `packages/api-client/tsconfig.json` to:
 
@@ -762,7 +762,7 @@ pnpm install
 
 Expected: `pnpm-lock.yaml` gains an `@ponter/api-client` → `@types/node@24.19.0` entry; the lockfile is committed in Step 5.
 
-- [ ] **Step 2: Write the gate test**
+- [x] **Step 2: Write the gate test**
 
 Create `packages/api-client/test/api-access-gate.test.ts`:
 
@@ -870,7 +870,7 @@ describe('no raw fetch/axios in app code (ADR-89 §6.1)', () => {
 });
 ```
 
-- [ ] **Step 3: Verify the gate PASSES on the current tree**
+- [x] **Step 3: Verify the gate PASSES on the current tree**
 
 Run:
 ```bash
@@ -878,7 +878,7 @@ pnpm --filter @ponter/api-client typecheck && pnpm --filter @ponter/api-client e
 ```
 Expected: PASS — the only bare `fetch(` in `apps/*/src` + `packages/*/src` is `apps/server/src/utils/ice.ts:137` (allow-listed by `apps/server/`); zero `axios`.
 
-- [ ] **Step 4: Prove the gate FAILS on a seeded violation (seed-fail obligation)**
+- [x] **Step 4: Prove the gate FAILS on a seeded violation (seed-fail obligation)**
 
 Create a throwaway violation in a **non-allow-listed `.vue`** file (this also proves the `.vue` scan):
 
@@ -901,7 +901,7 @@ git status --short apps/web/src/services
 ```
 Expected: PASS, and `git status` shows no leftover seed.
 
-- [ ] **Step 5: Format and commit**
+- [x] **Step 5: Format and commit**
 
 Run:
 ```bash
@@ -926,12 +926,12 @@ git commit -m "ci(api-client): gate raw fetch/axios out of app code (ADR-89 6.1)
 
 **This task changes NO behavior.** `fleet.test.ts`'s ladder tests (`mockRandomUnit(0.5)` → 200 then 400; reset-on-open) must pass **without edits**.
 
-- [ ] **Step 1: Confirm the regression net is green before touching anything**
+- [x] **Step 1: Confirm the regression net is green before touching anything**
 
 Run: `pnpm --filter @ponter/web exec vitest run fleet`
 Expected: PASS (record the count).
 
-- [ ] **Step 2: Replace the local ladder with the shared module**
+- [x] **Step 2: Replace the local ladder with the shared module**
 
 In `apps/web/src/services/fleet-socket.ts`:
 
@@ -990,12 +990,12 @@ function randomUnit(): number {
   }
 ```
 
-- [ ] **Step 3: Run the ladder tests to verify behavior is unchanged**
+- [x] **Step 3: Run the ladder tests to verify behavior is unchanged**
 
 Run: `pnpm --filter @ponter/web exec vitest run fleet`
 Expected: PASS — same count as Step 1, zero test-body edits.
 
-- [ ] **Step 4: Full web suite + typecheck + format**
+- [x] **Step 4: Full web suite + typecheck + format**
 
 Run:
 ```bash
@@ -1003,7 +1003,7 @@ pnpm --filter @ponter/web typecheck && pnpm --filter @ponter/web test && pnpm fo
 ```
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/services/fleet-socket.ts
@@ -1024,7 +1024,7 @@ git commit -m "refactor(web): use shared ReconnectBackoff in FleetSocket (ADR-89
 - Consumes: `createApiClient` (Task 1, exported from `@ponter/api-client`).
 - Produces: no new surface — `apiClient` keeps its type and identity.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 If `apps/web/src/__tests__/client.test.ts` does not exist, create it; otherwise extend it. It must mock the same modules `fleet.test.ts` mocks so no real storage/fetch is touched:
 
@@ -1054,7 +1054,7 @@ describe('web api client', () => {
 Run: `pnpm --filter @ponter/web exec vitest run client`
 Expected: PASS on the current code too (the assertion is construction-only) — this is a characterization test, not a red→green. It exists to pin that the Task-8 refactor keeps `apiClient` a working `ApiClient`.
 
-- [ ] **Step 2: Rewrite the web client construction**
+- [x] **Step 2: Rewrite the web client construction**
 
 Replace `apps/web/src/services/client.ts` in full:
 
@@ -1069,7 +1069,7 @@ export const apiClient = createApiClient({
 });
 ```
 
-- [ ] **Step 3: Run the test + the fleet/terminal suites that consume `apiClient`**
+- [x] **Step 3: Run the test + the fleet/terminal suites that consume `apiClient`**
 
 Run:
 ```bash
@@ -1078,7 +1078,7 @@ pnpm --filter @ponter/web exec vitest run fleet terminal
 ```
 Expected: all PASS — `apiClient.http.baseUrl` and `apiClient.http.refreshAccessToken` are unchanged (the factory delegates to `new ApiClient`).
 
-- [ ] **Step 4: Full web suite + typecheck + format + the gate**
+- [x] **Step 4: Full web suite + typecheck + format + the gate**
 
 Run:
 ```bash
@@ -1088,7 +1088,7 @@ pnpm format:check
 ```
 Expected: all PASS — the gate still finds nothing (the refactor introduces no raw `fetch`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/services/client.ts apps/web/src/__tests__/client.test.ts
@@ -1125,3 +1125,22 @@ git commit -m "refactor(web): build the api client through createApiClient (ADR-
 2. The shared base-URL resolver is **documentation-only** (URL-2 precedence tables stay per-app), per the spec's "where feasible" and the FE pin — G2 shares only the scheme rewrite + trim, not the precedence chains.
 3. Tasks 7–8 were held pending sub-project A; A merged 2026-10-15 (`main` @ `55f3441`) and **did not touch** `apps/web/src/services/**`, so they are now unblocked with citations re-verified. Tasks 1–6 were never blocked.
 4. `@types/node` is added to `packages/api-client` (dev-only) **and** `"types": ["node"]` to its tsconfig — both are load-bearing (devDep alone still yields TS2591; the field is what pulls `@types/node` into the program), and `pnpm-lock.yaml` changes. This is required for the gate test's `node:fs`/`node:path` imports to typecheck. (Note: the `types` field also suppresses automatic inclusion of other `@types/*` packages — see Task 6 prerequisite 2.)
+
+---
+
+## Execution & Merge Record
+
+- **Tasks 1–8 Completed:** All 8 tasks implemented via subagent-driven development (TDD RED→GREEN per task).
+- **Candidate Branch:** `feat/subproject-g2-ts-consolidation` (tip `5ddc8c9`).
+- **Independent Docs & Code Audit (BA):** Verified all 19 touched files against living specs (`docs/superpowers/specs/2026-10-14-unified-api-access-standard-design.md`, ADR-89) and this plan.
+- **TEST-INTEGRITY:** 153 total tests passing clean across 4 packages:
+  - `@ponter/api-client`: 8 passed (4 factory + 4 CI gate).
+  - `@ponter/webrtc-core`: 88 passed (14 backoff + 9 url + 65 transport/signaling regression tests untouched).
+  - `@ponter/shared`: 13 passed (including narrowed `BrowserErrorCode` tests).
+  - `apps/web`: 44 passed (including `client.test.ts` and untouched fleet socket regression tests).
+  - Zero deleted, zero skipped, zero weakened tests.
+- **CI Source-Scan Gate Verified (§6.1):** Vitest automated gate (`packages/api-client/test/api-access-gate.test.ts`) scans `.ts` and `.vue` files across `apps/` and `packages/`, banning raw `fetch(` and `axios` outside sanctioned allow-listed files. Seed-fail obligation proved.
+- **Typecheck & Formatting:** `pnpm typecheck` (4/4 packages) and `pnpm format:check` clean with 0 errors.
+- **QA Binding Verdict:** PASS (`RECOMMEND MERGE`).
+- **BA Audit Verdict:** PASS (`RECOMMEND MERGE`).
+- **Merged to `main`:** Squash-merged by PM @ `978432fdc7ac95b74976a3f4a05fed47b259fe48` ([PR #130](https://github.com/ngotuananh101/ponter/pull/130)).
