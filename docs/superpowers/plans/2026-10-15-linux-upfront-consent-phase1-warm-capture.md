@@ -54,7 +54,7 @@ Failure modes implied by the spec that an implementation might get wrong:
     - `pub fn transition_on_release(&mut self) -> Result<WarmTransitionAction>`
     - `pub fn transition_on_shutdown(&mut self) -> WarmTransitionAction`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `apps/agent/src/desktop/warm_capture.rs` with the module doc, types, stub methods, and failing unit tests:
 
@@ -225,12 +225,12 @@ pub mod warm_capture;
 pub use warm_capture::{WarmCaptureStatus, WarmStateTracker, WarmTransitionAction};
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml desktop::warm_capture::tests`
 Expected: FAIL with "not yet implemented: implement acquire transition"
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Implement `transition_on_acquire`, `transition_on_release`, and `transition_on_shutdown` in `apps/agent/src/desktop/warm_capture.rs`:
 
@@ -286,12 +286,12 @@ impl WarmStateTracker {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml desktop::warm_capture::tests`
 Expected: PASS (all 7 tests pass)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/desktop/warm_capture.rs apps/agent/src/desktop.rs
@@ -321,7 +321,7 @@ git commit -m "feat(agent): warm capture state tracker and transitions (ADR-90 T
     - Worker event loop managing `CaptureRecorder::start()` / `stop()` on lease transitions.
   - `#[cfg(test)] pub(crate) struct FakeRecorder`: mock recorder tracking `start()`/`stop()` counts.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `apps/agent/src/desktop/warm_capture.rs`, define `WorkerCommand`, `FakeRecorder`, and test cases asserting worker command handling:
 
@@ -497,12 +497,12 @@ mod worker_tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml desktop::warm_capture::worker_tests`
 Expected: FAIL with missing `WorkerCommand` and `run_warm_capture_worker`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Add `WorkerCommand` and `run_warm_capture_worker` in `apps/agent/src/desktop/warm_capture.rs`:
 
@@ -623,12 +623,12 @@ pub(crate) trait CaptureRecorder: Send + 'static {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml desktop::warm_capture::worker_tests`
 Expected: PASS (all 3 worker tests pass)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/desktop/warm_capture.rs apps/agent/src/desktop.rs
@@ -658,7 +658,7 @@ git commit -m "feat(agent): warm capture background worker loop and pause/resume
     - `fn stop(&mut self)`
     - `impl Drop for WarmScreenSource`: invokes `stop()`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `apps/agent/src/desktop/warm_capture.rs`, add unit tests for `WarmCaptureManager` and `WarmScreenSource`:
 
@@ -741,12 +741,12 @@ mod manager_tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml desktop::warm_capture::manager_tests`
 Expected: FAIL with missing `WarmCaptureManager` and `WarmScreenSource`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Implement `WarmCaptureManager` and `WarmScreenSource` in `apps/agent/src/desktop/warm_capture.rs`:
 
@@ -977,12 +977,12 @@ In `apps/agent/src/desktop.rs`, re-export the types:
 pub use warm_capture::{WarmCaptureManager, WarmCaptureStatus, WarmScreenSource};
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml desktop::warm_capture::manager_tests`
 Expected: PASS (all tests pass)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/desktop/warm_capture.rs apps/agent/src/desktop.rs
@@ -1006,7 +1006,7 @@ git commit -m "feat(agent): WarmCaptureManager and WarmScreenSource FrameSource 
   - `run_desktop_session` acquires from `cfg.warm_capture` with safe fallback to `desktop::source_for`.
   - `run_with_reconnect` triggers `warm_capture.shutdown()` on agent shutdown signal.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `apps/agent/src/lib.rs`, add a test verifying `SessionConfig` includes `warm_capture` and can acquire a lease:
 
@@ -1024,12 +1024,12 @@ mod warm_capture_lib_tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml warm_capture_lib_tests`
 Expected: Passes once field is added, fails if compilation fails.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 1. In `apps/agent/src/lib.rs:538`, add `pub warm_capture: std::sync::Arc<desktop::WarmCaptureManager>` to `SessionConfig`:
 ```rust
@@ -1125,12 +1125,12 @@ Update the source resolution to acquire from `cfg.warm_capture` when `cfg.deskto
     };
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml`
 Expected: PASS (all unittests compile and pass)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/agent/src/lib.rs
@@ -1149,7 +1149,7 @@ git commit -m "feat(agent): wire WarmCaptureManager into SessionConfig and run_d
 - Consumes: All Task 1-4 implementations.
 - Produces: Comprehensive test coverage for rapid reconnects, subscriber drop recovery, clean shutdowns, and full agent integration.
 
-- [ ] **Step 1: Write integration tests**
+- [x] **Step 1: Write integration tests**
 
 Add comprehensive multi-session simulation tests in `apps/agent/src/desktop/warm_capture.rs`:
 
@@ -1210,12 +1210,12 @@ mod integration_tests {
 }
 ```
 
-- [ ] **Step 2: Run all agent tests**
+- [x] **Step 2: Run all agent tests**
 
 Run: `cargo test --manifest-path apps/agent/Cargo.toml`
 Expected: PASS (all tests pass, 0 failures)
 
-- [ ] **Step 3: Run formatting and clippy verification**
+- [x] **Step 3: Run formatting and clippy verification**
 
 Run:
 ```bash
@@ -1224,7 +1224,7 @@ cargo clippy --manifest-path apps/agent/Cargo.toml --all-targets --locked -- -D 
 ```
 Expected: PASS with 0 warnings and 0 formatting errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/agent/src/desktop/warm_capture.rs
@@ -1245,3 +1245,19 @@ git commit -m "test(agent): end-to-end reconnect integration tests for WarmCaptu
 - [x] **No Placeholders:** All tasks contain complete Rust types, test code, and exact signatures.
 - [x] **Type Consistency:** Method signatures (`acquire_lease`, `release_lease`, `status`, `WarmCaptureStatus`, `WarmScreenSource`) are strictly consistent across all 5 tasks.
 - [x] **Review Focus Coverage:** All 5 failure modes from the Review Focus section are covered with dedicated pinning tests.
+
+---
+
+## Execution & Merge Record
+
+- **Tasks 1–5 Completed:** All 5 tasks implemented via subagent-driven development (TDD RED→GREEN per task) on branch `feat/adr90-warm-capture-phase1`.
+- **Review Findings Addressed:** Subsequent commit `d358d7d` resolved all review findings:
+  - **F-01 (Spec §4.1 Self-Healing & Resilience):** `reset_on_worker_death()` rolls `WarmCaptureStatus` back to `Uninitialized`, resets `active_leases = 0`, and clears dead worker handles, verified by `warm_capture_manager_self_heals_when_worker_dies`.
+  - **F-02 (Spec §4.2 Source Routing):** `should_use_warm_capture()` restricts warm capture strictly to default/primary displays (`""` or `"primary"`), falling back to direct `desktop::source_for` for non-primary monitors or windows, verified by `should_use_warm_capture_only_for_primary_or_empty_default_source`.
+  - **F-03 (Spec §6 Concurrency & Deadlock Prevention):** `shutdown()` releases the inner mutex guard before joining the background worker thread, eliminating thread deadlock risk, verified by `warm_capture_manager_shutdown_releases_lock_before_join`.
+- **Candidate Branch:** `feat/adr90-warm-capture-phase1` (tip `d358d7d`).
+- **Independent Code & Docs Audit (BA):** PASS (`RECOMMEND MERGE`) — Verified 100% compliance with living spec ADR-90 (`docs/superpowers/specs/2026-10-15-linux-upfront-consent-design.md`) and Phase 1 plan. Zero new crate additions, zero regressions.
+- **QA Binding Verdict:** PASS (`RECOMMEND MERGE`) — 309/309 tests passing (303 lib + 6 main, 4 live display ignored), clippy 0 warnings, formatting clean, musl build verified.
+- **SonarCloud Quality Gate:** Passed with 0 security hotspots, 0 bugs, 0 code smells.
+- **Merged to `main`:** Squash-merged by PM @ `512c654e45cac906748a6ce7a1a43adc45c915e8` ([PR #131](https://github.com/ngotuananh101/ponter/pull/131)).
+
