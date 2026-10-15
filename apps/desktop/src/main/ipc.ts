@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain, BrowserWindow, net } from 'electron';
 import type { SessionManager } from './session';
 import type { ConfigManager } from './config';
 import type { DeviceManager } from './devices';
@@ -67,7 +67,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     'desktop:probe-server',
     async (_event, url: string): Promise<ProbeResult> => {
       try {
-        const response = await fetch(`${url}/api/health`, {
+        const response = await net.fetch(`${url}/api/health`, {
           signal: AbortSignal.timeout(5000),
         });
         if (response.ok) {

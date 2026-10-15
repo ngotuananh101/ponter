@@ -11,9 +11,12 @@ vi.mock('electron', () => ({
   BrowserWindow: {
     getAllWindows: vi.fn(() => []),
   },
+  net: {
+    fetch: vi.fn(),
+  },
 }));
 
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain, BrowserWindow, net } from 'electron';
 import { registerIpcHandlers } from '../ipc';
 
 describe('IPC Handlers (Main Process)', () => {
@@ -82,5 +85,39 @@ describe('IPC Handlers (Main Process)', () => {
 
     statusListener!('error');
     expect(sendMock).toHaveBeenCalledWith('desktop:runtime-status', 'error');
+  });
+
+  it('probes server reachable status via net.fetch (ADR-89 §6.1)', async () => {
+    vi.mocked(net.fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+    } as any);
+
+    registerIpcHandlers(deps);
+
+    const result = await handlers['desktop:probe-server'](
+      {},
+      'http://localhost:8787',
+    );
+    expect(net.fetch).toHaveBeenCalledWith(
+      'http://localhost:8787/api/health',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+    expect(result).toEqual({ ok: true, message: 'Server reachable' });
+  });
+
+  it('handles server probe failure via net.fetch', async () => {
+    vi.mocked(net.fetch).mockResolvedValue({
+      ok: false,
+      status: 503,
+    } as any);
+
+    registerIpcHandlers(deps);
+
+    const result = await handlers['desktop:probe-server'](
+      {},
+      'http://localhost:8787',
+    );
+    expect(result).toEqual({ ok: false, message: 'HTTP 503' });
   });
 });

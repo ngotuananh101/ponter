@@ -61,15 +61,15 @@ export class FleetManager {
    */
   private async connectWebSocket(): Promise<void> {
     const ticket = await this.session.retryOnceOn401(async () => {
-      const token = await this.apiClient.http.storage.getAccessToken();
-      if (!token) return null;
-      const response = await fetch(`${this.baseUrl}${this.wsTicketPath}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!response.ok) return null;
-      const body = (await response.json()) as { ticket?: string };
-      return body.ticket ?? null;
+      try {
+        const body = await this.apiClient.http.request<{ ticket?: string }>(
+          'POST',
+          this.wsTicketPath,
+        );
+        return body?.ticket ?? null;
+      } catch {
+        return null;
+      }
     });
 
     if (!ticket) {

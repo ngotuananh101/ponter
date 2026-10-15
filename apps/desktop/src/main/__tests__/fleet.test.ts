@@ -22,6 +22,7 @@ function createApiClientMock() {
       storage: {
         getAccessToken: vi.fn(),
       },
+      request: vi.fn(),
     },
   };
 }
