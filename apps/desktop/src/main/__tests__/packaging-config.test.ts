@@ -2,16 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
+}
+
 describe('Linux package removal', () => {
+  it('normalizes Windows line endings before assertions', () => {
+    expect(normalizeLineEndings('rpm:\r\n  afterRemove: hook\r\n')).toBe(
+      'rpm:\n  afterRemove: hook\n',
+    );
+    expect(normalizeLineEndings('rpm:\r  afterRemove: hook\r')).toBe(
+      'rpm:\n  afterRemove: hook\n',
+    );
+  });
+
   it('uses a guarded custom after-remove scriptlet', () => {
     const appRoot = process.cwd();
-    const config = readFileSync(
-      resolve(appRoot, 'electron-builder.yml'),
-      'utf8',
+    const config = normalizeLineEndings(
+      readFileSync(resolve(appRoot, 'electron-builder.yml'), 'utf8'),
     );
-    const script = readFileSync(
-      resolve(appRoot, 'build/after-remove.sh'),
-      'utf8',
+    const script = normalizeLineEndings(
+      readFileSync(resolve(appRoot, 'build/after-remove.sh'), 'utf8'),
     );
 
     expect(config).toMatch(
