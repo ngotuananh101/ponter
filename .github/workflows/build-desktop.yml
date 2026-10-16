@@ -175,27 +175,48 @@ jobs:
             *) echo "::error::apps/desktop package script must pass --publish never"; exit 1 ;;
           esac
 
-      - name: Upload artifacts (Linux)
+      - name: Upload artifact — Linux .deb
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: ponter-desktop-linux
-          path: |
-            apps/desktop/dist/*.deb
-            apps/desktop/dist/*.rpm
-            apps/desktop/dist/*.AppImage
+          name: ponter-desktop-linux-deb
+          path: apps/desktop/dist/*.deb
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload artifacts (Windows)
+      - name: Upload artifact — Linux .rpm
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-linux-rpm
+          path: apps/desktop/dist/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload artifact — Linux .AppImage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-linux-appimage
+          path: apps/desktop/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload artifact — Windows NSIS installer
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: ponter-desktop-windows
-          path: |
-            apps/desktop/dist/*.exe
-            apps/desktop/dist/*.msi
-            apps/desktop/dist/*.zip
+          name: ponter-desktop-windows-nsis
+          path: apps/desktop/dist/*Setup*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload artifact — Windows portable
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-windows-portable
+          path: apps/desktop/dist/*Portable*.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -226,10 +247,11 @@ jobs:
         run: |
           Write-Host "dist/ contents:"
           Get-ChildItem -Recurse -File dist | Format-Table FullName, Length
-          $exe = Get-ChildItem -File dist -Filter '*.exe' | Where-Object { $_.Length -ge 10240 }
-          $msi = Get-ChildItem -File dist -Filter '*.msi' | Where-Object { $_.Length -ge 10240 }
-          if (-not $exe) { throw "No valid .exe found in dist/" }
-          Write-Host "Installer artifact check PASSED (Windows)."
+          $nsis = Get-ChildItem -File dist -Filter '*Setup*.exe' | Where-Object { $_.Length -ge 10240 }
+          $portable = Get-ChildItem -File dist -Filter '*Portable*.exe' | Where-Object { $_.Length -ge 10240 }
+          if (-not $nsis) { throw "No NSIS installer (.exe matching *Setup*) found in dist/" }
+          if (-not $portable) { throw "No portable build (.exe matching *Portable*) found in dist/" }
+          Write-Host "Installer artifact check PASSED (Windows): NSIS + portable present."
 
   # ---------------------------------------------------------------------------
   # Publish a GitHub Release with all platform installer artifacts.
