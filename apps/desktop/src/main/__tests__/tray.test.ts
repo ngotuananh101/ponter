@@ -37,13 +37,14 @@ describe('TrayManager', () => {
     expect(manager.getTray()).toBeNull();
 
     const tray = manager.createTray();
+    expect(tray).not.toBeNull();
 
     expect(Tray).toHaveBeenCalledTimes(1);
     expect(manager.getTray()).toBe(tray);
-    expect(tray.setToolTip).toHaveBeenCalledWith('Ponter Desktop');
+    expect(tray?.setToolTip).toHaveBeenCalledWith('Ponter Desktop');
     expect(Menu.buildFromTemplate).toHaveBeenCalledTimes(1);
-    expect(tray.setContextMenu).toHaveBeenCalledTimes(1);
-    expect(tray.on).toHaveBeenCalledWith('click', expect.any(Function));
+    expect(tray?.setContextMenu).toHaveBeenCalledTimes(1);
+    expect(tray?.on).toHaveBeenCalledWith('click', expect.any(Function));
   });
 
   it('selects correct icon depending on platform', () => {
@@ -98,9 +99,12 @@ describe('TrayManager', () => {
 
   it('triggers onShowWindow when tray icon is clicked', () => {
     const tray = manager.createTray();
+    expect(tray).not.toBeNull();
 
     const clickCall = (
-      vi.mocked(tray.on).mock.calls as Array<[string, (...args: any[]) => void]>
+      vi.mocked(tray!.on).mock.calls as Array<
+        [string, (...args: any[]) => void]
+      >
     ).find(([event]) => event === 'click');
     expect(clickCall).toBeDefined();
 
@@ -113,10 +117,11 @@ describe('TrayManager', () => {
   it('destroys tray and resets instance to null', () => {
     const tray = manager.createTray();
     expect(manager.getTray()).toBe(tray);
+    expect(tray).not.toBeNull();
 
     manager.destroy();
 
-    expect(tray.destroy).toHaveBeenCalledTimes(1);
+    expect(tray!.destroy).toHaveBeenCalledTimes(1);
     expect(manager.getTray()).toBeNull();
 
     // Calling destroy again when already destroyed does not throw

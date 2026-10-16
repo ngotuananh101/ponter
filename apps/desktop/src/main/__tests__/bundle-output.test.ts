@@ -34,13 +34,28 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { builtinModules } from 'node:module';
+import { resolve, dirname } from 'node:path';
+import { builtinModules, createRequire } from 'node:module';
 
 // Vitest runs with `apps/desktop` as the working directory.
 const APP_ROOT = process.cwd();
 const MAIN_BUNDLE = resolve(APP_ROOT, 'out/main/index.js');
-const PRELOAD_BUNDLE = resolve(APP_ROOT, 'out/preload/index.mjs');
+const PRELOAD_BUNDLE = resolve(APP_ROOT, 'out/preload/index.js');
+
+// Resolve the electron-vite CLI script via package.json so the child process
+// can be invoked portably via `process.execPath` on Windows, Linux, and macOS
+// without hitting `spawnSync ENOENT` on `./node_modules/.bin/electron-vite`.
+const require = createRequire(import.meta.url);
+const electronVitePkgPath = require.resolve('electron-vite/package.json');
+const electronVitePkg = JSON.parse(readFileSync(electronVitePkgPath, 'utf8'));
+const electronViteBinRel =
+  typeof electronVitePkg.bin === 'string'
+    ? electronVitePkg.bin
+    : (electronVitePkg.bin?.['electron-vite'] ?? 'bin/electron-vite.js');
+const ELECTRON_VITE_CLI = resolve(
+  dirname(electronVitePkgPath),
+  electronViteBinRel,
+);
 
 /** Matches the development-only `electron` loader that must never be inlined. */
 const ELECTRON_DEV_LOADER_MARKERS =
@@ -78,7 +93,7 @@ let preloadBundle: string;
 
 describe('electron-vite bundle output', () => {
   beforeAll(() => {
-    execFileSync('./node_modules/.bin/electron-vite', ['build'], {
+    execFileSync(process.execPath, [ELECTRON_VITE_CLI, 'build'], {
       cwd: APP_ROOT,
       stdio: 'pipe',
     });

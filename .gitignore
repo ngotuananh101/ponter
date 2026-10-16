@@ -8,6 +8,7 @@ build/
 out/
 target/
 .turbo/
+apps/desktop/resources/ponter-agent*
 
 # Environment files
 .env

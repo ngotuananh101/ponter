@@ -186,8 +186,11 @@ jobs:
           fi
           # A fatal main-process exception prints this banner and then the
           # process keeps running, so it must be asserted explicitly.
-          if grep -qE "A JavaScript error occurred in the main process|Uncaught Exception:" "$log"; then
+          if grep -qE "A JavaScript error occurred in the main process|Uncaught Exception:|UnhandledPromiseRejectionWarning" "$log"; then
             echo "::error::Main process threw an uncaught exception on startup"; exit 1
+          fi
+          if grep -qiE "Unable to load preload script|preload-error" "$log"; then
+            echo "::error::Preload script failed to load"; exit 1
           fi
           if [ "$code" != "124" ]; then
             echo "::error::App exited early (code $code); expected 124 (timeout kill = still running)"; exit 1

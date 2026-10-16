@@ -1,5 +1,6 @@
 import { Tray, Menu } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 
 export interface TrayOptions {
   onShowWindow: () => void;
@@ -17,15 +18,34 @@ export class TrayManager {
 
   constructor(private options: TrayOptions) {}
 
-  createTray(): Tray {
+  private resolveIconPath(): string {
     const iconName =
       process.platform === 'win32' ? 'ponter-tray.ico' : 'ponter-tray.png';
 
-    this.tray = new Tray(path.join(__dirname, '../../resources', iconName));
-    this.tray.setToolTip('Ponter Desktop');
-    this.setupContextMenu();
-    this.setupClickHandler();
-    return this.tray;
+    if (process.resourcesPath) {
+      const prodPath = path.join(process.resourcesPath, iconName);
+      if (fs.existsSync(prodPath)) return prodPath;
+    }
+
+    const devPath = path.join(__dirname, '../../resources', iconName);
+    if (fs.existsSync(devPath)) return devPath;
+
+    return devPath;
+  }
+
+  createTray(): Tray | null {
+    const iconPath = this.resolveIconPath();
+    try {
+      this.tray = new Tray(iconPath);
+      this.tray.setToolTip('Ponter Desktop');
+      this.setupContextMenu();
+      this.setupClickHandler();
+      return this.tray;
+    } catch (err) {
+      console.warn('Failed to initialize system tray:', err);
+      this.tray = null;
+      return null;
+    }
   }
 
   private setupContextMenu(): void {
