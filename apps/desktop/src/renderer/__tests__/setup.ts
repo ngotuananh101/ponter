@@ -40,6 +40,11 @@ const ponterMock: MockedPonterApi = {
   getRuntimeStatus: vi.fn(),
   onFleetChanged: vi.fn(),
   onRuntimeStatus: vi.fn(),
+  checkForUpdates: vi.fn(),
+  downloadUpdate: vi.fn(),
+  quitAndInstall: vi.fn(),
+  getUpdateStatus: vi.fn(),
+  onUpdateStatus: vi.fn(),
 };
 
 // Install onto window exactly once per test file import.

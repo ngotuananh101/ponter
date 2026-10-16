@@ -6,6 +6,7 @@ import type { AutostartManager } from './autostart';
 import type { FleetManager } from './fleet';
 import type { WindowManager } from './window';
 import type { AgentSupervisor } from './agent-supervisor';
+import type { UpdaterManager } from './updater';
 import type {
   AppConfig,
   SaveConfigPayload,
@@ -13,6 +14,8 @@ import type {
   UserProfile,
   DesktopDevice,
   RegisterDevicePayload,
+  UpdateStatusInfo,
+  UpdateCheckResult,
 } from '../shared/ipc-types';
 
 export interface IpcDependencies {
@@ -23,12 +26,13 @@ export interface IpcDependencies {
   fleet: FleetManager;
   window: WindowManager;
   supervisor: AgentSupervisor;
+  updater: UpdaterManager;
 }
 
 /**
  * Registers all `desktop:*` IPC channel handlers on ipcMain.
  *
- * The 12 channels match those defined in src/shared/ipc-types.ts:
+ * The 16 channels match those defined in src/shared/ipc-types.ts:
  *  1. desktop:get-config
  *  2. desktop:save-config
  *  3. desktop:probe-server
@@ -41,13 +45,28 @@ export interface IpcDependencies {
  * 10. desktop:register-device
  * 11. desktop:delete-device
  * 12. desktop:get-runtime-status
+ * 13. desktop:check-for-updates
+ * 14. desktop:download-update
+ * 15. desktop:quit-and-install
+ * 16. desktop:get-update-status
  */
 export function registerIpcHandlers(deps: IpcDependencies): void {
-  const { config, session, devices, autostart, fleet, window, supervisor } =
-    deps;
+  const {
+    config,
+    session,
+    devices,
+    autostart,
+    fleet,
+    window,
+    supervisor,
+    updater,
+  } = deps;
 
   // Listen for agent sidecar runtime status changes and broadcast to renderer windows
   supervisor.onStatusChange(notifyRuntimeStatus);
+
+  // Listen for updater status changes and broadcast to renderer windows
+  updater.onStatusChange(notifyUpdateStatus);
 
   // 1. desktop:get-config
   ipcMain.handle('desktop:get-config', (): AppConfig => {
@@ -161,6 +180,29 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle('desktop:get-runtime-status', (): string => {
     return supervisor.getStatus();
   });
+
+  // 13. desktop:check-for-updates
+  ipcMain.handle(
+    'desktop:check-for-updates',
+    async (): Promise<UpdateCheckResult> => {
+      return await updater.checkForUpdates();
+    },
+  );
+
+  // 14. desktop:download-update
+  ipcMain.handle('desktop:download-update', async (): Promise<boolean> => {
+    return await updater.downloadUpdate();
+  });
+
+  // 15. desktop:quit-and-install
+  ipcMain.handle('desktop:quit-and-install', (): void => {
+    updater.quitAndInstall();
+  });
+
+  // 16. desktop:get-update-status
+  ipcMain.handle('desktop:get-update-status', (): UpdateStatusInfo => {
+    return updater.getStatus();
+  });
 }
 
 /**
@@ -214,5 +256,15 @@ export function notifyRuntimeStatus(status: string): void {
   const windows = BrowserWindow.getAllWindows();
   for (const win of windows) {
     win.webContents.send('desktop:runtime-status', status);
+  }
+}
+
+/**
+ * Notify all renderer windows of an updater status change.
+ */
+export function notifyUpdateStatus(status: UpdateStatusInfo): void {
+  const windows = BrowserWindow.getAllWindows();
+  for (const win of windows) {
+    win.webContents.send('desktop:update-status', status);
   }
 }

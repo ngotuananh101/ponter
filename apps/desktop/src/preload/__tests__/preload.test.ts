@@ -35,6 +35,11 @@ describe('Preload contextBridge API', () => {
         getRuntimeStatus: expect.any(Function),
         onFleetChanged: expect.any(Function),
         onRuntimeStatus: expect.any(Function),
+        checkForUpdates: expect.any(Function),
+        downloadUpdate: expect.any(Function),
+        quitAndInstall: expect.any(Function),
+        getUpdateStatus: expect.any(Function),
+        onUpdateStatus: expect.any(Function),
       }),
     );
   });
@@ -66,6 +71,57 @@ describe('Preload contextBridge API', () => {
     unsubscribe();
     expect(ipcRendererMock.removeListener).toHaveBeenCalledWith(
       'desktop:fleet-changed',
+      expect.any(Function),
+    );
+  });
+
+  it('routes updater methods to ipcRenderer.invoke', async () => {
+    ipcRendererMock.invoke.mockResolvedValueOnce({
+      available: true,
+      version: '0.2.0',
+    });
+    ipcRendererMock.invoke.mockResolvedValueOnce(true);
+    ipcRendererMock.invoke.mockResolvedValueOnce(undefined);
+    ipcRendererMock.invoke.mockResolvedValueOnce({
+      status: 'downloaded',
+      version: '0.2.0',
+    });
+
+    const api = exposePonterApi(
+      contextBridgeMock as any,
+      ipcRendererMock as any,
+    );
+
+    const checkResult = await api.checkForUpdates();
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:check-for-updates');
+    expect(checkResult).toEqual({ available: true, version: '0.2.0' });
+
+    const downloadResult = await api.downloadUpdate();
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:download-update');
+    expect(downloadResult).toBe(true);
+
+    await api.quitAndInstall();
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:quit-and-install');
+
+    const status = await api.getUpdateStatus();
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:get-update-status');
+    expect(status).toEqual({ status: 'downloaded', version: '0.2.0' });
+  });
+
+  it('subscribes and unregisters event listeners for onUpdateStatus', () => {
+    const api = exposePonterApi(
+      contextBridgeMock as any,
+      ipcRendererMock as any,
+    );
+    const cb = vi.fn();
+    const unsubscribe = api.onUpdateStatus!(cb);
+    expect(ipcRendererMock.on).toHaveBeenCalledWith(
+      'desktop:update-status',
+      expect.any(Function),
+    );
+    unsubscribe();
+    expect(ipcRendererMock.removeListener).toHaveBeenCalledWith(
+      'desktop:update-status',
       expect.any(Function),
     );
   });

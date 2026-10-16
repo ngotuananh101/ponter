@@ -8,6 +8,7 @@ import { TrayManager } from './tray';
 import { WindowManager } from './window';
 import { FleetManager } from './fleet';
 import { AgentSupervisor } from './agent-supervisor';
+import { UpdaterManager } from './updater';
 import { registerIpcHandlers } from './ipc';
 import { createApiClient } from '@ponter/api-client';
 
@@ -15,7 +16,7 @@ import { createApiClient } from '@ponter/api-client';
  * Main process entry point for the Ponter desktop shell (ADR-79).
  *
  * Initializes all core services: config, keychain, session, devices,
- * autostart, tray, window, fleet, supervisor, and IPC handlers.
+ * autostart, tray, window, fleet, supervisor, updater, and IPC handlers.
  *
  * ADR-78: macOS is not supported (native GUI Windows + Linux only).
  */
@@ -30,6 +31,7 @@ let tray: TrayManager;
 let window: WindowManager;
 let fleet: FleetManager;
 let supervisor: AgentSupervisor;
+let updater: UpdaterManager;
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -90,7 +92,17 @@ if (!gotTheLock) {
     // Create the main window
     window.createWindow();
 
-    // Register all IPC handlers (12 desktop:* channels)
+    // Initialize auto-updater (ADR-87)
+    updater = new UpdaterManager();
+
+    // Check for updates in the background on startup when packaged
+    if (app.isPackaged) {
+      updater.checkForUpdates().catch(() => {
+        // Suppress background check error
+      });
+    }
+
+    // Register all IPC handlers (16 desktop:* channels)
     registerIpcHandlers({
       config,
       session,
@@ -99,6 +111,7 @@ if (!gotTheLock) {
       fleet,
       window,
       supervisor,
+      updater,
     });
 
     app.on('activate', () => {
