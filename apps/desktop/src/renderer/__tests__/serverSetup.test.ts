@@ -29,6 +29,17 @@ describe('ServerSetupView', () => {
     );
   });
 
+  it('renders the connect action in a padded card footer', () => {
+    const wrapper = mount(ServerSetupView);
+    const footer = wrapper.find('[data-slot="card-footer"]');
+
+    expect(footer.exists()).toBe(true);
+    expect(footer.find('[data-testid="server-setup-connect"]').exists()).toBe(
+      true,
+    );
+    expect(footer.classes()).toContain('pt-2');
+  });
+
   it('successful probe calls saveConfig and clears editing', async () => {
     const ponter = getPonterMock();
     const wrapper = mount(ServerSetupView);

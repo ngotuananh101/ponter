@@ -46,6 +46,7 @@ deb:
 rpm:
   packageName: ponter-desktop
   artifactName: ${productName}-${version}.${arch}.${ext}
+  afterRemove: build/after-remove.sh
 win:
   target:
     - target: nsis

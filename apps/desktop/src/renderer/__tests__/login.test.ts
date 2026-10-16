@@ -22,6 +22,15 @@ describe('LoginView', () => {
     resetPonterMock();
   });
 
+  it('renders the submit action in a padded card footer', () => {
+    const wrapper = mount(LoginView);
+    const footer = wrapper.find('[data-slot="card-footer"]');
+
+    expect(footer.exists()).toBe(true);
+    expect(footer.find('[data-testid="login-submit"]').exists()).toBe(true);
+    expect(footer.classes()).toContain('pt-2');
+  });
+
   it('shows an error and stores nothing when login fails', async () => {
     const ponter = getPonterMock();
     ponter.login.mockRejectedValue(new Error('Invalid username or password'));

@@ -5,6 +5,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from '@ponter/ui-components';
@@ -98,7 +99,8 @@ async function connect() {
         >
           <AlertDescription>{{ probe.message }}</AlertDescription>
         </Alert>
-
+      </CardContent>
+      <CardFooter class="flex flex-col space-y-3 pt-2">
         <Button
           data-testid="server-setup-connect"
           :disabled="loading || !url"
@@ -108,7 +110,7 @@ async function connect() {
           <Loader2 v-if="loading" class="mr-2 h-4 w-4 animate-spin" />
           {{ loading ? 'Probing...' : 'Connect' }}
         </Button>
-      </CardContent>
+      </CardFooter>
     </Card>
   </div>
 </template>

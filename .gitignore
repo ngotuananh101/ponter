@@ -5,6 +5,8 @@ node_modules/
 # Build outputs
 dist/
 build/
+!apps/desktop/build/
+!apps/desktop/build/after-remove.sh
 out/
 target/
 .turbo/

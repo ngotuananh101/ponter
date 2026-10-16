@@ -6,6 +6,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from '@ponter/ui-components';
@@ -77,8 +78,8 @@ async function handleSubmit() {
           </button>
         </div>
       </CardHeader>
-      <CardContent>
-        <form @submit.prevent="handleSubmit" class="space-y-4">
+      <form @submit.prevent="handleSubmit">
+        <CardContent class="space-y-4">
           <div class="space-y-2">
             <Label
               for="login-username"
@@ -126,6 +127,8 @@ async function handleSubmit() {
           >
             <AlertDescription>{{ store.error }}</AlertDescription>
           </Alert>
+        </CardContent>
+        <CardFooter class="flex flex-col space-y-3 pt-2">
           <Button
             data-testid="login-submit"
             type="submit"
@@ -138,8 +141,8 @@ async function handleSubmit() {
             />
             {{ store.status === 'loading' ? 'Signing in...' : 'Sign in' }}
           </Button>
-        </form>
-      </CardContent>
+        </CardFooter>
+      </form>
     </Card>
   </main>
 </template>
