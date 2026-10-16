@@ -16,7 +16,7 @@
     "typecheck": "pnpm run typecheck:node && pnpm run typecheck:web",
     "test": "vitest run",
     "package:dir": "electron-builder --dir",
-    "package": "electron-builder"
+    "package": "electron-builder --publish never"
   },
   "dependencies": {
     "@lucide/vue": "^1.49.0",
