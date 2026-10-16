@@ -5,10 +5,10 @@
 @import 'shadcn-vue/tailwind.css';
 @import '@ponter/ui-components/styles/tokens.css';
 
-@source "../../../packages/ui-components/src";
-@source "../views";
-@source "../components";
-@source "../App.vue";
+@source "../../../../packages/ui-components/src";
+@source "./views";
+@source "./components";
+@source "./App.vue";
 
 @custom-variant dark (&:is(.dark *));
 

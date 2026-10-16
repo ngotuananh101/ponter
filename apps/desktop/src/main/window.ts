@@ -1,4 +1,4 @@
-import { BrowserWindow, app } from 'electron';
+import { BrowserWindow, Menu, app } from 'electron';
 import * as path from 'path';
 
 export interface WindowOptions {
@@ -14,12 +14,16 @@ export class WindowManager {
   private mainWindow: BrowserWindow | null = null;
 
   createWindow(options: WindowOptions = {}): BrowserWindow {
-    const width = options.width ?? 1280;
-    const height = options.height ?? 800;
+    const width = options.width ?? 800;
+    const height = options.height ?? 600;
 
+    Menu.setApplicationMenu(null);
     this.mainWindow = new BrowserWindow({
       width,
       height,
+      minWidth: 480,
+      minHeight: 500,
+      autoHideMenuBar: true,
       webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -27,6 +31,8 @@ export class WindowManager {
         sandbox: true,
       },
     });
+
+    this.mainWindow.removeMenu();
 
     // ADR-85: Deny unexpected window/popup opens to prevent external navigation
     this.mainWindow.webContents.setWindowOpenHandler(() => ({

@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 class MockAutoUpdater extends EventEmitter {
   autoDownload = true;
   autoInstallOnAppQuit = false;
+  logger: unknown = console;
   checkForUpdates = vi.fn();
   downloadUpdate = vi.fn();
   quitAndInstall = vi.fn();
@@ -43,6 +44,7 @@ describe('UpdaterManager', () => {
   it('configures autoUpdater defaults on initialization', () => {
     expect(mockUpdater.autoDownload).toBe(false);
     expect(mockUpdater.autoInstallOnAppQuit).toBe(true);
+    expect(mockUpdater.logger).toBeNull();
     expect(manager.getStatus()).toEqual({ status: 'idle' });
   });
 

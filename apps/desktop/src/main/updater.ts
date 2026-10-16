@@ -24,6 +24,7 @@ export class UpdaterManager {
   private configureDefaults(): void {
     this.updater.autoDownload = false;
     this.updater.autoInstallOnAppQuit = true;
+    this.updater.logger = null;
   }
 
   private setupEventListeners(): void {
