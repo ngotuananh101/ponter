@@ -11,13 +11,23 @@ vi.mock('electron', () => {
   const app = {
     getPath: vi.fn((_key: string) => '/tmp/test-user-data'),
     setLoginItemSettings: vi.fn(),
+    getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+    getVersion: vi.fn(() => '0.1.0'),
+    getName: vi.fn(() => 'Ponter Desktop'),
     requestSingleInstanceLock: vi.fn(() => true),
     whenReady: vi.fn(() => Promise.resolve()),
     quit: vi.fn(),
     on: vi.fn(),
     isPackaged: false,
   };
-  const Tray = vi.fn();
+  const Tray = vi.fn(function () {
+    return {
+      setToolTip: vi.fn(),
+      setContextMenu: vi.fn(),
+      on: vi.fn(),
+      destroy: vi.fn(),
+    };
+  });
   const BrowserWindow = vi.fn();
   const safeStorage = {
     isEncryptionAvailable: vi.fn(() => true),
@@ -34,6 +44,7 @@ vi.mock('electron', () => {
     })),
   };
   const Menu = {
+    buildFromTemplate: vi.fn((items) => items),
     buildTemplate: vi.fn(),
   };
 

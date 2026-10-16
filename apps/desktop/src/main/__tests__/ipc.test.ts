@@ -22,6 +22,7 @@ import { registerIpcHandlers } from '../ipc';
 describe('IPC Handlers (Main Process)', () => {
   let deps: any;
   let statusListener: ((status: string) => void) | null = null;
+  let updateStatusListener: ((status: any) => void) | null = null;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -29,6 +30,7 @@ describe('IPC Handlers (Main Process)', () => {
       delete handlers[key];
     }
     statusListener = null;
+    updateStatusListener = null;
 
     deps = {
       config: {
@@ -56,10 +58,22 @@ describe('IPC Handlers (Main Process)', () => {
           statusListener = cb;
         }),
       },
+      updater: {
+        checkForUpdates: vi.fn(async () => ({
+          available: true,
+          version: '1.0.0',
+        })),
+        downloadUpdate: vi.fn(async () => true),
+        quitAndInstall: vi.fn(),
+        getStatus: vi.fn(() => ({ status: 'idle' })),
+        onStatusChange: vi.fn((cb: (status: any) => void) => {
+          updateStatusListener = cb;
+        }),
+      },
     };
   });
 
-  it('registers all 12 desktop:* channels including get-runtime-status', () => {
+  it('registers all 16 desktop:* channels including get-runtime-status and updater channels', async () => {
     registerIpcHandlers(deps);
 
     expect(ipcMain.handle).toHaveBeenCalledWith(
@@ -69,6 +83,26 @@ describe('IPC Handlers (Main Process)', () => {
     expect(handlers['desktop:get-runtime-status']).toBeDefined();
     expect(handlers['desktop:get-runtime-status']()).toBe('connected');
     expect(deps.supervisor.getStatus).toHaveBeenCalled();
+
+    // Check updater channels
+    expect(handlers['desktop:check-for-updates']).toBeDefined();
+    const checkRes = await handlers['desktop:check-for-updates']();
+    expect(checkRes).toEqual({ available: true, version: '1.0.0' });
+    expect(deps.updater.checkForUpdates).toHaveBeenCalled();
+
+    expect(handlers['desktop:download-update']).toBeDefined();
+    const dlRes = await handlers['desktop:download-update']();
+    expect(dlRes).toBe(true);
+    expect(deps.updater.downloadUpdate).toHaveBeenCalled();
+
+    expect(handlers['desktop:quit-and-install']).toBeDefined();
+    handlers['desktop:quit-and-install']();
+    expect(deps.updater.quitAndInstall).toHaveBeenCalled();
+
+    expect(handlers['desktop:get-update-status']).toBeDefined();
+    const statusRes = handlers['desktop:get-update-status']();
+    expect(statusRes).toEqual({ status: 'idle' });
+    expect(deps.updater.getStatus).toHaveBeenCalled();
   });
 
   it('connects supervisor onStatusChange to broadcast runtime status to windows', () => {
@@ -85,6 +119,25 @@ describe('IPC Handlers (Main Process)', () => {
 
     statusListener!('error');
     expect(sendMock).toHaveBeenCalledWith('desktop:runtime-status', 'error');
+  });
+
+  it('connects updater onStatusChange to broadcast update status to windows', () => {
+    const sendMock = vi.fn();
+    const mockWindow = { webContents: { send: sendMock } };
+    vi.mocked(BrowserWindow.getAllWindows).mockReturnValue([mockWindow as any]);
+
+    registerIpcHandlers(deps);
+
+    expect(deps.updater.onStatusChange).toHaveBeenCalledWith(
+      expect.any(Function),
+    );
+    expect(updateStatusListener).toBeDefined();
+
+    updateStatusListener!({ status: 'downloaded', version: '1.0.0' });
+    expect(sendMock).toHaveBeenCalledWith('desktop:update-status', {
+      status: 'downloaded',
+      version: '1.0.0',
+    });
   });
 
   it('probes server reachable status via net.fetch (ADR-89 §6.1)', async () => {

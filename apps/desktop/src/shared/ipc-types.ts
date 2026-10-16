@@ -43,6 +43,22 @@ export interface RegisterDevicePayload {
   capabilities?: string[];
 }
 
+export type UpdateStatus =
+  'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
+
+export interface UpdateStatusInfo {
+  status: UpdateStatus;
+  version?: string;
+  error?: string;
+  progress?: number;
+}
+
+export interface UpdateCheckResult {
+  available: boolean;
+  version?: string;
+  error?: string;
+}
+
 export interface PonterDesktopApi {
   getConfig(): Promise<AppConfig>;
   saveConfig(payload: SaveConfigPayload): Promise<void>;
@@ -58,6 +74,11 @@ export interface PonterDesktopApi {
   getRuntimeStatus(): Promise<string>;
   onFleetChanged(callback: () => void): () => void;
   onRuntimeStatus(callback: (status: string) => void): () => void;
+  checkForUpdates(): Promise<UpdateCheckResult>;
+  downloadUpdate(): Promise<boolean>;
+  quitAndInstall(): Promise<void>;
+  getUpdateStatus(): Promise<UpdateStatusInfo>;
+  onUpdateStatus?(callback: (status: UpdateStatusInfo) => void): () => void;
 }
 
 declare global {

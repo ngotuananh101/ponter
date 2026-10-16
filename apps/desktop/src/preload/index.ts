@@ -3,6 +3,7 @@ import type {
   PonterDesktopApi,
   SaveConfigPayload,
   RegisterDevicePayload,
+  UpdateStatusInfo,
 } from '../shared/ipc-types';
 
 export function createPonterApi(ipc: typeof ipcRenderer): PonterDesktopApi {
@@ -33,6 +34,16 @@ export function createPonterApi(ipc: typeof ipcRenderer): PonterDesktopApi {
       const listener = (_: unknown, status: string) => callback(status);
       ipc.on('desktop:runtime-status', listener);
       return () => ipc.removeListener('desktop:runtime-status', listener);
+    },
+    checkForUpdates: () => ipc.invoke('desktop:check-for-updates'),
+    downloadUpdate: () => ipc.invoke('desktop:download-update'),
+    quitAndInstall: () => ipc.invoke('desktop:quit-and-install'),
+    getUpdateStatus: () => ipc.invoke('desktop:get-update-status'),
+    onUpdateStatus: (callback: (status: UpdateStatusInfo) => void) => {
+      const listener = (_: unknown, status: UpdateStatusInfo) =>
+        callback(status);
+      ipc.on('desktop:update-status', listener);
+      return () => ipc.removeListener('desktop:update-status', listener);
     },
   };
 }
