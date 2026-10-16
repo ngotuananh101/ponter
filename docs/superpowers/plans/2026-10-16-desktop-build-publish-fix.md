@@ -200,10 +200,12 @@ These are recorded for sequencing only; none is specified here. Ordered by recom
 - **Status:** Spikes already committed (`docs/spikes/2026-10-11-hardware-encode-h265.md`, `docs/spikes/2026-10-11-quality-speed-optimization.md`). Findings: top lever = vectorise `downscale` (7.07 ms/frame scalar box filter > ~4 ms encode); AV1 = CONDITIONAL GO (opt-in, not default); H.265 blocked by browser support.
 - **Next step:** owner decision on scope → spec → plan. The highest-value, lowest-risk item is the `downscale` vectorisation (does not change codec negotiation).
 
-### Workstream 4 (P3): §8 trail — record PR #137 squash SHA `11cc5d8`
+### Workstream 4 (P3): §8 trail SHAs + Phase 7 release-path drift
 
-- **What:** append PR #137's squash SHA to the §8 trail in `docs/ARCHITECTURE.md` (convention: a docs PR's own SHA is recorded by the *next* docs PR, since it is unknowable pre-merge).
+- **What (a):** append the squash SHAs of PR #137 (`11cc5d8`) and PR #138 to the §8 trail in `docs/ARCHITECTURE.md` (convention: a PR's own SHA is recorded by the *next* docs PR, since it is unknowable pre-merge).
+- **What (b):** correct the Tauri-era release-path wording at `docs/ARCHITECTURE.md:1027` (Phase 7 Limitations: "assembling `latest.json` + per-platform `.sig`") — it contradicts the Electron migration and the deferred `latest.yml` (ADR-87). Same drift also lives in `docs/superpowers/plans/2026-10-07-phase7-agent-desktop-app.md:739/776/848` and `docs/superpowers/specs/2026-10-07-phase7-agent-desktop-app-design.md:86/92/93`. **Pre-existing from PR #135, not from #138** — flagged by BA during the PR #138 docs-impact check.
 - **Status:** docs-only. Fold into the next docs PR (e.g. the docs leg of Workstream 2) rather than opening a standalone PR. Chain for a standalone docs PR: BA implement → independent reviewer PASS → PM cross-check (no QA binding, no CI — no workflow `paths:` matches `docs/**`).
+- **Explicitly NOT touched:** point-in-time execution records (e.g. the Sub-project B plan's as-planned `"package": "electron-builder"` snippet at `2026-10-15-electron-subproject-b-desktop-shell.md:121`, and historical test-count anchors) — these are historical records, not live claims.
 
 ### Workstream 5 (deferred): Item C — viewer surface
 
