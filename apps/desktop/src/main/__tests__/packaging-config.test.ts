@@ -114,9 +114,11 @@ describe('Linux package removal', () => {
     expect(config).toMatch(
       /^rpm:\n(?: {2}.*\n)* {2}afterRemove: build\/after-remove\.sh$/m,
     );
-    expect(
-      statSync(resolve(appRoot, 'build/after-remove.sh')).mode & 0o111,
-    ).not.toBe(0);
+    if (process.platform !== 'win32') {
+      expect(
+        statSync(resolve(appRoot, 'build/after-remove.sh')).mode & 0o111,
+      ).not.toBe(0);
+    }
     expect(script).toContain(
       "update-alternatives --remove '${executable}' '/opt/${sanitizedProductName}/${executable}' || true",
     );
