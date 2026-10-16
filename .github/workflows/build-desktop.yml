@@ -202,6 +202,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload artifact — Linux update metadata
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-linux-update-metadata
+          path: apps/desktop/dist/latest*.yml
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload artifact — Windows NSIS installer
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
@@ -218,6 +227,15 @@ jobs:
           name: ponter-desktop-windows-portable
           path: apps/desktop/dist/*Portable*.exe
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload artifact — Windows update metadata
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ponter-desktop-windows-update-metadata
+          path: apps/desktop/dist/latest*.yml
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Assert installer artifacts (Linux)
@@ -345,6 +363,7 @@ jobs:
             dist/**/*.AppImage
             dist/**/*.msi
             dist/**/*.exe
+            dist/**/latest*.yml
             dist/SHA256SUMS.txt
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
           generate_release_notes: true
