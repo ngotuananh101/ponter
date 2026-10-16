@@ -40,6 +40,12 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  # Explicit, deterministic name so the CI upload step can distinguish the NSIS
+  # installer from the portable build (both are `.exe`).
+  artifactName: ${productName}-Setup-${version}.${ext}
+portable:
+  # Explicit, deterministic name — see the `nsis` note above.
+  artifactName: ${productName}-Portable-${version}.${ext}
 publish:
   provider: github
   owner: ngotuananh101
