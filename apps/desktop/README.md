@@ -10,7 +10,7 @@ Desktop client for the Ponter remote-desktop platform, built with Electron 35 an
 
 The desktop shell implements:
 
-- **ADR-85 (Electron Desktop Shell with Vue 3 Renderer):** Replaces legacy egui shell with an Electron architecture pairing a Node.js 24 ESM main process with a Vue 3 renderer leveraging `@ponter/ui-components` and Pinia stores. Strictly-typed IPC bridge exposes `window.ponter` (`PonterDesktopApi`) via Electron `contextBridge` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`).
+- **ADR-85 (Electron Desktop Shell with Vue 3 Renderer):** Replaces legacy egui shell with an Electron architecture pairing a Node.js 24 ESM main process with a Vue 3 renderer leveraging `@ponter/ui-components` and Pinia stores. Strictly-typed IPC bridge exposes `window.ponter` (`PonterDesktopApi`) via Electron `contextBridge` (`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`). The main window defaults to 800x600 with 480x500 minimum dimensions and suppresses the native application menu to keep setup and login flows compact.
 - **ADR-86 (Rust Agent Binary Sidecar Supervision):** Spawns and supervises the native `ponter-agent` binary sidecar with bounded exponential backoff (1s -> 2s -> 4s -> 8s -> 16s -> max 30s) and graceful SIGTERM/SIGKILL termination.
 - **ADR-87 (Auto-Update — IMPLEMENTED):** Auto-update is implemented via `UpdaterManager` in the Electron main process wrapping `electron-updater`, performing non-blocking startup and on-demand checks against GitHub Releases, broadcasting update status events (`desktop:update-status`) to the renderer, and exposing 4 IPC channels (`desktop:check-for-updates`, `desktop:download-update`, `desktop:quit-and-install`, `desktop:get-update-status`). Release workflows generate and attach `latest*.yml` metadata feeds alongside installer artifacts. Implemented in PR #141 `8dd9620`, closing follow-up issue #136.
 - **ADR-88 (Shared Design Layer Integration):** Desktop renderer directly consumes shared `@ponter/ui-components` design tokens (`tokens.css`), presentational components (`LoginForm`, `RegisterForm`, `ThemeToggle`), and shared `useTheme` with an IPC-backed storage adapter.
@@ -32,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (18 test suites, 154 tests):
+Run the Vitest test suite (22 test suites, 167 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
@@ -85,6 +85,12 @@ spaces. On install:
 - **Desktop entry:** `Name=Ponter Desktop`, `Exec=/opt/ponterdesktop/ponter %U`
   (the friendly label is restored with `linux.desktop.Name`; see
   `electron-builder.yml`).
+
+The RPM package uses a guarded `afterRemove` scriptlet (`apps/desktop/build/after-remove.sh`)
+that exits early when `$1 != 0` to preserve files on upgrade, and on uninstallation
+unregisters the `/opt/ponterdesktop/ponter` alternative, removes the `/usr/bin/ponter` link,
+and refreshes the desktop and MIME databases without failing package removal when an optional
+system utility is unavailable.
 
 ### Windows
 
