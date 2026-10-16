@@ -160,6 +160,40 @@ jobs:
         working-directory: apps/desktop
         run: pnpm package
 
+      # Boot the packaged Linux app under a virtual display. A correct build
+      # launches and stays alive until the timeout kills it (exit 124). A build
+      # that inlines `electron`, externalizes a raw-`.ts` workspace package, or
+      # leaves a CJS-only dependency as an ESM named import crashes on launch —
+      # and every one of those crashes still leaves the process alive long
+      # enough to hit the timeout, so the exit code alone is not enough. This
+      # step therefore also fails on the crash banners Electron prints for a
+      # fatal main-process exception. `pnpm package` (electron-builder) leaves
+      # the unpacked tree at dist/linux-unpacked/ as a side effect.
+      - name: Smoke test packaged app (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get install -y xvfb
+          log=$(mktemp)
+          code=0
+          timeout 25 xvfb-run -a ./dist/linux-unpacked/ponter --no-sandbox >"$log" 2>&1 || code=$?
+          echo "exit=$code"
+          cat "$log"
+          if grep -q "failed to install correctly" "$log"; then
+            echo "::error::electron was inlined — 'Electron failed to install correctly'"; exit 1
+          fi
+          # A fatal main-process exception prints this banner and then the
+          # process keeps running, so it must be asserted explicitly.
+          if grep -qE "A JavaScript error occurred in the main process|Uncaught Exception:" "$log"; then
+            echo "::error::Main process threw an uncaught exception on startup"; exit 1
+          fi
+          if [ "$code" != "124" ]; then
+            echo "::error::App exited early (code $code); expected 124 (timeout kill = still running)"; exit 1
+          fi
+          echo "Smoke test PASSED"
+
       - name: Assert packaging did not attempt a publish
         working-directory: apps/desktop
         shell: bash

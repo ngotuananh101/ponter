@@ -1,5 +1,10 @@
 appId: com.ponter.desktop
-productName: Ponter Desktop
+# `productName` is global (electron-builder has no per-platform override), so it
+# drives both the Linux install directory and the Windows installer naming.
+# Linux install dir = /opt/${sanitizeFileName(productName)} => /opt/ponterdesktop.
+# The Windows UX is preserved explicitly via the `nsis.shortcutName` /
+# `nsis.uninstallDisplayName` overrides below.
+productName: ponterdesktop
 directories:
   output: dist
   buildResources: build
@@ -16,6 +21,15 @@ linux:
     - target: rpm
   category: Utility
   icon: icons/icon.png
+  # Only the Linux executable is renamed. Never set a top-level `executableName`
+  # — that would also rename the Windows binary. The packaged app name
+  # (`app.getName()` / userData dir) is unaffected: it comes from the asar's
+  # package.json (`@ponter/desktop`), which electron-builder does not rewrite.
+  executableName: ponter
+  desktop:
+    # Keep the friendly menu label even though `productName` is now the
+    # space-free `ponterdesktop` (computeDesktopEntry spreads this last).
+    Name: Ponter Desktop
 # The workspace package name is scoped (`@ponter/desktop`), and electron-builder
 # expands the `${name}` macro in the deb/rpm default filename patterns
 # (`${name}_${version}_${arch}.${ext}`) to that raw name — the `/` is then treated
@@ -24,9 +38,9 @@ linux:
 # installers land directly in `dist/`. AppImage/NSIS already default to
 # `${productName}` and are unaffected.
 deb:
-  # `packageName` must be a single token: rpm's `Name:` tag rejects the space in
-  # the derived `Ponter Desktop`, and a space-free name is also the correct
-  # Debian package identifier.
+  # `packageName` must be a single token — the correct Debian package identifier.
+  # (Kept explicit even though `productName` is now space-free, so the .deb name
+  # stays stable and independent of the display name.)
   packageName: ponter-desktop
   artifactName: ${productName}_${version}_${arch}.${ext}
 rpm:
@@ -40,6 +54,11 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  # `productName` is global and now the space-free `ponterdesktop`; restore the
+  # friendly Windows UX (Start Menu shortcut + Apps & features entry) here so the
+  # Linux-driven rename does not regress Windows.
+  shortcutName: Ponter Desktop
+  uninstallDisplayName: Ponter Desktop ${version}
   # Explicit, deterministic name so the CI upload step can distinguish the NSIS
   # installer from the portable build (both are `.exe`).
   artifactName: ${productName}-Setup-${version}.${ext}
