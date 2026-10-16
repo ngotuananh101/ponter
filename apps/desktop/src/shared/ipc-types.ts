@@ -44,12 +44,7 @@ export interface RegisterDevicePayload {
 }
 
 export type UpdateStatus =
-  | 'idle'
-  | 'checking'
-  | 'available'
-  | 'downloading'
-  | 'downloaded'
-  | 'error';
+  'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error';
 
 export interface UpdateStatusInfo {
   status: UpdateStatus;

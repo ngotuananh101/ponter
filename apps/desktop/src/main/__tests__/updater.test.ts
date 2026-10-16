@@ -60,7 +60,10 @@ describe('UpdaterManager', () => {
 
       expect(mockUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
       expect(result).toEqual({ available: true, version: '0.2.0' });
-      expect(manager.getStatus()).toEqual({ status: 'available', version: '0.2.0' });
+      expect(manager.getStatus()).toEqual({
+        status: 'available',
+        version: '0.2.0',
+      });
     });
 
     it('sets status to idle and returns available=false when no update is found', async () => {
@@ -79,7 +82,9 @@ describe('UpdaterManager', () => {
     });
 
     it('catches offline / network errors gracefully and sets error status without throwing', async () => {
-      mockUpdater.checkForUpdates.mockRejectedValue(new Error('net::ERR_INTERNET_DISCONNECTED'));
+      mockUpdater.checkForUpdates.mockRejectedValue(
+        new Error('net::ERR_INTERNET_DISCONNECTED'),
+      );
 
       const result = await manager.checkForUpdates();
 
@@ -130,7 +135,9 @@ describe('UpdaterManager', () => {
     });
 
     it('catches download errors gracefully and sets error status', async () => {
-      mockUpdater.downloadUpdate.mockRejectedValue(new Error('Checksum mismatch'));
+      mockUpdater.downloadUpdate.mockRejectedValue(
+        new Error('Checksum mismatch'),
+      );
 
       const ok = await manager.downloadUpdate();
 
@@ -158,7 +165,10 @@ describe('UpdaterManager', () => {
       expect(listener).toHaveBeenCalledWith({ status: 'checking' });
 
       mockUpdater.emit('update-available', { version: '1.0.0' });
-      expect(listener).toHaveBeenCalledWith({ status: 'available', version: '1.0.0' });
+      expect(listener).toHaveBeenCalledWith({
+        status: 'available',
+        version: '1.0.0',
+      });
 
       unsubscribe();
 

@@ -93,18 +93,26 @@ describe('Preload contextBridge API', () => {
     );
 
     const checkResult = await api.checkForUpdates();
-    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:check-for-updates');
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(
+      'desktop:check-for-updates',
+    );
     expect(checkResult).toEqual({ available: true, version: '0.2.0' });
 
     const downloadResult = await api.downloadUpdate();
-    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:download-update');
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(
+      'desktop:download-update',
+    );
     expect(downloadResult).toBe(true);
 
     await api.quitAndInstall();
-    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:quit-and-install');
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(
+      'desktop:quit-and-install',
+    );
 
     const status = await api.getUpdateStatus();
-    expect(ipcRendererMock.invoke).toHaveBeenCalledWith('desktop:get-update-status');
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(
+      'desktop:get-update-status',
+    );
     expect(status).toEqual({ status: 'downloaded', version: '0.2.0' });
   });
 

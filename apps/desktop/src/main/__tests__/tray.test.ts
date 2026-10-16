@@ -1,4 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeEach,
+  afterEach,
+  type Mock,
+} from 'vitest';
 import { TrayManager } from '../tray';
 import { Tray, Menu } from 'electron';
 
@@ -61,7 +69,8 @@ describe('TrayManager', () => {
   it('sets up context menu actions for show window and quit', () => {
     manager.createTray();
 
-    const template = vi.mocked(Menu.buildFromTemplate).mock.calls[0][0] as Array<{
+    const template = vi.mocked(Menu.buildFromTemplate).mock
+      .calls[0][0] as Array<{
       label?: string;
       type?: string;
       click?: () => void;

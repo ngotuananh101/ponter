@@ -12,7 +12,9 @@ describe('AutostartManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    testTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ponter-autostart-test-'));
+    testTempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'ponter-autostart-test-'),
+    );
     process.env.XDG_CONFIG_HOME = testTempDir;
   });
 
@@ -54,7 +56,11 @@ describe('AutostartManager', () => {
 
       expect(manager.isEnabled()).toBe(true);
 
-      const desktopFile = path.join(testTempDir, 'autostart', 'ponter-desktop.desktop');
+      const desktopFile = path.join(
+        testTempDir,
+        'autostart',
+        'ponter-desktop.desktop',
+      );
       expect(fs.existsSync(desktopFile)).toBe(true);
 
       const content = fs.readFileSync(desktopFile, 'utf-8');
@@ -74,7 +80,11 @@ describe('AutostartManager', () => {
       manager.setEnabled(false);
       expect(manager.isEnabled()).toBe(false);
 
-      const desktopFile = path.join(testTempDir, 'autostart', 'ponter-desktop.desktop');
+      const desktopFile = path.join(
+        testTempDir,
+        'autostart',
+        'ponter-desktop.desktop',
+      );
       expect(fs.existsSync(desktopFile)).toBe(false);
     });
 
@@ -106,7 +116,9 @@ describe('AutostartManager', () => {
     });
 
     it('disables autostart via app.setLoginItemSettings', () => {
-      const manager = new AutostartManager('C:\\Program Files\\Ponter\\ponter-desktop.exe');
+      const manager = new AutostartManager(
+        'C:\\Program Files\\Ponter\\ponter-desktop.exe',
+      );
 
       manager.setEnabled(false);
 

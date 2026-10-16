@@ -1,8 +1,5 @@
 import { autoUpdater, type AppUpdater } from 'electron-updater';
-import type {
-  UpdateCheckResult,
-  UpdateStatusInfo,
-} from '../shared/ipc-types';
+import type { UpdateCheckResult, UpdateStatusInfo } from '../shared/ipc-types';
 
 /**
  * Manages auto-updates for the desktop application using electron-updater.
