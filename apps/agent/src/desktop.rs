@@ -202,11 +202,17 @@ pub trait FrameSource: Send {
     fn stop(&mut self);
 }
 
+thread_local! {
+    static RESIZER: std::cell::RefCell<fast_image_resize::Resizer> =
+        std::cell::RefCell::new(fast_image_resize::Resizer::new());
+}
+
 /// Box-filter downscale to fit `(max_w, max_h)`, preserving aspect ratio.
 ///
 /// A frame that already fits is returned untouched — this never upscales, so
 /// an 800×600 screen stays 800×600. Scaled output is floored to even
 /// dimensions, which `RgbaSliceU8::new` requires (it panics on odd sizes).
+/// Uses pure Rust SIMD via `fast_image_resize` with scalar fallback.
 fn downscale(frame: &RawFrame, max_w: u32, max_h: u32) -> RawFrame {
     if frame.width <= max_w && frame.height <= max_h {
         return frame.clone();
@@ -219,6 +225,48 @@ fn downscale(frame: &RawFrame, max_w: u32, max_h: u32) -> RawFrame {
     let dst_w = (((frame.width as f64 * scale) as u32) & !1).max(2);
     let dst_h = (((frame.height as f64 * scale) as u32) & !1).max(2);
 
+    let src_image = match fast_image_resize::images::ImageRef::new(
+        frame.width,
+        frame.height,
+        &frame.rgba,
+        fast_image_resize::PixelType::U8x4,
+    ) {
+        Ok(img) => img,
+        Err(e) => {
+            tracing::warn!(error = ?e, "invalid frame buffer for SIMD downscale; using scalar fallback");
+            return downscale_scalar(frame, dst_w, dst_h);
+        }
+    };
+
+    let mut dst_image =
+        fast_image_resize::images::Image::new(dst_w, dst_h, fast_image_resize::PixelType::U8x4);
+
+    let options = fast_image_resize::ResizeOptions::new()
+        .resize_alg(fast_image_resize::ResizeAlg::Convolution(
+            fast_image_resize::FilterType::Box,
+        ))
+        .use_alpha(false);
+
+    let resize_result = RESIZER.with(|cell| {
+        let mut resizer = cell.borrow_mut();
+        resizer.resize(&src_image, &mut dst_image, &options)
+    });
+
+    if let Err(e) = resize_result {
+        tracing::warn!(error = ?e, "SIMD downscale failed; using scalar fallback");
+        return downscale_scalar(frame, dst_w, dst_h);
+    }
+
+    RawFrame {
+        width: dst_w,
+        height: dst_h,
+        rgba: dst_image.into_vec(),
+        seq: frame.seq,
+    }
+}
+
+/// Fallback scalar box-filter downscaler.
+fn downscale_scalar(frame: &RawFrame, dst_w: u32, dst_h: u32) -> RawFrame {
     let mut rgba = vec![0u8; (dst_w * dst_h * 4) as usize];
     for dy in 0..dst_h {
         let sy0 = (dy as u64 * frame.height as u64 / dst_h as u64) as u32;
@@ -232,8 +280,10 @@ fn downscale(frame: &RawFrame, max_w: u32, max_h: u32) -> RawFrame {
             for sy in sy0..sy1 {
                 for sx in sx0..sx1 {
                     let i = ((sy * frame.width + sx) * 4) as usize;
-                    for (c, sum) in sums.iter_mut().enumerate() {
-                        *sum += frame.rgba[i + c] as u32;
+                    if i + 3 < frame.rgba.len() {
+                        for (c, sum) in sums.iter_mut().enumerate() {
+                            *sum += frame.rgba[i + c] as u32;
+                        }
                     }
                     count += 1;
                 }
@@ -2061,6 +2111,117 @@ mod tests {
         );
         assert_eq!((frame.width, frame.height), (800, 600));
         assert_eq!(frame.rgba, source.rgba);
+    }
+
+    #[test]
+    fn downscale_preserves_solid_color() {
+        let expected_color = [42u8, 84, 168, 255];
+        let width = 1920;
+        let height = 1080;
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for px in rgba.chunks_exact_mut(4) {
+            px.copy_from_slice(&expected_color);
+        }
+        let source = RawFrame {
+            width,
+            height,
+            rgba,
+            seq: 42,
+        };
+        let downscaled = downscale(
+            &source,
+            StreamProfile::SAFE_720P30.max_width,
+            StreamProfile::SAFE_720P30.max_height,
+        );
+        assert_eq!((downscaled.width, downscaled.height), (1280, 720));
+        assert_eq!(downscaled.seq, 42);
+        assert_eq!(downscaled.rgba.len(), (1280 * 720 * 4) as usize);
+        for (idx, px) in downscaled.rgba.chunks_exact(4).enumerate() {
+            assert_eq!(
+                px, &expected_color,
+                "pixel at index {idx} diverged from solid color: {px:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn downscale_clamps_to_even_dimensions_minimum_2() {
+        let source = RawFrame {
+            width: 3,
+            height: 3,
+            rgba: vec![128u8; 3 * 3 * 4],
+            seq: 7,
+        };
+        // Requesting max dimensions of 1x1 will scale down, but dst_w and dst_h are clamped to .max(2) & !1 => 2x2.
+        let downscaled = downscale(&source, 1, 1);
+        assert_eq!(downscaled.width, 2);
+        assert_eq!(downscaled.height, 2);
+        assert_eq!(downscaled.width % 2, 0);
+        assert_eq!(downscaled.height % 2, 0);
+        assert_eq!(downscaled.rgba.len(), (2 * 2 * 4) as usize);
+        assert_eq!(downscaled.seq, 7);
+    }
+
+    #[test]
+    fn downscale_preserves_horizontal_gradient_monotonicity() {
+        let width = 1920;
+        let height = 1080;
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                // Monotonically increasing red channel from 0 to 240
+                let val = (x * 240 / width) as u8;
+                rgba[idx] = val;
+                rgba[idx + 1] = 0;
+                rgba[idx + 2] = 0;
+                rgba[idx + 3] = 255;
+            }
+        }
+        let source = RawFrame {
+            width,
+            height,
+            rgba,
+            seq: 99,
+        };
+        let downscaled = downscale(
+            &source,
+            StreamProfile::SAFE_720P30.max_width,
+            StreamProfile::SAFE_720P30.max_height,
+        );
+        assert_eq!((downscaled.width, downscaled.height), (1280, 720));
+        assert_eq!(downscaled.seq, 99);
+
+        // Check monotonicity along middle row
+        let mid_y = 360;
+        let mut prev_val = 0u8;
+        for x in 0..1280 {
+            let idx = ((mid_y * 1280 + x) * 4) as usize;
+            let val = downscaled.rgba[idx];
+            assert!(
+                val >= prev_val,
+                "Gradient decreased at x={x}: prev={prev_val}, curr={val}"
+            );
+            prev_val = val;
+        }
+    }
+
+    #[test]
+    fn downscale_benchmark_1080p_to_720p() {
+        let source = solid(1920, 1080);
+        // Warm up
+        let _ = downscale(&source, 1280, 720);
+
+        let iters = 50;
+        let start = std::time::Instant::now();
+        for _ in 0..iters {
+            let _ = downscale(&source, 1280, 720);
+        }
+        let elapsed = start.elapsed();
+        let per_frame_ms = elapsed.as_secs_f64() * 1000.0 / iters as f64;
+        let cpu_ext = RESIZER.with(|c| c.borrow().cpu_extensions());
+        println!("Resizer cpu extensions: {cpu_ext:?}");
+        println!("Downscale 1080p->720p: {per_frame_ms:.2} ms/frame over {iters} iterations");
     }
 
     #[test]
