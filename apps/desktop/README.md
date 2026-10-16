@@ -69,9 +69,9 @@ pnpm --filter @ponter/desktop package
 
 Outputs in `apps/desktop/dist/`:
 
-- `ponter-desktop_<version>_amd64.deb`
-- `ponter-desktop-<version>.x86_64.rpm`
-- `ponter-desktop-<version>.AppImage`
+- `Ponter Desktop_<version>_amd64.deb`
+- `Ponter Desktop-<version>.x86_64.rpm`
+- `Ponter Desktop-<version>.AppImage`
 
 ### Windows
 
@@ -88,7 +88,8 @@ pnpm --filter @ponter/desktop package
 
 Outputs in `apps/desktop/dist/`:
 
-- `ponter-desktop Setup <version>.exe`
+- `Ponter Desktop-Setup-<version>.exe`
+- `Ponter Desktop-Portable-<version>.exe`
 
 ## Configuration & Precedence
 
