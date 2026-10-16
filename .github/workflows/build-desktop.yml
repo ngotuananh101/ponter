@@ -160,6 +160,21 @@ jobs:
         working-directory: apps/desktop
         run: pnpm package
 
+      - name: Assert packaging did not attempt a publish
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          set -e
+          # The packaging script must never publish implicitly: on non-release
+          # events electron-builder would fail with "GitHub Personal Access
+          # Token is not set". Release publishing is owned by the `release` job.
+          script=$(node -p "require('./package.json').scripts.package")
+          echo "package script: $script"
+          case "$script" in
+            *"--publish never"*) echo "OK: implicit publish disabled." ;;
+            *) echo "::error::apps/desktop package script must pass --publish never"; exit 1 ;;
+          esac
+
       - name: Upload artifacts (Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
