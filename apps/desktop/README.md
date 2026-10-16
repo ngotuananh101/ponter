@@ -69,9 +69,22 @@ pnpm --filter @ponter/desktop package
 
 Outputs in `apps/desktop/dist/`:
 
-- `Ponter Desktop_<version>_amd64.deb`
-- `Ponter Desktop-<version>.x86_64.rpm`
-- `Ponter Desktop-<version>.AppImage`
+- `ponterdesktop_<version>_amd64.deb`
+- `ponterdesktop-<version>.x86_64.rpm`
+- `ponterdesktop-<version>.AppImage`
+
+The packaged artifact names use the space-free `productName` (`ponterdesktop`),
+which keeps the generated filenames and the Linux install directory free of
+spaces. On install:
+
+- **Install directory:** `/opt/ponterdesktop` (electron-builder derives it as
+  `/opt/${sanitizeFileName(productName)}`).
+- **Executable:** `/opt/ponterdesktop/ponter` (from `linux.executableName`),
+  exposed on `PATH` via the `/usr/bin/ponter` symlink shipped by the `.deb`/`.rpm`
+  packages.
+- **Desktop entry:** `Name=Ponter Desktop`, `Exec=/opt/ponterdesktop/ponter %U`
+  (the friendly label is restored with `linux.desktop.Name`; see
+  `electron-builder.yml`).
 
 ### Windows
 
@@ -88,8 +101,12 @@ pnpm --filter @ponter/desktop package
 
 Outputs in `apps/desktop/dist/`:
 
-- `Ponter Desktop-Setup-<version>.exe`
-- `Ponter Desktop-Portable-<version>.exe`
+- `ponterdesktop-Setup-<version>.exe`
+- `ponterdesktop-Portable-<version>.exe`
+
+The Windows installers keep the friendly `Ponter Desktop` Start Menu shortcut
+and Apps & features entry via the `nsis.shortcutName` / `nsis.uninstallDisplayName`
+overrides (the global `productName` is the space-free `ponterdesktop`).
 
 ## Configuration & Precedence
 

@@ -81,7 +81,11 @@ if (!gotTheLock) {
         app.quit();
       },
     });
-    tray.createTray();
+    try {
+      tray.createTray();
+    } catch (err) {
+      console.warn('Failed to initialize tray:', err);
+    }
 
     // Initialize fleet (dual-layer: WebSocket + polling fallback, ADR-82)
     fleet = new FleetManager(apiClient, session, {
