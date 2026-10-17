@@ -10,6 +10,7 @@ import { FleetManager } from './fleet';
 import { AgentSupervisor } from './agent-supervisor';
 import { UpdaterManager } from './updater';
 import { registerIpcHandlers } from './ipc';
+import { applyServerUrlChange } from './server-url';
 import { createApiClient } from '@ponter/api-client';
 
 /**
@@ -116,6 +117,11 @@ if (!gotTheLock) {
       window,
       supervisor,
       updater,
+      // Issue #150: the client and fleet are built once here, so a server URL
+      // saved later must be pushed into the live services rather than waiting
+      // for the next launch.
+      applyServerUrlChange: (effectiveBaseUrl) =>
+        applyServerUrlChange({ apiClient, session, fleet }, effectiveBaseUrl),
     });
 
     app.on('activate', () => {

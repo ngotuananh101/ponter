@@ -13,22 +13,45 @@ import { AgentsResource } from './resources/agents';
 import { SessionsResource } from './resources/sessions';
 import { WebrtcResource } from './resources/webrtc';
 
+/** Trim every trailing slash, matching the constructor's normalisation. */
+function normalizeBaseUrl(baseUrl: string): string {
+  let normalized = baseUrl;
+  while (normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
 export class HttpClient {
-  readonly baseUrl: string;
+  private currentBaseUrl: string;
   readonly storage: TokenStorageAdapter;
   onAuthError?: AuthErrorHandler;
   private readonly customFetch: typeof fetch;
   private refreshPromise: Promise<void> | null = null;
 
   constructor(config: ApiClientConfig) {
-    let normalized = config.baseUrl;
-    while (normalized.endsWith('/')) {
-      normalized = normalized.slice(0, -1);
-    }
-    this.baseUrl = normalized;
+    this.currentBaseUrl = normalizeBaseUrl(config.baseUrl);
     this.storage = config.storage;
     this.onAuthError = config.onAuthError;
     this.customFetch = config.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /** The base URL every request (and the refresh call) is built from. */
+  get baseUrl(): string {
+    return this.currentBaseUrl;
+  }
+
+  /**
+   * Repoint this client at a different server (Issue #150).
+   *
+   * The desktop main process builds its client once at boot, so a server URL
+   * chosen afterwards in Server Setup would otherwise be ignored until the app
+   * restarted. Normalisation matches the constructor, and because every
+   * resource holds this same `HttpClient` instance, one call repoints all of
+   * them. `createApiClient` remains the single construction point (ADR-89).
+   */
+  setBaseUrl(baseUrl: string): void {
+    this.currentBaseUrl = normalizeBaseUrl(baseUrl);
   }
 
   async request<T>(

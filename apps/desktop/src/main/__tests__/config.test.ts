@@ -7,6 +7,7 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   mkdirSync: vi.fn(),
+  renameSync: vi.fn(),
 }));
 
 describe('ConfigManager', () => {
@@ -57,5 +58,53 @@ describe('ConfigManager', () => {
     const cfg = manager.load();
     expect(cfg.allowInput).toBe(false);
     expect(cfg.serverUrl).toBe('http://localhost:8787');
+  });
+
+  /**
+   * Issue #150: saving a preference must not invent a server URL. The old code
+   * carried `current.serverUrl` (the *effective* value, i.e. the localhost
+   * fallback when nothing was configured) into the file, so a theme save on a
+   * fresh install persisted the fallback — the next launch then believed a
+   * server was configured and skipped Server Setup.
+   */
+  it('does not persist the localhost fallback when no URL was ever set', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ theme: 'dark' });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written).toEqual({
+      serverUrl: null,
+      allowInput: false,
+      theme: 'dark',
+    });
+    expect(manager.load().hasServerUrl).toBe(false);
+  });
+
+  it('preserves a previously persisted URL when saving a preference', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ serverUrl: 'https://ponter.ponta.dev' }),
+    );
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ allowInput: true });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.serverUrl).toBe('https://ponter.ponta.dev');
+    expect(written.allowInput).toBe(true);
   });
 });

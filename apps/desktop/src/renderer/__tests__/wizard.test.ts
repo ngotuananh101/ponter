@@ -78,11 +78,9 @@ describe('wizard store', () => {
     config.allowInput = true;
     ponter.saveConfig.mockResolvedValue(undefined);
     await store.finish();
-    expect(ponter.saveConfig).toHaveBeenCalledWith({
-      serverUrl: null,
-      allowInput: true,
-      theme: null,
-    });
+    // Issue #150: the preference save carries ONLY the field it changes —
+    // sending `serverUrl: null` cleared the persisted URL on every save.
+    expect(ponter.saveConfig).toHaveBeenCalledWith({ allowInput: true });
     // finish() advances to autoStart but does NOT set completed (R11).
     expect(store.step).toBe('autoStart');
     expect(store.completed).toBe(false);
@@ -100,11 +98,9 @@ describe('wizard store', () => {
 
     ponter.saveConfig.mockResolvedValue(undefined);
     await store.finish();
-    expect(ponter.saveConfig).toHaveBeenCalledWith({
-      serverUrl: null,
-      allowInput: true,
-      theme: null,
-    });
+    // Issue #150: the preference save carries ONLY the field it changes —
+    // sending `serverUrl: null` cleared the persisted URL on every save.
+    expect(ponter.saveConfig).toHaveBeenCalledWith({ allowInput: true });
     // finish() advances to autoStart but does NOT set completed (R11).
     expect(store.step).toBe('autoStart');
     expect(store.completed).toBe(false);
@@ -342,15 +338,15 @@ describe('WizardView', () => {
     await wrapper.find('[data-testid="wizard-finish"]').trigger('click');
     await flushPromises();
 
-    // A later theme toggle re-saves the whole config; it must carry the SAME
-    // allowInput (true) — the gate must not silently close.
+    // A later theme toggle persists only the theme. `allowInput` is omitted
+    // (`undefined` = unchanged), so ConfigManager keeps the gate open — the
+    // invariant this test protects is unchanged by Issue #150, only the
+    // payload shape moved from "resend every field" to "send what changed".
     ponter.saveConfig.mockClear();
     await config.setTheme('dark');
-    expect(ponter.saveConfig).toHaveBeenCalledWith({
-      serverUrl: null,
-      allowInput: true,
-      theme: 'dark',
-    });
+    expect(ponter.saveConfig).toHaveBeenCalledWith({ theme: 'dark' });
+    expect(ponter.saveConfig.mock.calls[0]![0]).not.toHaveProperty('serverUrl');
+    expect(config.allowInput).toBe(true);
   });
 
   it('autoStart checkbox toggle calls setAutostart', async () => {
