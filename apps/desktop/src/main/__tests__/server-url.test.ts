@@ -292,6 +292,67 @@ describe('SessionTokenStorage generation awareness (Issue #150 B1)', () => {
     expect(await live.storage.getAccessToken()).toBe('NEW-ACCESS');
     expect(await live.storage.getRefreshToken()).toBe('NEW-REFRESH');
   });
+
+  /**
+   * BE finding B3: requiring an explicit stamp made the adapter refuse tokens
+   * it had never seen `setTokens()` for — i.e. the refresh token that survived
+   * a restart in the keychain. Session restore then failed with
+   * "No refresh token available" and the user had to log in again every launch.
+   */
+  it('adopts the current generation for a token persisted before this process started', async () => {
+    const secrets = new Map<string, string>([
+      ['refresh_token', 'PERSISTED-REFRESH'],
+    ]);
+    const keychain = {
+      getSecret: vi.fn((key: string) => secrets.get(key) ?? null),
+      storeSecret: vi.fn(),
+      deleteSecret: vi.fn(),
+    };
+    let generation = 7;
+    const storage = new SessionTokenStorage(keychain as any, () => generation);
+
+    // Fresh process: nothing stamped yet, the keychain still holds a token.
+    expect(await storage.getRefreshToken()).toBe('PERSISTED-REFRESH');
+
+    // The adopted stamp is the generation in force at that moment.
+    generation = 8;
+    expect(await storage.getRefreshToken()).toBeNull();
+  });
+
+  /**
+   * The counter-regression for B3: "adopt on null" must not reopen leak #2.
+   * `clearTokens()` sets the purged marker synchronously — before its awaited
+   * keychain delete finishes — so a read inside that window cannot adopt the
+   * new generation and serve the old secret.
+   */
+  it('does not adopt a generation after a purge', async () => {
+    const secrets = new Map<string, string>();
+    const keychain = {
+      getSecret: vi.fn((key: string) => secrets.get(key) ?? null),
+      storeSecret: vi.fn((key: string, value: string) => {
+        secrets.set(key, value);
+      }),
+      deleteSecret: vi.fn(),
+    };
+    let generation = 0;
+    const storage = new SessionTokenStorage(keychain as any, () => generation);
+
+    await storage.setTokens({
+      accessToken: 'OLD-ACCESS',
+      refreshToken: 'OLD-REFRESH',
+    });
+
+    // Simulate a slow purge: the keychain secret is still present when the
+    // generation moves and clearTokens() has been entered but not finished.
+    generation = 1;
+    const purge = storage.clearTokens();
+    expect(await storage.getRefreshToken()).toBeNull();
+    expect(await storage.getAccessToken()).toBeNull();
+    await purge;
+
+    expect(await storage.getRefreshToken()).toBeNull();
+    expect(await storage.getAccessToken()).toBeNull();
+  });
 });
 
 /**
@@ -394,6 +455,59 @@ describe('no previous-server credential reaches the new host (Issue #150 B1)', (
         r.body?.includes('OLD-REFRESH'),
     );
     expect(leaked).toEqual([]);
+
+    runtime.fleet.destroy();
+  });
+
+  /**
+   * BE finding B2: `refreshSession()` read the keychain directly, bypassing the
+   * generation-aware storage, so only `HttpClient.doRefresh()` was protected.
+   * The path is reachable in production — `retryOnceOn401()` is called from the
+   * fleet poll, the WS ticket call, and every DeviceManager method.
+   */
+  it('refreshSession routes through the generation-aware storage', async () => {
+    // A slow purge is what exposes the bypass: the keychain still holds the old
+    // refresh token while `refreshSession()` reads it directly.
+    const runtime = buildRuntime({ purgeDelayMs: 120 });
+    await seedOldTokens(runtime);
+
+    const change = applyServerUrlChange(runtime, 'https://new.example');
+
+    // Inside the purge window: the old secret is still in the keychain, but the
+    // generation has already moved. A direct keychain read leaks it.
+    await expect(runtime.session.refreshSession()).rejects.toBeDefined();
+
+    await change;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const leaked = runtime.requests.filter(
+      (r) =>
+        r.url.startsWith('https://new.example') &&
+        r.body?.includes('OLD-REFRESH'),
+    );
+    expect(leaked).toEqual([]);
+
+    runtime.fleet.destroy();
+  });
+
+  /**
+   * BE finding B3: a fresh process whose keychain still holds a refresh token
+   * must be able to restore the session. Requiring an explicit `setTokens()`
+   * stamp made every restart look unauthenticated.
+   */
+  it('restores a persisted session after restart', async () => {
+    const runtime = buildRuntime();
+    // No seedOldTokens(): this is a brand-new process. The keychain already
+    // holds the refresh token from the previous run.
+    expect(await runtime.storage.getRefreshToken()).toBe('OLD-REFRESH');
+
+    await expect(runtime.session.refreshSession()).rejects.toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const refreshCalls = runtime.requests.filter((r) =>
+      r.url.endsWith('/api/auth/refresh'),
+    );
+    expect(refreshCalls).toHaveLength(1);
 
     runtime.fleet.destroy();
   });

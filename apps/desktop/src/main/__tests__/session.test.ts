@@ -34,6 +34,8 @@ function createApiClientMock() {
       request: vi.fn(),
       storage: {
         getAccessToken: vi.fn(),
+        // `refreshSession()` reads through the adapter (PR #151 review B2):
+        // the adapter is what enforces the server generation.
         getRefreshToken: vi.fn(),
         setTokens: vi.fn(),
         clearTokens: vi.fn(),
@@ -57,7 +59,9 @@ describe('SessionManager & Auth Classification (Issue #107)', () => {
   });
 
   it('classifies 401 UNAUTHORIZED as auth-fatal and purges keychain', async () => {
-    keychainMock.getSecret.mockReturnValue('valid-refresh-token');
+    apiClientMock.http.storage.getRefreshToken.mockResolvedValue(
+      'valid-refresh-token',
+    );
     apiClientMock.http.request.mockRejectedValue(
       new ApiError('Unauthorized', 401, 'UNAUTHORIZED'),
     );
@@ -73,7 +77,9 @@ describe('SessionManager & Auth Classification (Issue #107)', () => {
   });
 
   it('treats 403 as non-fatal without wiping keychain', async () => {
-    keychainMock.getSecret.mockReturnValue('valid-refresh-token');
+    apiClientMock.http.storage.getRefreshToken.mockResolvedValue(
+      'valid-refresh-token',
+    );
     apiClientMock.http.request.mockRejectedValue(
       new ApiError('AGENT_LIMIT_REACHED', 403, 'AGENT_LIMIT_REACHED'),
     );
@@ -98,7 +104,9 @@ describe('SessionManager & Auth Classification (Issue #107)', () => {
       return { success: true };
     });
 
-    keychainMock.getSecret.mockReturnValue('refresh-token');
+    apiClientMock.http.storage.getRefreshToken.mockResolvedValue(
+      'refresh-token',
+    );
     apiClientMock.http.request.mockResolvedValueOnce({
       token: 'new-access-token',
       refreshToken: 'rotated-refresh-token',

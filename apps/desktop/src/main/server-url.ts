@@ -62,7 +62,13 @@ export async function applyServerUrlChange(
   // normalised form the requests use, not a second copy of the rule.
   runtime.fleet.setBaseUrl(runtime.apiClient.http.baseUrl);
 
-  await purge;
+  // A failing adapter must never fail the server switch once the client and
+  // fleet have already repointed (PM ruling N1).
+  try {
+    await purge;
+  } catch {
+    // Swallowed: the in-memory token is gone and the epoch has moved.
+  }
 
   return true;
 }

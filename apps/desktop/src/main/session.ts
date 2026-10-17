@@ -22,8 +22,20 @@ let inMemoryAccessToken: string | null = null;
  * adapter has finished purging — so the previous server's credentials can never
  * be read by a request aimed at the new host. This is the single choke point
  * covering every read path, whatever the adapter's latency.
+ *
+ * Two distinct "no stamp" states must not be conflated (review B3):
+ *  - `null` — this process never stored a token. A refresh token found in the
+ *    keychain therefore belongs to the server in use (session restore after a
+ *    restart), so the current generation is adopted on first read.
+ *  - `PURGED` — the credentials were deliberately cleared for a server switch or
+ *    logout. They must never be served again until `setTokens()` runs.
+ * Adopting on `null` alone would reopen leak #2: `clearTokens()` must therefore
+ * set `PURGED` synchronously, before its awaited keychain delete.
  */
 class SessionTokenStorage implements TokenStorageAdapter {
+  /** Sentinel for "cleared on purpose"; never equals a real generation. */
+  private static readonly PURGED = -1;
+
   private tokensGeneration: number | null = null;
 
   constructor(
@@ -33,10 +45,15 @@ class SessionTokenStorage implements TokenStorageAdapter {
 
   /** True when the stored tokens still belong to the current server. */
   private isCurrent(): boolean {
-    return (
-      this.tokensGeneration !== null &&
-      this.tokensGeneration === this.currentGeneration()
-    );
+    if (this.tokensGeneration === SessionTokenStorage.PURGED) return false;
+
+    const current = this.currentGeneration();
+    if (this.tokensGeneration === null) {
+      // Fresh process: a secret already in the keychain is this server's.
+      this.tokensGeneration = current;
+      return true;
+    }
+    return this.tokensGeneration === current;
   }
 
   async getAccessToken(): Promise<string | null> {
@@ -59,8 +76,11 @@ class SessionTokenStorage implements TokenStorageAdapter {
   }
 
   async clearTokens(): Promise<void> {
+    // Both assignments are synchronous: the purge marker must be in place
+    // before the awaited keychain delete, or a read inside that window would
+    // adopt the new generation and serve the old secret.
     inMemoryAccessToken = null;
-    this.tokensGeneration = null;
+    this.tokensGeneration = SessionTokenStorage.PURGED;
     this.keychain.deleteSecret('refresh_token');
   }
 }
@@ -155,6 +175,13 @@ export class SessionManager {
    * something else later) purges itself, then clears this module's own copy.
    * The adapter already deletes the keychain secret, so there is no second
    * delete here (PR #151 review N4).
+   *
+   * Both this method and the adapter's `clearTokens()` reset
+   * `inMemoryAccessToken` — deliberately. This module's copy is cleared
+   * synchronously so no reader can observe the old token even if the adapter
+   * call is slow, while the adapter also owns its own generation stamp. Keep
+   * that split in mind: the storage's stamp (not this copy) is what decides
+   * whether a credential may still be served (review B3).
    */
   async clearLocalSession(): Promise<void> {
     this.currentUser = null;
@@ -167,7 +194,12 @@ export class SessionManager {
   }
 
   async refreshSession(): Promise<string> {
-    const refreshToken = this.keychain.getSecret('refresh_token');
+    // Read through the storage adapter, never the keychain directly (BE finding
+    // B2): the adapter is what enforces the server generation, so a refresh
+    // token left over from the previous server can never be posted to the new
+    // one. This path is reachable from the fleet poll, the WS ticket call, and
+    // every DeviceManager method via `retryOnceOn401()`.
+    const refreshToken = await this.apiClient.http.storage.getRefreshToken();
     if (!refreshToken) {
       this.currentUser = null;
       inMemoryAccessToken = null;
