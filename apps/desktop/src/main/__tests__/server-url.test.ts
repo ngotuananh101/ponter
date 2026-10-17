@@ -215,3 +215,186 @@ describe('server switch during an in-flight refresh (Issue #150 B1)', () => {
     live.fleet.destroy();
   });
 });
+
+/**
+ * PM probe on `b12acf6`: the epoch guard covered the refresh *response*, but
+ * two read paths still leaked the previous server's credentials to the new
+ * host. Both read from `SessionTokenStorage`, so the guard belongs there — it
+ * is the single choke point for `getAccessToken()` (Bearer header) and
+ * `getRefreshToken()` (refresh POST), regardless of how fast the adapter purges.
+ */
+describe('SessionTokenStorage generation awareness (Issue #150 B1)', () => {
+  function buildStorage() {
+    const secrets = new Map<string, string>();
+    const keychain = {
+      getSecret: vi.fn((key: string) => secrets.get(key) ?? null),
+      storeSecret: vi.fn((key: string, value: string) => {
+        secrets.set(key, value);
+      }),
+      deleteSecret: vi.fn((key: string) => {
+        secrets.delete(key);
+      }),
+    };
+    let generation = 0;
+    const storage = new SessionTokenStorage(keychain as any, () => generation);
+    return {
+      storage,
+      secrets,
+      keychain,
+      bump: () => {
+        generation += 1;
+      },
+    };
+  }
+
+  it('stops serving the access token once the generation moves', async () => {
+    const live = buildStorage();
+    await live.storage.setTokens({
+      accessToken: 'OLD-ACCESS',
+      refreshToken: 'OLD-REFRESH',
+    });
+    expect(await live.storage.getAccessToken()).toBe('OLD-ACCESS');
+
+    live.bump();
+
+    // The adapter has not purged yet (keychain I/O is async in reality); the
+    // storage itself must refuse to hand out the previous server's credential.
+    expect(await live.storage.getAccessToken()).toBeNull();
+    expect(live.secrets.get('refresh_token')).toBe('OLD-REFRESH');
+  });
+
+  it('stops serving the refresh token once the generation moves', async () => {
+    const live = buildStorage();
+    await live.storage.setTokens({
+      accessToken: 'OLD-ACCESS',
+      refreshToken: 'OLD-REFRESH',
+    });
+    expect(await live.storage.getRefreshToken()).toBe('OLD-REFRESH');
+
+    live.bump();
+
+    expect(await live.storage.getRefreshToken()).toBeNull();
+  });
+
+  it('serves tokens again once they are set for the new generation', async () => {
+    const live = buildStorage();
+    await live.storage.setTokens({
+      accessToken: 'OLD-ACCESS',
+      refreshToken: 'OLD-REFRESH',
+    });
+
+    live.bump();
+    await live.storage.setTokens({
+      accessToken: 'NEW-ACCESS',
+      refreshToken: 'NEW-REFRESH',
+    });
+
+    expect(await live.storage.getAccessToken()).toBe('NEW-ACCESS');
+    expect(await live.storage.getRefreshToken()).toBe('NEW-REFRESH');
+  });
+});
+
+/**
+ * The end-to-end leaks PM reproduced. These run the real storage, session and
+ * fleet against a recording fetch, so they fail for the same reason the
+ * packaged app leaked.
+ */
+describe('no previous-server credential reaches the new host (Issue #150 B1)', () => {
+  function buildRuntime(options: { purgeDelayMs?: number } = {}) {
+    const secrets = new Map<string, string>([['refresh_token', 'OLD-REFRESH']]);
+    const keychain = {
+      getSecret: vi.fn((key: string) => secrets.get(key) ?? null),
+      storeSecret: vi.fn((key: string, value: string) => {
+        secrets.set(key, value);
+      }),
+      deleteSecret: vi.fn((key: string) => {
+        secrets.delete(key);
+      }),
+    };
+
+    const requests: { url: string; auth?: string; body?: string }[] = [];
+    const mockFetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      requests.push({
+        url: String(url),
+        auth: headers['Authorization'],
+        body: typeof init?.body === 'string' ? init.body : undefined,
+      });
+      // Everything is unauthorized: that is what drives the retry/refresh path.
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized', code: 'UNAUTHORIZED' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    let apiClient!: ReturnType<typeof createApiClient>;
+    const storage = new SessionTokenStorage(keychain as any, () => {
+      return apiClient.http.serverGeneration;
+    });
+    if (options.purgeDelayMs) {
+      const originalClear = storage.clearTokens.bind(storage);
+      storage.clearTokens = async () => {
+        await new Promise((resolve) =>
+          setTimeout(resolve, options.purgeDelayMs),
+        );
+        await originalClear();
+      };
+    }
+
+    apiClient = createApiClient({
+      baseUrl: 'https://old.example',
+      storage,
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+    const session = new SessionManager(apiClient, keychain as any);
+    const fleet = new FleetManager(apiClient, session, {
+      baseUrl: 'https://old.example',
+    });
+
+    return { apiClient, storage, session, fleet, keychain, secrets, requests };
+  }
+
+  /** Seed the in-memory access token without going through a login. */
+  async function seedOldTokens(runtime: ReturnType<typeof buildRuntime>) {
+    await runtime.storage.setTokens({
+      accessToken: 'OLD-ACCESS',
+      refreshToken: 'OLD-REFRESH',
+    });
+  }
+
+  it('sends no request carrying the previous server bearer token to the new host', async () => {
+    const runtime = buildRuntime();
+    await seedOldTokens(runtime);
+
+    await applyServerUrlChange(runtime, 'https://new.example');
+    // Let the fleet's reconnection attempt run.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const leaked = runtime.requests.filter(
+      (r) =>
+        r.url.startsWith('https://new.example') &&
+        r.auth?.includes('OLD-ACCESS'),
+    );
+    expect(leaked).toEqual([]);
+
+    runtime.fleet.destroy();
+  });
+
+  it('never posts the previous server refresh token to the new host when the purge is slow', async () => {
+    const runtime = buildRuntime({ purgeDelayMs: 120 });
+    await seedOldTokens(runtime);
+
+    await applyServerUrlChange(runtime, 'https://new.example');
+    // Long enough for the ticket request, its 401, and the refresh retry.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const leaked = runtime.requests.filter(
+      (r) =>
+        r.url.startsWith('https://new.example') &&
+        r.body?.includes('OLD-REFRESH'),
+    );
+    expect(leaked).toEqual([]);
+
+    runtime.fleet.destroy();
+  });
+});

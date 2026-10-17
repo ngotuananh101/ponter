@@ -53,10 +53,17 @@ if (!gotTheLock) {
     // Initialize session token storage:
     // - Access tokens: in-memory only (never written to keychain/disk)
     // - Refresh tokens: via keychain.safeStorage
-    const tokenStorage = new SessionTokenStorage(keychain);
+    // - Generation-aware (Issue #150): once the client is repointed at another
+    //   server, stored credentials stop being served immediately, so neither a
+    //   Bearer header nor a refresh POST can carry them to the new host.
+    let apiClient: ReturnType<typeof createApiClient>;
+    const tokenStorage = new SessionTokenStorage(
+      keychain,
+      () => apiClient.http.serverGeneration,
+    );
 
     // Initialize API client with secure storage adapter
-    const apiClient = createApiClient({
+    apiClient = createApiClient({
       baseUrl: cfg.serverUrl ?? 'http://localhost:8787',
       storage: tokenStorage,
     });

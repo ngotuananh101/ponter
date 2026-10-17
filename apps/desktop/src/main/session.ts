@@ -14,16 +14,37 @@ let inMemoryAccessToken: string | null = null;
 /**
  * Token storage adapter that keeps access tokens in memory and delegates
  * refresh token storage to the keychain.
+ *
+ * Generation-aware (PR #151 review B1): every credential is tagged with the
+ * server generation it was minted under. Once the app is repointed at a
+ * different server, both `getAccessToken()` (Bearer header) and
+ * `getRefreshToken()` (refresh POST) return `null` immediately — before the
+ * adapter has finished purging — so the previous server's credentials can never
+ * be read by a request aimed at the new host. This is the single choke point
+ * covering every read path, whatever the adapter's latency.
  */
 class SessionTokenStorage implements TokenStorageAdapter {
-  constructor(private keychain: KeychainService) {}
+  private tokensGeneration: number | null = null;
+
+  constructor(
+    private keychain: KeychainService,
+    private readonly currentGeneration: () => number = () => 0,
+  ) {}
+
+  /** True when the stored tokens still belong to the current server. */
+  private isCurrent(): boolean {
+    return (
+      this.tokensGeneration !== null &&
+      this.tokensGeneration === this.currentGeneration()
+    );
+  }
 
   async getAccessToken(): Promise<string | null> {
-    return inMemoryAccessToken;
+    return this.isCurrent() ? inMemoryAccessToken : null;
   }
 
   async getRefreshToken(): Promise<string | null> {
-    return this.keychain.getSecret('refresh_token');
+    return this.isCurrent() ? this.keychain.getSecret('refresh_token') : null;
   }
 
   async setTokens(tokens: {
@@ -31,6 +52,7 @@ class SessionTokenStorage implements TokenStorageAdapter {
     refreshToken: string;
   }): Promise<void> {
     inMemoryAccessToken = tokens.accessToken;
+    this.tokensGeneration = this.currentGeneration();
     if (tokens.refreshToken) {
       this.keychain.storeSecret('refresh_token', tokens.refreshToken);
     }
@@ -38,6 +60,7 @@ class SessionTokenStorage implements TokenStorageAdapter {
 
   async clearTokens(): Promise<void> {
     inMemoryAccessToken = null;
+    this.tokensGeneration = null;
     this.keychain.deleteSecret('refresh_token');
   }
 }

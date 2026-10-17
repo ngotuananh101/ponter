@@ -27,14 +27,15 @@ export interface ServerUrlRuntime {
  * Order matters, and the first step is deliberately synchronous:
  *  1. Repoint the shared HTTP client. `setBaseUrl()` bumps the client's server
  *     generation before any await, so a refresh still in flight against the old
- *     host can never be mistaken for a current one — there is no window between
- *     the purge and the bump for it to slip through (BE finding B1). All
- *     resources follow the same instance.
- *  2. Repoint the fleet and reconnect so its WebSocket ticket comes from the
+ *     host can never be mistaken for a current one, and the generation-aware
+ *     token storage stops serving the old credentials immediately — there is no
+ *     window between the purge and the bump for either to slip through (BE/PM
+ *     finding B1). All resources follow the same instance.
+ *  2. Start the purge. It is kicked off (not awaited) before the fleet is
+ *     repointed, so the in-memory token is already gone when the fleet asks for
+ *     one; awaiting it afterwards keeps `applyServerUrlChange()` honest.
+ *  3. Repoint the fleet and reconnect so its WebSocket ticket comes from the
  *     new server.
- *  3. Drop the previous server's credentials. This is a local clear only —
- *     `SessionManager.logout()` would POST to the old server, which is exactly
- *     the host we may be running away from.
  *
  * A no-op when the URL is unchanged: saves of unrelated preferences (theme,
  * input gate) must not log the user out.
@@ -51,11 +52,17 @@ export async function applyServerUrlChange(
 
   // Synchronous first: closes the generation window before any await can yield.
   runtime.apiClient.http.setBaseUrl(normalized);
+
+  // Start the purge before the fleet is repointed. `clearLocalSession()` clears
+  // the in-memory token synchronously, then awaits the adapter; not awaiting it
+  // here means the fleet cannot observe the old token in the gap.
+  const purge = runtime.session.clearLocalSession();
+
   // Read the base back from the client so the fleet receives exactly the
   // normalised form the requests use, not a second copy of the rule.
   runtime.fleet.setBaseUrl(runtime.apiClient.http.baseUrl);
 
-  await runtime.session.clearLocalSession();
+  await purge;
 
   return true;
 }
