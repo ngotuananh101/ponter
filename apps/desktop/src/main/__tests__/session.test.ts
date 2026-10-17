@@ -183,3 +183,47 @@ describe('SessionManager.login error reporting (Issue #150)', () => {
     });
   });
 });
+
+describe('SessionManager.logout', () => {
+  let apiClientMock: ReturnType<typeof createApiClientMock>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiClientMock = createApiClientMock();
+  });
+
+  it('resolves only after the local session is purged', async () => {
+    let purgeFinished = false;
+    apiClientMock.auth.logout.mockResolvedValue({ success: true });
+    apiClientMock.http.storage.clearTokens.mockImplementation(async () => {
+      // Yield, so a caller that does not await the purge would observe the
+      // session still intact when logout() resolves (typescript:S9383).
+      await Promise.resolve();
+      purgeFinished = true;
+    });
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    await session.logout();
+
+    expect(purgeFinished).toBe(true);
+    expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
+    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
+  });
+
+  it('still purges locally when the remote logout fails', async () => {
+    apiClientMock.auth.logout.mockRejectedValue(new Error('network down'));
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    await expect(session.logout()).resolves.toBeUndefined();
+    expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
+    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
+  });
+});

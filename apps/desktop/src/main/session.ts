@@ -108,7 +108,10 @@ export class SessionManager {
     } catch {
       // Swallowed on client logout
     } finally {
-      this.clearLocalSession();
+      // Awaited so the token purge finishes before logout() resolves and so the
+      // floating promise is not left unhandled (typescript:S9383).
+      // `clearLocalSession()` never rejects — it wraps the adapter call.
+      await this.clearLocalSession();
     }
   }
 
