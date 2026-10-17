@@ -46,36 +46,34 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  /** Set the server URL, persist, and leave edit mode. */
+  /** Set the server URL, persist, and leave edit mode.
+   *
+   * Sends only the field it owns. Resending `allowInput`/`theme` from the store
+   * would overwrite disk state with whatever this process last loaded — the
+   * same class of bug as Issue #150's `serverUrl: null`. */
   async function setServerUrl(url: string): Promise<void> {
     serverUrl.value = url;
     hasServerUrl.value = true;
-    await window.ponter.saveConfig({
-      serverUrl: url,
-      allowInput: allowInput.value,
-      theme: theme.value,
-    });
+    await window.ponter.saveConfig({ serverUrl: url });
     editing.value = false;
   }
 
-  /** Set the input-gate preference and persist. */
+  /** Set the input-gate preference and persist.
+   *
+   * Issue #150: never send `serverUrl` here. The payload omits the key
+   * (`undefined` = unchanged) because `ConfigManager.save()` reads an explicit
+   * `null` as "clear the URL" — the old `serverUrl: null` meant a save of any
+   * preference wiped the persisted server and dropped the user back into
+   * Server Setup on the next launch. */
   async function setAllowInput(value: boolean): Promise<void> {
     allowInput.value = value;
-    await window.ponter.saveConfig({
-      serverUrl: null,
-      allowInput: value,
-      theme: theme.value,
-    });
+    await window.ponter.saveConfig({ allowInput: value });
   }
 
-  /** Set the theme and persist. */
+  /** Set the theme and persist (see `setAllowInput` for the `serverUrl` rule). */
   async function setTheme(value: ThemeName): Promise<void> {
     theme.value = value;
-    await window.ponter.saveConfig({
-      serverUrl: null,
-      allowInput: allowInput.value,
-      theme: value,
-    });
+    await window.ponter.saveConfig({ theme: value });
   }
 
   return {

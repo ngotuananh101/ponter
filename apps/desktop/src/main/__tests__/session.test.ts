@@ -118,3 +118,112 @@ describe('SessionManager & Auth Classification (Issue #107)', () => {
     );
   });
 });
+
+/**
+ * Issue #150: a bare "fetch failed" gave the user no way to tell which server
+ * the client was actually pointed at — the packaged app shipped with the
+ * localhost fallback while the UI showed the URL the user had typed. The
+ * network-error path must name the base URL; every other error path keeps its
+ * existing message and code.
+ */
+describe('SessionManager.login error reporting (Issue #150)', () => {
+  let apiClientMock: ReturnType<typeof createApiClientMock>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiClientMock = createApiClientMock();
+    (apiClientMock.http as any).baseUrl = 'http://localhost:8787';
+  });
+
+  it('names the base URL when login fails with a network error', async () => {
+    apiClientMock.auth.login.mockRejectedValue(
+      new ApiError('fetch failed', 0, 'NETWORK_ERROR'),
+    );
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    await expect(session.login('alice', 'secret')).rejects.toThrow(
+      'Cannot reach http://localhost:8787 (network error)',
+    );
+  });
+
+  it('keeps the server message for credential errors', async () => {
+    apiClientMock.auth.login.mockRejectedValue(
+      new ApiError('Invalid credentials', 401, 'INVALID_CREDENTIALS'),
+    );
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    await expect(session.login('alice', 'wrong')).rejects.toThrow(
+      'Invalid credentials',
+    );
+  });
+
+  it('preserves the API error code on the surfaced error', async () => {
+    apiClientMock.auth.login.mockRejectedValue(
+      new ApiError('fetch failed', 0, 'NETWORK_ERROR'),
+    );
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    // The message names the server; the code must survive too, otherwise the
+    // renderer loses the only stable signal it can branch on (Issue #107).
+    await expect(session.login('alice', 'secret')).rejects.toMatchObject({
+      message: 'Cannot reach http://localhost:8787 (network error)',
+      code: 'NETWORK_ERROR',
+    });
+  });
+});
+
+describe('SessionManager.logout', () => {
+  let apiClientMock: ReturnType<typeof createApiClientMock>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiClientMock = createApiClientMock();
+  });
+
+  it('resolves only after the local session is purged', async () => {
+    let purgeFinished = false;
+    apiClientMock.auth.logout.mockResolvedValue({ success: true });
+    apiClientMock.http.storage.clearTokens.mockImplementation(async () => {
+      // Yield, so a caller that does not await the purge would observe the
+      // session still intact when logout() resolves (typescript:S9383).
+      await Promise.resolve();
+      purgeFinished = true;
+    });
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    await session.logout();
+
+    expect(purgeFinished).toBe(true);
+    expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
+    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
+  });
+
+  it('still purges locally when the remote logout fails', async () => {
+    apiClientMock.auth.logout.mockRejectedValue(new Error('network down'));
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+    );
+
+    await expect(session.logout()).resolves.toBeUndefined();
+    expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
+    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
+  });
+});

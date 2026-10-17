@@ -44,6 +44,19 @@ class SessionTokenStorage implements TokenStorageAdapter {
 
 export { SessionTokenStorage };
 
+/**
+ * Build the error surfaced to the renderer while keeping the API's error code
+ * reachable for callers in the main process (Issue #150: the code used to be
+ * dropped on the floor here).
+ */
+function loginError(message: string, code?: string): Error {
+  const error = new Error(message);
+  if (code) {
+    (error as Error & { code?: string }).code = code;
+  }
+  return error;
+}
+
 export class SessionManager {
   private apiClient: ApiClient;
   private keychain: KeychainService;
@@ -71,7 +84,21 @@ export class SessionManager {
       this.currentUser = resp.user;
       return resp.user;
     } catch (err: any) {
-      throw new Error(err.data?.message || err.message || 'Login failed');
+      // Issue #150: a bare "fetch failed" hides which server was actually
+      // contacted, so a stale base URL looked like a network outage. Name the
+      // base for transport failures (status 0); every other error keeps the
+      // server-supplied message verbatim. The code travels with the message so
+      // callers can still branch on it (e.g. NETWORK_ERROR).
+      if (err?.status === 0 || err?.code === 'NETWORK_ERROR') {
+        throw loginError(
+          `Cannot reach ${this.apiClient.http.baseUrl} (network error)`,
+          'NETWORK_ERROR',
+        );
+      }
+      throw loginError(
+        err.data?.message || err.message || 'Login failed',
+        err.code,
+      );
     }
   }
 
@@ -81,10 +108,33 @@ export class SessionManager {
     } catch {
       // Swallowed on client logout
     } finally {
-      this.currentUser = null;
-      inMemoryAccessToken = null;
-      this.keychain.deleteSecret('refresh_token');
+      // Awaited so the token purge finishes before logout() resolves and so the
+      // floating promise is not left unhandled (typescript:S9383).
+      // `clearLocalSession()` never rejects — it wraps the adapter call.
+      await this.clearLocalSession();
     }
+  }
+
+  /**
+   * Drop the local session without contacting the server (Issue #150).
+   *
+   * Used when the client is repointed at a different server: the refresh token
+   * belongs to the old host, and a logout request would target that host — the
+   * very one we may be unable to reach. Revoking it remotely is best-effort at
+   * most, so the local purge is what matters here.
+   *
+   * Goes through the storage adapter so any adapter (in-memory + keychain today,
+   * something else later) purges itself, then clears this module's own copy.
+   */
+  async clearLocalSession(): Promise<void> {
+    this.currentUser = null;
+    inMemoryAccessToken = null;
+    try {
+      await this.apiClient.http.storage.clearTokens();
+    } catch {
+      // A failing adapter must not block the server switch.
+    }
+    this.keychain.deleteSecret('refresh_token');
   }
 
   async refreshSession(): Promise<string> {

@@ -71,4 +71,26 @@ describe('FleetManager', () => {
     const manager = new FleetManager(apiClientMock as any, sessionMock as any);
     expect(() => manager.destroy()).not.toThrow();
   });
+
+  it('setBaseUrl repoints the manager at a new server (Issue #150)', () => {
+    const manager = new FleetManager(apiClientMock as any, sessionMock as any, {
+      baseUrl: 'http://localhost:8787',
+    });
+    expect(manager.getBaseUrl()).toBe('http://localhost:8787');
+
+    manager.setBaseUrl('https://ponter.ponta.dev');
+    expect(manager.getBaseUrl()).toBe('https://ponter.ponta.dev');
+
+    manager.destroy();
+  });
+
+  it('setBaseUrl is a no-op once destroyed', () => {
+    const manager = new FleetManager(apiClientMock as any, sessionMock as any, {
+      baseUrl: 'http://localhost:8787',
+    });
+    manager.destroy();
+
+    manager.setBaseUrl('https://ponter.ponta.dev');
+    expect(manager.getBaseUrl()).toBe('http://localhost:8787');
+  });
 });

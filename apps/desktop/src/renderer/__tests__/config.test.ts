@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { resetPonterMock, getPonterMock } from './setup';
 import { useConfigStore } from '@/stores/config';
+import { initDesktopTheme } from '@/composables/useTheme';
 
 describe('config store', () => {
   beforeEach(() => {
@@ -49,27 +50,52 @@ describe('config store', () => {
     ponter.saveConfig.mockResolvedValue(undefined);
 
     await store.setServerUrl('http://new:1');
+    // Issue #150: only the changed field is sent, so a save can never clobber
+    // the other persisted preferences.
     expect(ponter.saveConfig).toHaveBeenCalledWith({
       serverUrl: 'http://new:1',
-      allowInput: false,
-      theme: null,
     });
     expect(store.serverUrl).toBe('http://new:1');
     expect(store.hasServerUrl).toBe(true);
     expect(store.editing).toBe(false);
   });
 
-  it('setTheme persists the theme and leaves serverUrl untouched (null)', async () => {
+  it('setTheme persists the theme without touching the server URL (Issue #150)', async () => {
     const store = useConfigStore();
     const ponter = getPonterMock();
     ponter.saveConfig.mockResolvedValue(undefined);
 
     await store.setTheme('dark');
-    expect(ponter.saveConfig).toHaveBeenCalledWith({
-      serverUrl: null,
-      allowInput: false,
-      theme: 'dark',
-    });
+    // Issue #150: the payload must NOT carry `serverUrl` at all. `undefined`
+    // means "unchanged" to ConfigManager.save(); the previous `serverUrl: null`
+    // meant "clear", so saving a theme wiped the persisted URL and sent the app
+    // back to Server Setup on the next launch.
+    expect(ponter.saveConfig).toHaveBeenCalledWith({ theme: 'dark' });
+    expect(ponter.saveConfig.mock.calls[0]![0]).not.toHaveProperty('serverUrl');
     expect(store.theme).toBe('dark');
+  });
+
+  it('setAllowInput persists the gate without touching the server URL (Issue #150)', async () => {
+    const store = useConfigStore();
+    const ponter = getPonterMock();
+    ponter.saveConfig.mockResolvedValue(undefined);
+
+    await store.setAllowInput(true);
+    expect(ponter.saveConfig).toHaveBeenCalledWith({ allowInput: true });
+    expect(ponter.saveConfig.mock.calls[0]![0]).not.toHaveProperty('serverUrl');
+    expect(store.allowInput).toBe(true);
+  });
+
+  it('useTheme persistence adapter never sends a serverUrl key (Issue #150)', async () => {
+    const ponter = getPonterMock();
+    ponter.saveConfig.mockResolvedValue(undefined);
+
+    initDesktopTheme(null);
+    const { useTheme } = await import('@/composables/useTheme');
+    useTheme().set('dark');
+
+    await vi.waitFor(() => expect(ponter.saveConfig).toHaveBeenCalled());
+    expect(ponter.saveConfig.mock.calls[0]![0]).toEqual({ theme: 'dark' });
+    expect(ponter.saveConfig.mock.calls[0]![0]).not.toHaveProperty('serverUrl');
   });
 });

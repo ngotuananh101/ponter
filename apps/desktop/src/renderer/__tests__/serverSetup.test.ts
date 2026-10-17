@@ -58,10 +58,10 @@ describe('ServerSetupView', () => {
     await flushPromises();
 
     expect(ponter.probeServer).toHaveBeenCalledWith('http://localhost:8787');
+    // Issue #150: the save carries only the URL the user changed; the other
+    // preferences stay untouched on disk.
     expect(ponter.saveConfig).toHaveBeenCalledWith({
       serverUrl: 'http://localhost:8787',
-      allowInput: false,
-      theme: null,
     });
     expect(config.editing).toBe(false);
     expect(config.hasServerUrl).toBe(true);
