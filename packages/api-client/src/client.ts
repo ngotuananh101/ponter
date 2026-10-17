@@ -13,22 +13,63 @@ import { AgentsResource } from './resources/agents';
 import { SessionsResource } from './resources/sessions';
 import { WebrtcResource } from './resources/webrtc';
 
+/** Trim every trailing slash, matching the constructor's normalisation. */
+function normalizeBaseUrl(baseUrl: string): string {
+  let normalized = baseUrl;
+  while (normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
 export class HttpClient {
-  readonly baseUrl: string;
+  private currentBaseUrl: string;
   readonly storage: TokenStorageAdapter;
   onAuthError?: AuthErrorHandler;
   private readonly customFetch: typeof fetch;
   private refreshPromise: Promise<void> | null = null;
+  private generation = 0;
 
   constructor(config: ApiClientConfig) {
-    let normalized = config.baseUrl;
-    while (normalized.endsWith('/')) {
-      normalized = normalized.slice(0, -1);
-    }
-    this.baseUrl = normalized;
+    this.currentBaseUrl = normalizeBaseUrl(config.baseUrl);
     this.storage = config.storage;
     this.onAuthError = config.onAuthError;
     this.customFetch = config.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /** The base URL every request (and the refresh call) is built from. */
+  get baseUrl(): string {
+    return this.currentBaseUrl;
+  }
+
+  /**
+   * Monotonic counter bumped by every `setBaseUrl()` call.
+   *
+   * A refresh that was already in flight when the server changed must not
+   * write its tokens into storage afterwards — they belong to the previous
+   * server. Callers capture this value before awaiting and compare it after.
+   */
+  get serverGeneration(): number {
+    return this.generation;
+  }
+
+  /**
+   * Repoint this client at a different server (Issue #150).
+   *
+   * The desktop main process builds its client once at boot, so a server URL
+   * chosen afterwards in Server Setup would otherwise be ignored until the app
+   * restarted. Normalisation matches the constructor, and because every
+   * resource holds this same `HttpClient` instance, one call repoints all of
+   * them. `createApiClient` remains the single construction point (ADR-89).
+   *
+   * Bumping `generation` and dropping `refreshPromise` are part of the same
+   * switch: a refresh still waiting on the old host must not be shared with the
+   * new one, and its eventual response must be discarded rather than stored.
+   */
+  setBaseUrl(baseUrl: string): void {
+    this.currentBaseUrl = normalizeBaseUrl(baseUrl);
+    this.generation += 1;
+    this.refreshPromise = null;
   }
 
   async request<T>(
@@ -161,6 +202,11 @@ export class HttpClient {
       );
     }
 
+    // Snapshot before the request: if the client is repointed while this is in
+    // flight, the response belongs to the previous server and must be dropped
+    // (Issue #150 B1).
+    const generation = this.generation;
+
     try {
       const response = await this.customFetch(
         `${this.baseUrl}/api/auth/refresh`,
@@ -181,6 +227,15 @@ export class HttpClient {
         expiresIn: number;
       };
 
+      if (generation !== this.generation) {
+        // Not `failRefresh`: clearing here would wipe the NEW server's tokens.
+        throw new ApiError(
+          'Server changed during refresh',
+          0,
+          'SERVER_CHANGED',
+        );
+      }
+
       await this.storage.setTokens({
         accessToken: data.token,
         refreshToken: data.refreshToken,
@@ -193,6 +248,11 @@ export class HttpClient {
         const message =
           error instanceof Error ? error.message : 'Refresh failed';
         apiErr = new ApiError(message, 401, 'REFRESH_FAILED');
+      }
+      // A stale-server outcome is not an auth failure for the server now in
+      // use, so it must not purge whatever the new server has stored.
+      if (apiErr.code === 'SERVER_CHANGED') {
+        throw apiErr;
       }
       throw await this.failRefresh(apiErr);
     }

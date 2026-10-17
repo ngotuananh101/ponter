@@ -10,6 +10,7 @@ import { FleetManager } from './fleet';
 import { AgentSupervisor } from './agent-supervisor';
 import { UpdaterManager } from './updater';
 import { registerIpcHandlers } from './ipc';
+import { applyServerUrlChange } from './server-url';
 import { createApiClient } from '@ponter/api-client';
 
 /**
@@ -52,10 +53,20 @@ if (!gotTheLock) {
     // Initialize session token storage:
     // - Access tokens: in-memory only (never written to keychain/disk)
     // - Refresh tokens: via keychain.safeStorage
-    const tokenStorage = new SessionTokenStorage(keychain);
+    // - Generation-aware (Issue #150): once the client is repointed at another
+    //   server, stored credentials stop being served immediately, so neither a
+    //   Bearer header nor a refresh POST can carry them to the new host.
+    // - Optional chaining guard (BE review B3 TDZ): `getRefreshToken()` now
+    //   calls this on its very first read to adopt the initial generation, so
+    //   an early read before `apiClient` is assigned must not throw.
+    let apiClient: ReturnType<typeof createApiClient> | undefined;
+    const tokenStorage = new SessionTokenStorage(
+      keychain,
+      () => apiClient?.http.serverGeneration ?? 0,
+    );
 
     // Initialize API client with secure storage adapter
-    const apiClient = createApiClient({
+    apiClient = createApiClient({
       baseUrl: cfg.serverUrl ?? 'http://localhost:8787',
       storage: tokenStorage,
     });
@@ -116,6 +127,11 @@ if (!gotTheLock) {
       window,
       supervisor,
       updater,
+      // Issue #150: the client and fleet are built once here, so a server URL
+      // saved later must be pushed into the live services rather than waiting
+      // for the next launch.
+      applyServerUrlChange: (effectiveBaseUrl) =>
+        applyServerUrlChange({ apiClient, session, fleet }, effectiveBaseUrl),
     });
 
     app.on('activate', () => {

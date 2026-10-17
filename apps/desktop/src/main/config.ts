@@ -39,15 +39,7 @@ export class ConfigManager {
   }
 
   load(): AppConfig {
-    let persisted: Partial<AppConfig> = {};
-    if (fs.existsSync(this.filePath)) {
-      try {
-        const raw = fs.readFileSync(this.filePath, 'utf-8');
-        persisted = JSON.parse(raw);
-      } catch {
-        persisted = {};
-      }
-    }
+    const persisted = this.loadPersisted();
 
     const envUrl = this.cleanUrl(this.runtimeEnvUrl);
     const persistedUrl = this.cleanUrl(persisted.serverUrl);
@@ -78,20 +70,43 @@ export class ConfigManager {
     };
   }
 
+  /**
+   * Read the raw persisted file, without applying ADR-64 precedence.
+   *
+   * `load()` returns the *effective* URL, which falls back to
+   * `http://localhost:8787` when nothing was ever configured. Writing that value
+   * back (Issue #150) would make the next launch believe a server had been
+   * chosen and skip Server Setup, so `save()` needs the persisted value alone.
+   */
+  private loadPersisted(): Partial<AppConfig> {
+    if (!fs.existsSync(this.filePath)) return {};
+    try {
+      return JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
+    } catch {
+      return {};
+    }
+  }
+
   save(payload: SaveConfigPayload): void {
-    const current = this.load();
+    const persisted = this.loadPersisted();
+    const currentUrl = this.cleanUrl(persisted.serverUrl) || null;
     const updated = {
       serverUrl:
         payload.serverUrl !== undefined
           ? payload.serverUrl
             ? this.cleanUrl(payload.serverUrl)
             : null
-          : current.serverUrl,
+          : currentUrl,
       allowInput:
         payload.allowInput !== undefined
           ? payload.allowInput
-          : current.allowInput,
-      theme: payload.theme !== undefined ? payload.theme : current.theme,
+          : persisted.allowInput === true,
+      theme:
+        payload.theme !== undefined
+          ? payload.theme
+          : persisted.theme === 'dark' || persisted.theme === 'light'
+            ? persisted.theme
+            : null,
     };
 
     const dir = path.dirname(this.filePath);

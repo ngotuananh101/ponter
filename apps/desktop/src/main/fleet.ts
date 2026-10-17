@@ -28,6 +28,11 @@ export class FleetManager {
   private listeners: Set<() => void> = new Set();
   private currentAgents: Agent[] = [];
   private destroyed = false;
+  /**
+   * Bumped on every server change so a ticket minted by the previous server
+   * cannot be replayed against the new one (BE finding N1).
+   */
+  private connectionGeneration = 0;
 
   constructor(
     apiClient: ApiClient,
@@ -58,40 +63,64 @@ export class FleetManager {
 
   /**
    * Connect via WebSocket using a server-minted ticket.
+   *
+   * Runs fire-and-forget from `start()`/`setBaseUrl()`, so it must never
+   * reject: a missing session (fresh install, or right after a server switch
+   * cleared the tokens) makes the ticket request fail with AUTH_FAILED, and an
+   * unhandled rejection here would surface as a main-process error. Falling
+   * back to polling keeps the fleet warm until the user signs in.
+   *
+   * A ticket is only valid on the server that minted it (BE finding N1), so the
+   * connection generation is captured before awaiting and re-checked before the
+   * socket is opened: a ticket that arrives after the user switched servers is
+   * discarded instead of being replayed against the new host.
    */
   private async connectWebSocket(): Promise<void> {
-    const ticket = await this.session.retryOnceOn401(async () => {
-      try {
-        const body = await this.apiClient.http.request<{ ticket?: string }>(
-          'POST',
-          this.wsTicketPath,
-        );
-        return body?.ticket ?? null;
-      } catch {
-        return null;
+    const generation = this.connectionGeneration;
+
+    try {
+      const ticket = await this.session.retryOnceOn401(async () => {
+        try {
+          const body = await this.apiClient.http.request<{ ticket?: string }>(
+            'POST',
+            this.wsTicketPath,
+          );
+          return body?.ticket ?? null;
+        } catch {
+          return null;
+        }
+      });
+
+      if (generation !== this.connectionGeneration) {
+        return;
       }
-    });
 
-    if (!ticket) {
-      this.startPolling();
-      return;
+      if (!ticket) {
+        this.startPolling();
+        return;
+      }
+
+      const wsUrl = `${toWsUrl(this.baseUrl)}/api/ws/fleet?ticket=${encodeURIComponent(ticket)}`;
+      this.ws = new WebSocket(wsUrl);
+
+      this.ws.onmessage = () => {
+        // Re-fetch fleet on WebSocket updates.
+        void this.refresh();
+      };
+
+      this.ws.onerror = () => {
+        this.startPolling();
+      };
+
+      this.ws.onclose = () => {
+        this.startPolling();
+      };
+    } catch {
+      // No usable session yet (or the ticket call failed outright): poll.
+      if (generation === this.connectionGeneration) {
+        this.startPolling();
+      }
     }
-
-    const wsUrl = `${toWsUrl(this.baseUrl)}/api/ws/fleet?ticket=${encodeURIComponent(ticket)}`;
-    this.ws = new WebSocket(wsUrl);
-
-    this.ws.onmessage = () => {
-      // Re-fetch fleet on WebSocket updates.
-      void this.refresh();
-    };
-
-    this.ws.onerror = () => {
-      this.startPolling();
-    };
-
-    this.ws.onclose = () => {
-      this.startPolling();
-    };
   }
 
   private startPolling(): void {
@@ -127,6 +156,31 @@ export class FleetManager {
   }
 
   start(): void {
+    if (this.baseUrl) {
+      void this.connectWebSocket();
+    } else {
+      this.startPolling();
+    }
+  }
+
+  /** The server this manager currently targets. */
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /**
+   * Repoint the fleet at a different server and reconnect (Issue #150).
+   *
+   * The manager is built once at boot, so a URL chosen later in Server Setup
+   * would otherwise keep the WebSocket and its ticket on the old host. Stop
+   * first so the stale socket and poll timer cannot outlive the change.
+   */
+  setBaseUrl(baseUrl: string): void {
+    if (this.destroyed || this.baseUrl === baseUrl) return;
+    this.stop();
+    // Invalidate any ticket request still in flight for the previous server.
+    this.connectionGeneration += 1;
+    this.baseUrl = baseUrl;
     if (this.baseUrl) {
       void this.connectWebSocket();
     } else {

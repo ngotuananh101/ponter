@@ -223,4 +223,59 @@ describe('IPC Handlers (Main Process)', () => {
     expect(result.ok).toBe(false);
     expect(net.fetch).not.toHaveBeenCalled();
   });
+
+  /**
+   * Issue #150: saving a new server URL must take effect immediately. The
+   * packaged app built its ApiClient once at boot, so without this hook the
+   * persisted URL was ignored until the next launch and login kept hitting the
+   * localhost fallback.
+   */
+  describe('desktop:save-config applies a new server URL at runtime', () => {
+    it('applies the effective URL when the payload carries a new serverUrl', async () => {
+      const applyServerUrlChange = vi.fn(async () => true);
+      deps.applyServerUrlChange = applyServerUrlChange;
+      deps.config.load = vi.fn(() => ({
+        serverUrl: 'https://ponter.ponta.dev',
+        allowInput: false,
+        theme: null,
+        hasServerUrl: true,
+      }));
+
+      registerIpcHandlers(deps);
+
+      await handlers['desktop:save-config'](
+        {},
+        { serverUrl: 'https://ponter.ponta.dev' },
+      );
+
+      expect(deps.config.save).toHaveBeenCalledWith({
+        serverUrl: 'https://ponter.ponta.dev',
+      });
+      // The effective URL (config precedence, ADR-64) is what gets applied —
+      // not the raw payload — so a runtime env override still wins.
+      expect(applyServerUrlChange).toHaveBeenCalledWith(
+        'https://ponter.ponta.dev',
+      );
+    });
+
+    it('does not touch the runtime when the payload has no serverUrl', async () => {
+      const applyServerUrlChange = vi.fn(async () => true);
+      deps.applyServerUrlChange = applyServerUrlChange;
+
+      registerIpcHandlers(deps);
+
+      await handlers['desktop:save-config']({}, { theme: 'dark' });
+
+      expect(deps.config.save).toHaveBeenCalledWith({ theme: 'dark' });
+      expect(applyServerUrlChange).not.toHaveBeenCalled();
+    });
+
+    it('keeps working when no runtime hook is wired', async () => {
+      registerIpcHandlers(deps);
+
+      await expect(
+        handlers['desktop:save-config']({}, { theme: 'dark' }),
+      ).resolves.toBeUndefined();
+    });
+  });
 });

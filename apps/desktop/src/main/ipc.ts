@@ -27,6 +27,13 @@ export interface IpcDependencies {
   window: WindowManager;
   supervisor: AgentSupervisor;
   updater: UpdaterManager;
+  /**
+   * Apply a changed server URL to the running services (Issue #150).
+   *
+   * Wired by `index.ts` to `applyServerUrlChange`; optional so tests and any
+   * embedder that does not own a live runtime can register the handlers alone.
+   */
+  applyServerUrlChange?: (effectiveBaseUrl: string) => Promise<boolean>;
 }
 
 /**
@@ -60,6 +67,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     window,
     supervisor,
     updater,
+    applyServerUrlChange,
   } = deps;
 
   // Listen for agent sidecar runtime status changes and broadcast to renderer windows
@@ -76,8 +84,20 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   // 2. desktop:save-config
   ipcMain.handle(
     'desktop:save-config',
-    (_event, payload: SaveConfigPayload): void => {
+    async (_event, payload: SaveConfigPayload): Promise<void> => {
       config.save(payload);
+      // Issue #150: a new server URL must take effect now, not at next launch.
+      // The ApiClient and FleetManager are built once in `app.whenReady()`, so
+      // they only learn about the change through this hook. Only an explicit
+      // `serverUrl` key triggers it — a theme/allowInput save must not log the
+      // user out. The URL applied is the *effective* one (`config.load()`),
+      // which honours the ADR-64 precedence order, not the raw payload.
+      if (payload.serverUrl !== undefined && applyServerUrlChange) {
+        const effectiveUrl = config.load().serverUrl;
+        if (effectiveUrl) {
+          await applyServerUrlChange(effectiveUrl);
+        }
+      }
     },
   );
 
