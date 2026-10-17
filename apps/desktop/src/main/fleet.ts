@@ -28,6 +28,11 @@ export class FleetManager {
   private listeners: Set<() => void> = new Set();
   private currentAgents: Agent[] = [];
   private destroyed = false;
+  /**
+   * Bumped on every server change so a ticket minted by the previous server
+   * cannot be replayed against the new one (BE finding N1).
+   */
+  private connectionGeneration = 0;
 
   constructor(
     apiClient: ApiClient,
@@ -64,8 +69,15 @@ export class FleetManager {
    * cleared the tokens) makes the ticket request fail with AUTH_FAILED, and an
    * unhandled rejection here would surface as a main-process error. Falling
    * back to polling keeps the fleet warm until the user signs in.
+   *
+   * A ticket is only valid on the server that minted it (BE finding N1), so the
+   * connection generation is captured before awaiting and re-checked before the
+   * socket is opened: a ticket that arrives after the user switched servers is
+   * discarded instead of being replayed against the new host.
    */
   private async connectWebSocket(): Promise<void> {
+    const generation = this.connectionGeneration;
+
     try {
       const ticket = await this.session.retryOnceOn401(async () => {
         try {
@@ -78,6 +90,10 @@ export class FleetManager {
           return null;
         }
       });
+
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
 
       if (!ticket) {
         this.startPolling();
@@ -101,7 +117,9 @@ export class FleetManager {
       };
     } catch {
       // No usable session yet (or the ticket call failed outright): poll.
-      this.startPolling();
+      if (generation === this.connectionGeneration) {
+        this.startPolling();
+      }
     }
   }
 
@@ -160,6 +178,8 @@ export class FleetManager {
   setBaseUrl(baseUrl: string): void {
     if (this.destroyed || this.baseUrl === baseUrl) return;
     this.stop();
+    // Invalidate any ticket request still in flight for the previous server.
+    this.connectionGeneration += 1;
     this.baseUrl = baseUrl;
     if (this.baseUrl) {
       void this.connectWebSocket();

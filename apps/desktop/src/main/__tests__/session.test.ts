@@ -210,8 +210,11 @@ describe('SessionManager.logout', () => {
     await session.logout();
 
     expect(purgeFinished).toBe(true);
+    // The purge runs through the storage adapter, which is what owns the
+    // keychain secret (see `SessionTokenStorage.clearTokens`); `logout()` must
+    // not delete it a second time (PR #151 review N4).
     expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
-    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
+    expect(keychainMock.deleteSecret).not.toHaveBeenCalled();
   });
 
   it('still purges locally when the remote logout fails', async () => {
@@ -224,6 +227,5 @@ describe('SessionManager.logout', () => {
 
     await expect(session.logout()).resolves.toBeUndefined();
     expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
-    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
   });
 });

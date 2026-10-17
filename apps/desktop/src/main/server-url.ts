@@ -24,14 +24,17 @@ export interface ServerUrlRuntime {
  * (the `http://localhost:8787` fallback on a fresh install) and failed with a
  * bare "fetch failed" until the app was restarted.
  *
- * Order matters:
- *  1. Drop the previous server's credentials BEFORE the base moves, so nothing
- *     can retry against the old host with them. This is a local clear only —
+ * Order matters, and the first step is deliberately synchronous:
+ *  1. Repoint the shared HTTP client. `setBaseUrl()` bumps the client's server
+ *     generation before any await, so a refresh still in flight against the old
+ *     host can never be mistaken for a current one — there is no window between
+ *     the purge and the bump for it to slip through (BE finding B1). All
+ *     resources follow the same instance.
+ *  2. Repoint the fleet and reconnect so its WebSocket ticket comes from the
+ *     new server.
+ *  3. Drop the previous server's credentials. This is a local clear only —
  *     `SessionManager.logout()` would POST to the old server, which is exactly
  *     the host we may be running away from.
- *  2. Repoint the shared HTTP client (all resources follow it).
- *  3. Repoint the fleet and reconnect so its WebSocket ticket comes from the
- *     new server.
  *
  * A no-op when the URL is unchanged: saves of unrelated preferences (theme,
  * input gate) must not log the user out.
@@ -46,12 +49,13 @@ export async function applyServerUrlChange(
     return false;
   }
 
-  // Local purge only: `SessionManager.logout()` would POST to the old host.
-  await runtime.session.clearLocalSession();
+  // Synchronous first: closes the generation window before any await can yield.
   runtime.apiClient.http.setBaseUrl(normalized);
   // Read the base back from the client so the fleet receives exactly the
   // normalised form the requests use, not a second copy of the rule.
   runtime.fleet.setBaseUrl(runtime.apiClient.http.baseUrl);
+
+  await runtime.session.clearLocalSession();
 
   return true;
 }

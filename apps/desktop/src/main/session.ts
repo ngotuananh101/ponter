@@ -57,6 +57,14 @@ function loginError(message: string, code?: string): Error {
   return error;
 }
 
+/**
+ * The client was repointed at a different server while this request was in
+ * flight, so its response belongs to the previous server (BE finding B1).
+ */
+function serverChangedError(): Error {
+  return loginError('Server changed during refresh', 'SERVER_CHANGED');
+}
+
 export class SessionManager {
   private apiClient: ApiClient;
   private keychain: KeychainService;
@@ -95,10 +103,7 @@ export class SessionManager {
           'NETWORK_ERROR',
         );
       }
-      throw loginError(
-        err.data?.message || err.message || 'Login failed',
-        err.code,
-      );
+      throw loginError(err.message || 'Login failed', err.code);
     }
   }
 
@@ -125,6 +130,8 @@ export class SessionManager {
    *
    * Goes through the storage adapter so any adapter (in-memory + keychain today,
    * something else later) purges itself, then clears this module's own copy.
+   * The adapter already deletes the keychain secret, so there is no second
+   * delete here (PR #151 review N4).
    */
   async clearLocalSession(): Promise<void> {
     this.currentUser = null;
@@ -134,7 +141,6 @@ export class SessionManager {
     } catch {
       // A failing adapter must not block the server switch.
     }
-    this.keychain.deleteSecret('refresh_token');
   }
 
   async refreshSession(): Promise<string> {
@@ -145,6 +151,12 @@ export class SessionManager {
       throw new Error('AUTH_FAILED: UNAUTHORIZED');
     }
 
+    // Snapshot before the request (BE finding B1). If the app is repointed at a
+    // different server while this is in flight, the response carries the OLD
+    // server's credentials: storing them would send the old bearer token to the
+    // new host and post the old refresh token there.
+    const generation = this.apiClient.http.serverGeneration;
+
     try {
       const resp = await this.apiClient.http.request<{
         token: string;
@@ -154,6 +166,10 @@ export class SessionManager {
         body: { refreshToken },
       });
 
+      if (generation !== this.apiClient.http.serverGeneration) {
+        throw serverChangedError();
+      }
+
       inMemoryAccessToken = resp.token;
       if (resp.refreshToken) {
         this.keychain.storeSecret('refresh_token', resp.refreshToken);
@@ -161,8 +177,17 @@ export class SessionManager {
       if (resp.user) this.currentUser = resp.user;
       return resp.token;
     } catch (err: any) {
+      // A stale-server outcome is not an auth failure for the server now in
+      // use: purging here would wipe credentials the new server may have.
+      if (err?.code === 'SERVER_CHANGED') {
+        throw err;
+      }
       if (err.status === 401 || err.statusCode === 401) {
-        // Issue #107: 401 is auth-fatal — purge keychain
+        // Issue #107: 401 is auth-fatal — purge keychain. Guarded again because
+        // the 401 itself may have been produced by the old host mid-switch.
+        if (generation !== this.apiClient.http.serverGeneration) {
+          throw serverChangedError();
+        }
         this.currentUser = null;
         inMemoryAccessToken = null;
         this.keychain.deleteSecret('refresh_token');
@@ -171,7 +196,7 @@ export class SessionManager {
       // Non-401 errors (e.g. 403 AGENT_LIMIT_REACHED) are non-fatal:
       // do NOT clear the keychain (Issue #107).
       if (err.status === 403 || err.statusCode === 403) {
-        throw new Error(err.data?.message || err.message || 'Forbidden');
+        throw new Error(err.message || 'Forbidden');
       }
       throw err;
     }
