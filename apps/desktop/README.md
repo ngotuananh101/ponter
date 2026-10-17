@@ -32,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (22 test suites, 167 tests):
+Run the Vitest test suite (23 test suites, 197 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
@@ -129,3 +129,12 @@ Server URL resolution follows the four-level precedence chain (ADR-64):
 4. Fallback default `http://localhost:8787`
 
 Credentials and tokens are never stored in `config.json` or renderer web storage (localStorage/sessionStorage/IndexedDB).
+
+### Runtime Server URL Application & Preference Isolation (Issue #150 / PR #151)
+
+- **Dynamic Reconfiguration Without Restart:** Modifying the server URL in Server Setup takes effect immediately in the running application session without requiring a restart. The main process applies the change via `applyServerUrlChange()`:
+  - Repoints the shared `ApiClient` via `HttpClient.setBaseUrl(newUrl)`.
+  - Increments the monotonic `serverGeneration` counter in `SessionTokenStorage`, which discards any in-flight refresh responses from the old host and prevents cross-host token writes.
+  - Purges local session tokens from memory and the system keychain without dispatching network calls to the old host.
+  - Reconnects `FleetManager` by terminating the active WebSocket connection or clearing polling intervals, then reconnecting to `/api/ws/ticket` on the new server.
+- **Preference Save Isolation:** Saving user preferences (such as theme or `allowInput`) sends only their respective fields to `ConfigManager.save()`. The configuration manager preserves raw persisted settings and does not overwrite or wipe the configured `serverUrl` with the localhost fallback.
