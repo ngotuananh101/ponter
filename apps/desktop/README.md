@@ -32,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (24 test suites, 249 tests):
+Run the Vitest test suite (24 test suites, 264 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
@@ -148,3 +148,12 @@ Credentials and tokens are never stored in `config.json` or renderer web storage
   - **Crash and Buffer Deadlock Prevention:** Listens for child process `'error'` events to prevent unhandled Electron main-process crashes, and ignores child stdout (`stdio: ['ignore', 'ignore', 'pipe']`) to prevent the operating system pipe buffer (~64KB) from filling and deadlocking the agent.
 - **Sticky Auto-Start:** Persists the `agentAutoStart` preference flag across sessions, automatically starting the sidecar on application launch if registered and configured.
 - **Safe Server Switching:** When switching servers via `applyServerUrlChange()`, any running agent is safely halted via `agentControl.stop()` before credentials are removed and local device identity is reset.
+
+### Session Persistence & Auto-Restore (Issue #156 / PR #158)
+
+- **Remember Me & Username Retention:** `LoginView.vue` provides a "Remember me" checkbox (defaulting to enabled) and automatically persists the last successfully authenticated username as `savedUsername` in `config.json`. On subsequent launches, the username field is prefilled automatically.
+- **Silent Session Auto-Restore on Boot:** When `rememberMe !== false` and a refresh token exists in the OS keychain, `App.vue` invokes `auth.restoreSession()` on launch via the `desktop:restore-session` IPC channel:
+  - `SessionManager.restoreSession()` calls `refreshSession()` to silently exchange the stored refresh token for a fresh access token and validates user identity via `apiClient.users.me()`.
+  - Authenticated sessions navigate immediately to `DevicesView.vue` (or `WizardView.vue` if initial device setup is pending) without flashing `LoginView.vue`.
+  - Integrates with generation-aware token storage (PR #151): checks `apiClient.http.storage.getRefreshToken()`, respects `PURGED (-1)` sentinels to prevent restoring invalidated credentials, and purges credentials on 401 response.
+- **Explicit Logout / Remember Me Disabled:** When `rememberMe === false`, closing and reopening the application lands directly on `LoginView.vue` with `savedUsername` prefilled, but does not auto-restore the session, ensuring a full password prompt is required.
