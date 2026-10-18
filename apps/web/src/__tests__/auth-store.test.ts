@@ -42,6 +42,20 @@ describe('Auth Store (Pinia)', () => {
     expect(store.status).toBe('authenticated');
   });
 
+  it('1b. login with rememberMe: false delegates to tokenStorage.setRememberMe(false)', async () => {
+    const store = useAuthStore();
+    const setRememberMeSpy = vi.spyOn(tokenStorage, 'setRememberMe');
+    vi.spyOn(apiClient.auth, 'login').mockResolvedValue({
+      user: { id: 'u1', username: 'bob' } as unknown as User,
+      token: 'access-tok',
+      refreshToken: 'ref-tok',
+      expiresIn: 900,
+    });
+
+    await store.login('bob', 'secret123', false);
+    expect(setRememberMeSpy).toHaveBeenCalledWith(false);
+  });
+
   it('2. login failure sets error and leaves status: error', async () => {
     const store = useAuthStore();
     vi.spyOn(apiClient.auth, 'login').mockRejectedValue(

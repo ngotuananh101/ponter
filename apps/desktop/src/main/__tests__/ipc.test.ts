@@ -328,4 +328,41 @@ describe('IPC Handlers (Main Process)', () => {
       expect(deps.agentControl.stop).toHaveBeenCalledTimes(1);
     });
   });
+
+  /**
+   * Ticket #156: Desktop session restore and rememberMe in desktop:login.
+   */
+  describe('desktop:restore-session & desktop:login with rememberMe (Ticket #156)', () => {
+    it('passes rememberMe to session.login', async () => {
+      deps.session.login = vi.fn(async () => ({ id: 'u1', username: 'alice' }));
+
+      registerIpcHandlers(deps);
+
+      await handlers['desktop:login'](
+        {},
+        {
+          username: 'alice',
+          password: 'password123',
+          rememberMe: false,
+        },
+      );
+
+      expect(deps.session.login).toHaveBeenCalledWith(
+        'alice',
+        'password123',
+        false,
+      );
+    });
+
+    it('delegates restore-session to session.restoreSession', async () => {
+      const mockUser = { id: 'u1', username: 'alice', role: 'admin' };
+      deps.session.restoreSession = vi.fn(async () => mockUser);
+
+      registerIpcHandlers(deps);
+
+      const result = await handlers['desktop:restore-session']();
+      expect(result).toEqual(mockUser);
+      expect(deps.session.restoreSession).toHaveBeenCalledTimes(1);
+    });
+  });
 });

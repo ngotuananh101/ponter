@@ -35,7 +35,29 @@ describe('LoginForm.vue', () => {
 
     expect(wrapper.emitted('submit')).toHaveLength(1);
     expect(wrapper.emitted('submit')![0]).toEqual([
-      { username: 'alice', password: 'password123' },
+      { username: 'alice', password: 'password123', rememberMe: true },
+    ]);
+  });
+
+  it('20. Remember me checkbox defaults to checked and can be unchecked', async () => {
+    const wrapper = mount(LoginForm, {
+      global: { stubs: { RouterLink: true } },
+    });
+    const checkbox = wrapper.find('#remember-me');
+    expect(checkbox.exists()).toBe(true);
+    expect(
+      checkbox.attributes('aria-checked') === 'true' ||
+        (checkbox.element as HTMLInputElement).checked === true,
+    ).toBe(true);
+
+    await wrapper.find('#username').setValue('bob');
+    await wrapper.find('#password').setValue('secret123');
+    await checkbox.trigger('click');
+    await wrapper.find('form').trigger('submit.prevent');
+
+    expect(wrapper.emitted('submit')).toHaveLength(1);
+    expect(wrapper.emitted('submit')![0]).toEqual([
+      { username: 'bob', password: 'secret123', rememberMe: false },
     ]);
   });
 

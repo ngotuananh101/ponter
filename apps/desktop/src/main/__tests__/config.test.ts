@@ -86,6 +86,8 @@ describe('ConfigManager', () => {
       theme: 'dark',
       localAgentId: null,
       agentAutoStart: false,
+      rememberMe: true,
+      savedUsername: null,
     });
     expect(manager.load().hasServerUrl).toBe(false);
   });
@@ -180,5 +182,68 @@ describe('ConfigManager', () => {
     );
     expect(written.localAgentId).toBe('dev_abc12345');
     expect(written.theme).toBe('light');
+  });
+
+  /**
+   * Ticket #156: desktop app supports "Remember me".
+   * - rememberMe defaults to true if unset.
+   * - savedUsername persists the last successfully remembered username.
+   */
+  it('persists rememberMe and savedUsername and reports them from load()', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ rememberMe: true, savedUsername: 'alice' });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.rememberMe).toBe(true);
+    expect(written.savedUsername).toBe('alice');
+
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(written));
+    const loaded = manager.load();
+    expect(loaded.rememberMe).toBe(true);
+    expect(loaded.savedUsername).toBe('alice');
+  });
+
+  it('defaults rememberMe to true and savedUsername to null when unset', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+
+    const loaded = manager.load();
+    expect(loaded.rememberMe).toBe(true);
+    expect(loaded.savedUsername).toBeNull();
+  });
+
+  it('clears savedUsername when rememberMe is set to false', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        rememberMe: true,
+        savedUsername: 'alice',
+      }),
+    );
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ rememberMe: false });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.rememberMe).toBe(false);
+    expect(written.savedUsername).toBeNull();
   });
 });

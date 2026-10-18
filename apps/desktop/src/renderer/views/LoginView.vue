@@ -13,19 +13,21 @@ import {
 import { Input } from '@ponter/ui-components';
 import { Label } from '@ponter/ui-components';
 import { Button } from '@ponter/ui-components';
+import { Checkbox } from '@ponter/ui-components';
 import { Alert, AlertDescription } from '@ponter/ui-components';
 import { Terminal, ShieldCheck, User, Lock, Loader2 } from '@lucide/vue';
 import { ThemeToggle } from '@ponter/ui-components';
 
 const store = useAuthStore();
 const config = useConfigStore();
-const username = ref('');
+const username = ref(config.savedUsername || '');
 const password = ref('');
+const rememberMe = ref(config.rememberMe !== false);
 
 async function handleSubmit() {
   if (!username.value.trim() || !password.value) return;
   try {
-    await store.login(username.value.trim(), password.value);
+    await store.login(username.value.trim(), password.value, rememberMe.value);
   } catch {
     // error surfaced via store.error and the view
   }
@@ -117,6 +119,20 @@ async function handleSubmit() {
               :disabled="store.status === 'loading'"
               class="bg-background/60 text-sm focus-visible:ring-primary"
             />
+          </div>
+          <div class="flex items-center space-x-2 pt-1">
+            <Checkbox
+              id="login-remember-me"
+              data-testid="login-remember-me"
+              v-model="rememberMe"
+              :disabled="store.status === 'loading'"
+            />
+            <Label
+              for="login-remember-me"
+              class="text-xs font-normal text-muted-foreground cursor-pointer select-none"
+            >
+              Remember me
+            </Label>
           </div>
           <Alert
             v-if="store.error"

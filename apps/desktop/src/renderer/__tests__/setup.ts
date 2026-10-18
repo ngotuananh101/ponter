@@ -31,6 +31,7 @@ const ponterMock: MockedPonterApi = {
   probeServer: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
+  restoreSession: vi.fn(),
   probeCapture: vi.fn(),
   setAutostart: vi.fn(),
   isAutostartEnabled: vi.fn(),

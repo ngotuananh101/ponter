@@ -72,6 +72,11 @@ export class ConfigManager {
           ? persisted.localAgentId
           : null,
       agentAutoStart: persisted.agentAutoStart === true,
+      rememberMe: persisted.rememberMe !== false,
+      savedUsername:
+        typeof persisted.savedUsername === 'string' && persisted.savedUsername
+          ? persisted.savedUsername
+          : null,
     };
   }
 
@@ -125,6 +130,19 @@ export class ConfigManager {
           : persistedLocalAgentId,
       agentAutoStart:
         payload.agentAutoStart ?? persisted.agentAutoStart === true,
+      rememberMe:
+        payload.rememberMe !== undefined && payload.rememberMe !== null
+          ? payload.rememberMe
+          : persisted.rememberMe !== false,
+      savedUsername:
+        payload.savedUsername !== undefined
+          ? payload.savedUsername
+          : payload.rememberMe === false
+            ? null
+            : typeof persisted.savedUsername === 'string' &&
+                persisted.savedUsername
+              ? persisted.savedUsername
+              : null,
     };
 
     const dir = path.dirname(this.filePath);

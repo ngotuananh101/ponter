@@ -10,6 +10,10 @@ export interface AppConfig {
   localAgentId: string | null;
   /** Start the local agent automatically on the next launch (Ticket #154). */
   agentAutoStart: boolean;
+  /** Whether login credentials / session should be remembered (Ticket #156). Defaults to true. */
+  rememberMe: boolean;
+  /** Last remembered username for login autofill (Ticket #156). */
+  savedUsername: string | null;
 }
 
 export interface SaveConfigPayload {
@@ -20,6 +24,10 @@ export interface SaveConfigPayload {
   localAgentId?: string | null;
   /** `undefined` = unchanged; persisted so the agent starts on next launch. */
   agentAutoStart?: boolean;
+  /** `undefined` = unchanged; whether session should be remembered across restarts. */
+  rememberMe?: boolean | null;
+  /** `undefined` = unchanged, `null` = clear prefilled username. */
+  savedUsername?: string | null;
 }
 
 export interface ProbeResult {
@@ -80,8 +88,14 @@ export interface PonterDesktopApi {
   getConfig(): Promise<AppConfig>;
   saveConfig(payload: SaveConfigPayload): Promise<void>;
   probeServer(url: string): Promise<ProbeResult>;
-  login(username: string, password: string): Promise<UserProfile>;
+  login(
+    username: string,
+    password: string,
+    rememberMe?: boolean,
+  ): Promise<UserProfile>;
   logout(): Promise<void>;
+  /** Restore remembered session if available (Ticket #156). */
+  restoreSession(): Promise<UserProfile | null>;
   probeCapture(): Promise<ProbeResult>;
   setAutostart(enabled: boolean): Promise<void>;
   isAutostartEnabled(): Promise<boolean>;

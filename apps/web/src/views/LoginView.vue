@@ -15,9 +15,17 @@ onMounted(() => {
   authStore.clearError();
 });
 
-async function handleLogin(payload: { username: string; password: string }) {
+async function handleLogin(payload: {
+  username: string;
+  password: string;
+  rememberMe?: boolean;
+}) {
   try {
-    await authStore.login(payload.username, payload.password);
+    await authStore.login(
+      payload.username,
+      payload.password,
+      payload.rememberMe ?? true,
+    );
     router.push(safeRedirect(route.query.redirect));
   } catch (err) {
     // The store rethrows the ApiError. Detect the pending-approval case here

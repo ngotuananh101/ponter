@@ -142,4 +142,57 @@ describe('App flow (ADR-66)', () => {
 
     wrapper.unmount();
   });
+
+  /**
+   * Ticket #156: Auto-restore session on startup when rememberMe was chosen.
+   */
+  it('restores remembered session on startup and routes directly without showing LoginView', async () => {
+    const ponter = getPonterMock();
+    ponter.getConfig.mockResolvedValue({
+      serverUrl: 'https://ponter.ponta.dev',
+      allowInput: true,
+      theme: 'dark',
+      hasServerUrl: true,
+      rememberMe: true,
+      savedUsername: 'alice',
+    });
+    ponter.restoreSession.mockResolvedValue({
+      id: 'u1',
+      username: 'alice',
+      email: 'alice@example.com',
+      role: 'admin',
+    });
+
+    const wrapper = await mountApp();
+
+    expect(ponter.restoreSession).toHaveBeenCalledTimes(1);
+    const auth = useAuthStore();
+    expect(auth.isAuthenticated).toBe(true);
+    expect(auth.user?.username).toBe('alice');
+    // LoginView must NOT be shown
+    expect(wrapper.find('[data-testid="login-username"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it('shows LoginView when restoreSession returns null on startup', async () => {
+    const ponter = getPonterMock();
+    ponter.getConfig.mockResolvedValue({
+      serverUrl: 'https://ponter.ponta.dev',
+      allowInput: true,
+      theme: 'dark',
+      hasServerUrl: true,
+      rememberMe: false,
+    });
+    ponter.restoreSession.mockResolvedValue(null);
+
+    const wrapper = await mountApp();
+
+    expect(ponter.restoreSession).toHaveBeenCalledTimes(1);
+    const auth = useAuthStore();
+    expect(auth.isAuthenticated).toBe(false);
+    expect(wrapper.find('[data-testid="login-username"]').exists()).toBe(true);
+
+    wrapper.unmount();
+  });
 });

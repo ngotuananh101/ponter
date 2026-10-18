@@ -69,4 +69,8 @@ export interface AppConfig {
   localAgentId: string | null;
   /** Whether the local agent should start on launch (Ticket #154). */
   agentAutoStart: boolean;
+  /** Whether login credentials / session should be remembered (Ticket #156). Defaults to true. */
+  rememberMe: boolean;
+  /** Last remembered username for login autofill (Ticket #156). */
+  savedUsername: string | null;
 }
