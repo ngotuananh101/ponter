@@ -531,4 +531,65 @@ mod tests {
             let _ = ZbusRemoteDesktopPortal::new;
         }
     }
+
+    /// Issue #160: the sidecar crashed on Wayland because every `zbus::blocking`
+    /// call site runs inside the agent's tokio runtime, and zbus's `tokio`
+    /// feature implements `blocking` as `Runtime::block_on` on a shared static
+    /// runtime — which tokio rejects from within a runtime ("Cannot start a
+    /// runtime from within a runtime"), aborting the process under
+    /// `panic = "abort"`.
+    ///
+    /// This is the minimal reproduction: call a `zbus::blocking` API from
+    /// inside `Runtime::block_on`. It must not panic.
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    #[test]
+    fn zbus_blocking_is_safe_inside_a_tokio_runtime() {
+        let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
+
+        // `catch_unwind` turns the tokio panic into an assertable value: on the
+        // pre-fix code this test fails with the runtime-in-runtime panic; after
+        // the fix (async-io reactor) it passes. A live session bus is not
+        // required — reaching the reactor at all is what used to abort.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                // Errors are fine (no session bus in CI); panics are not.
+                let _ = zbus::blocking::Connection::session();
+            });
+        }));
+
+        assert!(
+            outcome.is_ok(),
+            "zbus::blocking must not panic when driven from a tokio runtime (Issue #160)"
+        );
+    }
+
+    /// The real call sites must be reachable from a spawned tokio task without
+    /// panicking, which is how `run_with_reconnect` drives the portal.
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    #[test]
+    fn portal_construction_from_spawned_task_does_not_panic() {
+        let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                let handle = tokio::spawn(async {
+                    // Same path `run_with_reconnect` takes before the portal
+                    // session is initialized (lib.rs).
+                    let _ = ZbusRemoteDesktopPortal::new();
+                });
+                // A panicking task surfaces as a JoinError; asserting on it is
+                // what makes this test able to fail (the bare `let _ =` would
+                // swallow the very panic this guards against).
+                assert!(
+                    handle.await.is_ok(),
+                    "portal construction task panicked inside the tokio runtime"
+                );
+            });
+        }));
+
+        assert!(
+            outcome.is_ok(),
+            "portal construction inside tokio::spawn must not panic (Issue #160)"
+        );
+    }
 }
