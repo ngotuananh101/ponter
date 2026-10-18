@@ -32,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (23 test suites, 197 tests):
+Run the Vitest test suite (24 test suites, 249 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
@@ -138,3 +138,13 @@ Credentials and tokens are never stored in `config.json` or renderer web storage
   - Purges local session tokens from memory and the system keychain without dispatching network calls to the old host.
   - Reconnects `FleetManager` by terminating the active WebSocket connection or clearing polling intervals, then reconnecting to `/api/ws/ticket` on the new server.
 - **Preference Save Isolation:** Saving user preferences (such as theme or `allowInput`) sends only their respective fields to `ConfigManager.save()`. The configuration manager preserves raw persisted settings and does not overwrite or wipe the configured `serverUrl` with the localhost fallback.
+
+### Local Device Identity & Agent Supervision Controls (Issue #154 / PR #155)
+
+- **Local Device Identity Resolution:** The desktop app recognizes the machine's local device by persisting `localAgentId` in `config.json` and verifying that the corresponding `device_credential_${id}` exists in the OS keychain via `DeviceManager.getLocalAgentId()`. Missing or invalid keychain credentials automatically reset stale local IDs, and `DeviceManager.registerDevice()` cleans up orphaned server rows via `purgeOrphanAgent()` to prevent duplicate device entries.
+- **Direct UI and System Tray Controls:** Users can start or stop the local agent sidecar directly from `DevicesView.vue` (which displays a distinct "This device" badge and running/stopped state) and the system tray context menu (`Agent: <status>`, `Start Agent` / `Stop Agent`). Both surfaces update synchronously on status changes.
+- **Serialized Agent Supervision (`AgentControlService`):** Centralizes all sidecar lifecycle operations on a single serialized task queue (enforcing clean stops before starts):
+  - **Early Exit Health Watch:** Monitors the spawned process across a 2000ms grace period to catch immediate startup failures (e.g. identity file corruption, missing binary) and capture stderr diagnostics.
+  - **Crash and Buffer Deadlock Prevention:** Listens for child process `'error'` events to prevent unhandled Electron main-process crashes, and ignores child stdout (`stdio: ['ignore', 'ignore', 'pipe']`) to prevent the operating system pipe buffer (~64KB) from filling and deadlocking the agent.
+- **Sticky Auto-Start:** Persists the `agentAutoStart` preference flag across sessions, automatically starting the sidecar on application launch if registered and configured.
+- **Safe Server Switching:** When switching servers via `applyServerUrlChange()`, any running agent is safely halted via `agentControl.stop()` before credentials are removed and local device identity is reset.
