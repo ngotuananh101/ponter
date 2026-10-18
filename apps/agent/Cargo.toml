@@ -93,7 +93,13 @@ windows = { version = "0.62", features = [
 [target.'cfg(all(not(target_env = "musl"), target_os = "linux"))'.dependencies.zbus]
 version = "5"
 default-features = false
-features = ["tokio", "blocking-api"]
+# Issue #160: do NOT enable `tokio` here. With it, zbus implements its
+# `blocking` API as `Runtime::block_on` on a shared static tokio runtime
+# (zbus-5.19.0/src/utils.rs), and every blocking call site in this crate runs
+# inside the agent's own tokio runtime — tokio then panics with "Cannot start a
+# runtime from within a runtime", and `panic = "abort"` kills the sidecar on
+# Wayland. The `async-io` reactor's `block_on` has no such enter-runtime check.
+features = ["async-io", "blocking-api"]
 
 # `xcap` 0.9.8 drops the portal ScreenCast session at the end of
 # `WaylandVideoRecorder::new()`, which tears the session down before PipeWire
