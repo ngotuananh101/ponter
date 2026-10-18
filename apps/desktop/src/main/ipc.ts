@@ -6,6 +6,7 @@ import type { AutostartManager } from './autostart';
 import type { FleetManager } from './fleet';
 import type { WindowManager } from './window';
 import type { AgentSupervisor } from './agent-supervisor';
+import type { AgentControlService } from './agent-control';
 import type { UpdaterManager } from './updater';
 import type {
   AppConfig,
@@ -14,6 +15,7 @@ import type {
   UserProfile,
   DesktopDevice,
   RegisterDevicePayload,
+  AgentControlResult,
   UpdateStatusInfo,
   UpdateCheckResult,
 } from '../shared/ipc-types';
@@ -28,6 +30,11 @@ export interface IpcDependencies {
   supervisor: AgentSupervisor;
   updater: UpdaterManager;
   /**
+   * Shared start/stop logic for the local agent (Ticket #154). The tray uses
+   * the same instance, so both entry points behave identically.
+   */
+  agentControl?: Pick<AgentControlService, 'start' | 'stop'>;
+  /**
    * Apply a changed server URL to the running services (Issue #150).
    *
    * Wired by `index.ts` to `applyServerUrlChange`; optional so tests and any
@@ -39,7 +46,7 @@ export interface IpcDependencies {
 /**
  * Registers all `desktop:*` IPC channel handlers on ipcMain.
  *
- * The 16 channels match those defined in src/shared/ipc-types.ts:
+ * The 19 channels match those defined in src/shared/ipc-types.ts:
  *  1. desktop:get-config
  *  2. desktop:save-config
  *  3. desktop:probe-server
@@ -56,6 +63,9 @@ export interface IpcDependencies {
  * 14. desktop:download-update
  * 15. desktop:quit-and-install
  * 16. desktop:get-update-status
+ * 17. desktop:get-local-agent-id
+ * 18. desktop:start-agent
+ * 19. desktop:stop-agent
  */
 export function registerIpcHandlers(deps: IpcDependencies): void {
   const {
@@ -67,6 +77,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     window,
     supervisor,
     updater,
+    agentControl,
     applyServerUrlChange,
   } = deps;
 
@@ -222,6 +233,27 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   // 16. desktop:get-update-status
   ipcMain.handle('desktop:get-update-status', (): UpdateStatusInfo => {
     return updater.getStatus();
+  });
+
+  // 17. desktop:get-local-agent-id
+  ipcMain.handle('desktop:get-local-agent-id', (): string | null => {
+    return devices.getLocalAgentId();
+  });
+
+  // 18. desktop:start-agent
+  ipcMain.handle(
+    'desktop:start-agent',
+    async (): Promise<AgentControlResult> => {
+      if (!agentControl) {
+        return { ok: false, message: 'Agent control is unavailable' };
+      }
+      return await agentControl.start();
+    },
+  );
+
+  // 19. desktop:stop-agent
+  ipcMain.handle('desktop:stop-agent', async (): Promise<void> => {
+    await agentControl?.stop();
   });
 }
 

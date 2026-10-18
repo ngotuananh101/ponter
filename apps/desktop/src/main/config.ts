@@ -67,6 +67,11 @@ export class ConfigManager {
           ? persisted.theme
           : null,
       hasServerUrl,
+      localAgentId:
+        typeof persisted.localAgentId === 'string' && persisted.localAgentId
+          ? persisted.localAgentId
+          : null,
+      agentAutoStart: persisted.agentAutoStart === true,
     };
   }
 
@@ -90,6 +95,10 @@ export class ConfigManager {
   save(payload: SaveConfigPayload): void {
     const persisted = this.loadPersisted();
     const currentUrl = this.cleanUrl(persisted.serverUrl) || null;
+    const persistedLocalAgentId =
+      typeof persisted.localAgentId === 'string' && persisted.localAgentId
+        ? persisted.localAgentId
+        : null;
     const updated = {
       serverUrl:
         payload.serverUrl !== undefined
@@ -107,6 +116,15 @@ export class ConfigManager {
           : persisted.theme === 'dark' || persisted.theme === 'light'
             ? persisted.theme
             : null,
+      // Ticket #154: `undefined` = unchanged, `null` = forget this machine's
+      // device. Kept independent of the other fields so a preference save can
+      // never orphan or resurrect the local device identity.
+      localAgentId:
+        payload.localAgentId !== undefined
+          ? payload.localAgentId
+          : persistedLocalAgentId,
+      agentAutoStart:
+        payload.agentAutoStart ?? persisted.agentAutoStart === true,
     };
 
     const dir = path.dirname(this.filePath);

@@ -39,8 +39,23 @@ function buildRuntime() {
   };
   const session = new SessionManager(apiClient, keychain as any);
   const fleet = new FleetManager(apiClient, session, { baseUrl: '' });
+  // Ticket #154: the switch stops the agent through the SAME serialized
+  // control service the UI and tray use (BLOCKING-3), never the supervisor.
+  const agentControl = {
+    stop: vi.fn(async () => ({ ok: true, message: 'Agent stopped' })),
+  };
+  const onServerChanged = vi.fn(async () => {});
 
-  return { apiClient, storage, mockFetch, session, keychain, fleet };
+  return {
+    apiClient,
+    storage,
+    mockFetch,
+    session,
+    keychain,
+    fleet,
+    agentControl,
+    onServerChanged,
+  };
 }
 
 describe('applyServerUrlChange (Issue #150)', () => {
@@ -89,6 +104,40 @@ describe('applyServerUrlChange (Issue #150)', () => {
     expect(runtime.storage.clearTokens).not.toHaveBeenCalled();
     expect(runtime.keychain.deleteSecret).not.toHaveBeenCalled();
     expect(runtime.apiClient.http.baseUrl).toBe('http://localhost:8787');
+    expect(runtime.agentControl.stop).not.toHaveBeenCalled();
+    expect(runtime.onServerChanged).not.toHaveBeenCalled();
+  });
+
+  /**
+   * PM ruling R1: the sidecar holds the old server's credential in its env and
+   * keeps reconnecting to it, so it must be stopped BEFORE the credential is
+   * purged and the local identity is forgotten.
+   */
+  it('stops the agent before purging credentials and forgetting the device', async () => {
+    await applyServerUrlChange(runtime, 'https://ponter.ponta.dev');
+
+    expect(runtime.agentControl.stop).toHaveBeenCalledTimes(1);
+    expect(runtime.onServerChanged).toHaveBeenCalledTimes(1);
+
+    const stopOrder = runtime.agentControl.stop.mock.invocationCallOrder[0]!;
+    const forgetOrder = runtime.onServerChanged.mock.invocationCallOrder[0]!;
+
+    // The agent must be down before its server-scoped credential is dropped.
+    // (The refresh-token purge deliberately starts EARLIER — before the fleet
+    // repoints — so an in-flight request cannot leak it to the new host.)
+    expect(stopOrder).toBeLessThan(forgetOrder);
+  });
+
+  it('still switches servers when stopping the agent fails', async () => {
+    runtime.agentControl.stop.mockRejectedValue(new Error('stop timed out'));
+
+    await expect(
+      applyServerUrlChange(runtime, 'https://ponter.ponta.dev'),
+    ).resolves.toBe(true);
+
+    expect(runtime.apiClient.http.baseUrl).toBe('https://ponter.ponta.dev');
+    expect(runtime.onServerChanged).toHaveBeenCalled();
+    expect(runtime.storage.clearTokens).toHaveBeenCalled();
   });
 });
 
@@ -154,6 +203,10 @@ describe('server switch during an in-flight refresh (Issue #150 B1)', () => {
       secrets,
       requests,
       mockFetch,
+      // Ticket #154: the switch stops the agent via the serialized control
+      // service and forgets the local device.
+      agentControl: { stop: vi.fn(async () => ({ ok: true })) },
+      onServerChanged: vi.fn(async () => {}),
       release: (response: Response) => releaseRefresh(response),
     };
   }
@@ -412,7 +465,17 @@ describe('no previous-server credential reaches the new host (Issue #150 B1)', (
       baseUrl: 'https://old.example',
     });
 
-    return { apiClient, storage, session, fleet, keychain, secrets, requests };
+    return {
+      apiClient,
+      storage,
+      session,
+      fleet,
+      keychain,
+      secrets,
+      requests,
+      agentControl: { stop: vi.fn(async () => ({ ok: true })) },
+      onServerChanged: vi.fn(async () => {}),
+    };
   }
 
   /** Seed the in-memory access token without going through a login. */

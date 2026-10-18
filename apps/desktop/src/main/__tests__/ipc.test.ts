@@ -278,4 +278,54 @@ describe('IPC Handlers (Main Process)', () => {
       ).resolves.toBeUndefined();
     });
   });
+
+  /**
+   * Ticket #154: the desktop app had no way to start its agent. These channels
+   * are the only bridge between the UI/tray and the sidecar supervisor.
+   */
+  describe('agent control channels', () => {
+    it('reports the local agent id from the device manager', () => {
+      deps.devices.getLocalAgentId = vi.fn(() => 'dev_local1');
+
+      registerIpcHandlers(deps);
+
+      expect(handlers['desktop:get-local-agent-id']()).toBe('dev_local1');
+    });
+
+    it('returns null when this machine has no local device', () => {
+      deps.devices.getLocalAgentId = vi.fn(() => null);
+
+      registerIpcHandlers(deps);
+
+      expect(handlers['desktop:get-local-agent-id']()).toBeNull();
+    });
+
+    it('delegates start to the shared agent control service', async () => {
+      const result = { ok: true, message: 'Agent starting' };
+      deps.agentControl = { start: vi.fn(async () => result) };
+
+      registerIpcHandlers(deps);
+
+      await expect(handlers['desktop:start-agent']()).resolves.toEqual(result);
+      expect(deps.agentControl.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates a refusal from the service unchanged', async () => {
+      const result = { ok: false, message: 'Register this device first' };
+      deps.agentControl = { start: vi.fn(async () => result) };
+
+      registerIpcHandlers(deps);
+
+      await expect(handlers['desktop:start-agent']()).resolves.toEqual(result);
+    });
+
+    it('delegates stop to the shared agent control service', async () => {
+      deps.agentControl = { stop: vi.fn(async () => {}) };
+
+      registerIpcHandlers(deps);
+
+      await handlers['desktop:stop-agent']();
+      expect(deps.agentControl.stop).toHaveBeenCalledTimes(1);
+    });
+  });
 });

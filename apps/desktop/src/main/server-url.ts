@@ -13,6 +13,21 @@ export interface ServerUrlRuntime {
   apiClient: Pick<ApiClient, 'http'>;
   session: Pick<SessionManager, 'clearLocalSession'>;
   fleet: Pick<FleetManager, 'setBaseUrl' | 'getBaseUrl'>;
+  /**
+   * The agent sidecar must be stopped before its credential is purged: the
+   * running child holds that credential in its environment and would keep
+   * reconnecting to the old server until it exits (PM ruling R1).
+   *
+   * Routed through `AgentControlService`, not the supervisor directly (PM
+   * ruling BLOCKING-3): start/stop are serialized on one queue there, so a
+   * server switch cannot interleave with a UI/tray start that is mid-flight.
+   */
+  agentControl: { stop(): Promise<unknown> };
+  /**
+   * Forget this machine's device and its sticky auto-start. Wired by `index.ts`
+   * so this module never depends on `ConfigManager` directly.
+   */
+  onServerChanged: () => Promise<void> | void;
 }
 
 /**
@@ -61,6 +76,25 @@ export async function applyServerUrlChange(
   // Read the base back from the client so the fleet receives exactly the
   // normalised form the requests use, not a second copy of the rule.
   runtime.fleet.setBaseUrl(runtime.apiClient.http.baseUrl);
+
+  // Stop the sidecar BEFORE its credential is purged (PM ruling R1): a live
+  // child holds `AGENT_SERVER` + credential in its env and would keep
+  // reconnecting to the old host otherwise. Going through the shared control
+  // service keeps this stop on the same queue as UI/tray starts (BLOCKING-3).
+  // A failing stop must not abort the switch — the credential still gets purged.
+  try {
+    await runtime.agentControl.stop();
+  } catch {
+    // Swallowed: the purge below is what actually revokes access.
+  }
+
+  // Forget this machine's device: its credential is server-scoped, so both the
+  // keychain entry and the sticky auto-start are meaningless on the new host.
+  try {
+    await runtime.onServerChanged();
+  } catch {
+    // Swallowed: the server switch itself already took effect.
+  }
 
   // A failing adapter must never fail the server switch once the client and
   // fleet have already repointed (PM ruling N1).

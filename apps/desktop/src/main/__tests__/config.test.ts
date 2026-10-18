@@ -84,6 +84,8 @@ describe('ConfigManager', () => {
       serverUrl: null,
       allowInput: false,
       theme: 'dark',
+      localAgentId: null,
+      agentAutoStart: false,
     });
     expect(manager.load().hasServerUrl).toBe(false);
   });
@@ -106,5 +108,77 @@ describe('ConfigManager', () => {
     );
     expect(written.serverUrl).toBe('https://ponter.ponta.dev');
     expect(written.allowInput).toBe(true);
+  });
+
+  /**
+   * Ticket #154: the desktop app must remember which registered device belongs
+   * to this machine, so the UI/tray can offer to start its agent and the
+   * DevicesView can mark it "This device".
+   */
+  it('persists localAgentId and reports it from load()', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ localAgentId: 'dev_abc12345' });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.localAgentId).toBe('dev_abc12345');
+
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(written));
+    expect(manager.load().localAgentId).toBe('dev_abc12345');
+  });
+
+  it('clears localAgentId on an explicit null without touching other fields', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        serverUrl: 'https://ponter.ponta.dev',
+        allowInput: true,
+        theme: 'dark',
+        localAgentId: 'dev_abc12345',
+      }),
+    );
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ localAgentId: null });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.localAgentId).toBeNull();
+    expect(written.serverUrl).toBe('https://ponter.ponta.dev');
+    expect(written.allowInput).toBe(true);
+    expect(written.theme).toBe('dark');
+  });
+
+  it('preserves localAgentId when saving an unrelated field', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ localAgentId: 'dev_abc12345' }),
+    );
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    manager.save({ theme: 'light' });
+
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.localAgentId).toBe('dev_abc12345');
+    expect(written.theme).toBe('light');
   });
 });

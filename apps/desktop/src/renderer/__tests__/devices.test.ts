@@ -817,3 +817,169 @@ describe('DevicesView', () => {
     wrapper.unmount();
   });
 });
+
+/**
+ * Ticket #154: the app could not start its agent at all, and had no idea which
+ * listed device was this machine. These pin the UI half: the "This device"
+ * badge, the Start/Stop control, and the honest "Running" label (the process
+ * being alive is not proof it authenticated over the WebSocket).
+ */
+describe('DevicesView agent controls (Ticket #154)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    resetPonterMock();
+    vi.clearAllTimers();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('marks the local device row with a "This device" badge', async () => {
+    const other = { ...sampleDevice, id: 'other-device', hostname: 'other' };
+    mockPonter({
+      listDevices: () => [sampleDevice, other],
+      getRuntimeStatus: () => 'stopped',
+      getLocalAgentId: () => sampleDevice.id,
+    });
+
+    const wrapper = await mountView();
+
+    const rows = wrapper.findAll('[data-testid="device-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.find('[data-testid="device-local-badge"]').exists()).toBe(
+      true,
+    );
+    expect(rows[1]!.find('[data-testid="device-local-badge"]').exists()).toBe(
+      false,
+    );
+
+    wrapper.unmount();
+  });
+
+  it('shows Start Agent when the runtime is stopped', async () => {
+    mockPonter({
+      listDevices: () => [sampleDevice],
+      getRuntimeStatus: () => 'stopped',
+      getLocalAgentId: () => sampleDevice.id,
+    });
+
+    const wrapper = await mountView();
+
+    expect(wrapper.find('[data-testid="agent-start"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it('shows Stop Agent when the runtime is running', async () => {
+    mockPonter({
+      listDevices: () => [sampleDevice],
+      getRuntimeStatus: () => 'connected',
+      getLocalAgentId: () => sampleDevice.id,
+    });
+
+    const wrapper = await mountView();
+
+    expect(wrapper.find('[data-testid="agent-stop"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="agent-start"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it('calls startAgent when Start Agent is clicked', async () => {
+    const ponter = getPonterMock();
+    mockPonter({
+      listDevices: () => [sampleDevice],
+      getRuntimeStatus: () => 'stopped',
+      getLocalAgentId: () => sampleDevice.id,
+      startAgent: () => ({ ok: true, message: 'Agent starting' }),
+    });
+
+    const wrapper = await mountView();
+    await wrapper.find('[data-testid="agent-start"]').trigger('click');
+    await flushPromises();
+
+    expect(ponter.startAgent).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it('calls stopAgent when Stop Agent is clicked', async () => {
+    const ponter = getPonterMock();
+    mockPonter({
+      listDevices: () => [sampleDevice],
+      getRuntimeStatus: () => 'connected',
+      getLocalAgentId: () => sampleDevice.id,
+      stopAgent: () => undefined,
+    });
+
+    const wrapper = await mountView();
+    await wrapper.find('[data-testid="agent-stop"]').trigger('click');
+    await flushPromises();
+
+    expect(ponter.stopAgent).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it('disables Start Agent and explains why before this machine is registered', async () => {
+    mockPonter({
+      listDevices: () => [],
+      getRuntimeStatus: () => 'stopped',
+      getLocalAgentId: () => null,
+    });
+
+    const wrapper = await mountView();
+
+    const start = wrapper.find('[data-testid="agent-start"]');
+    expect(start.attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-testid="agent-control-hint"]').text()).toMatch(
+      /register/i,
+    );
+
+    wrapper.unmount();
+  });
+
+  it('surfaces a refused start in the alert', async () => {
+    mockPonter({
+      listDevices: () => [sampleDevice],
+      getRuntimeStatus: () => 'stopped',
+      getLocalAgentId: () => sampleDevice.id,
+      startAgent: () => ({
+        ok: false,
+        message: 'Device credential is missing; re-register this device',
+      }),
+    });
+
+    const wrapper = await mountView();
+    await wrapper.find('[data-testid="agent-start"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="devices-error"]').text()).toContain(
+      'Device credential is missing',
+    );
+
+    wrapper.unmount();
+  });
+
+  it('labels a connected process as "Running", not "Connected"', async () => {
+    mockPonter({
+      listDevices: () => [],
+      getRuntimeStatus: () => 'connected',
+      getLocalAgentId: () => null,
+    });
+
+    const wrapper = await mountView();
+
+    const statusEl = wrapper.find('[data-testid="runtime-status"]');
+    // `data-status` stays raw for machine-readable assertions.
+    expect(statusEl.attributes('data-status')).toBe('connected');
+    expect(statusEl.text()).toContain('Running');
+    expect(statusEl.text()).not.toContain('connected');
+
+    wrapper.unmount();
+  });
+});
