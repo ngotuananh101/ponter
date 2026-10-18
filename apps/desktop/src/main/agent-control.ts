@@ -39,7 +39,7 @@ const STARTUP_GRACE_MS = 2000;
 export class AgentControlService {
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(private deps: AgentControlDeps) {}
+  constructor(private readonly deps: AgentControlDeps) {}
 
   /** Serialize every operation behind the previous one. */
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {

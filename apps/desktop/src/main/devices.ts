@@ -115,9 +115,8 @@ export class DeviceManager {
     if (result.outcome === 'failed') {
       // The stale row still occupies the per-user quota; a later register may
       // hit AGENT_LIMIT_REACHED. Surface it rather than hiding it.
-      console.warn(
-        `Failed to remove stale local agent ${previous}: ${result.message}`,
-      );
+      // S8689: Do not log the agentId or credentials to prevent secret disclosure
+      console.warn('Failed to remove stale local agent:', result.message);
     }
   }
 

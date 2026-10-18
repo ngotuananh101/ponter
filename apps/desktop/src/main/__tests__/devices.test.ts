@@ -495,7 +495,8 @@ describe('DeviceManager', () => {
       expect(apiClientMock.agents.delete).toHaveBeenCalledWith('agent-orphan');
       // Ruling D: the failed cleanup is surfaced, not swallowed.
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('agent-orphan'),
+        'Failed to remove stale local agent:',
+        'Forbidden',
       );
       warnSpy.mockRestore();
     });

@@ -10,8 +10,8 @@ export interface TrayOptions {
    * original shape, so existing embedders and tests are unaffected.
    */
   getAgentStatus?: () => string;
-  onStartAgent?: () => Promise<unknown> | unknown;
-  onStopAgent?: () => Promise<unknown> | unknown;
+  onStartAgent?: () => unknown;
+  onStopAgent?: () => unknown;
 }
 
 /**
@@ -126,13 +126,15 @@ export class TrayManager {
       });
     }
 
-    template.push({ type: 'separator' });
-    template.push({
-      label: 'Quit',
-      click: () => {
-        onQuit();
+    template.push(
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          onQuit();
+        },
       },
-    });
+    );
 
     const menu = Menu.buildFromTemplate(template);
     this.tray.setContextMenu(menu);
@@ -145,12 +147,12 @@ export class TrayManager {
    * result would make a failed start invisible from the tray. The window shows
    * the detailed message; the console line is the fallback when it is hidden.
    */
-  private runAgentAction(action?: () => Promise<unknown> | unknown): void {
+  private runAgentAction(action?: () => unknown): void {
     if (!action) return;
     void Promise.resolve(action())
       .then((result) => {
         const failure = result as { ok?: boolean; message?: string } | null;
-        if (failure && failure.ok === false) {
+        if (failure?.ok === false) {
           console.warn(`Agent action failed: ${failure.message ?? 'unknown'}`);
         }
       })

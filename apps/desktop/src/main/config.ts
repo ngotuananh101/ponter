@@ -124,9 +124,7 @@ export class ConfigManager {
           ? payload.localAgentId
           : persistedLocalAgentId,
       agentAutoStart:
-        payload.agentAutoStart !== undefined
-          ? payload.agentAutoStart
-          : persisted.agentAutoStart === true,
+        payload.agentAutoStart ?? persisted.agentAutoStart === true,
     };
 
     const dir = path.dirname(this.filePath);

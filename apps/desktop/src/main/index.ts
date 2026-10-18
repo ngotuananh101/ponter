@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from 'electron';
-import * as path from 'path';
+import * as path from 'node:path';
 import { ConfigManager } from './config';
 import { KeychainService } from './keychain';
 import { SessionManager, SessionTokenStorage } from './session';
@@ -188,9 +188,11 @@ if (!gotTheLock) {
       devices.getLocalAgentId() &&
       devices.getDeviceCredential(devices.getLocalAgentId()!)
     ) {
-      void agentControl.start().catch(() => {
+      try {
+        await agentControl.start();
+      } catch {
         // Surfaced in the UI via runtime status; boot continues regardless.
-      });
+      }
     }
 
     app.on('activate', () => {
