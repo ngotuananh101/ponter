@@ -31,6 +31,9 @@ export class AgentSupervisor {
   private restartTimeout: any = null;
   private isIntentionallyStopped = true;
   private currentConfig: SupervisorConfig | null = null;
+  /** Last few stderr lines from the child (PM ruling C). */
+  private stderrTail: string[] = [];
+  private static readonly STDERR_TAIL_LINES = 20;
 
   constructor(
     configOrKeychain: ConfigManager | KeychainService,
@@ -63,6 +66,14 @@ export class AgentSupervisor {
     this.statusCallbacks.push(callback);
   }
 
+  /**
+   * Broadcast a lifecycle change.
+   *
+   * `connected` means the PROCESS is alive — not that it authenticated over the
+   * WebSocket. The agent can still be crash-looping (bad identity, wrong
+   * credential, unreachable server), so the UI labels this state "Running"
+   * rather than "Connected" (PM ruling B, Ticket #154).
+   */
   private emitStatus(status: string): void {
     for (const cb of this.statusCallbacks) {
       try {
@@ -137,10 +148,23 @@ export class AgentSupervisor {
     return Math.min(delay, 30000);
   }
 
+  /**
+   * Start the sidecar.
+   *
+   * Refuses when a child is already alive (PM ruling A): overwriting
+   * `currentConfig` there would mean a later respawn reconnects to the NEW
+   * server while the process still carries the OLD server's credential in its
+   * environment. Callers must `await stop()` first — the shared start/stop
+   * service does exactly that.
+   */
   start(config: SupervisorConfig): void {
+    if (this.child) {
+      throw new Error('Agent already running');
+    }
     this.currentConfig = config;
     this.isIntentionallyStopped = false;
     this.restartCount = 0;
+    this.stderrTail = [];
     this.spawnProcess();
   }
 
@@ -151,9 +175,15 @@ export class AgentSupervisor {
       const env = this.buildEnvironment(this.currentConfig);
       this.child = this.spawnFn(this.binaryPath, [], {
         env: { ...process.env, ...env },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // stdout is dropped on purpose (BE blocking-2): the agent logs to
+        // stdout via tracing's default writer, and nobody reads that pipe — a
+        // full buffer (~64KB) would block the agent inside write() forever
+        // while the process stays alive and the UI reports "Running".
+        stdio: ['ignore', 'ignore', 'pipe'],
       });
 
+      this.captureStderr(this.child);
+      this.captureSpawnFailure(this.child);
       this.emitStatus('connected');
 
       this.child.on('exit', (code) => {
@@ -174,6 +204,67 @@ export class AgentSupervisor {
     } catch {
       this.emitStatus('error');
     }
+  }
+
+  /**
+   * Handle a failed spawn (BE blocking-1).
+   *
+   * `spawn()` does not throw when the binary is missing — it emits 'error'
+   * asynchronously. Without a listener Node treats that as an uncaught
+   * exception and the Electron main process dies, so clicking "Start Agent"
+   * with a missing sidecar would kill the whole app.
+   *
+   * A spawn failure is permanent (ENOENT/EACCES), unlike a process that ran and
+   * exited: retrying it on the backoff ladder would loop forever, so the
+   * supervisor goes idle instead.
+   */
+  private captureSpawnFailure(child: ChildProcess): void {
+    child.on('error', (err: Error) => {
+      this.child = null;
+      this.isIntentionallyStopped = true;
+      this.stderrTail.push(`spawn error: ${err.message}`);
+      if (this.stderrTail.length > AgentSupervisor.STDERR_TAIL_LINES) {
+        this.stderrTail.shift();
+      }
+      this.emitStatus('error');
+    });
+  }
+
+  /**
+   * Keep the last few stderr lines (PM ruling C).
+   *
+   * A corrupt identity file makes the agent exit immediately — fail-closed by
+   * design, since regenerating would break the WS2 trust binding. Without this
+   * tail the UI could only say "error"; with it, the real cause is surfaced.
+   */
+  private captureStderr(child: ChildProcess): void {
+    const stderr = (child as { stderr?: NodeJS.ReadableStream | null }).stderr;
+    if (!stderr?.on) return;
+
+    let buffered = '';
+    stderr.on('data', (chunk: Buffer | string) => {
+      buffered += chunk.toString();
+      const lines = buffered.split(/\r?\n/);
+      // Keep the trailing partial line buffered until its newline arrives.
+      buffered = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line) continue;
+        this.stderrTail.push(line);
+        if (this.stderrTail.length > AgentSupervisor.STDERR_TAIL_LINES) {
+          this.stderrTail.shift();
+        }
+      }
+    });
+  }
+
+  /** The most recent stderr output from the child, or null (PM ruling C). */
+  getLastError(): string | null {
+    return this.stderrTail.length > 0 ? this.stderrTail.join('\n') : null;
+  }
+
+  /** The server the running (or last started) child points at. */
+  getCurrentServerUrl(): string | null {
+    return this.currentConfig?.serverUrl ?? null;
   }
 
   stop(): Promise<void> {

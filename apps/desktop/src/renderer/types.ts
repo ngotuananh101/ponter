@@ -65,4 +65,8 @@ export interface AppConfig {
   allowInput: boolean;
   theme: 'light' | 'dark' | null;
   hasServerUrl: boolean;
+  /** Registered agent belonging to this machine, or null (Ticket #154). */
+  localAgentId: string | null;
+  /** Whether the local agent should start on launch (Ticket #154). */
+  agentAutoStart: boolean;
 }

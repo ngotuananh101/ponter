@@ -1,4 +1,5 @@
 import { app, BrowserWindow } from 'electron';
+import * as path from 'path';
 import { ConfigManager } from './config';
 import { KeychainService } from './keychain';
 import { SessionManager, SessionTokenStorage } from './session';
@@ -8,6 +9,7 @@ import { TrayManager } from './tray';
 import { WindowManager } from './window';
 import { FleetManager } from './fleet';
 import { AgentSupervisor } from './agent-supervisor';
+import { AgentControlService } from './agent-control';
 import { UpdaterManager } from './updater';
 import { registerIpcHandlers } from './ipc';
 import { applyServerUrlChange } from './server-url';
@@ -32,6 +34,7 @@ let tray: TrayManager;
 let window: WindowManager;
 let fleet: FleetManager;
 let supervisor: AgentSupervisor;
+let agentControl: AgentControlService;
 let updater: UpdaterManager;
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -74,7 +77,20 @@ if (!gotTheLock) {
     session = new SessionManager(apiClient, keychain);
 
     // Initialize devices
-    devices = new DeviceManager(apiClient, session, keychain);
+    devices = new DeviceManager(apiClient, session, keychain, config);
+
+    // Shared start/stop logic for the local agent (Ticket #154). Both the IPC
+    // handlers and the tray call this, so the two entry points cannot drift and
+    // start/stop stay serialized on one queue.
+    agentControl = new AgentControlService({
+      supervisor,
+      config,
+      devices,
+      // PM ruling R3: a stable path under userData. The agent falls back to
+      // CWD on Windows when unset, which regenerates the identity on every run
+      // and breaks the WS2 trust binding.
+      identityPath: path.join(app.getPath('userData'), 'agent-identity.pkcs8'),
+    });
 
     // Initialize autostart
     autostart = new AutostartManager();
@@ -86,17 +102,26 @@ if (!gotTheLock) {
     tray = new TrayManager({
       onShowWindow: () => window.restore(),
       onQuit: async () => {
-        await supervisor?.stop();
+        await agentControl?.stop();
         fleet?.destroy();
         tray?.destroy();
         app.quit();
       },
+      // Ticket #154: the tray is the only control surface when the window is
+      // hidden. Start/stop go through the same service as the IPC handlers.
+      getAgentStatus: () => supervisor.getStatus(),
+      onStartAgent: () => agentControl?.start(),
+      onStopAgent: () => agentControl?.stop(),
     });
     try {
       tray.createTray();
     } catch (err) {
       console.warn('Failed to initialize tray:', err);
     }
+
+    // Rebuild the tray menu whenever the agent lifecycle changes, so the
+    // Start/Stop item always matches reality.
+    supervisor.onStatusChange(() => tray?.updateAgentStatus());
 
     // Initialize fleet (dual-layer: WebSocket + polling fallback, ADR-82)
     fleet = new FleetManager(apiClient, session, {
@@ -117,7 +142,7 @@ if (!gotTheLock) {
       });
     }
 
-    // Register all IPC handlers (16 desktop:* channels)
+    // Register all IPC handlers (19 desktop:* channels)
     registerIpcHandlers({
       config,
       session,
@@ -127,12 +152,46 @@ if (!gotTheLock) {
       window,
       supervisor,
       updater,
+      agentControl,
       // Issue #150: the client and fleet are built once here, so a server URL
       // saved later must be pushed into the live services rather than waiting
       // for the next launch.
       applyServerUrlChange: (effectiveBaseUrl) =>
-        applyServerUrlChange({ apiClient, session, fleet }, effectiveBaseUrl),
+        applyServerUrlChange(
+          {
+            apiClient,
+            session,
+            fleet,
+            agentControl,
+            // Ticket #154 / ruling R1: the device credential is server-scoped,
+            // so the switch forgets this machine's device and its sticky
+            // auto-start. The keychain entry goes first — the config field is
+            // only a pointer to it.
+            onServerChanged: () => {
+              const localAgentId = config.load().localAgentId;
+              if (localAgentId) {
+                keychain.deleteSecret(`device_credential_${localAgentId}`);
+              }
+              config.save({ localAgentId: null, agentAutoStart: false });
+            },
+          },
+          effectiveBaseUrl,
+        ),
     });
+
+    // Ticket #154 / ruling R5: sticky auto-start. A user who pressed Start once
+    // expects the agent to come back on the next launch; a Stop turns it off
+    // for good. Best-effort — a failure here must never block startup.
+    if (
+      cfg.agentAutoStart === true &&
+      cfg.hasServerUrl &&
+      devices.getLocalAgentId() &&
+      devices.getDeviceCredential(devices.getLocalAgentId()!)
+    ) {
+      void agentControl.start().catch(() => {
+        // Surfaced in the UI via runtime status; boot continues regardless.
+      });
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -141,14 +200,14 @@ if (!gotTheLock) {
     });
 
     app.on('before-quit', async () => {
-      await supervisor?.stop();
+      await agentControl?.stop();
       fleet?.destroy();
       tray?.destroy();
     });
 
     app.on('window-all-closed', async () => {
       // ADR-78: macOS not supported — quit on all remaining platforms
-      await supervisor?.stop();
+      await agentControl?.stop();
       fleet?.destroy();
       tray?.destroy();
       app.quit();

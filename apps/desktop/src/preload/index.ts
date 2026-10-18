@@ -25,6 +25,9 @@ export function createPonterApi(ipc: typeof ipcRenderer): PonterDesktopApi {
     deleteDevice: (agentId: string) =>
       ipc.invoke('desktop:delete-device', agentId),
     getRuntimeStatus: () => ipc.invoke('desktop:get-runtime-status'),
+    getLocalAgentId: () => ipc.invoke('desktop:get-local-agent-id'),
+    startAgent: () => ipc.invoke('desktop:start-agent'),
+    stopAgent: () => ipc.invoke('desktop:stop-agent'),
     onFleetChanged: (callback: () => void) => {
       const listener = () => callback();
       ipc.on('desktop:fleet-changed', listener);

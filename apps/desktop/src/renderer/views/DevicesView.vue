@@ -60,12 +60,77 @@ function orderedCapabilities(): string[] {
 
 /** Runtime status from the backend: connected | disconnected | stopped | unknown */
 const runtimeStatus = ref<string>('unknown');
+
+/**
+ * `connected` means the agent PROCESS is alive, not that it authenticated over
+ * the WebSocket — it can still be crash-looping. Label it honestly (PM ruling B,
+ * Ticket #154); `data-status` keeps the raw value for machine-readable tests.
+ */
+const runtimeStatusLabel = computed(() =>
+  runtimeStatus.value === 'connected' ? 'Running' : runtimeStatus.value,
+);
 let unsubscribeRuntime: (() => void) | null = null;
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 /** Tracks whether the *current* device registration is in-flight, independent
  * of the background auto-refresh cycle. */
 const isRegistering = ref(false);
+
+/** The device belonging to this machine (Ticket #154), or null. */
+const localAgentId = ref<string | null>(null);
+
+/** Error from an agent start/stop attempt, shown in its own alert. */
+const agentError = ref<string | null>(null);
+
+/** True while a start/stop request is in flight (UI disable). */
+const agentPending = ref(false);
+
+/** Start/Stop availability follows the runtime state. `connected` means the
+ * process is alive, which is the only signal the supervisor reports. */
+const agentRunning = computed(
+  () =>
+    runtimeStatus.value === 'connected' || runtimeStatus.value === 'starting',
+);
+
+/** A start needs a local device to attach to. */
+const canControlAgent = computed(() => localAgentId.value !== null);
+
+async function loadLocalAgentId() {
+  try {
+    localAgentId.value = await window.ponter.getLocalAgentId();
+  } catch {
+    localAgentId.value = null;
+  }
+}
+
+async function handleStartAgent() {
+  agentError.value = null;
+  agentPending.value = true;
+  try {
+    const result = await window.ponter.startAgent();
+    if (!result.ok) {
+      agentError.value = result.message;
+    }
+    await probeRuntimeStatus();
+  } catch (err) {
+    agentError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    agentPending.value = false;
+  }
+}
+
+async function handleStopAgent() {
+  agentError.value = null;
+  agentPending.value = true;
+  try {
+    await window.ponter.stopAgent();
+    await probeRuntimeStatus();
+  } catch (err) {
+    agentError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    agentPending.value = false;
+  }
+}
 
 /** Combined action-pending flag used to disable interactive controls.
  * True only during an actual user action (registration) or the initial load
@@ -87,6 +152,9 @@ async function handleRegister() {
   isRegistering.value = true;
   try {
     await store.register(orderedCapabilities());
+    // Ticket #154: the backend records the new device as this machine's local
+    // agent, so pick it up for the badge and the Start control.
+    await loadLocalAgentId();
   } finally {
     isRegistering.value = false;
   }
@@ -103,6 +171,8 @@ async function confirmDelete() {
   deleteDialogOpen.value = false;
   deleteTarget.value = null;
   await store.remove(deviceId);
+  // Deleting this machine's device also clears the local id in the backend.
+  await loadLocalAgentId();
 }
 
 function cancelDelete() {
@@ -113,6 +183,7 @@ function cancelDelete() {
 onMounted(async () => {
   void store.refresh();
   await probeRuntimeStatus();
+  await loadLocalAgentId();
   // Listen for real-time runtime status updates pushed from the main process.
   unsubscribeRuntime = window.ponter.onRuntimeStatus((status: string) => {
     runtimeStatus.value = status;
@@ -192,7 +263,33 @@ onUnmounted(() => {
           "
         />
         <span class="text-muted-foreground">Runtime:</span>
-        <span class="text-foreground font-semibold">{{ runtimeStatus }}</span>
+        <span class="text-foreground font-semibold">{{
+          runtimeStatusLabel
+        }}</span>
+
+        <!-- Ticket #154: the agent is started from here or the tray. -->
+        <Button
+          v-if="agentRunning"
+          data-testid="agent-stop"
+          variant="outline"
+          size="sm"
+          class="ml-auto h-6 px-2 text-[11px]"
+          :disabled="agentPending"
+          @click="handleStopAgent"
+        >
+          Stop Agent
+        </Button>
+        <Button
+          v-else
+          data-testid="agent-start"
+          variant="outline"
+          size="sm"
+          class="ml-auto h-6 px-2 text-[11px]"
+          :disabled="agentPending || !canControlAgent"
+          @click="handleStartAgent"
+        >
+          Start Agent
+        </Button>
       </div>
 
       <CardContent class="space-y-4">
@@ -203,6 +300,22 @@ onUnmounted(() => {
         >
           <AlertDescription>{{ store.error }}</AlertDescription>
         </Alert>
+
+        <Alert
+          v-if="agentError"
+          data-testid="devices-error"
+          variant="destructive"
+        >
+          <AlertDescription>{{ agentError }}</AlertDescription>
+        </Alert>
+
+        <p
+          v-if="!canControlAgent"
+          data-testid="agent-control-hint"
+          class="text-xs text-muted-foreground"
+        >
+          Register this device to start its agent.
+        </p>
 
         <div
           v-if="store.loading && store.devices.length === 0"
@@ -253,6 +366,14 @@ onUnmounted(() => {
                     class="w-1.5 h-1.5 rounded-full bg-emerald-400 motion-safe:animate-pulse"
                   />
                   {{ device.isOnline ? 'online' : 'offline' }}
+                </Badge>
+                <Badge
+                  v-if="device.id === localAgentId"
+                  data-testid="device-local-badge"
+                  variant="outline"
+                  class="text-[11px] font-mono px-1.5 py-0 border-primary/40 text-primary"
+                >
+                  This device
                 </Badge>
               </div>
               <div

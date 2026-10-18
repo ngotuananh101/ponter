@@ -79,4 +79,209 @@ describe('AgentSupervisor (ADR-86 Sidecar Contract)', () => {
     expect(listener).toHaveBeenCalledWith('stopped');
     expect(supervisor.getStatus()).toBe('stopped');
   });
+
+  /**
+   * PM ruling A: `start()` used to overwrite `currentConfig` even when a child
+   * was already alive, so a respawn after an exit would reconnect to the NEW
+   * server while still carrying the OLD server's credential in its env — the
+   * same cross-host leak class as B1/B2. A second start while running must be
+   * refused, not silently ignored.
+   */
+  it('refuses a second start while the child is alive and keeps the first config', () => {
+    keychainMock.getSecret.mockReturnValue('cred');
+    const child = {
+      on: vi.fn(),
+      kill: vi.fn(),
+    };
+    const spawnMock = vi.fn(() => child);
+    const supervisor = new AgentSupervisor(keychainMock as any, {
+      spawn: spawnMock as any,
+    });
+
+    supervisor.start({
+      agentId: 'dev_1',
+      serverUrl: 'https://old.example',
+      allowInput: false,
+    });
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    expect(() =>
+      supervisor.start({
+        agentId: 'dev_1',
+        serverUrl: 'https://new.example',
+        allowInput: false,
+      }),
+    ).toThrow(/already running/i);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    // The original config must survive: a later respawn has to reconnect to the
+    // server the credential in its env actually belongs to.
+    expect(supervisor.getCurrentServerUrl()).toBe('https://old.example');
+  });
+
+  /**
+   * PM ruling C: the agent exits immediately on a corrupt identity file
+   * (fail-closed by design — regenerating would break the WS2 trust binding).
+   * The supervisor must capture stderr so the UI can show the real cause
+   * instead of reporting a successful start.
+   */
+  it('captures the tail of stderr and exposes it as getLastError', () => {
+    keychainMock.getSecret.mockReturnValue('cred');
+    const listeners: Record<string, (arg?: unknown) => void> = {};
+    const child = {
+      on: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+        listeners[event] = cb;
+      }),
+      kill: vi.fn(),
+      stderr: {
+        on: vi.fn((event: string, cb: (chunk: Buffer) => void) => {
+          if (event === 'data') {
+            cb(Buffer.from('panic: failed to parse identity file\n'));
+          }
+        }),
+      },
+      exitCode: null,
+    };
+    const supervisor = new AgentSupervisor(keychainMock as any, {
+      spawn: vi.fn(() => child) as any,
+    });
+
+    supervisor.start({
+      agentId: 'dev_1',
+      serverUrl: 'https://ponter.example',
+      allowInput: false,
+    });
+
+    expect(supervisor.getLastError()).toContain('failed to parse identity');
+  });
+
+  it('clears the last error on a fresh start', () => {
+    keychainMock.getSecret.mockReturnValue('cred');
+    const child = { on: vi.fn(), kill: vi.fn(), stderr: { on: vi.fn() } };
+    const supervisor = new AgentSupervisor(keychainMock as any, {
+      spawn: vi.fn(() => child) as any,
+    });
+
+    supervisor.start({
+      agentId: 'dev_1',
+      serverUrl: 'https://ponter.example',
+      allowInput: false,
+    });
+
+    expect(supervisor.getLastError()).toBeNull();
+  });
+
+  /**
+   * BE blocking-1: `spawn()` does not throw synchronously when the binary is
+   * missing — it emits an async 'error' event. Without a listener Node treats
+   * it as uncaught and kills the Electron main process, so a user clicking
+   * "Start Agent" with a missing sidecar would crash the whole app.
+   */
+  it('survives a spawn error instead of crashing the main process', () => {
+    keychainMock.getSecret.mockReturnValue('cred');
+    const listeners: Record<string, (arg?: unknown) => void> = {};
+    const child = {
+      on: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+        listeners[event] = cb;
+      }),
+      kill: vi.fn(),
+      stderr: { on: vi.fn() },
+      stdout: { resume: vi.fn() },
+    };
+    const supervisor = new AgentSupervisor(keychainMock as any, {
+      spawn: vi.fn(() => child) as any,
+    });
+    const statuses: string[] = [];
+    supervisor.onStatusChange((status) => statuses.push(status));
+
+    supervisor.start({
+      agentId: 'dev_1',
+      serverUrl: 'https://ponter.example',
+      allowInput: false,
+    });
+
+    expect(listeners['error']).toBeTypeOf('function');
+    expect(() =>
+      listeners['error']!(
+        Object.assign(new Error('spawn ponter-agent ENOENT'), {
+          code: 'ENOENT',
+        }),
+      ),
+    ).not.toThrow();
+
+    expect(statuses).toContain('error');
+    expect(supervisor.getLastError()).toContain('ENOENT');
+    expect(supervisor.getStatus()).not.toBe('connected');
+  });
+
+  it('does not schedule a respawn after a spawn failure', async () => {
+    vi.useFakeTimers();
+    try {
+      keychainMock.getSecret.mockReturnValue('cred');
+      const listeners: Record<string, (arg?: unknown) => void> = {};
+      const child = {
+        on: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+          listeners[event] = cb;
+        }),
+        kill: vi.fn(),
+        stderr: { on: vi.fn() },
+        stdout: { resume: vi.fn() },
+      };
+      const spawnMock = vi.fn(() => child);
+      const supervisor = new AgentSupervisor(keychainMock as any, {
+        spawn: spawnMock as any,
+      });
+
+      supervisor.start({
+        agentId: 'dev_1',
+        serverUrl: 'https://ponter.example',
+        allowInput: false,
+      });
+      listeners['error']!(
+        Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }),
+      );
+
+      // ENOENT is permanent: retrying it in a backoff loop would spin forever.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * BE blocking-2: the agent logs to STDOUT (tracing's default writer), but the
+   * supervisor only read stderr. A full pipe (~64KB) blocks the agent inside
+   * write() forever, while the UI still reports "Running" because the process
+   * is alive. The chosen fix is to not create a stdout pipe at all.
+   */
+  it('does not create an unread stdout pipe for the agent', () => {
+    keychainMock.getSecret.mockReturnValue('cred');
+    const child = {
+      on: vi.fn(),
+      kill: vi.fn(),
+      stderr: { on: vi.fn() },
+      stdout: { resume: vi.fn() },
+    };
+    const spawnMock = vi.fn(() => child);
+    const supervisor = new AgentSupervisor(keychainMock as any, {
+      spawn: spawnMock as any,
+    });
+
+    supervisor.start({
+      agentId: 'dev_1',
+      serverUrl: 'https://ponter.example',
+      allowInput: false,
+    });
+
+    const call = spawnMock.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { stdio: string[] },
+    ];
+    const options = call[2];
+    expect(options.stdio[1]).toBe('ignore');
+    // stderr stays piped: PM ruling C needs the tail.
+    expect(options.stdio[2]).toBe('pipe');
+  });
 });
