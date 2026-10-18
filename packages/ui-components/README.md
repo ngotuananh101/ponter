@@ -13,6 +13,8 @@ renderer next). ADR-88.
 - `src/components/app/**` — environment-independent presentational components
   (props/emits only; no store/router/API-client **import**). They may use a
   globally-registered `<router-link>`, which the host app must provide or stub.
+  Includes `LoginForm` (supporting an accessible "Remember me" checkbox, emitting
+  `{ username, password, rememberMe }`), `RegisterForm`, and `ThemeToggle`.
 - `src/composables/useTheme.ts` — the storage-agnostic theme composable.
 
 ## How an app consumes it
