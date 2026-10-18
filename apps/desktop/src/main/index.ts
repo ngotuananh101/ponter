@@ -74,7 +74,7 @@ if (!gotTheLock) {
       storage: tokenStorage,
     });
 
-    session = new SessionManager(apiClient, keychain);
+    session = new SessionManager(apiClient, keychain, config);
 
     // Initialize devices
     devices = new DeviceManager(apiClient, session, keychain, config);

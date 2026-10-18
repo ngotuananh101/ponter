@@ -11,6 +11,7 @@ import {
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/checkbox';
 import { ShieldCheck, Lock, User, Terminal, Loader2 } from '@lucide/vue';
 import { toast } from 'vue-sonner';
 
@@ -20,11 +21,15 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'submit', payload: { username: string; password: string }): void;
+  (
+    e: 'submit',
+    payload: { username: string; password: string; rememberMe: boolean },
+  ): void;
 }>();
 
 const username = ref('');
 const password = ref('');
+const rememberMe = ref(true);
 
 watch(
   () => props.errorMessage,
@@ -38,7 +43,11 @@ function handleSubmit() {
     toast.error('Please enter both username and password');
     return;
   }
-  emit('submit', { username: username.value.trim(), password: password.value });
+  emit('submit', {
+    username: username.value.trim(),
+    password: password.value,
+    rememberMe: rememberMe.value,
+  });
 }
 </script>
 
@@ -105,6 +114,16 @@ function handleSubmit() {
             :disabled="loading"
             class="bg-background/60 text-sm focus-visible:ring-primary"
           />
+        </div>
+
+        <div class="flex items-center space-x-2 pt-1">
+          <Checkbox id="remember-me" v-model="rememberMe" :disabled="loading" />
+          <Label
+            for="remember-me"
+            class="text-xs font-normal text-muted-foreground cursor-pointer select-none"
+          >
+            Remember me
+          </Label>
         </div>
       </CardContent>
       <CardFooter class="flex flex-col space-y-3 pt-2">

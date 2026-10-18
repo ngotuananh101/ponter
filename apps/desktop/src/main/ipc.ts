@@ -46,7 +46,7 @@ export interface IpcDependencies {
 /**
  * Registers all `desktop:*` IPC channel handlers on ipcMain.
  *
- * The 19 channels match those defined in src/shared/ipc-types.ts:
+ * The 20 channels match those defined in src/shared/ipc-types.ts:
  *  1. desktop:get-config
  *  2. desktop:save-config
  *  3. desktop:probe-server
@@ -66,6 +66,7 @@ export interface IpcDependencies {
  * 17. desktop:get-local-agent-id
  * 18. desktop:start-agent
  * 19. desktop:stop-agent
+ * 20. desktop:restore-session
  */
 export function registerIpcHandlers(deps: IpcDependencies): void {
   const {
@@ -147,9 +148,13 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     'desktop:login',
     async (
       _event,
-      payload: { username: string; password: string },
+      payload: { username: string; password: string; rememberMe?: boolean },
     ): Promise<UserProfile> => {
-      return await session.login(payload.username, payload.password);
+      return await session.login(
+        payload.username,
+        payload.password,
+        payload.rememberMe,
+      );
     },
   );
 
@@ -255,6 +260,14 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle('desktop:stop-agent', async (): Promise<void> => {
     await agentControl?.stop();
   });
+
+  // 20. desktop:restore-session
+  ipcMain.handle(
+    'desktop:restore-session',
+    async (): Promise<UserProfile | null> => {
+      return await session.restoreSession();
+    },
+  );
 }
 
 /**

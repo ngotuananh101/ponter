@@ -49,7 +49,40 @@ describe('LoginView', () => {
     expect(storageLength(window, 'l')).toBe(0);
     expect(storageLength(window, 's')).toBe(0);
     expect(ponter.login).toHaveBeenCalledOnce();
-    expect(ponter.login).toHaveBeenCalledWith('alice', 'secret');
+    expect(ponter.login).toHaveBeenCalledWith('alice', 'secret', true);
+  });
+
+  it('passes rememberMe flag when unchecked and submits', async () => {
+    const ponter = getPonterMock();
+    ponter.login.mockResolvedValue({
+      id: 'u1',
+      username: 'alice',
+      role: 'user',
+    });
+
+    const wrapper = mount(LoginView);
+    await wrapper.find('[data-testid="login-username"]').setValue('alice');
+    await wrapper.find('[data-testid="login-password"]').setValue('secret');
+    const checkbox = wrapper.find('[data-testid="login-remember-me"]');
+    expect(checkbox.exists()).toBe(true);
+    await checkbox.trigger('click');
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+
+    expect(ponter.login).toHaveBeenCalledWith('alice', 'secret', false);
+  });
+
+  it('prefills username when savedUsername exists in config store', async () => {
+    const { useConfigStore } = await import('@/stores/config');
+    const config = useConfigStore();
+    config.savedUsername = 'saved_bob';
+    config.rememberMe = true;
+
+    const wrapper = mount(LoginView);
+    const usernameInput = wrapper.find<HTMLInputElement>(
+      '[data-testid="login-username"]',
+    );
+    expect(usernameInput.element.value).toBe('saved_bob');
   });
 
   it('signs in and holds the profile when login succeeds', async () => {

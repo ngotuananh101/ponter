@@ -237,3 +237,167 @@ describe('SessionManager.logout', () => {
     expect(apiClientMock.http.storage.clearTokens).toHaveBeenCalled();
   });
 });
+
+/**
+ * Ticket #156: Desktop SessionManager "Remember me" and restoreSession().
+ */
+describe('SessionManager.restoreSession & rememberMe (Ticket #156)', () => {
+  let apiClientMock: any;
+  let configMock: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiClientMock = {
+      auth: {
+        login: vi.fn(),
+        logout: vi.fn(),
+      },
+      users: {
+        me: vi.fn(),
+      },
+      http: {
+        request: vi.fn(),
+        storage: {
+          getAccessToken: vi.fn(),
+          getRefreshToken: vi.fn(),
+          setTokens: vi.fn(),
+          clearTokens: vi.fn(),
+        },
+      },
+    };
+    configMock = {
+      load: vi.fn(() => ({
+        rememberMe: true,
+        savedUsername: null,
+      })),
+      save: vi.fn(),
+    };
+  });
+
+  it('login saves rememberMe and savedUsername to config when rememberMe is true', async () => {
+    apiClientMock.auth.login.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', role: 'admin' },
+      token: 'tok-1',
+      refreshToken: 'ref-1',
+    });
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+      configMock as any,
+    );
+    await session.login('alice', 'secret', true);
+
+    expect(configMock.save).toHaveBeenCalledWith({
+      rememberMe: true,
+      savedUsername: 'alice',
+    });
+  });
+
+  it('login saves rememberMe: false and clears savedUsername when rememberMe is false', async () => {
+    apiClientMock.auth.login.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', role: 'admin' },
+      token: 'tok-1',
+      refreshToken: 'ref-1',
+    });
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+      configMock as any,
+    );
+    await session.login('alice', 'secret', false);
+
+    expect(configMock.save).toHaveBeenCalledWith({
+      rememberMe: false,
+      savedUsername: null,
+    });
+  });
+
+  it('restoreSession returns null immediately if rememberMe is false', async () => {
+    configMock.load.mockReturnValue({ rememberMe: false, savedUsername: null });
+    keychainMock.getSecret.mockReturnValue('valid-token');
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+      configMock as any,
+    );
+    const user = await session.restoreSession();
+
+    expect(user).toBeNull();
+    expect(keychainMock.getSecret).not.toHaveBeenCalled();
+    expect(apiClientMock.http.request).not.toHaveBeenCalled();
+  });
+
+  it('restoreSession returns null if keychain has no refresh token', async () => {
+    configMock.load.mockReturnValue({ rememberMe: true, savedUsername: null });
+    keychainMock.getSecret.mockReturnValue(null);
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+      configMock as any,
+    );
+    const user = await session.restoreSession();
+
+    expect(user).toBeNull();
+    expect(apiClientMock.http.request).not.toHaveBeenCalled();
+  });
+
+  it('restoreSession refreshes session and fetches user profile', async () => {
+    configMock.load.mockReturnValue({
+      rememberMe: true,
+      savedUsername: 'alice',
+    });
+    keychainMock.getSecret.mockReturnValue('refresh-token-123');
+    apiClientMock.http.storage.getRefreshToken.mockResolvedValue(
+      'refresh-token-123',
+    );
+    apiClientMock.http.request.mockResolvedValue({
+      token: 'new-access-token',
+      refreshToken: 'new-refresh-token',
+    });
+    apiClientMock.users.me.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', role: 'admin' },
+    });
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+      configMock as any,
+    );
+    const user = await session.restoreSession();
+
+    expect(user).toEqual({ id: 'u1', username: 'alice', role: 'admin' });
+    expect(apiClientMock.users.me).toHaveBeenCalledTimes(1);
+    expect(keychainMock.storeSecret).toHaveBeenCalledWith(
+      'refresh_token',
+      'new-refresh-token',
+    );
+  });
+
+  it('restoreSession clears session and returns null when refresh fails with 401', async () => {
+    configMock.load.mockReturnValue({
+      rememberMe: true,
+      savedUsername: 'alice',
+    });
+    keychainMock.getSecret.mockReturnValue('expired-token');
+    apiClientMock.http.storage.getRefreshToken.mockResolvedValue(
+      'expired-token',
+    );
+    apiClientMock.http.request.mockRejectedValue(
+      new ApiError('Unauthorized', 401, 'UNAUTHORIZED'),
+    );
+
+    const session = new SessionManager(
+      apiClientMock as any,
+      keychainMock as any,
+      configMock as any,
+    );
+    const user = await session.restoreSession();
+
+    expect(user).toBeNull();
+    expect(keychainMock.deleteSecret).toHaveBeenCalledWith('refresh_token');
+  });
+});

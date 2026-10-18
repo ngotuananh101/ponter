@@ -24,6 +24,10 @@ export const useConfigStore = defineStore('config', () => {
    * `App.vue` to suppress the startup flash until the first route decision is
    * possible. */
   const configLoaded = ref(false);
+  /** Remember me preference for desktop (Ticket #156). */
+  const rememberMe = ref(true);
+  /** Last saved username for login autofill (Ticket #156). */
+  const savedUsername = ref<string | null>(null);
 
   /** Load the config from the backend.
    *
@@ -39,6 +43,8 @@ export const useConfigStore = defineStore('config', () => {
       theme.value =
         cfg.theme === 'light' || cfg.theme === 'dark' ? cfg.theme : null;
       hasServerUrl.value = cfg.hasServerUrl;
+      rememberMe.value = cfg.rememberMe !== false;
+      savedUsername.value = cfg.savedUsername ?? null;
     } catch {
       // Swallowed intentionally — see the doc comment above.
     } finally {
@@ -83,6 +89,8 @@ export const useConfigStore = defineStore('config', () => {
     hasServerUrl,
     editing,
     configLoaded,
+    rememberMe,
+    savedUsername,
     load,
     setServerUrl,
     setAllowInput,

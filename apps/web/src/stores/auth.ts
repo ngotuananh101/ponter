@@ -186,7 +186,12 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(username: string, password: string): Promise<void> {
+  async function login(
+    username: string,
+    password: string,
+    rememberMe = true,
+  ): Promise<void> {
+    tokenStorage.setRememberMe(rememberMe);
     status.value = 'loading';
     error.value = null;
     try {

@@ -16,6 +16,9 @@ const wizard = useWizardStore();
 onMounted(async () => {
   await config.load();
   initDesktopTheme(config.theme);
+  if (config.hasServerUrl) {
+    await auth.restoreSession();
+  }
 });
 </script>
 

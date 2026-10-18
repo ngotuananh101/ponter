@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import LoginView from '@/views/LoginView.vue';
+import { useAuthStore } from '@/stores/auth';
 import { apiClient } from '@/services/client';
 import { ApiError } from '@ponter/api-client';
 
@@ -22,6 +23,7 @@ import { toast } from 'vue-sonner';
 async function submitLogin(credentials: {
   username: string;
   password: string;
+  rememberMe?: boolean;
 }) {
   const wrapper = mount(LoginView, {
     global: { stubs: { RouterLink: true, RouterView: true } },
@@ -29,7 +31,10 @@ async function submitLogin(credentials: {
   await wrapper.vm.$nextTick();
 
   const loginForm = wrapper.findComponent({ name: 'LoginForm' });
-  await loginForm.vm.$emit('submit', credentials);
+  await loginForm.vm.$emit('submit', {
+    rememberMe: true,
+    ...credentials,
+  });
   await wrapper.vm.$nextTick();
   await new Promise((r) => setTimeout(r, 0));
   await wrapper.vm.$nextTick();
@@ -66,5 +71,18 @@ describe('LoginView.vue', () => {
     await submitLogin({ username: 'user', password: 'wrong' });
 
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('passes rememberMe flag to authStore.login', async () => {
+    const authStore = useAuthStore();
+    const loginSpy = vi.spyOn(authStore, 'login').mockResolvedValue(undefined);
+
+    await submitLogin({
+      username: 'user',
+      password: 'secret',
+      rememberMe: false,
+    });
+
+    expect(loginSpy).toHaveBeenCalledWith('user', 'secret', false);
   });
 });

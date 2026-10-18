@@ -12,9 +12,10 @@ export function createPonterApi(ipc: typeof ipcRenderer): PonterDesktopApi {
     saveConfig: (payload: SaveConfigPayload) =>
       ipc.invoke('desktop:save-config', payload),
     probeServer: (url: string) => ipc.invoke('desktop:probe-server', url),
-    login: (username: string, password: string) =>
-      ipc.invoke('desktop:login', { username, password }),
+    login: (username: string, password: string, rememberMe?: boolean) =>
+      ipc.invoke('desktop:login', { username, password, rememberMe }),
     logout: () => ipc.invoke('desktop:logout'),
+    restoreSession: () => ipc.invoke('desktop:restore-session'),
     probeCapture: () => ipc.invoke('desktop:probe-capture'),
     setAutostart: (enabled: boolean) =>
       ipc.invoke('desktop:set-autostart', enabled),

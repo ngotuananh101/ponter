@@ -13,11 +13,15 @@ export const useAuthStore = defineStore('auth', () => {
     () => user.value !== null && status.value === 'authenticated',
   );
 
-  async function login(username: string, password: string): Promise<void> {
+  async function login(
+    username: string,
+    password: string,
+    rememberMe = true,
+  ): Promise<void> {
     status.value = 'loading';
     error.value = null;
     try {
-      const profile = await window.ponter.login(username, password);
+      const profile = await window.ponter.login(username, password, rememberMe);
       user.value = profile;
       status.value = 'authenticated';
     } catch (err) {
@@ -25,6 +29,20 @@ export const useAuthStore = defineStore('auth', () => {
       error.value = err instanceof Error ? err.message : String(err);
       user.value = null;
       throw err;
+    }
+  }
+
+  async function restoreSession(): Promise<boolean> {
+    try {
+      const profile = await window.ponter.restoreSession();
+      if (profile) {
+        user.value = profile;
+        status.value = 'authenticated';
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
     }
   }
 
@@ -44,6 +62,7 @@ export const useAuthStore = defineStore('auth', () => {
     error,
     isAuthenticated,
     login,
+    restoreSession,
     logout,
   };
 });

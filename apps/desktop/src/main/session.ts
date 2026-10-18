@@ -1,5 +1,6 @@
 import type { ApiClient, TokenStorageAdapter } from '@ponter/api-client';
 import type { KeychainService } from './keychain';
+import type { ConfigManager } from './config';
 import type { UserProfile } from '../shared/ipc-types';
 import type { ApiError } from '@ponter/api-client';
 
@@ -111,11 +112,17 @@ function serverChangedError(): Error {
 export class SessionManager {
   private apiClient: ApiClient;
   private keychain: KeychainService;
+  private config?: ConfigManager;
   private currentUser: UserProfile | null = null;
 
-  constructor(apiClient: ApiClient, keychain: KeychainService) {
+  constructor(
+    apiClient: ApiClient,
+    keychain: KeychainService,
+    config?: ConfigManager,
+  ) {
     this.apiClient = apiClient;
     this.keychain = keychain;
+    this.config = config;
   }
 
   /**
@@ -126,13 +133,26 @@ export class SessionManager {
     return inMemoryAccessToken;
   }
 
-  async login(username: string, password: string): Promise<UserProfile> {
+  async login(
+    username: string,
+    password: string,
+    rememberMe = true,
+  ): Promise<UserProfile> {
     try {
       const resp = await this.apiClient.auth.login(username, password);
       // auth.login() already stored tokens via the storage adapter:
       // - access token in memory
       // - refresh token in keychain
       this.currentUser = resp.user;
+
+      // Ticket #156: persist rememberMe and savedUsername
+      if (this.config) {
+        this.config.save({
+          rememberMe,
+          savedUsername: rememberMe ? username : null,
+        });
+      }
+
       return resp.user;
     } catch (err: any) {
       // Issue #150: a bare "fetch failed" hides which server was actually
@@ -147,6 +167,41 @@ export class SessionManager {
         );
       }
       throw loginError(err.message || 'Login failed', err.code);
+    }
+  }
+
+  /**
+   * Restore a remembered session across app restarts (Ticket #156).
+   *
+   * - If `rememberMe === false`, returns null immediately (forces login view).
+   * - If `rememberMe !== false`, checks refresh token in keychain, refreshes
+   *   session and fetches user profile.
+   * - If 401 occurs, clears local session and returns null.
+   */
+  async restoreSession(): Promise<UserProfile | null> {
+    if (this.config && this.config.load().rememberMe === false) {
+      return null;
+    }
+
+    const refreshToken = await this.apiClient.http.storage.getRefreshToken();
+    if (!refreshToken) {
+      return null;
+    }
+
+    try {
+      await this.refreshSession();
+      const res = await this.apiClient.users.me();
+      this.currentUser = res.user;
+      return res.user;
+    } catch (err: any) {
+      if (
+        err?.status === 401 ||
+        err?.statusCode === 401 ||
+        err?.message?.includes('UNAUTHORIZED')
+      ) {
+        await this.clearLocalSession();
+      }
+      return null;
     }
   }
 
