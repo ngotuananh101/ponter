@@ -32,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (24 test suites, 287 tests):
+Run the Vitest test suite (24 test suites, 293 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
@@ -166,3 +166,11 @@ Credentials and tokens are never stored in `config.json` or renderer web storage
   - **My Devices (Bottom Section):** Compact account device fleet ledger below the hero cards with one-click connection and device deletion dialog.
 - **Zero-Click Onboarding Automation:** When the authenticated view mounts, if the machine has no local device registration (`localAgentId === null`), the client automatically calls `DeviceManager.registerDevice()` using the OS hostname and full capabilities (`['desktop', 'terminal', 'files']`). If "Allow Remote Access" is enabled (`agentAutoStart !== false`), it immediately starts the sidecar in the background without requiring user clicks.
 - **IPC Channel 21 (`desktop:open-remote-session`):** Validates partner agent ID format (`^[a-zA-Z0-9_-]{1,64}$`) and target mode, asserts strict `http:`/`https:` server URL protocols, preserves URL subpaths, constructs `${serverUrl}/workspace/${agentId}?mode=${mode}`, and delegates navigation safely to Electron `shell.openExternal`. Preserves absolute zero webview storage in the desktop renderer (R8 storage gate).
+
+### Desktop Usability & System Tray Lifecycle (PR #167)
+
+- **Vertical Scrolling & Responsive Layout:** Resolves view clipping when view height exceeds window boundaries (default 800x600, minimum 480x500, or when the account fleet contains numerous devices). The root HTML body (`index.html`) and application shell (`App.vue`) implement an `overflow-y-auto overflow-x-hidden` scroll container with inner flexbox `my-auto` centering. Short views (such as Server Setup and Login) remain vertically centered, while taller operational views (such as the two-column Devices view) scroll smoothly without top-clipping.
+- **System Tray Minimize-on-Close & Lifecycle Management (`WindowManager`):**
+  - **Close Interception:** Intercepts window `'close'` events on `BrowserWindow`. If `isQuitting === false`, invokes `event.preventDefault()` and hides the window (`mainWindow.hide()`) rather than destroying the process, maintaining uninterrupted execution of the supervised Rust agent sidecar (`AgentControlService`) and background fleet WebSocket push.
+  - **Single-Instance Restoration:** Listens for `app.on('second-instance')` to invoke `windowManager.restore()`. If the window is minimized, it unminimizes via `mainWindow.restore()`, then shows and focuses the window when a second launch attempt occurs.
+  - **Explicit Clean Quit:** Full application termination is guarded by `isQuitting`. The application only terminates completely when selecting "Quit" from the tray context menu, calling `windowManager.close()`, or during system shutdown (`before-quit`), triggering clean sidecar termination (`agentControl.stop()`), fleet cleanup, tray destruction, and window closure.
