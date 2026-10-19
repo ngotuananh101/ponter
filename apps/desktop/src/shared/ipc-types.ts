@@ -1,3 +1,26 @@
+/**
+ * The desktop stream profiles the agent accepts on `--desktop-profile` /
+ * `AGENT_DESKTOP_PROFILE` (Phase 16, ADR-92).
+ *
+ * The order is presentation order in the settings UI, not a quality ranking.
+ */
+export const DESKTOP_PROFILES = [
+  '1080p30',
+  '720p30',
+  '1080p60',
+  '720p60',
+] as const;
+export type DesktopProfileName = (typeof DESKTOP_PROFILES)[number];
+export const DEFAULT_DESKTOP_PROFILE: DesktopProfileName = '1080p30';
+
+/** Any absent, unknown, or non-string value resolves to the safe default. */
+export function normalizeDesktopProfile(raw: unknown): DesktopProfileName {
+  return typeof raw === 'string' &&
+    (DESKTOP_PROFILES as readonly string[]).includes(raw)
+    ? (raw as DesktopProfileName)
+    : DEFAULT_DESKTOP_PROFILE;
+}
+
 export interface AppConfig {
   serverUrl: string | null;
   allowInput: boolean;
@@ -13,6 +36,8 @@ export interface AppConfig {
    * (spec §3.3, §5.4; ADR-91).
    */
   deviceCode: string | null;
+  /** Desktop stream profile forwarded to the sidecar as AGENT_DESKTOP_PROFILE. */
+  desktopProfile: DesktopProfileName;
   /** Start the local agent automatically on the next launch (Ticket #154). */
   agentAutoStart: boolean;
   /** Whether login credentials / session should be remembered (Ticket #156). Defaults to true. */
@@ -29,6 +54,8 @@ export interface SaveConfigPayload {
   localAgentId?: string | null;
   /** `undefined` = unchanged, `null` = forget the cached code. */
   deviceCode?: string | null;
+  /** `undefined` = unchanged. An invalid value is normalised to 1080p30. */
+  desktopProfile?: DesktopProfileName;
   /** `undefined` = unchanged; persisted so the agent starts on next launch. */
   agentAutoStart?: boolean;
   /** `undefined` = unchanged; whether session should be remembered across restarts. */
