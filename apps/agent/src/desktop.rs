@@ -1278,19 +1278,35 @@ async fn swap_source<S: SwapSource>(
     Ok(encoder)
 }
 
-/// How many consecutive over-budget frames before the agent falls back to
-/// 720p30. 30 frames is ~1 s at 30 fps — long enough to ride out a transient
-/// stall (a GC pause, a scheduler hiccup), short enough that a host which truly
-/// cannot sustain 1080p30 drops within a second (ADR-24).
+/// How many consecutive over-budget frames before the agent falls back one
+/// rung (ADR-24). 30 frames is ~1 s at 30 fps — long enough to ride out a
+/// transient stall (a GC pause, a scheduler hiccup), short enough that a host
+/// which truly cannot sustain its profile drops within a second.
 pub const SUSTAIN_FRAMES_BEFORE_FALLBACK: u32 = 30;
 
 /// What the sustain check wants to do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SustainAction {
     /// Stay on the current profile.
     Continue,
-    /// Rebuild at `SAFE_720P30` — a resolution change, so an encoder rebuild.
-    Downgrade,
+    /// Rebuild at the named profile — a resolution and/or cadence change, so
+    /// an encoder rebuild.
+    DowngradeTo(StreamProfile),
+}
+
+/// The next rung below `profile`, or `None` at the floor.
+///
+/// Every rung is strictly cheaper in pixels per second, so a demotion always
+/// reduces the encode load. `1080p30` is deliberately not a rung below
+/// `720p60`: it is the more expensive of the two.
+pub(crate) fn downgrade_for(profile: StreamProfile) -> Option<StreamProfile> {
+    if profile == StreamProfile::DEFAULT_1080P60 {
+        Some(StreamProfile::SAFE_720P60)
+    } else if profile == StreamProfile::SAFE_720P60 || profile == StreamProfile::DEFAULT_1080P30 {
+        Some(StreamProfile::SAFE_720P30)
+    } else {
+        None
+    }
 }
 
 /// The ADR-24 fallback decision, as a pure state machine.
@@ -1304,19 +1320,23 @@ pub struct SustainMonitor {
     budget: Duration,
     /// Consecutive over-budget frames seen so far.
     consecutive_over: u32,
-    /// Set once a downgrade is requested (or immediately, at the floor) so the
-    /// monitor can never ask twice — ADR-24's anti-oscillation hysteresis.
+    /// Set once a downgrade is requested (or when there is no rung below) so
+    /// the monitor can never ask twice — ADR-24's anti-oscillation hysteresis.
     latched: bool,
+    /// The rung to request when the streak trips; `None` at the floor.
+    next: Option<StreamProfile>,
 }
 
 impl SustainMonitor {
     pub fn new(profile: StreamProfile) -> Self {
+        let next = downgrade_for(profile);
         Self {
             budget: profile.frame_budget(),
-            // At the floor there is nowhere to fall back to, so the latch starts
-            // closed and `observe` can never return `Downgrade`.
-            latched: profile == StreamProfile::SAFE_720P30,
             consecutive_over: 0,
+            // At the floor there is nowhere to fall back to, so the latch
+            // starts closed and `observe` can never ask for a downgrade.
+            latched: next.is_none(),
+            next,
         }
     }
 
@@ -1334,7 +1354,9 @@ impl SustainMonitor {
         }
         if self.consecutive_over >= SUSTAIN_FRAMES_BEFORE_FALLBACK {
             self.latched = true;
-            return SustainAction::Downgrade;
+            if let Some(next) = self.next {
+                return SustainAction::DowngradeTo(next);
+            }
         }
         SustainAction::Continue
     }
@@ -1348,7 +1370,7 @@ impl SustainMonitor {
     /// Named `note_bitrate_change`, not `note_manual_bitrate`: the caller does
     /// not (and cannot) distinguish the two sources here, so the old name lied.
     pub fn note_bitrate_change(&mut self, current: StreamProfile) {
-        if current != StreamProfile::SAFE_720P30 {
+        if downgrade_for(current).is_some() {
             self.latched = false;
             self.consecutive_over = 0;
         }
@@ -1584,24 +1606,28 @@ pub async fn run_stream(
                     );
                 }
 
-                if sustain.observe(encode_time) == SustainAction::Downgrade {
+                if let SustainAction::DowngradeTo(next) = sustain.observe(encode_time) {
                     // ADR-24: the host cannot sustain the current profile's
-                    // budget, so drop to the guaranteed floor. One rebuild, one
-                    // IDR blip, and the monitor's latch is closed by construction
-                    // (`SustainMonitor::new(SAFE_720P30)` starts latched).
+                    // budget, so drop one rung. One rebuild, one IDR blip, and
+                    // the monitor for the new profile starts with its own
+                    // `next` (closed by construction at the floor).
                     tracing::warn!(
-                        from = ?(profile.max_width, profile.max_height),
+                        from = ?(profile.max_width, profile.max_height, profile.fps),
+                        to = ?(next.max_width, next.max_height, next.fps),
                         encode_ms = encode_time.as_secs_f64() * 1000.0,
-                        "desktop: cannot sustain the profile; falling back to 720p30"
+                        "desktop: cannot sustain the profile; falling back one rung"
                     );
-                    profile = StreamProfile::SAFE_720P30;
+                    profile = next;
                     encoder = DesktopEncoder::new(profile)?;
                     sustain = SustainMonitor::new(profile);
                     // The stats frame carries the *real* next-frame size, so it
                     // is deferred one tick (§6.4) rather than reporting the box.
                     pending_stats = Some(Some(StatsStatus {
                         kind: StatsStatusKind::QualityDowngraded,
-                        detail: "720p30 (quality downgraded)".to_string(),
+                        detail: format!(
+                            "{}x{} @ {} fps (quality downgraded)",
+                            next.max_width, next.max_height, next.fps as u32
+                        ),
                     }));
                 }
                 // Diagnostic for the black-video hunt: distinguishes a blank
@@ -3227,7 +3253,7 @@ mod tests {
         }
         assert_eq!(
             monitor.observe(slow),
-            SustainAction::Downgrade,
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30),
             "the 30th consecutive slow frame trips the fallback"
         );
         for _ in 0..200 {
@@ -3252,7 +3278,10 @@ mod tests {
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
-        assert_eq!(monitor.observe(slow), SustainAction::Downgrade);
+        assert_eq!(
+            monitor.observe(slow),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
     }
 
     #[test]
@@ -3278,7 +3307,10 @@ mod tests {
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
-        assert_eq!(monitor.observe(slow), SustainAction::Downgrade);
+        assert_eq!(
+            monitor.observe(slow),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
 
         // At the floor, a bitrate change does not re-arm.
         let mut at_floor = SustainMonitor::new(StreamProfile::SAFE_720P30);
@@ -3286,6 +3318,64 @@ mod tests {
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK * 2 {
             assert_eq!(at_floor.observe(slow), SustainAction::Continue);
         }
+    }
+
+    #[test]
+    fn downgrade_ladder_is_monotonic_in_pixels_per_second() {
+        let pixel_rate =
+            |p: StreamProfile| f64::from(p.max_width) * f64::from(p.max_height) * f64::from(p.fps);
+        for from in [
+            StreamProfile::DEFAULT_1080P60,
+            StreamProfile::SAFE_720P60,
+            StreamProfile::DEFAULT_1080P30,
+        ] {
+            let to = downgrade_for(from).expect("a non-floor profile has a next rung");
+            assert!(
+                pixel_rate(to) < pixel_rate(from),
+                "{:?} -> {:?} must reduce the encode load",
+                (from.max_width, from.max_height, from.fps),
+                (to.max_width, to.max_height, to.fps)
+            );
+        }
+        assert_eq!(downgrade_for(StreamProfile::SAFE_720P30), None);
+    }
+
+    #[test]
+    fn a_1080p60_monitor_demotes_to_720p60_first() {
+        let mut monitor = SustainMonitor::new(StreamProfile::DEFAULT_1080P60);
+        let slow = Duration::from_millis(20); // > the 16.67 ms 60 FPS budget
+        for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
+            assert_eq!(monitor.observe(slow), SustainAction::Continue);
+        }
+        let action = monitor.observe(slow);
+        assert_eq!(
+            action,
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P60),
+            "the first rung below 1080p60 keeps the 60 FPS cadence"
+        );
+        if let SustainAction::DowngradeTo(target) = action {
+            let detail = format!(
+                "{}x{} @ {} fps (quality downgraded)",
+                target.max_width, target.max_height, target.fps as u32
+            );
+            assert!(
+                detail.contains("1280x720 @ 60 fps"),
+                "detail payload must contain the target profile name (Part B AC3)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_720p60_monitor_demotes_to_the_floor() {
+        let mut monitor = SustainMonitor::new(StreamProfile::SAFE_720P60);
+        let slow = Duration::from_millis(20);
+        for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
+            monitor.observe(slow);
+        }
+        assert_eq!(
+            monitor.observe(slow),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
     }
 
     #[test]
