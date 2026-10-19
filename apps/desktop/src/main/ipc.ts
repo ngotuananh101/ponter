@@ -1,4 +1,5 @@
 import { ipcMain, BrowserWindow, net, shell } from 'electron';
+import { stripTrailingSlashes } from '@ponter/webrtc-core';
 import type { SessionManager } from './session';
 import type { ConfigManager } from './config';
 import type { DeviceManager } from './devices';
@@ -311,7 +312,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
         return { ok: false, message: 'Invalid server URL protocol' };
       }
 
-      const basePath = parsed.pathname.replace(/\/+$/, '');
+      const basePath = stripTrailingSlashes(parsed.pathname);
       parsed.pathname = `${basePath}/workspace/${encodeURIComponent(rawAgentId)}`;
       parsed.search = `?mode=${encodeURIComponent(mode)}`;
       parsed.hash = '';
@@ -357,7 +358,7 @@ function buildHealthUrl(rawUrl: string): string | null {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return null;
   }
-  const basePath = parsed.pathname.replace(/\/+$/, '');
+  const basePath = stripTrailingSlashes(parsed.pathname);
   parsed.pathname = `${basePath}/health`;
   parsed.search = '';
   parsed.hash = '';

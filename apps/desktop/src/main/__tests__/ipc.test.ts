@@ -377,95 +377,65 @@ describe('IPC Handlers (Main Process)', () => {
       vi.mocked(shell.openExternal).mockClear();
     });
 
-    it('opens a remote session URL with default mode desktop', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: 'http://localhost:8787' }));
-      vi.mocked(shell.openExternal).mockResolvedValue(undefined);
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-1' },
-      );
-
-      expect(shell.openExternal).toHaveBeenCalledWith(
-        'http://localhost:8787/workspace/agent-1?mode=desktop',
-      );
-      expect(result).toEqual({
-        ok: true,
-        url: 'http://localhost:8787/workspace/agent-1?mode=desktop',
-      });
-    });
-
-    it('opens a remote session URL with custom mode terminal', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: 'https://example.com' }));
-      vi.mocked(shell.openExternal).mockResolvedValue(undefined);
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-2', mode: 'terminal' },
-      );
-
-      expect(shell.openExternal).toHaveBeenCalledWith(
-        'https://example.com/workspace/agent-2?mode=terminal',
-      );
-      expect(result).toEqual({
-        ok: true,
-        url: 'https://example.com/workspace/agent-2?mode=terminal',
-      });
-    });
-
-    it('opens a remote session URL with mode files', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: 'https://example.com' }));
-      vi.mocked(shell.openExternal).mockResolvedValue(undefined);
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-3', mode: 'files' },
-      );
-
-      expect(shell.openExternal).toHaveBeenCalledWith(
-        'https://example.com/workspace/agent-3?mode=files',
-      );
-      expect(result).toEqual({
-        ok: true,
-        url: 'https://example.com/workspace/agent-3?mode=files',
-      });
-    });
-
-    it('handles subpath in serverUrl (e.g. https://example.com/prefix)', async () => {
-      deps.config.load = vi.fn(() => ({
+    it.each([
+      {
+        description: 'default mode desktop',
+        serverUrl: 'http://localhost:8787',
+        payload: { agentId: 'agent-1' },
+        expectedUrl: 'http://localhost:8787/workspace/agent-1?mode=desktop',
+      },
+      {
+        description: 'custom mode terminal',
+        serverUrl: 'https://example.com',
+        payload: { agentId: 'agent-2', mode: 'terminal' as const },
+        expectedUrl: 'https://example.com/workspace/agent-2?mode=terminal',
+      },
+      {
+        description: 'mode files',
+        serverUrl: 'https://example.com',
+        payload: { agentId: 'agent-3', mode: 'files' as const },
+        expectedUrl: 'https://example.com/workspace/agent-3?mode=files',
+      },
+      {
+        description: 'subpath in serverUrl',
         serverUrl: 'https://example.com:8443/prefix',
-      }));
-      vi.mocked(shell.openExternal).mockResolvedValue(undefined);
+        payload: { agentId: 'agent-4', mode: 'desktop' as const },
+        expectedUrl:
+          'https://example.com:8443/prefix/workspace/agent-4?mode=desktop',
+      },
+      {
+        description: 'invalid mode falling back to desktop',
+        serverUrl: 'https://example.com',
+        payload: { agentId: 'agent-5', mode: 'invalid-mode' as any },
+        expectedUrl: 'https://example.com/workspace/agent-5?mode=desktop',
+      },
+    ])(
+      'opens remote session URL for $description',
+      async ({ serverUrl, payload, expectedUrl }) => {
+        deps.config.load = vi.fn(() => ({ serverUrl }));
+        vi.mocked(shell.openExternal).mockResolvedValue(undefined);
 
+        registerIpcHandlers(deps);
+
+        const result = await handlers['desktop:open-remote-session'](
+          {},
+          payload,
+        );
+
+        expect(shell.openExternal).toHaveBeenCalledWith(expectedUrl);
+        expect(result).toEqual({ ok: true, url: expectedUrl });
+      },
+    );
+
+    it.each([
+      ['empty string', { agentId: '' }],
+      ['only whitespace', { agentId: '   ' }],
+      ['null payload', null as any],
+      ['missing agentId', { mode: 'desktop' } as any],
+    ])('rejects invalid or missing agentId (%s)', async (_name, payload) => {
       registerIpcHandlers(deps);
 
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-4', mode: 'desktop' },
-      );
-
-      expect(shell.openExternal).toHaveBeenCalledWith(
-        'https://example.com:8443/prefix/workspace/agent-4?mode=desktop',
-      );
-      expect(result).toEqual({
-        ok: true,
-        url: 'https://example.com:8443/prefix/workspace/agent-4?mode=desktop',
-      });
-    });
-
-    it('rejects when agentId is an empty string', async () => {
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: '' },
-      );
+      const result = await handlers['desktop:open-remote-session']({}, payload);
 
       expect(shell.openExternal).not.toHaveBeenCalled();
       expect(result).toEqual({
@@ -474,50 +444,17 @@ describe('IPC Handlers (Main Process)', () => {
       });
     });
 
-    it('rejects when agentId is only whitespace', async () => {
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: '   ' },
-      );
-
-      expect(shell.openExternal).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        ok: false,
-        message: 'Invalid or missing agentId',
-      });
-    });
-
-    it('rejects when payload is null or undefined', async () => {
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session']({}, null);
-
-      expect(shell.openExternal).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        ok: false,
-        message: 'Invalid or missing agentId',
-      });
-    });
-
-    it('rejects when agentId is missing from payload', async () => {
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { mode: 'desktop' },
-      );
-
-      expect(shell.openExternal).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        ok: false,
-        message: 'Invalid or missing agentId',
-      });
-    });
-
-    it('rejects when serverUrl is not configured', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: null }));
+    it.each([
+      ['not configured', null, 'Server URL not configured'],
+      ['file: protocol', 'file:///etc/passwd', 'Invalid server URL protocol'],
+      [
+        'gopher: protocol',
+        'gopher://example.com',
+        'Invalid server URL protocol',
+      ],
+      ['unparseable format', 'not-a-url', 'Invalid server URL format'],
+    ])('rejects when serverUrl is %s', async (_name, serverUrl, message) => {
+      deps.config.load = vi.fn(() => ({ serverUrl }));
 
       registerIpcHandlers(deps);
 
@@ -529,60 +466,7 @@ describe('IPC Handlers (Main Process)', () => {
       expect(shell.openExternal).not.toHaveBeenCalled();
       expect(result).toEqual({
         ok: false,
-        message: 'Server URL not configured',
-      });
-    });
-
-    it('rejects when serverUrl has invalid protocol (file:)', async () => {
-      deps.config.load = vi.fn(() => ({
-        serverUrl: 'file:///etc/passwd',
-      }));
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-1' },
-      );
-
-      expect(shell.openExternal).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        ok: false,
-        message: 'Invalid server URL protocol',
-      });
-    });
-
-    it('rejects when serverUrl has invalid protocol (gopher:)', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: 'gopher://example.com' }));
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-1' },
-      );
-
-      expect(shell.openExternal).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        ok: false,
-        message: 'Invalid server URL protocol',
-      });
-    });
-
-    it('rejects when serverUrl is not parseable as a URL', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: 'not-a-url' }));
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-1' },
-      );
-
-      expect(shell.openExternal).not.toHaveBeenCalled();
-      expect(result).toEqual({
-        ok: false,
-        message: 'Invalid server URL format',
+        message,
       });
     });
 
@@ -605,26 +489,6 @@ describe('IPC Handlers (Main Process)', () => {
       expect(result).toEqual({
         ok: false,
         message: 'No browser found',
-      });
-    });
-
-    it('defaults to desktop mode when mode is an invalid value', async () => {
-      deps.config.load = vi.fn(() => ({ serverUrl: 'https://example.com' }));
-      vi.mocked(shell.openExternal).mockResolvedValue(undefined);
-
-      registerIpcHandlers(deps);
-
-      const result = await handlers['desktop:open-remote-session'](
-        {},
-        { agentId: 'agent-5', mode: 'invalid-mode' as any },
-      );
-
-      expect(shell.openExternal).toHaveBeenCalledWith(
-        'https://example.com/workspace/agent-5?mode=desktop',
-      );
-      expect(result).toEqual({
-        ok: true,
-        url: 'https://example.com/workspace/agent-5?mode=desktop',
       });
     });
   });
