@@ -381,33 +381,53 @@ describe('IPC Handlers (Main Process)', () => {
       {
         description: 'default mode desktop',
         serverUrl: 'http://localhost:8787',
-        payload: { agentId: 'agent-1' },
-        expectedUrl: 'http://localhost:8787/workspace/agent-1?mode=desktop',
+        payload: { agentId: 'dev_aaaa0001' },
+        expectedUrl:
+          'http://localhost:8787/workspace/dev_aaaa0001?mode=desktop',
       },
       {
         description: 'custom mode terminal',
         serverUrl: 'https://example.com',
-        payload: { agentId: 'agent-2', mode: 'terminal' as const },
-        expectedUrl: 'https://example.com/workspace/agent-2?mode=terminal',
+        payload: { agentId: 'dev_bbbb0002', mode: 'terminal' as const },
+        expectedUrl: 'https://example.com/workspace/dev_bbbb0002?mode=terminal',
       },
       {
         description: 'mode files',
         serverUrl: 'https://example.com',
-        payload: { agentId: 'agent-3', mode: 'files' as const },
-        expectedUrl: 'https://example.com/workspace/agent-3?mode=files',
+        payload: { agentId: 'dev_cccc0003', mode: 'files' as const },
+        expectedUrl: 'https://example.com/workspace/dev_cccc0003?mode=files',
       },
       {
         description: 'subpath in serverUrl',
         serverUrl: 'https://example.com:8443/prefix',
-        payload: { agentId: 'agent-4', mode: 'desktop' as const },
+        payload: { agentId: 'dev_dddd0004', mode: 'desktop' as const },
         expectedUrl:
-          'https://example.com:8443/prefix/workspace/agent-4?mode=desktop',
+          'https://example.com:8443/prefix/workspace/dev_dddd0004?mode=desktop',
       },
       {
         description: 'invalid mode falling back to desktop',
         serverUrl: 'https://example.com',
-        payload: { agentId: 'agent-5', mode: 'invalid-mode' as any },
-        expectedUrl: 'https://example.com/workspace/agent-5?mode=desktop',
+        payload: { agentId: 'dev_eeee0005', mode: 'invalid-mode' as any },
+        expectedUrl: 'https://example.com/workspace/dev_eeee0005?mode=desktop',
+      },
+      {
+        description: 'spaced device code',
+        serverUrl: 'http://localhost:8787',
+        payload: { agentId: '749 281 903' },
+        expectedUrl: 'http://localhost:8787/workspace/749281903?mode=desktop',
+      },
+      {
+        description: 'hyphenated device code',
+        serverUrl: 'http://localhost:8787',
+        payload: { agentId: '749-281-903' },
+        expectedUrl: 'http://localhost:8787/workspace/749281903?mode=desktop',
+      },
+      {
+        description: 'legacy agent id preserved',
+        serverUrl: 'http://localhost:8787',
+        payload: { agentId: 'dev_ab12cd34' },
+        expectedUrl:
+          'http://localhost:8787/workspace/dev_ab12cd34?mode=desktop',
       },
     ])(
       'opens remote session URL for $description',
@@ -460,7 +480,7 @@ describe('IPC Handlers (Main Process)', () => {
 
       const result = await handlers['desktop:open-remote-session'](
         {},
-        { agentId: 'agent-1' },
+        { agentId: 'dev_f001aaaa' },
       );
 
       expect(shell.openExternal).not.toHaveBeenCalled();
@@ -480,11 +500,11 @@ describe('IPC Handlers (Main Process)', () => {
 
       const result = await handlers['desktop:open-remote-session'](
         {},
-        { agentId: 'agent-1', mode: 'desktop' },
+        { agentId: 'dev_f001aaaa', mode: 'desktop' },
       );
 
       expect(shell.openExternal).toHaveBeenCalledWith(
-        'http://localhost:8787/workspace/agent-1?mode=desktop',
+        'http://localhost:8787/workspace/dev_f001aaaa?mode=desktop',
       );
       expect(result).toEqual({
         ok: false,

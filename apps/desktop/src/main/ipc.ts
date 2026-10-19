@@ -1,5 +1,6 @@
 import { ipcMain, BrowserWindow, net, shell } from 'electron';
 import { stripTrailingSlashes } from '@ponter/webrtc-core';
+import { normalizeDeviceCode } from '@ponter/shared';
 import type { SessionManager } from './session';
 import type { ConfigManager } from './config';
 import type { DeviceManager } from './devices';
@@ -288,7 +289,10 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
         return { ok: false, message: 'Invalid or missing agentId' };
       }
 
-      const rawAgentId = payload.agentId.trim();
+      // Normalise device-code-style input (spaced/hyphenated digits) before
+      // embedding in the URL. Legacy IDs like `dev_ab12cd34` are preserved
+      // verbatim by `normalizeDeviceCode` (underscores only, no dashes).
+      const rawAgentId = normalizeDeviceCode(payload.agentId.trim());
       const allowedModes = ['desktop', 'terminal', 'files'];
       const mode =
         payload.mode && allowedModes.includes(payload.mode)

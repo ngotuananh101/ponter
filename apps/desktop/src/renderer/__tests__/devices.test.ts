@@ -25,6 +25,7 @@ const sampleDevice: DesktopDevice = {
   agentVersion: '0.1.0',
   publicKey: '',
   signingPublicKey: null,
+  deviceCode: null,
   isOnline: false,
   lastHeartbeat: null,
   capabilities: [],

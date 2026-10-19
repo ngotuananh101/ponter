@@ -85,6 +85,7 @@ describe('ConfigManager', () => {
       allowInput: false,
       theme: 'dark',
       localAgentId: null,
+      deviceCode: null,
       agentAutoStart: false,
       rememberMe: true,
       savedUsername: null,
