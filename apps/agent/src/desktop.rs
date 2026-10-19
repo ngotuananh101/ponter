@@ -556,27 +556,32 @@ fn run_capture<R: CaptureRecorder>(
 #[allow(dead_code)]
 const GDI_DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Parse `AGENT_DESKTOP_POLL_INTERVAL_MS` into a `Duration`; returns the
-/// default on an absent, empty, zero, or unparseable value.
+/// Parse `AGENT_DESKTOP_POLL_INTERVAL_MS` into a `Duration`; returns `fallback`
+/// on an absent, empty, zero, or unparseable value.
 ///
-/// Split from `gdi_poll_interval` so the parsing logic is unit-testable on
-/// every platform without touching the process environment.
+/// The fallback is the profile's frame budget, so the `capture_image` path
+/// polls at the stream's cadence: a fixed 33 ms would cap a 60 FPS session at
+/// 30 FPS. Split from `gdi_poll_interval` so the parsing logic is unit-testable
+/// on every platform without touching the process environment.
 #[allow(dead_code)]
-fn parse_poll_interval(raw: Option<String>) -> Duration {
+fn parse_poll_interval(raw: Option<String>, fallback: Duration) -> Duration {
     raw.and_then(|s| s.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
         .map(Duration::from_millis)
-        .unwrap_or(GDI_DEFAULT_POLL_INTERVAL)
+        .unwrap_or(fallback)
 }
 
 /// The poll interval for the `capture_image` fallback path (Task 3).
 ///
-/// Reads `AGENT_DESKTOP_POLL_INTERVAL_MS`; defaults to 33 ms (~30 Hz) which
-/// matches the streaming ticker so `drain_latest` has a fresh frame each tick.
-/// A value of 0 or an unparseable string is treated as the default.
+/// Reads `AGENT_DESKTOP_POLL_INTERVAL_MS`; defaults to the profile's frame
+/// budget (16.7 ms at 60 FPS, 33.3 ms at 30 FPS). A value of 0 or an
+/// unparseable string is treated as the default.
 #[cfg(windows)]
-fn gdi_poll_interval() -> Duration {
-    parse_poll_interval(std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS").ok())
+fn gdi_poll_interval(profile: StreamProfile) -> Duration {
+    parse_poll_interval(
+        std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS").ok(),
+        profile.frame_budget(),
+    )
 }
 
 /// Abstraction over image capture for the polling fallback loop,
@@ -712,7 +717,7 @@ impl ScreenSource {
     /// An id absent from the live enumeration is reported as `unknown source
     /// id`, the same refusal `source_for` gives for a bad scheme — a hostile
     /// `desktop-select` can never name a source the agent did not offer (§9).
-    pub async fn for_monitor(monitor_id: u32) -> Result<Self> {
+    pub async fn for_monitor(monitor_id: u32, profile: StreamProfile) -> Result<Self> {
         let (ready_tx, ready_rx) = oneshot::channel::<std::result::Result<(), String>>();
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<xcap::Frame>();
@@ -742,18 +747,20 @@ impl ScreenSource {
                             tracing::warn!(
                                 "video recorder unavailable ({e}); falling back to image polling"
                             );
+                            let _ = profile;
                             run_capture_image_poll(
                                 monitor,
                                 ready_tx,
                                 frame_tx,
                                 stop_rx,
-                                gdi_poll_interval(),
+                                gdi_poll_interval(profile),
                                 FIRST_FRAME_TIMEOUT,
                             );
                             return;
                         }
                         #[cfg(not(windows))]
                         {
+                            let _ = profile;
                             let _ = ready_tx.send(Err(e.to_string()));
                             return;
                         }
@@ -912,7 +919,7 @@ pub fn enumerate_sources() -> Result<Vec<DesktopSourceInfo>> {
 /// The id is validated by *lookup against the enumeration*, never parsed into a
 /// platform handle directly: an unknown id is an error, so a hostile
 /// `desktop-select` can never name a source the agent did not offer (§9).
-pub async fn source_for(id: &str, _profile: StreamProfile) -> Result<Box<dyn FrameSource>> {
+pub async fn source_for(id: &str, profile: StreamProfile) -> Result<Box<dyn FrameSource>> {
     let (kind, raw) = id
         .split_once(':')
         .ok_or_else(|| anyhow::anyhow!("unknown source id {id:?}"))?;
@@ -926,7 +933,7 @@ pub async fn source_for(id: &str, _profile: StreamProfile) -> Result<Box<dyn Fra
             // `move` closure — see `ScreenSource::for_monitor` and
             // `find_monitor`. An id absent from the enumeration still fails
             // with `unknown source`, just reported from the thread.
-            Ok(Box::new(ScreenSource::for_monitor(wanted).await?))
+            Ok(Box::new(ScreenSource::for_monitor(wanted, profile).await?))
         }
         "window" => {
             let wanted: u32 = raw
@@ -3504,13 +3511,16 @@ mod tests {
 
     #[test]
     fn parse_poll_interval_returns_the_default_for_none() {
-        assert_eq!(parse_poll_interval(None), GDI_DEFAULT_POLL_INTERVAL);
+        assert_eq!(
+            parse_poll_interval(None, GDI_DEFAULT_POLL_INTERVAL),
+            GDI_DEFAULT_POLL_INTERVAL
+        );
     }
 
     #[test]
     fn parse_poll_interval_returns_the_default_for_empty() {
         assert_eq!(
-            parse_poll_interval(Some("".to_string())),
+            parse_poll_interval(Some("".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             GDI_DEFAULT_POLL_INTERVAL
         );
     }
@@ -3518,7 +3528,7 @@ mod tests {
     #[test]
     fn parse_poll_interval_returns_the_default_for_zero() {
         assert_eq!(
-            parse_poll_interval(Some("0".to_string())),
+            parse_poll_interval(Some("0".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             GDI_DEFAULT_POLL_INTERVAL
         );
     }
@@ -3526,7 +3536,7 @@ mod tests {
     #[test]
     fn parse_poll_interval_returns_the_default_for_garbage() {
         assert_eq!(
-            parse_poll_interval(Some("not-a-number".to_string())),
+            parse_poll_interval(Some("not-a-number".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             GDI_DEFAULT_POLL_INTERVAL
         );
     }
@@ -3534,7 +3544,7 @@ mod tests {
     #[test]
     fn parse_poll_interval_uses_an_explicit_millisecond_value() {
         assert_eq!(
-            parse_poll_interval(Some("50".to_string())),
+            parse_poll_interval(Some("50".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             Duration::from_millis(50)
         );
     }
@@ -3542,8 +3552,30 @@ mod tests {
     #[test]
     fn parse_poll_interval_uses_a_large_millisecond_value() {
         assert_eq!(
-            parse_poll_interval(Some("16".to_string())),
+            parse_poll_interval(Some("16".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             Duration::from_millis(16)
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_uses_the_profile_budget_as_its_fallback() {
+        let budget = StreamProfile::DEFAULT_1080P60.frame_budget();
+        assert_eq!(parse_poll_interval(None, budget), budget);
+        assert_eq!(
+            parse_poll_interval(Some("0".to_string()), budget),
+            budget,
+            "an explicit 0 is still the fallback, not a 0 ms poll"
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_prefers_an_explicit_value_over_the_budget() {
+        assert_eq!(
+            parse_poll_interval(
+                Some("20".to_string()),
+                StreamProfile::DEFAULT_1080P60.frame_budget()
+            ),
+            Duration::from_millis(20)
         );
     }
 
