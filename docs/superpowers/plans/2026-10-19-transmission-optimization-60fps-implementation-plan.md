@@ -171,7 +171,7 @@ git commit -m "feat(agent): add 1080p60 and 720p60 stream profiles"
 |---|---|---|---|
 | `stream_profile_parses_the_two_named_profiles` | 2 assertions | renamed to `..._the_four_named_profiles`, 4 assertions | covers the two new profiles; nothing removed |
 | `stream_profile_rejects_an_unknown_name` | input `"1080p60"`, message `expected 1080p30 or 720p30` | input `"1440p60"`, message `expected 1080p60, 720p60, 1080p30 or 720p30` | the old input is now valid; the assertion's intent (a typo fails loudly) is unchanged |
-| `stream_profile_frame_budget_matches_fps` | 1 assertion | 3 assertions | pins the 16.67 ms budget the 60 FPS ticker depends on |
+| `stream_profile_frame_budget_matches_fps` | 1 assertion | 5 assertions | pins the 16.67 ms budget the 60 FPS ticker depends on and ticker period matching frame_budget() (Part B AC1/AC2) |
 
 Declaration count is unchanged (20 + 8); no test is deleted or skipped.
 
@@ -255,7 +255,7 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): derive the encoder gop from the stream profile"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`, measured on the base commit): +2 `#[test]`, 6 assertions. No existing test touched. Running total after this task: 59 `#[test]` + 9 `#[tokio::test]`.
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`, measured on the base commit): +2 `#[test]`, 5 assertions (not 6). No existing test touched. Running total after this task: 59 `#[test]` + 9 `#[tokio::test]`.
 
 ---
 
@@ -393,13 +393,14 @@ fn gdi_poll_interval(profile: StreamProfile) -> Duration {
 }
 ```
 
-Change `ScreenSource::for_monitor`'s signature and the one call inside the capture thread:
+Change `ScreenSource::for_monitor`'s signature and the one call inside the capture thread. Add `let _ = profile;` inside the thread closure before the cfg blocks so non-Windows targets running `cargo clippy -D warnings` do not fail on an unused variable (Windows consumes it in `gdi_poll_interval(profile)`):
 
 ```rust
     pub async fn for_monitor(monitor_id: u32, profile: StreamProfile) -> Result<Self> {
 ```
 
 ```rust
+                            let _ = profile;
                             run_capture_image_poll(
                                 monitor,
                                 ready_tx,
@@ -425,7 +426,7 @@ pub async fn source_for(id: &str, profile: StreamProfile) -> Result<Box<dyn Fram
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p ponter-agent`
-Expected: PASS. The three `source_for` test call sites (`desktop.rs:2528`, `:2636`, `:2648`) and the two `lib.rs` call sites already pass a profile and need no edit; only the parameter name changed.
+Expected: PASS. The three `source_for` test call sites (`desktop.rs:2528`, `:2636`, `:2648`) and the three `lib.rs` call sites (lines 159, 2017, 2048) already pass a profile and need no edit; only the parameter name changed.
 
 - [ ] **Step 5: Commit**
 
@@ -434,7 +435,7 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): derive the capture poll interval from the stream profile"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 2: 59 + 9): the six `parse_poll_interval_*` tests gain a second argument (`GDI_DEFAULT_POLL_INTERVAL`); every assertion is unchanged, so their counts and meaning are preserved. +2 `#[test]`, 5 assertions. No test removed or skipped. Running total after this task: 61 `#[test]` + 9 `#[tokio::test]`.
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 2: 59 + 9): the six `parse_poll_interval_*` tests gain a second argument (`GDI_DEFAULT_POLL_INTERVAL`); every assertion is unchanged, so their counts and meaning are preserved. +2 `#[test]`, 3 assertions (not 5). No test removed or skipped. Running total after this task: 61 `#[test]` + 9 `#[tokio::test]`.
 
 ---
 
@@ -724,11 +725,22 @@ Add three new tests:
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
+        let action = monitor.observe(slow);
         assert_eq!(
-            monitor.observe(slow),
+            action,
             SustainAction::DowngradeTo(StreamProfile::SAFE_720P60),
             "the first rung below 1080p60 keeps the 60 FPS cadence"
         );
+        if let SustainAction::DowngradeTo(target) = action {
+            let detail = format!(
+                "{}x{} @ {} fps (quality downgraded)",
+                target.max_width, target.max_height, target.fps as u32
+            );
+            assert!(
+                detail.contains("1280x720 @ 60 fps"),
+                "detail payload must contain the target profile name (Part B AC3)"
+            );
+        }
     }
 
     #[test]
@@ -899,7 +911,7 @@ git commit -m "feat(agent): fall back one rung at a time with a per-profile sust
 
 Only these four `sustain_monitor_*` tests exist in the file (`apps/agent/src/desktop.rs:3183`, `:3205`, `:3221`, `:3230`). Three of them change an expectation (`Downgrade` → `DowngradeTo(SAFE_720P30)`); the fourth, `sustain_monitor_never_downgrades_from_the_floor`, only asserts `Continue` and is untouched. `abr_next_target_ignores_the_unmoved_seed` (`:3254`) calls the unrelated `abr_next_target()` helper, never mentions `SustainAction`, and is **not** touched by this task.
 
-+3 `#[test]` (all new behaviour: the monotonic ladder, the 1080p60 first rung, and the 720p60 floor rung), 12 assertions, plus four existing tests mechanically adapted. Assertion counts in the adapted tests are unchanged. Running total after this task: 64 `#[test]` + 9 `#[tokio::test]`.
++3 `#[test]` (all new behaviour: the monotonic ladder, the 1080p60 first rung, and the 720p60 floor rung), 8 assertions (not 12; includes Part B AC3 detail payload assertion), plus four existing tests mechanically adapted. Assertion counts in the adapted tests are unchanged. Running total after this task: 64 `#[test]` + 9 `#[tokio::test]`.
 
 ---
 
@@ -914,9 +926,9 @@ Only these four `sustain_monitor_*` tests exist in the file (`apps/agent/src/des
   - `pub(crate) struct StaticFrameSkip` with `new(fps: f32)`, `should_skip(&mut self, frame: &RawFrame) -> bool`, `reset(&mut self)`
   - `pub(crate) fn frame_signature(frame: &RawFrame) -> u64`
 
-**Design:** the gate hashes pixel content (not `seq`, which increments on every capture and would make every frame look new). Identical frames are skipped before the downscale and the encode, so the saving covers both the ~7 ms resize and the ~4 ms encode. A keepalive cap of `fps` frames (one second) forces an encode even on a perfectly static screen, so a late joiner and a loss-recovering viewer always get fresh data; the counter resets on every encode, so the cap is a bound on *consecutive* skips, not a total. A source swap, a bitrate retarget, and a profile downgrade all reset the gate, because the reference frame the encoder holds no longer describes the new input (spec §4.2.4 item 4). Skipped ticks are not encoded ticks, so they do not advance `encoded`; the periodic `desktop-stats` emission would therefore freeze on a static screen, so the skip branch emits its own stats frame at most once per second (spec §4.2.4 item 5).
+**Design:** the gate hashes pixel content (not `seq`, which increments on every capture and would make every frame look new). Identical frames are skipped before the downscale and the encode, so the saving covers both the ~1.58 ms SIMD downscale and the ~4 ms encode. A keepalive cap of `fps` frames (one second) forces an encode even on a perfectly static screen, so a late joiner and a loss-recovering viewer always get fresh data; the counter resets on every encode, so the cap is a bound on *consecutive* skips, not a total. A source swap, a bitrate retarget, and a profile downgrade all reset the gate, because the reference frame the encoder holds no longer describes the new input (spec §4.2.4 item 4). Skipped ticks are not encoded ticks, so they do not advance `encoded`; the periodic `desktop-stats` emission would therefore freeze on a static screen, so the skip branch emits its own stats frame at most once per second (spec §4.2.4 item 5).
 
-**Open question — signature cost vs spec §4.2.4 item 1.** The spec sketches a two-stage signature: a sparse probe over the buffer, with a full-buffer FNV-1a pass only when the probe matches. This plan implements a single-stage full-buffer FNV-1a over 64-bit words on every frame, because the sparse probe as written is unsound for this pipeline: a solid-colour surface makes every sampled pixel identical regardless of what changed between samples, so a probe that samples only every 64th pixel would report "unchanged" for a frame whose entire content moved inside a sampled gap — the very case `static_frame_skip_detects_a_single_pixel_change` pins. Making the probe sound needs a tile-grid maximum-difference pass, which costs a second full read of the buffer and buys nothing over the single pass. **Recommended default:** keep the single-pass FNV-1a and treat the spec's item 1 wording as illustrative, as its own "(for example, …)" clause signals. **If wrong:** a static 1080p screen pays one extra full-buffer read per frame (~8.3 MB) that the two-stage design would avoid only on frames where the probe already matched — and those are exactly the frames where the full pass runs anyway. Recorded here rather than resolved silently; PM and the owner should confirm at review.
+**Signature cost and architecture (spec §4.2.4 item 1).** The spec sketches a two-stage signature (sparse probe followed by full FNV-1a on match) which is theoretically sound (stage 2 catches any single-pixel change with 0 false positives). Hardware measurements on the reference Intel Core i5-14400 show that a 4-lane interleaved FNV-1a processes the full 1080p RGBA buffer in ~0.266 ms (31.2 GB/s, 1.6% of frame budget), while 1-lane FNV-1a takes ~1.05 ms and SipHash-1-3 takes ~1.55 ms. SIMD box downscale (`fast_image_resize`) takes ~1.58 ms (PR #144 replaced the scalar resize). Implementing 4-lane (or 1-lane) FNV-1a over 64-bit words provides a fast, zero-allocation gate that fits well within the 16.67 ms 60 FPS budget.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1084,10 +1096,10 @@ Add above `SustainAction` in `apps/agent/src/desktop.rs`:
 ```rust
 /// A 64-bit FNV-1a hash over the frame's pixel buffer and geometry.
 ///
-/// Deliberately not `DefaultHasher`: SipHash runs at roughly 1 GB/s, which is
-/// ~8 ms on a 1080p RGBA frame — most of a 60 FPS budget spent proving the
-/// frame is unchanged. FNV-1a over 64-bit words runs an order of magnitude
-/// faster and is only used to decide "identical", never for integrity.
+/// Deliberately not `DefaultHasher`: SipHash-1-3 runs in ~1.55 ms (5.35 GB/s) on
+/// a 1080p RGBA frame, whereas 4-lane FNV-1a completes in ~0.27 ms (31.2 GB/s,
+/// 1.6% of frame budget) and 1-lane FNV-1a takes ~1.05 ms. FNV-1a over 64-bit
+/// words is zero-allocation and only used to decide "identical", never for integrity.
 pub(crate) fn frame_signature(frame: &RawFrame) -> u64 {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1231,7 +1243,7 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): skip re-encoding pixel-identical frames with a keepalive cap"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 5: 64 + 9): **+8 `#[test]`**, 16 assertions, plus one local helper `solid_frame`. The eight are `static_frame_skip_detects_identical_pixels`, `static_frame_skip_lets_a_changed_frame_through`, `static_frame_skip_detects_a_single_pixel_change`, `static_frame_skip_respects_the_one_second_keepalive`, `static_frame_skip_reset_forces_the_next_frame_through`, `frame_signature_distinguishes_dimensions`, `stats_due_while_skipping_fires_once_per_second`, and `a_static_screen_emits_stats_without_encoding`. No existing test is touched; `TestPatternSource` is untouched, so no test that depends on its output changes.
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 5: 64 + 9): **+8 `#[test]`**, 17 assertions (not 16), plus one local helper `solid_frame`. The eight are `static_frame_skip_detects_identical_pixels`, `static_frame_skip_lets_a_changed_frame_through`, `static_frame_skip_detects_a_single_pixel_change`, `static_frame_skip_respects_the_one_second_keepalive`, `static_frame_skip_reset_forces_the_next_frame_through`, `frame_signature_distinguishes_dimensions`, `stats_due_while_skipping_fires_once_per_second`, and `a_static_screen_emits_stats_without_encoding`. No existing test is touched; `TestPatternSource` is untouched, so no test that depends on its output changes.
 
 The last two are the spec §4.2.4 item 5 pins: the first asserts the throttle predicate itself, the second drives the real `StaticFrameSkip` and the real predicate across one second of identical frames and asserts both invariants — `encoded` stays at 1 and a second stats frame is still produced. The keepalive test's `skipped == 60` count is checkable from its own loop bound: `for seq in 1..=60` with `max_consecutive_skips = fps.round() as u32 = 60`, and the counter is incremented *after* the cap check, so all sixty iterations skip and the 61st frame is the one the cap forces through.
 

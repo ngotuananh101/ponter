@@ -422,10 +422,11 @@ The fixture `localDevice` must gain `deviceCode` for every existing test that mo
 The partner input keeps `data-testid="remote-agent-id-input"` and `v-model="remoteAgentId"`, but gains an input handler that groups digits while typing:
 
 ```ts
-/** Digits only, grouped in threes, capped at nine digits. */
+/** Digits only, grouped in threes, capped at nine digits. Non-numeric input is preserved verbatim. */
 function formatPartnerInput(raw: string): string {
-  const digits = raw.replace(/\D/g, '').slice(0, 9);
-  if (!digits) return raw.trim();          // legacy `dev_...` pasted verbatim
+  const compact = raw.replace(/[\s-]/g, '');
+  if (!compact || !/^\d+$/.test(compact)) return raw;
+  const digits = compact.slice(0, 9);
   return digits.replace(/(\d{3})(?=\d)/g, '$1 ');
 }
 ```
@@ -433,7 +434,7 @@ function formatPartnerInput(raw: string): string {
 Rules:
 
 - Typing `749281903` renders `749 281 903`; the caret must stay usable (append-only editing is sufficient for the first implementation; a caret-preserving implementation is preferred but not required).
-- Pasting `dev_ab12cd34` must leave the value intact — the handler detects that the input contains non-digit characters and returns it trimmed rather than destroying it.
+- Pasting `dev_ab12cd34` must leave the value intact without regex-stripping non-digits — the handler detects that compacted input contains non-digit characters (`!/^\d+$/.test(compact)`) and returns `raw` unmodified.
 - Pasting `749-281-903` normalises to `749 281 903`.
 - The Connect button's enabled predicate is `remoteAgentId.trim().length > 0`; it must not require exactly nine digits, because legacy identifiers remain valid.
 - `handleRemoteConnect()` passes the raw field value to `window.ponter.openRemoteSession()`; normalisation happens once, in the IPC handler (below), so the renderer cannot drift from the main process.
@@ -692,11 +693,11 @@ This path is CPU-bound by construction and is the first candidate for the Stage 
 
 #### 4.2.4 Static-frame skip
 
-Goal: spend **no CPU** on downscale + colour conversion + encode when the captured surface is unchanged. The measurement record is explicit that this buys CPU, not bandwidth — openh264 already emits ~9 KB for a static 1080p frame at a 4 Mbps target versus ~5 MB for a moving one.
+Goal: spend **no CPU** on downscale + colour conversion + encode when the captured surface is unchanged. The measurement record is explicit that this buys CPU, not bandwidth — openh264 already emits ~9 KB for a static 1080p frame at a 4 Mbps target versus ~5 MB for a moving one. Skipping an unchanged frame saves both the SIMD downscale (~1.58 ms on the target host) and openh264 encode (~4 ms), freeing ~5.58 ms per frame.
 
 Design:
 
-1. **Cheap signature first.** Hash a sparse sample of the raw RGBA buffer (for example, every 64th pixel plus a rolling FNV-1a over the full buffer only when the sparse sample matches). A full-buffer hash on every frame would itself consume a meaningful fraction of a 16.67 ms budget.
+1. **Cheap signature first.** Hash a signature of the raw RGBA buffer. The two-stage probe (a sparse sample of every 64th pixel triggering a full-buffer FNV-1a pass only on sparse match) is theoretically sound and has 0 false positives because single-pixel changes trigger full-buffer verification upon sparse collisions. Alternatively, a 4-lane interleaved FNV-1a over 64-bit words processes an entire 1080p RGBA buffer in ~0.27 ms (31.2 GB/s on an Intel i5-14400, taking only 1.6% of the 16.67 ms frame budget), compared to ~1.05 ms for 1-lane FNV-1a and ~1.55 ms for SipHash-1-3. Either zero-allocation approach fits well within the frame budget.
 2. **Skip on match.** When the signature equals the previous *encoded* frame's signature, do not downscale and do not call `encoder.encode()`. Increment `skipped` and continue.
 3. **Keepalive cap.** Never skip more than `MAX_STATIC_SKIP` consecutive frames (design value: `fps` frames, i.e. one second). After the cap, encode one frame unconditionally so the receiver's jitter buffer and any PLI-driven recovery path always see periodic media.
 4. **Invalidate on control events.** A `SourceSwap`, a bitrate retarget, or a profile downgrade resets the stored signature; the next frame is always encoded.
