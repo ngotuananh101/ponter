@@ -5,7 +5,7 @@
 - **Date:** 2026-10-19
 - **Supersedes / Amends:** Extends the device identity model established in Phase 7 / PR #155 (`localAgentId` + keychain credential) and the streaming profiles established in Phase 3 / ADR-21, ADR-23, ADR-24. Amends the error taxonomy in `packages/api-client` (Issue #152).
 - **Related ADRs:** ADR-13 (agent credentials), ADR-14 (single active session per agent), ADR-21 (resolved stream profile), ADR-22 (source switching), ADR-23 (runtime bitrate retarget), ADR-24 (sustain fallback floor), ADR-41 (admission gate), ADR-47 (frame timing telemetry), ADR-48 (WebCodecs probe — FAIL/DESCOPED), ADR-52 (keychain isolation), ADR-64/65 (config resolution and persistence), ADR-82 (fleet push), ADR-85 (Electron desktop shell), ADR-86 (agent sidecar supervision), ADR-89 (unified API access), **ADR-91 (9-digit Device Code identity — proposed by this spec)**, **ADR-92 (frame-budget-driven transmission profiles and zero-copy GPU roadmap — proposed by this spec)**
-- **Related Files:** `apps/server/src/db/schema.ts`, `apps/server/src/db/client.ts`, `apps/server/src/utils/agent.ts`, `apps/server/src/routes/agents.ts`, `apps/server/src/routes/sessions.ts`, `packages/shared/src/types/user.ts`, `packages/api-client/src/errors.ts`, `packages/api-client/test/client.test.ts`, `apps/desktop/src/shared/ipc-types.ts`, `apps/desktop/src/main/devices.ts`, `apps/desktop/src/main/ipc.ts`, `apps/desktop/src/renderer/views/DevicesView.vue`, `apps/desktop/src/renderer/stores/devices.ts`, `apps/web/src/views/DashboardView.vue`, `apps/web/src/views/WorkspaceView.vue`, `apps/web/src/stores/terminal.ts`, `apps/agent/src/lib.rs`, `apps/agent/src/main.rs`, `apps/agent/src/desktop.rs`
+- **Related Files:** `apps/server/src/db/schema.ts`, `apps/server/src/db/client.ts`, `apps/server/src/utils/agent.ts`, `apps/server/src/utils/device-code.ts`, `apps/server/src/routes/agents.ts`, `apps/server/src/routes/sessions.ts`, `packages/shared/src/types/user.ts`, `packages/api-client/src/errors.ts`, `packages/api-client/test/client.test.ts`, `apps/desktop/src/shared/ipc-types.ts`, `apps/desktop/src/main/devices.ts`, `apps/desktop/src/main/ipc.ts`, `apps/desktop/src/renderer/views/DevicesView.vue`, `apps/desktop/src/renderer/stores/devices.ts`, `apps/web/src/views/DashboardView.vue`, `apps/web/src/views/WorkspaceView.vue`, `apps/web/src/stores/terminal.ts`, `apps/agent/src/lib.rs`, `apps/agent/src/main.rs`, `apps/agent/src/desktop.rs`
 
 ---
 
@@ -130,7 +130,7 @@ try {
 backfillDeviceCodes(sqlite);
 ```
 
-`backfillDeviceCodes` is a new exported function in `apps/server/src/utils/agent.ts` (or a sibling module) with these properties:
+`backfillDeviceCodes` is a new exported function in `apps/server/src/utils/device-code.ts` (the same module that owns `generateDeviceCode`, so the migration and the registration path share one allocator) with these properties:
 
 - Selects `id` for every row where `device_code IS NULL`.
 - Allocates a code per row using the same allocator as registration, inserting with a per-row `UPDATE ... WHERE id = ?` and relying on the unique index to reject a collision; a collision retries with a fresh code.
@@ -167,7 +167,7 @@ export function generateDeviceCode(): string {
 Allocation on registration is a bounded attempt loop around the unique index:
 
 ```ts
-async function allocateDeviceCode(db: AppDatabase): Promise<string> {
+async function allocateDeviceCode(db: Database): Promise<string> {
   for (let attempt = 0; attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS; attempt += 1) {
     const candidate = generateDeviceCode();
     const clash = await db
@@ -192,18 +192,27 @@ async function allocateDeviceCode(db: AppDatabase): Promise<string> {
 deviceCode: string | null;
 ```
 
-Two downstream projections must be updated in the same change, or the field will silently disappear at a layer boundary:
+Four downstream projections must be updated in the same change, or the field will silently disappear at a layer boundary:
 
 1. **`toPublicAgent()` in `apps/server/src/utils/agent.ts`.** This function is an explicit literal projection and a documented security boundary (it must never spread the row, because the row carries `credentialHash`). Add:
    ```ts
    deviceCode: agent.deviceCode ?? null,
    ```
-2. **`DesktopDevice` in `apps/desktop/src/shared/ipc-types.ts`** and **`mapAgentToDesktopDevice()` in `apps/desktop/src/main/devices.ts`.** The Electron main process re-projects `Agent` onto its own IPC contract; without the field here, the renderer can never render a code.
+2. **`DesktopDevice` in `apps/desktop/src/shared/ipc-types.ts`** and **`mapAgentToDesktopDevice()` plus `mapAgentsToDevices()` in `apps/desktop/src/main/devices.ts`.** The Electron main process re-projects `Agent` onto its own IPC contract; without the field here the renderer can never render a code. Both mappers build the literal by hand, so both need the field.
    ```ts
    deviceCode: string | null;
    ```
+3. **`DesktopDevice` in `apps/desktop/src/renderer/types.ts` (line 37).** The renderer keeps its own duplicate of the IPC contract (`renderer/types.ts` mirrors `shared/ipc-types.ts`). A field added to only one of the two typechecks on the main side and is invisible to the renderer, or the reverse. Both copies must be edited in the same commit.
+4. **`AppConfig` in `apps/desktop/src/renderer/types.ts` (line 63), and its main-process twin in `ConfigManager`.** This is the cache that keeps "This Device" readable when the server is unreachable: the fleet refresh is the only other source of the code, and it fails offline. The value is the *local machine's own* code, which is not a secret (§5.4); it is never used for authorisation and never passed to the sidecar.
+   ```ts
+   /** The local device's own code, cached so it stays readable offline. */
+   deviceCode: string | null;
+   ```
+   Write path: `ConfigManager.save()` persists it with the same `undefined` = unchanged semantics as `localAgentId`; `DeviceManager.registerDevice()` stores `result.agent.deviceCode`; `DeviceManager.listDevices()` refreshes it when the local agent appears in the fleet.
 
-Formatting is a pure helper, exported from `packages/shared` so the desktop renderer, the web app, and the server can all use one definition:
+### 3.3.1 Where the helpers live — shared source, server mirror
+
+`formatDeviceCode` and `normalizeDeviceCode` are pure, so they live once in `packages/shared/src/device-code.ts` and are re-exported from `packages/shared/src/index.ts`:
 
 ```ts
 /** `749281903` -> `749 281 903`; a null/empty value -> the em dash placeholder. */
@@ -212,7 +221,32 @@ export function formatDeviceCode(code: string | null | undefined): string;
 export function normalizeDeviceCode(raw: string): string;
 ```
 
-`normalizeDeviceCode` strips **only** spaces and dashes (`/[\s-]/g`). It must not strip other characters, because a legacy `dev_ab12cd34` identifier has to survive normalisation unchanged.
+`normalizeDeviceCode` strips **only** spaces and dashes, via `raw.replaceAll(/[\s-]/g, '').trim()` (`replaceAll` rather than a global `replace`, which SonarCloud flags). It must not strip other characters, because a legacy `dev_ab12cd34` identifier has to survive normalisation unchanged.
+
+**The server must not import this module at runtime.** `@ponter/shared` ships raw TypeScript (`main` and `exports` point at `./src/index.ts`) and the production image runs compiled JS with `node apps/server/dist/index.js`, so a runtime import dies at boot with `ERR_MODULE_NOT_FOUND`. That failure mode is already recorded in this repository (the `@ponter/shared` P0) and is stated in the source at `apps/server/src/routes/ws.ts:337-342`, which explains why `normalizeBrowserFrame` is a local mirror rather than an import. Typecheck and build do **not** catch it: the bundler never runs for this server, and the error only appears at Node start.
+
+The server therefore gets its own module, `apps/server/src/utils/device-code.ts`, which owns the allocator and a **byte-for-byte mirror of `normalizeDeviceCode`**:
+
+```ts
+export const MIN_DEVICE_CODE = 100_000_000;
+export const MAX_DEVICE_CODE = 999_999_999;
+export const DEVICE_CODE_SPACE = MAX_DEVICE_CODE - MIN_DEVICE_CODE + 1;
+
+export function normalizeDeviceCode(raw: string): string; // mirrors @ponter/shared
+export function generateDeviceCode(): string;             // server-only: nothing else allocates
+export function backfillDeviceCodes(sqlite: Database): number;
+```
+
+`formatDeviceCode` is **not** mirrored: the server never formats a code for display. Mirroring unused code creates drift surface for no benefit.
+
+Two test files pin this arrangement:
+
+| File | Purpose |
+|---|---|
+| `packages/shared/test/device-code.test.ts` | Unit tests for the shared source: formatting, the em-dash placeholder, whitespace/dash normalisation, legacy-id preservation, non-numeric passthrough |
+| `apps/server/test/device-code-mirror.test.ts` | Drift test between `apps/server/src/utils/device-code.ts#normalizeDeviceCode` and `@ponter/shared#normalizeDeviceCode`, modelled exactly on `apps/server/test/identity-proof-mirror.test.ts`: a table of representative inputs compared with `toBe` |
+
+The drift test imports `@ponter/shared` as a *test* dependency only — Vitest resolves the TypeScript source, and nothing in `apps/server/src/**` imports it at runtime. A divergence between the two normalisers would otherwise be silent: the desktop and web format one way while the server resolves another.
 
 ### 3.4 API resolution — dual lookup, canonical result
 
@@ -235,7 +269,10 @@ The minimal correct change is to make the lookup return the row and the resolver
 ```ts
 async function resolveOwnedId<T extends { id: string }>(
   raw: unknown,
-  lookup: (candidate: string, normalized: string) => Promise<T | undefined>,
+  lookup: (
+    candidate: string,
+    normalized: string,
+  ) => T | undefined | Promise<T | undefined>,
   notFoundMessage: string,
 ): Promise<string | null> {
   if (raw === undefined || raw === null) return null;
@@ -247,6 +284,8 @@ async function resolveOwnedId<T extends { id: string }>(
   return found.id;
 }
 ```
+
+The lookup's return type is a union, not `Promise<T | undefined>`: `drizzle-orm/better-sqlite3` is a **synchronous** driver (`select.d.ts` → `SQLiteSelectPrepare` with `resultType: 'sync'`), so `.get()` returns `T | undefined` directly. A `Promise`-only parameter type would reject both existing call sites at compile time. `await` handles either shape.
 
 The agent call site becomes a single ownership-scoped query matching either identity:
 
@@ -268,7 +307,40 @@ const agentId = await resolveOwnedId(
 );
 ```
 
-The device call site passes `candidate` through unchanged for both parameters (devices have no device code).
+`resolveOwnedId` is **shared by two lookups in the same handler**, and the signature change touches both. Implementers must not treat it as an agent-only helper:
+
+| Line | Field | Table | Change |
+|---|---|---|---|
+| `sessions.ts:64` | `body.deviceId` | `devices` | **Behaviour unchanged.** The call keeps `and(eq(devices.id, candidate), eq(devices.userId, user.id))` and simply ignores the second parameter. It is correct without an OR clause because `devices.id` is canonical and `found.id === candidate` for every row it can match, so the new `return found.id` yields the identical string the old `return candidate` did. |
+| `sessions.ts:75` | `body.agentId` | `agents` | **Gains the OR clause** on `device_code`, as shown below. |
+
+```ts
+const deviceId = await resolveOwnedId(
+  body.deviceId,
+  (candidate) =>
+    db
+      .select()
+      .from(devices)
+      .where(and(eq(devices.id, candidate), eq(devices.userId, user.id)))
+      .get(),
+  'Device not found',
+);
+```
+
+The second parameter is optional at the call site: a one-argument arrow is assignable to the two-parameter lookup type, so the device call site needs no edit beyond compiling against the new signature. Do not add a `devices` OR clause, and do not normalise `deviceId` — device identifiers are opaque and have no grouped form.
+
+Two invariants the change must preserve verbatim:
+
+- **Return type stays `Promise<string | null>`.** `null` still means "not supplied" and is stored as SQL NULL.
+- **The `undefined` / `null` early return is untouched.** Only the string path gains normalisation.
+
+```ts
+if (raw === undefined || raw === null) {
+  return null;
+}
+```
+
+`apps/server/test/agents-sessions.test.ts` already covers the device-scoped path (29 `it()`, 117 `expect()` on the spec's base commit). That file must stay **green and untouched** by this change: the resolver refactor is behaviour-preserving for devices, and a failing assertion there means the refactor broke device-scoped session creation.
 
 Behavioural requirements:
 
@@ -293,35 +365,52 @@ The same treatment should be applied to the read-only `PATCH`/`DELETE` lookups *
 
 #### 3.5.1 "This Device"
 
-Replace the raw-identifier `<code>` block with a device-code block. The existing `data-testid="this-device-id"` is retained as an alias so that any test keyed on it keeps resolving, and a new `data-testid="this-device-code"` names the new surface.
+The card shows the device code as the primary identity and keeps the canonical id as a muted secondary line. Both test ids survive:
 
 ```vue
 <div class="flex items-center gap-2">
   <code
     data-testid="this-device-code"
     class="font-mono text-lg font-bold tracking-wider select-all"
-    >{{ formatDeviceCode(localDevice?.deviceCode) }}</code
+    >{{ formatDeviceCode(localDeviceCode) }}</code
   >
   <Button
-    v-if="localDevice?.deviceCode"
+    v-if="localDeviceCode"
     data-testid="copy-device-code"
     variant="ghost"
     size="xs"
     class="shrink-0"
-    @click="copyDeviceCode(localDevice.deviceCode)"
+    @click="copyDeviceCode(localDeviceCode)"
   >
     <Check v-if="copiedId" class="w-3.5 h-3.5 text-emerald-500" />
     <Copy v-else class="w-3.5 h-3.5" />
   </Button>
 </div>
+<code
+  data-testid="this-device-id"
+  class="font-mono text-[11px] text-muted-foreground select-all break-all"
+  >{{ localAgentId ?? '—' }}</code
+>
 ```
 
 Rules:
 
-- `localDevice` is resolved from `store.devices.find((d) => d.id === localAgentId)`; `deviceCode` comes from the shared `Agent` contract, not from a locally derived value.
+- `localDeviceCode` is resolved from the fleet entry (`store.devices.find((d) => d.id === localAgentId)?.deviceCode`), falling back to the `deviceCode` cached in `AppConfig` (§3.3). The fallback is what keeps the card usable while the server is unreachable.
 - The clipboard write uses the **digits only** (`749281903`), not the spaced form, so a paste into any other surface works without a second normalisation step. The visual grouping is presentation only.
-- When `deviceCode` is `null` (a row that has not yet been backfilled, or an offline fetch), the surface renders the em-dash placeholder and the copy button is disabled. It must never fall back to displaying `dev_...` as if it were a device code.
-- The 2-second `Check` confirmation and the existing `copiedId` timer are reused; no second timer is introduced.
+- When `deviceCode` is `null` (a row not yet backfilled, or a first launch before any fleet fetch), the code line renders the em-dash placeholder and the copy button is hidden. It must never fall back to displaying `dev_...` as if it were a device code.
+- The 2-second `Check` confirmation reuses the existing `copiedId` timer and `copyDeviceId`-style helper; no second timer is introduced.
+- `this-device-id` moves to the secondary line and keeps its old content (the canonical `localAgentId`), so tests keyed on its text still describe real UI.
+
+**TEST-INTEGRITY declaration** (`apps/desktop/src/renderer/__tests__/devices.test.ts`, baseline 53 `it()` + 1 `it.each` — 54 declarations — / 140 `expect()`):
+
+| Test | Before | After | Reason |
+|---|---|---|---|
+| `displays hostname, platform, and the local device ID` | asserts `this-device-id` text equals `localDevice.id` | **unchanged** — the assertion still holds because `this-device-id` now sits on the canonical-id line | the test id was preserved deliberately |
+| `copy ID button writes localAgentId to clipboard and shows feedback` | selects `copy-device-id`, expects `writeText(localDevice.id)` | fixture gains `deviceCode: '749281903'`; selects `copy-device-code`; expects `writeText('749281903')` | the copy control now copies the code; `it()` and `expect()` counts are unchanged |
+| new: `renders this-device-code with grouped digits` | — | +1 `it()`, +2 `expect()` | pins the new surface |
+| new: `renders the placeholder and hides copy when deviceCode is null` | — | +1 `it()`, +2 `expect()` | pins the offline/backfill gap |
+
+The fixture `localDevice` must gain `deviceCode` for every existing test that mounts the view — a required field in the type, so `pnpm typecheck` enforces it rather than leaving it to convention.
 
 #### 3.5.2 "Remote Control"
 
@@ -351,10 +440,15 @@ Rules:
 The handler must normalise before building the URL:
 
 ```ts
+import { normalizeDeviceCode } from '@ponter/shared';
 const rawAgentId = normalizeDeviceCode(payload.agentId.trim());
 ```
 
-using the same shared helper as the server. Consequences:
+The import is safe here for the opposite reason it is unsafe on the server: `apps/desktop/electron.vite.config.ts` lists `@ponter/shared` in `WORKSPACE_PACKAGES` and excludes it from `externalizeDepsPlugin`, so the main bundle **inlines** the TypeScript instead of emitting a runtime `import` of a `.ts` file. The renderer bundles it the same way. Neither the desktop main process nor the renderer ever resolves it through Node at runtime.
+
+The server cannot use this helper and uses its mirror instead (§3.3.1), so the drift test is what keeps the two normalisers identical.
+
+Consequences:
 
 - `"749 281 903"` becomes `749281903` in the URL path.
 - `"dev_ab12cd34"` is unchanged (normalisation strips only spaces and dashes).
@@ -459,7 +553,7 @@ If any stage overruns, the sustain ladder (§4.4) reacts. The measurement seam i
 
 ```rust
 /// 1080p60 at 8 Mbps: the Stage 1 default for hosts with CPU headroom.
-pub const P1080P60: Self = Self {
+pub const DEFAULT_1080P60: Self = Self {
     max_width: 1920,
     max_height: 1080,
     fps: 60.0,
@@ -467,7 +561,7 @@ pub const P1080P60: Self = Self {
 };
 
 /// 720p60 at 5 Mbps: the first rung below 1080p60.
-pub const P720P60: Self = Self {
+pub const SAFE_720P60: Self = Self {
     max_width: 1280,
     max_height: 720,
     fps: 60.0,
@@ -481,8 +575,8 @@ The owner-approved ranges are 8–10 Mbps for `1080p60` and 5–6 Mbps for `720p
 
 ```rust
 match value {
-    "1080p60" => Ok(Self::P1080P60),
-    "720p60"  => Ok(Self::P720P60),
+    "1080p60" => Ok(Self::DEFAULT_1080P60),
+    "720p60"  => Ok(Self::SAFE_720P60),
     "1080p30" => Ok(Self::DEFAULT_1080P30),
     "720p30"  => Ok(Self::SAFE_720P30),
     other => bail!(
@@ -490,6 +584,16 @@ match value {
     ),
 }
 ```
+
+The constant names follow the two that already exist: `DEFAULT_*` is the best-quality profile for a capable host, `SAFE_*` is a floor rung. The naming is load-bearing for the sustain ladder, which must decide whether a profile is the floor by comparing against `SAFE_720P30` alone — a name like `P1080P60` breaks that symmetry and invites a future reader to assume a separate naming scheme.
+
+**TEST-INTEGRITY declaration** (`apps/agent/src/lib.rs`, baseline 20 `#[test]` + 8 `#[tokio::test]`):
+
+| Test | Before | After | Reason |
+|---|---|---|---|
+| `stream_profile_rejects_an_unknown_name` | `"1080p60".parse::<StreamProfile>().unwrap_err()`; asserts the message contains `"expected 1080p30 or 720p30"` | probes `"1080p61"`; asserts the message contains `"expected 1080p60, 720p60, 1080p30 or 720p30"` | `1080p60` is now a valid profile, so the old probe no longer tests rejection. Same `#[test]` count, same assertion count, and the new input is still a genuinely invalid profile. |
+
+Changing the message alone without changing the probe would turn this test into a false green: it would fail to parse for the wrong reason and then assert a substring of an error it no longer produces.
 
 `apps/agent/src/main.rs` documents `--desktop-profile` / `AGENT_DESKTOP_PROFILE`; its doc comment must name the new values. The default stays `1080p30` in this phase: 60 FPS is opt-in until the sustain ladder and the capture cadence have been validated on real hardware.
 
@@ -501,13 +605,25 @@ match value {
 .intra_frame_period(IntraFramePeriod::from_num_frames(60))
 ```
 
-At 30 FPS that is a 2-second GOP; at 60 FPS it silently becomes 1 second, doubling IDR cost and bitrate spikes. Scale it to a fixed **time** window:
+At 30 FPS that is a 2-second GOP; at 60 FPS it silently becomes 1 second, doubling IDR cost and bitrate spikes. Scale it to a fixed **time** window. The calculation must be a pure, directly testable function — `openh264` exposes no accessor for `intra_frame_period`, so a test that constructs an encoder and inspects it cannot exist:
 
 ```rust
-let gop_frames = (profile.fps * 2.0).round().max(1.0) as u32;
-// ...
-.intra_frame_period(IntraFramePeriod::from_num_frames(gop_frames))
+/// GOP length in frames for a fixed two-second keyframe interval.
+///
+/// Extracted so the value can be asserted without constructing an encoder:
+/// `openh264` exposes no accessor for `intra_frame_period`.
+fn gop_frames_for(profile: StreamProfile) -> u32 {
+    (profile.fps * 2.0).round().max(1.0) as u32
+}
 ```
+
+`DesktopEncoder::new` calls it:
+
+```rust
+.intra_frame_period(IntraFramePeriod::from_num_frames(gop_frames_for(profile)))
+```
+
+`gop_frames_for` is a free function in `desktop.rs`, not a method on `StreamProfile`, because it describes the encoder's policy rather than the stream's identity. Tests assert `gop_frames_for(DEFAULT_1080P30) == 60`, `gop_frames_for(SAFE_720P30) == 60`, `gop_frames_for(DEFAULT_1080P60) == 120`, and `gop_frames_for(SAFE_720P60) == 120`.
 
 `UsageType::ScreenContentRealTime`, `RateControlMode::Bitrate`, `Complexity::Low`, `adaptive_quantization(false)`, `background_detection(false)`, and `VuiConfig::bt709()` are unchanged — each is deliberate (the two disabled flags silence an openh264 `ParamValidation` warning, as documented in the source comment).
 
@@ -519,20 +635,53 @@ The `capture_image` polling fallback (Windows, last resort) sleeps a fixed inter
 const GDI_DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(33);
 ```
 
-A 33 ms capture period **cannot** feed a 16.67 ms ticker — the ticker would find no new frame on every second tick, and the effective rate would stay at 30 FPS regardless of the profile. The poll interval must therefore be derived from the profile's frame budget, with `AGENT_DESKTOP_POLL_INTERVAL_MS` still overriding for diagnostics:
+A 33 ms capture period **cannot** feed a 16.67 ms ticker — the ticker would find no new frame on every second tick, and the effective rate would stay at 30 FPS regardless of the profile. The poll interval must therefore be derived from the profile's frame budget, with `AGENT_DESKTOP_POLL_INTERVAL_MS` still overriding for diagnostics.
+
+**The profile does not currently reach this code.** Two signatures discard it today and both must be threaded:
+
+| Location | Today | Change |
+|---|---|---|
+| `desktop.rs:915` | `source_for(id: &str, _profile: StreamProfile)` — parameter ignored | rename to `profile` and pass it to the monitor arm |
+| `desktop.rs:715` | `ScreenSource::for_monitor(monitor_id: u32)` | add `profile: StreamProfile`; `StreamProfile` is `Copy`, so it moves into the capture thread's `move` closure like the `u32` id does |
+| `desktop.rs:578` | `gdi_poll_interval()` takes no argument | `gdi_poll_interval(profile)`, called inside the capture thread construction |
 
 ```rust
-fn gdi_poll_interval(profile: StreamProfile) -> Duration {
-    std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(profile.frame_budget())
+pub async fn source_for(id: &str, profile: StreamProfile) -> Result<Box<dyn FrameSource>> {
+    // ...
+    "monitor" => {
+        let wanted: u32 = raw
+            .parse()
+            .map_err(|_| anyhow::anyhow!("unknown source id {id:?}"))?;
+        Ok(Box::new(ScreenSource::for_monitor(wanted, profile).await?))
+    }
+    // ...
 }
 ```
 
-`parse_poll_interval` keeps its existing unit tests; a new test asserts that the profile-derived default is 16 ms at 60 FPS and 33 ms at 30 FPS. This path is CPU-bound by construction and is the first candidate for the Stage 2 probe to retire.
+`parse_poll_interval` gains an explicit fallback instead of reaching for the module constant, so the value is decided by the caller at construction time:
+
+```rust
+fn parse_poll_interval(raw: Option<String>, fallback: Duration) -> Duration {
+    raw.and_then(|s| s.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(fallback)
+}
+
+#[cfg(windows)]
+fn gdi_poll_interval(profile: StreamProfile) -> Duration {
+    parse_poll_interval(
+        std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS").ok(),
+        profile.frame_budget(),
+    )
+}
+```
+
+`GDI_DEFAULT_POLL_INTERVAL` keeps its role as the documented 30 Hz default and as the fallback the existing unit tests pass in; it is no longer read implicitly.
+
+**TEST-INTEGRITY declaration** (`apps/agent/src/desktop.rs`, baseline 57 `#[test]` + 9 `#[tokio::test]`): the six `parse_poll_interval_*` tests each gain the second argument `GDI_DEFAULT_POLL_INTERVAL`. Assertions, `#[test]` count, and assertion count are unchanged — this is a mechanical call-site adaptation, not a weakened test. A new test asserts that `gdi_poll_interval`-equivalent behaviour yields 16.67 ms for `DEFAULT_1080P60` and 33.33 ms for `DEFAULT_1080P30` when the environment variable is absent, and that a present value still wins.
+
+This path is CPU-bound by construction and is the first candidate for the Stage 2 probe to retire.
 
 #### 4.2.4 Static-frame skip
 
@@ -560,11 +709,126 @@ Therefore Stage 1's client work is **tuning, not re-architecture**:
 
 | Option | Cost | Decision |
 |---|---|---|
-| Keep `<video>`; lower `playoutDelayMs` from 100 ms toward 0–40 ms on LAN | One constant in `apps/web/src/stores/terminal.ts` | **Ship in Stage 1** |
+| Keep `<video>`; set `playoutDelayMs` to **40 ms** in the web store (down from 100) | One constant in `apps/web/src/stores/terminal.ts:956` | **Ship in Stage 1** |
 | Keep `<video>`; raise `jitterBufferTarget` on WAN | Configuration only | Ship, per network profile |
 | WebCodecs `VideoDecoder` + rAF presentation | Annex-B→AVCC conversion, parameter-set cache, decoder lifecycle, ADR-48 reversal | **Gated follow-up**, only if measured presentation jitter remains after Stage 1 |
 
-`packages/desktop-core/src/client.ts` already writes `receiver.jitterBufferTarget` (Chrome) or `receiver.playoutDelayHint` (Firefox) from `playoutDelayMs`, so the Stage 1 change is a value, not a mechanism. Any WebCodecs work requires a new ADR that explicitly supersedes ADR-48's verdict and states the AVCC prerequisite.
+`packages/desktop-core/src/client.ts` already writes `receiver.jitterBufferTarget` (Chrome) or `receiver.playoutDelayHint` (Firefox) from `playoutDelayMs`, so the Stage 1 change is a value, not a mechanism. The library default stays 100 ms; only the web call site changes, so a future WAN profile can override it without touching the library.
+
+**TEST-INTEGRITY declaration** (`apps/web/src/__tests__/terminal-store.test.ts`, baseline 33 `it()` / 61 `expect()`):
+
+| Test | Before | After | Reason |
+|---|---|---|---|
+| `DesktopClient constructor receives { playoutDelayMs: 100 }` | title says 100; asserts `toEqual({ playoutDelayMs: 100 })` | title says 40; asserts `toEqual({ playoutDelayMs: 40 })` | the Stage 1 value changed; `it()` and `expect()` counts unchanged, and the assertion remains equally specific |
+
+This is a declared value change, not a loosened assertion. Dropping the claim from Stage 1 is the alternative; leaving both the code and the test at 100 ms while the spec claims tuning is not acceptable.
+
+#### 4.2.6 Desktop profile plumbing — `AGENT_DESKTOP_PROFILE`
+
+The sidecar already accepts `--desktop-profile` / `AGENT_DESKTOP_PROFILE` (`apps/agent/src/main.rs:69`, default `1080p30`), but the Electron shell never sets it. `AgentSupervisor.buildEnvironment()` emits exactly `AGENT_ID`, `AGENT_SERVER`, `AGENT_CREDENTIAL`, `STUN_SERVER`, `AGENT_ALLOW_INPUT`, and optionally `AGENT_FILES_ROOT` / `AGENT_IDENTITY_PATH`. A 60 FPS profile that cannot be selected from the app is not shippable, and a faster ticker with no way to select the previous one is worse than not adding it.
+
+The value travels one path, validated at both ends:
+
+| Layer | File | Change |
+|---|---|---|
+| Type + guard | `apps/desktop/src/shared/ipc-types.ts` | `DesktopProfileName`, `DESKTOP_PROFILES`, `DEFAULT_DESKTOP_PROFILE`, `normalizeDesktopProfile()` |
+| Contract | same file: `AppConfig` and `SaveConfigPayload` | `desktopProfile: DesktopProfileName` / `desktopProfile?: DesktopProfileName` |
+| Renderer duplicate | `apps/desktop/src/renderer/types.ts` (`AppConfig`, line 63) | the same two fields — the renderer keeps its own copy of the IPC contract |
+| Persistence | `apps/desktop/src/main/config.ts` | `load()` normalises; `save()` normalises and persists |
+| Supervisor | `apps/desktop/src/main/agent-supervisor.ts` | `SupervisorConfig.desktopProfile`; `buildEnvironment()` emits `AGENT_DESKTOP_PROFILE` |
+| Start path | `apps/desktop/src/main/agent-control.ts` | `startNow()` forwards `cfg.desktopProfile` |
+
+```ts
+export const DESKTOP_PROFILES = [
+  '1080p30',
+  '720p30',
+  '1080p60',
+  '720p60',
+] as const;
+export type DesktopProfileName = (typeof DESKTOP_PROFILES)[number];
+export const DEFAULT_DESKTOP_PROFILE: DesktopProfileName = '1080p30';
+
+/** Any absent, unknown, or non-string value resolves to the safe default. */
+export function normalizeDesktopProfile(raw: unknown): DesktopProfileName {
+  return typeof raw === 'string' &&
+    (DESKTOP_PROFILES as readonly string[]).includes(raw)
+    ? (raw as DesktopProfileName)
+    : DEFAULT_DESKTOP_PROFILE;
+}
+```
+
+`AgentSupervisor.buildEnvironment()` adds one line:
+
+```ts
+AGENT_DESKTOP_PROFILE: config.desktopProfile,
+```
+
+Rules:
+
+- An invalid persisted value resolves to `1080p30` and is never forwarded. The agent's `FromStr` rejects unknown names at startup, so forwarding a stale value would leave the user with an agent that refuses to start — a config typo must degrade to the default, not brick streaming.
+- `AgentControlService.startNow()` reads `cfg.desktopProfile`; it does not re-validate, because `load()` already narrowed the type.
+- **The default stays `1080p30`.** Choosing `1080p60` is an explicit operator decision in this phase; nothing promotes it automatically.
+- No settings UI is required by this phase. The value is settable through the existing `saveConfig` IPC and persisted; a selector in `DevicesView.vue` is a follow-up. Stating this prevents an implementer from inventing a settings surface the design has not specified.
+- The four accepted values must stay identical to the Rust `FromStr` list (§4.2.1). A mismatch is a startup failure on the sidecar, so both lists are named in the same review.
+
+#### 4.2.7 Sustain ladder — what must change, and what must not
+
+The current `SustainMonitor` is single-rung and its behaviour is pinned by five tests. A four-profile ladder cannot be bolted on without naming those tests:
+
+| Element | Today | Change |
+|---|---|---|
+| `SustainAction` | `Continue`, `Downgrade` | adds `DowngradeTo(StreamProfile)`; `Downgrade` is removed |
+| `SustainMonitor::next_profile()` | — | returns `Option<StreamProfile>`: the rung below the current profile, or `None` at the floor |
+| `latched` initial value | `profile == SAFE_720P30` | `next_profile().is_none()` — the same predicate, stated once |
+| `note_bitrate_change` re-arm | `current != SAFE_720P30` | `next_profile().is_some()` |
+| `run_stream` downgrade arm | `profile = SAFE_720P30` | `profile = target` from the action; encoder and monitor rebuilt for the target |
+
+```rust
+impl SustainMonitor {
+    /// The rung below `profile`, or `None` at the floor. One ladder, one definition.
+    fn next_profile(&self) -> Option<StreamProfile> {
+        match self.profile {
+            p if p == StreamProfile::DEFAULT_1080P60 => Some(StreamProfile::SAFE_720P60),
+            p if p == StreamProfile::SAFE_720P60 => Some(StreamProfile::DEFAULT_1080P30),
+            p if p == StreamProfile::DEFAULT_1080P30 => Some(StreamProfile::SAFE_720P30),
+            _ => None,
+        }
+    }
+
+    pub fn observe(&mut self, encode_time: Duration) -> SustainAction {
+        if self.latched {
+            return SustainAction::Continue;
+        }
+        if encode_time > self.budget {
+            self.consecutive_over += 1;
+        } else {
+            self.consecutive_over = 0;
+        }
+        if self.consecutive_over >= SUSTAIN_FRAMES_BEFORE_FALLBACK {
+            self.latched = true;
+            return self
+                .next_profile()
+                .map_or(SustainAction::Continue, SustainAction::DowngradeTo);
+        }
+        SustainAction::Continue
+    }
+}
+```
+
+`SustainMonitor` therefore stores the profile, not only its budget. The `StatsStatus` detail written on a downgrade names the target profile, not a hard-coded `"720p30 (quality downgraded)"` — a 1080p60 host that drops to 720p60 must not report that it fell to 720p30.
+
+**TEST-INTEGRITY declaration** (`apps/agent/src/desktop.rs`):
+
+| Test | Before | After | Reason |
+|---|---|---|---|
+| `sustain_monitor_downgrades_once_and_never_oscillates` | expects `SustainAction::Downgrade` on the 30th slow frame from `DEFAULT_1080P30` | expects `SustainAction::DowngradeTo(SAFE_720P30)` | the action carries its target; from 1080p30 the rung is unchanged |
+| `sustain_monitor_resets_the_streak_on_an_on_budget_frame` | `Downgrade` | `DowngradeTo(SAFE_720P30)` | same |
+| `sustain_monitor_never_downgrades_from_the_floor` | unchanged | **unchanged verbatim** — the floor is still `SAFE_720P30` (33.33 ms budget) and the 50 ms probe still exceeds it, so the test keeps asserting "no downgrade at the floor" without modification | proves the ladder's bottom rung did not move |
+| `sustain_monitor_reopens_only_above_the_floor` | `Downgrade` | `DowngradeTo(SAFE_720P30)` | same |
+| new: `sustain_ladder_descends_one_rung_per_downgrade` | — | +1 `#[test]`: from `DEFAULT_1080P60`, a chain of monitors/bitrate re-arms descends `SAFE_720P60 → DEFAULT_1080P30 → SAFE_720P30` and then latches | pins the four-rung order |
+
+No assertion is deleted or relaxed. The two `Downgrade` → `DowngradeTo(SAFE_720P30)` renames are forced by the type change and assert the identical decision.
+
 
 ### 4.3 Stage 2 — zero-copy GPU hardware pipeline (roadmap)
 
@@ -637,7 +901,7 @@ Rules:
 1. **The Device Code is an identifier, not a credential.** It grants nothing on its own. Authorization remains: authenticated session → ownership predicate (`agents.userId = user.id`) → ADR-41 admission gate → WS2 peer identity → E2EE. A code is never used as a bearer token, never embedded in a URL that bypasses authentication, and never stored in place of the agent credential.
 2. **No enumeration oracle.** A code that exists but belongs to another user, and a code that does not exist, both produce the identical `404 Agent not found`. Lookup is always scoped by `userId` inside the same query as the identity match.
 3. **No public resolution endpoint.** There is deliberately no `GET /api/device-codes/:code` or similar. Adding one would convert a 9-digit space into an enumerable directory of online machines.
-4. **Credential isolation is unchanged (ADR-13 / ADR-52 / R8).** The agent credential remains `ag_` + 32 hex, stored only in the OS keychain under `device_credential_${agents.id}` and passed to the sidecar through `AGENT_CREDENTIAL`. The Device Code never enters `config.json`, renderer storage, or the sidecar environment.
+4. **Credential isolation is unchanged (ADR-13 / ADR-52 / R8).** The agent credential remains `ag_` + 32 hex, stored only in the OS keychain under `device_credential_${agents.id}` and passed to the sidecar through `AGENT_CREDENTIAL`. The Device Code is **not** a credential and is never stored in the keychain, never substituted for the credential, and never passed to the sidecar environment. The *local machine's own* code may be cached in `config.json` (§3.3) so "This Device" remains readable offline; that value is public-facing by design, must never be used for authorisation, and is refreshed from the fleet whenever the server is reachable. No other device's code is persisted on this machine.
 5. **The projection boundary holds.** `toPublicAgent()` remains an explicit literal; the new field is added to it by hand. The row is never spread, so `credentialHash` cannot leak alongside `deviceCode`.
 6. **Logging.** Device codes are safe to log (they are not secrets), but logs must record the canonical `agents.id` for correlation. A support workflow should be able to go from a code in a user report to the agent row without a second lookup surface.
 7. **Error taxonomy (Issue #152) does not weaken transport security.** Only the classification label changes; no response body is rendered as HTML, and the message still comes from `statusText`, not from an untrusted payload.
@@ -646,10 +910,11 @@ Rules:
 
 ## 6. Testing & Verification Strategy
 
-### 6.1 Server — device code (`apps/server/test/agents-sessions.test.ts` and a new `device-code.test.ts`)
+### 6.1 Server — device code (`apps/server/test/agents-sessions.test.ts` and new `device-code.test.ts` / `device-code-mirror.test.ts`)
 
 - Allocator emits exactly nine digits, first digit non-zero, within `[100_000_000, 999_999_999]`, over a large sample.
 - Allocator distribution is not visibly skewed (a coarse bucket test over a large sample; a strict statistical test is out of scope).
+- `apps/server/test/device-code-mirror.test.ts` compares the server's `normalizeDeviceCode` against `@ponter/shared`'s on a representative input table (plain, spaced, hyphenated, padded, legacy `dev_...`, empty, non-numeric) — modelled on `apps/server/test/identity-proof-mirror.test.ts` (9 `it()` / 9 `expect()`), and it must stay green if either copy changes.
 - Registration persists a non-null `device_code` and returns it inside `toPublicAgent`.
 - Two concurrent registrations never share a code (unique index enforced).
 - `POST /api/sessions` resolves `"749 281 903"`, `"749-281-903"`, `" 749281903 "`, and `"749281903"` to the same canonical `agents.id`, and the stored `sessions.agent_id` is that canonical id.
@@ -657,6 +922,15 @@ Rules:
 - A code owned by another user yields `404 NOT_FOUND` with the same message as a non-existent code.
 - `GET /api/agents/:id` resolves a device code to the canonical agent for the owner, and 404s for a non-owner.
 - Backfill assigns codes to every pre-existing NULL row, is idempotent on a second run, and does not touch rows that already have one.
+- **Device-scoped session creation is a behaviour-preserving refactor.** The existing `deviceId` path in `agents-sessions.test.ts` (29 `it()` / 117 `expect()`) must stay green with its file untouched.
+
+### 6.1.1 Shared — device code helpers (`packages/shared/test/device-code.test.ts`)
+
+- `formatDeviceCode('749281903') === '749 281 903'`; `null`, `undefined`, and `''` render the em dash.
+- `formatDeviceCode` does not re-group a value that already contains spaces.
+- `normalizeDeviceCode` collapses `"749 281 903"`, `"749-281-903"`, and `" 749281903 "` to `"749281903"`.
+- `normalizeDeviceCode('dev_ab12cd34') === 'dev_ab12cd34'` (legacy identifiers survive).
+- Non-numeric input is returned trimmed, not emptied.
 
 ### 6.2 API client — Issue #152 (`packages/api-client/test/client.test.ts`)
 
@@ -667,15 +941,19 @@ Rules:
 - Rejected `fetch` → `NETWORK_ERROR`, status `0` (unchanged).
 - **Declared change:** the existing non-JSON test's expected `code` moves from `NETWORK_ERROR` to `SERVER_ERROR`; `it()` and `expect()` counts are unchanged.
 
-### 6.3 Desktop (`apps/desktop/src/renderer/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/ipc.test.ts`)
+### 6.3 Desktop (`apps/desktop/src/renderer/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/ipc.test.ts`, `apps/desktop/src/main/__tests__/config.test.ts`, `apps/desktop/src/main/__tests__/agent-supervisor.test.ts`)
 
-- "This Device" renders `749 281 903` when the local device carries `deviceCode: "749281903"`.
+- "This Device" renders `749 281 903` when the local device carries `deviceCode: "749281903"`, and falls back to the `AppConfig` cache when the fleet list is empty.
 - Copy writes digits only (`749281903`) to the clipboard and shows the confirmation icon.
-- A `null` `deviceCode` renders the placeholder and disables the copy control.
+- A `null` `deviceCode` renders the placeholder and hides the copy control.
 - Partner input groups digits while typing and caps at nine.
 - Partner input preserves a pasted `dev_ab12cd34` verbatim.
 - `desktop:open-remote-session` normalises `"749 281 903"` to `749281903` in the constructed URL, and leaves `dev_ab12cd34` unchanged.
-- `mapAgentToDesktopDevice` propagates `deviceCode`, including `null`.
+- `mapAgentToDesktopDevice` and `mapAgentsToDevices` propagate `deviceCode`, including `null`.
+- `normalizeDesktopProfile` accepts the four names and maps everything else (absent, `'1080p'`, `42`, `null`) to `1080p30`.
+- `ConfigManager.load()` returns `desktopProfile: '1080p30'` for an empty config file and preserves a valid persisted value; `save()` round-trips it.
+- `AgentSupervisor.buildEnvironment()` emits `AGENT_DESKTOP_PROFILE` with the configured value, and `AgentControlService.startNow()` forwards `cfg.desktopProfile`.
+- Baseline counts for the touched files: `devices.test.ts` (renderer) 53 `it()` + 1 `it.each` (54 declarations) / 140 `expect()`; `devices.test.ts` (main) 20 / 41; `ipc.test.ts` 23 test declarations (20 `it()` + 3 `it.each`) / 53 `expect()`; `config.test.ts` 12 / 27; `agent-supervisor.test.ts` 11 / 27. Every count is re-measured at execution time and declared before→after for each file the diff touches.
 
 ### 6.4 Web (`apps/web/src/__tests__/`)
 
@@ -684,17 +962,21 @@ Rules:
 - `Launch Shell` still routes with the canonical `a.id`.
 - `WorkspaceView` with a device-code route parameter opens a tab and reaches `sessions.create` with that value.
 
-### 6.5 Agent (`cargo test -p ponter_agent`)
+### 6.5 Agent (`cargo test -p ponter-agent`)
+
+The crate is `ponter-agent` (`apps/agent/Cargo.toml:2`); the lib target is `ponter_agent` and the binary is `ponter-agent`. `cargo test -p` takes the **package** name, so every gate command uses `ponter-agent`.
 
 - `"1080p60"` and `"720p60"` parse; `frame_budget()` is `16_666_666 ns` (asserted as `as_millis() == 16` plus a nanosecond-level assertion).
 - `"720p30"` still parses and still yields a 33.33 ms budget.
-- An unknown profile string fails with an error naming all four accepted values.
-- GOP frames equal `round(fps * 2)` for 30 and 60 FPS.
-- Poll interval defaults to `frame_budget()` when the environment variable is absent, and the environment variable still wins when present.
+- An unknown profile string fails with an error naming all four accepted values — the assertion is reached with a genuinely invalid probe (`"1080p61"`), not with `"1080p60"` now that it is valid (see the TEST-INTEGRITY declaration in §4.2.1).
+- `gop_frames_for` returns 60 for both 30 FPS profiles and 120 for both 60 FPS profiles.
+- Poll interval defaults to `profile.frame_budget()` when the environment variable is absent, and the environment variable still wins when present; the six existing `parse_poll_interval_*` tests keep their assertions and gain the explicit fallback argument (§4.2.3).
 - Static-frame detection returns "unchanged" for an identical buffer and "changed" for a one-pixel mutation.
 - The skip counter honours the keepalive cap and resets on a control event.
 - The sustain ladder descends `1080p60 → 720p60 → 1080p30 → 720p30` and latches at the floor.
 - No test deletes, skips, or weakens an existing assertion (TEST-INTEGRITY).
+
+Baseline for the two touched files: `apps/agent/src/lib.rs` 20 `#[test]` + 8 `#[tokio::test]`; `apps/agent/src/desktop.rs` 57 `#[test]` + 9 `#[tokio::test]`. Both are re-measured at execution time and declared before→after.
 
 ### 6.6 Repo-wide gates
 
@@ -706,7 +988,7 @@ Rules:
 | API client | `pnpm --filter @ponter/api-client test -- --run` | 100% green |
 | Desktop | `pnpm --filter @ponter/desktop test -- --run` | 100% green |
 | Web | `pnpm --filter @ponter/web test -- --run` | 100% green |
-| Agent | `cargo test -p ponter_agent` | 100% green |
+| Agent | `cargo test -p ponter-agent` | 100% green |
 | Attribution | `git log` audit | Single author line, zero `Co-authored-by` trailers |
 | Language | Character scan | Zero Vietnamese characters in code, tests, docs, commits |
 
@@ -730,7 +1012,10 @@ Rules:
 | GOP = 60 frames (2 s at 30 FPS) | GOP = `round(fps * 2)` frames (2 s at any rate) | Behaviour preserved at 30 FPS, corrected at 60 FPS |
 | GDI poll interval 33 ms | Derived from `frame_budget()`; env override preserved | Enables 60 FPS on the fallback path |
 | Sustain fallback = `SAFE_720P30` | Ladder `1080p60 → 720p60 → 1080p30 → 720p30`, latched at the floor | Supersedes ADR-24's single-rung rule; the floor is unchanged |
-| Client playout = `<video>` + 100 ms | `<video>` retained; `playoutDelayMs` lowered for LAN; WebCodecs gated behind a new ADR | ADR-48 verdict preserved |
+| Client playout = `<video>` + 100 ms | `<video>` retained; `playoutDelayMs` set to 40 ms at the web call site; WebCodecs gated behind a new ADR | Declared value change; ADR-48 verdict preserved |
+| Server imports `@ponter/shared` only as types | `normalizeDeviceCode` is mirrored in `apps/server/src/utils/device-code.ts`; a drift test pins it | Keeps `node apps/server/dist/index.js` bootable |
+| Desktop profile fixed at the sidecar default `1080p30` | Persisted `desktopProfile` in `AppConfig`, forwarded as `AGENT_DESKTOP_PROFILE` | Additive; default unchanged |
+| Desktop renderer duplicates the IPC contract | `DesktopDevice` and `AppConfig` updated in both `shared/ipc-types.ts` and `renderer/types.ts` | Both copies stay in sync by commit |
 
 ---
 
@@ -745,7 +1030,7 @@ Rules:
 5. The desktop "This Device" card shows `XXX XXX XXX` with a working one-click copy.
 6. The web dashboard shows the code for each device and can search by it.
 7. A `502` HTML response surfaces as a server error, not "Cannot reach".
-8. `pnpm format:check`, all four JS/TS test suites, and `cargo test -p ponter_agent` are green.
+8. `pnpm format:check`, `pnpm typecheck`, all four JS/TS test suites, and `cargo test -p ponter-agent` are green.
 9. Zero test deletions or weakenings; every changed expectation is declared before→after.
 
 ### Part B
@@ -754,7 +1039,10 @@ Rules:
 2. The ticker period observed in `desktop-stats` timing is ~16.67 ms on a host that sustains the budget.
 3. A host that cannot sustain 16.67 ms descends the ladder and reports each transition through `StatsStatus::QualityDowngraded` with the new profile name.
 4. A static screen stops consuming encode CPU while continuing to emit keepalive frames and periodic stats.
-5. Stage 2 is documented as a probe-and-fallback architecture; no Stage 2 tier is claimed as implemented or measured until a host with a hardware encoder validates it.
+5. Saving `desktopProfile: '1080p60'` starts the sidecar with `AGENT_DESKTOP_PROFILE=1080p60`; an absent or invalid persisted value starts it with `1080p30`, never with the invalid value.
+6. The keyframe interval is 120 frames at 60 FPS (a two-second GOP), asserted through `gop_frames_for`.
+7. The web client constructs `DesktopClient` with `playoutDelayMs: 40`.
+8. Stage 2 is documented as a probe-and-fallback architecture; no Stage 2 tier is claimed as implemented or measured until a host with a hardware encoder validates it.
 
 ---
 
