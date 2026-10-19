@@ -86,9 +86,11 @@ describe('ApiClient general requests & resources', () => {
 
   it('4b. Classifies a non-JSON 404 response as API_ERROR', async () => {
     const storage = new MemoryStorage();
-    const mockFetch = vi.fn().mockResolvedValue(
-      new Response('Not Found', { status: 404, statusText: 'Not Found' }),
-    );
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response('Not Found', { status: 404, statusText: 'Not Found' }),
+      );
     const client = makeClient(storage, mockFetch);
 
     await expect(client.users.me()).rejects.toMatchObject({

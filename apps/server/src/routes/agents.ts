@@ -42,7 +42,11 @@ router.get('/', async (c) => {
  * The insert below retries on a unique violation for the same reason.
  */
 async function allocateDeviceCode(db: Database): Promise<string> {
-  for (let attempt = 0; attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS;
+    attempt += 1
+  ) {
     const candidate = generateDeviceCode();
     const clash = await db
       .select({ id: agents.id })
@@ -115,7 +119,11 @@ router.post('/', async (c) => {
   const credential = generateAgentCredential();
 
   let created: typeof agents.$inferSelect | undefined;
-  for (let attempt = 0; attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS;
+    attempt += 1
+  ) {
     const deviceCode = await allocateDeviceCode(db);
     try {
       [created] = await db
@@ -139,7 +147,8 @@ router.post('/', async (c) => {
       break;
     } catch (err) {
       const code = (err as { code?: string } | null)?.code;
-      const unique = code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT';
+      const unique =
+        code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT';
       if (!unique || attempt === DEVICE_CODE_ALLOCATION_ATTEMPTS - 1) throw err;
     }
   }

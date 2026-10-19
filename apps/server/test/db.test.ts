@@ -47,7 +47,8 @@ describe('Database client', () => {
   });
 
   it('adds the device_code column and its unique index to agents', () => {
-    const sqlite = (db as unknown as { $client: BetterSqlite3.Database }).$client;
+    const sqlite = (db as unknown as { $client: BetterSqlite3.Database })
+      .$client;
     const columns = sqlite.prepare('PRAGMA table_info(agents)').all() as Array<{
       name: string;
     }>;
@@ -56,7 +57,9 @@ describe('Database client', () => {
       .prepare("PRAGMA index_list('agents')")
       .all() as Array<{ name: string; unique: number }>;
     expect(
-      indexes.some((i) => i.name === 'idx_agents_device_code' && i.unique === 1),
+      indexes.some(
+        (i) => i.name === 'idx_agents_device_code' && i.unique === 1,
+      ),
     ).toBe(true);
   });
 });
