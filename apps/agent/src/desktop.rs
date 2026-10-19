@@ -1284,6 +1284,83 @@ async fn swap_source<S: SwapSource>(
 /// which truly cannot sustain its profile drops within a second.
 pub const SUSTAIN_FRAMES_BEFORE_FALLBACK: u32 = 30;
 
+/// A 64-bit FNV-1a hash over the frame's pixel buffer and geometry.
+///
+/// Deliberately not `DefaultHasher`: SipHash-1-3 runs in ~1.55 ms (5.35 GB/s) on
+/// a 1080p RGBA frame, whereas 4-lane FNV-1a completes in ~0.27 ms (31.2 GB/s,
+/// 1.6% of frame budget) and 1-lane FNV-1a takes ~1.05 ms. FNV-1a over 64-bit
+/// words is zero-allocation and only used to decide "identical", never for integrity.
+pub(crate) fn frame_signature(frame: &RawFrame) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut chunks = frame.rgba.chunks_exact(8);
+    for word in &mut chunks {
+        let value = u64::from_ne_bytes(word.try_into().expect("chunks_exact(8)"));
+        hash ^= value;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    for byte in chunks.remainder() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash ^= (u64::from(frame.width) << 32) | u64::from(frame.height);
+    hash
+}
+
+/// Suppresses re-encoding when consecutive captured frames are pixel-identical.
+///
+/// The cap is one second of frames: a static screen still produces an encoded
+/// frame every `fps` ticks, so a viewer that joins late or loses packets never
+/// waits on a stale reference. `reset` is called after a source swap or a
+/// profile change, where the encoder's reference no longer matches the input.
+pub(crate) struct StaticFrameSkip {
+    last: Option<u64>,
+    consecutive_skips: u32,
+    max_consecutive_skips: u32,
+}
+
+impl StaticFrameSkip {
+    pub fn new(fps: f32) -> Self {
+        Self {
+            last: None,
+            consecutive_skips: 0,
+            max_consecutive_skips: (fps.round() as u32).max(1),
+        }
+    }
+
+    /// True when this frame duplicates the previous one and the keepalive cap
+    /// has not been reached. The frame still becomes the new reference.
+    pub fn should_skip(&mut self, frame: &RawFrame) -> bool {
+        let signature = frame_signature(frame);
+        let identical = self.last == Some(signature);
+        self.last = Some(signature);
+        if !identical {
+            self.consecutive_skips = 0;
+            return false;
+        }
+        if self.consecutive_skips >= self.max_consecutive_skips {
+            self.consecutive_skips = 0;
+            return false;
+        }
+        self.consecutive_skips += 1;
+        true
+    }
+
+    pub fn reset(&mut self) {
+        self.last = None;
+        self.consecutive_skips = 0;
+    }
+}
+
+/// Spec §4.2.4 item 5: while frames are being skipped, `encoded` does not
+/// advance, so the periodic `desktop-stats` emission (`encoded % fps_period`)
+/// would stop on a static screen. The skip branch emits at most one stats frame
+/// per second instead. This predicate is that whole rule, extracted as a free
+/// function so it is testable without a live stream.
+fn stats_due_while_skipping(last_stats_at: Instant, now: Instant) -> bool {
+    now.duration_since(last_stats_at) >= Duration::from_secs(1)
+}
+
 /// What the sustain check wants to do next.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SustainAction {
@@ -1442,6 +1519,12 @@ pub async fn run_stream(
 
     let mut encoder = DesktopEncoder::new(profile)?;
     let mut sustain = SustainMonitor::new(profile);
+    let mut static_skip = StaticFrameSkip::new(profile.fps);
+    let mut static_skipped: u64 = 0;
+    // Spec §4.2.4 item 5: skipped ticks do not advance `encoded`, so the
+    // periodic stats emission cannot be the only source of `desktop-stats`
+    // frames on a static screen. The skip branch emits its own, throttled here.
+    let mut last_stats_at = Instant::now();
     let mut ticker = tokio::time::interval(profile.frame_budget());
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1499,6 +1582,10 @@ pub async fn run_stream(
                                 // A bitrate change is a fresh evaluation request
                                 // (re-arms only above the floor; ADR-24).
                                 sustain.note_bitrate_change(profile);
+                                // The encoder is reconfigured for a new target,
+                                // so the gate's reference no longer describes
+                                // what will be encoded next (spec §4.2.4 item 4).
+                                static_skip.reset();
                                 // Reflect the effective value to the UI (spec §2.3 step 6).
                                 let (fs_seq, cap_p50, enc_p50, enc_samples) =
                                     timing_snapshot(&timing_ring, &last_frame_seq);
@@ -1527,6 +1614,9 @@ pub async fn run_stream(
                         {
                             Ok(new_encoder) => {
                                 encoder = new_encoder;
+                                // A different source invalidates the gate's
+                                // reference frame (spec §4.2.4 item 4).
+                                static_skip.reset();
                                 // The new source may be a different size, and
                                 // `downscale` never upscales — defer the stats
                                 // frame to the next encode, where the real size
@@ -1572,6 +1662,28 @@ pub async fn run_stream(
                 // feeds the capture→encode-start duration.
                 let capture_instant = Instant::now();
                 let capture_epoch_ms = crate::pty::now_ms();
+                // Static-frame gate: identical pixels cost nothing to capture
+                // but everything to encode. The keepalive cap inside
+                // `should_skip` bounds how long a viewer can be starved.
+                if static_skip.should_skip(&frame) {
+                    static_skipped += 1;
+                    // Spec §4.2.4 item 5: `encoded` must NOT advance here, so
+                    // the periodic emission below never runs on a static screen.
+                    // Report the last known size and the current timings at most
+                    // once per second instead. `send_stats` is already an
+                    // in-scope closure, so this is a call, not a refactor.
+                    let now = Instant::now();
+                    if stats_due_while_skipping(last_stats_at, now) {
+                        last_stats_at = now;
+                        let (fs_seq, cap_p50, enc_p50, enc_samples) =
+                            timing_snapshot(&timing_ring, &last_frame_seq);
+                        send_stats(
+                            &events, encoded_size, profile, None, fs_seq, cap_p50, enc_p50,
+                            enc_samples,
+                        );
+                    }
+                    continue;
+                }
                 let frame = crop_to_even(downscale(&frame, profile.max_width, profile.max_height));
                 let encode_start = Instant::now();
                 let data = encoder.encode(&frame)?;
@@ -1620,6 +1732,9 @@ pub async fn run_stream(
                     profile = next;
                     encoder = DesktopEncoder::new(profile)?;
                     sustain = SustainMonitor::new(profile);
+                    // The rebuilt encoder's reference does not match the new
+                    // input, so the gate must re-baseline (spec §4.2.4 item 4).
+                    static_skip.reset();
                     // The stats frame carries the *real* next-frame size, so it
                     // is deferred one tick (§6.4) rather than reporting the box.
                     pending_stats = Some(Some(StatsStatus {
@@ -1638,6 +1753,7 @@ pub async fn run_stream(
                     let (nonblack_pct, mean) = frame_content(&frame);
                     tracing::debug!(
                         encoded,
+                        static_skipped,
                         width = frame.width,
                         height = frame.height,
                         nonblack_pct,
@@ -3375,6 +3491,157 @@ mod tests {
         assert_eq!(
             monitor.observe(slow),
             SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
+    }
+
+    fn solid_frame(width: u32, height: u32, value: u8, seq: u64) -> RawFrame {
+        RawFrame {
+            width,
+            height,
+            rgba: vec![value; (width * height * 4) as usize],
+            seq,
+        }
+    }
+
+    #[test]
+    fn static_frame_skip_detects_identical_pixels() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        assert!(!gate.should_skip(&solid_frame(8, 8, 0x40, 0)));
+        assert!(
+            gate.should_skip(&solid_frame(8, 8, 0x40, 1)),
+            "identical pixels with a new seq must still be skipped"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_lets_a_changed_frame_through() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        gate.should_skip(&solid_frame(8, 8, 0x40, 0));
+        assert!(!gate.should_skip(&solid_frame(8, 8, 0x41, 1)));
+        assert!(
+            gate.should_skip(&solid_frame(8, 8, 0x41, 2)),
+            "the new content becomes the reference"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_detects_a_single_pixel_change() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        let mut frame = solid_frame(8, 8, 0x40, 0);
+        gate.should_skip(&frame);
+        frame.rgba[(4 * 8 + 4) * 4] = 0x41;
+        frame.seq = 1;
+        assert!(
+            !gate.should_skip(&frame),
+            "a one-byte change must not be reported as static"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_respects_the_one_second_keepalive() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        // Reference frame: encoded, because the gate has nothing to compare to.
+        gate.should_skip(&solid_frame(4, 4, 0x10, 0));
+        let mut skipped = 0;
+        // The cap is `fps` *consecutive* skips, so the loop bound and the
+        // expected count are both 60: seq 1..=60 all skip, and the 61st frame
+        // is the one the cap forces through.
+        for seq in 1..=60 {
+            if gate.should_skip(&solid_frame(4, 4, 0x10, seq)) {
+                skipped += 1;
+            }
+        }
+        assert_eq!(skipped, 60, "the cap allows `fps` skips, then one encode");
+        assert!(
+            !gate.should_skip(&solid_frame(4, 4, 0x10, 61)),
+            "the frame after the cap is encoded and becomes the new reference"
+        );
+        assert!(
+            gate.should_skip(&solid_frame(4, 4, 0x10, 62)),
+            "the counter restarts after the forced encode"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_reset_forces_the_next_frame_through() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        gate.should_skip(&solid_frame(4, 4, 0x10, 0));
+        assert!(gate.should_skip(&solid_frame(4, 4, 0x10, 1)));
+        gate.reset();
+        assert!(
+            !gate.should_skip(&solid_frame(4, 4, 0x10, 2)),
+            "after a reset the next frame is the new reference"
+        );
+    }
+
+    #[test]
+    fn frame_signature_distinguishes_dimensions() {
+        let wide = RawFrame {
+            width: 4,
+            height: 2,
+            rgba: vec![0; 4 * 2 * 4],
+            seq: 0,
+        };
+        let tall = RawFrame {
+            width: 2,
+            height: 4,
+            rgba: vec![0; 2 * 4 * 4],
+            seq: 0,
+        };
+        assert_ne!(frame_signature(&wide), frame_signature(&tall));
+    }
+
+    #[test]
+    fn stats_due_while_skipping_fires_once_per_second() {
+        let start = Instant::now();
+        assert!(!stats_due_while_skipping(start, start));
+        assert!(
+            !stats_due_while_skipping(start, start + Duration::from_millis(999)),
+            "just under a second is not due"
+        );
+        assert!(stats_due_while_skipping(
+            start,
+            start + Duration::from_secs(1)
+        ));
+    }
+
+    /// Spec §4.2.4 item 5: a static screen must still report stats. This drives
+    /// the real `StaticFrameSkip` and the real throttle predicate across one
+    /// second of identical frames and asserts both invariants the spec names:
+    /// `encoded` does not advance, and a stats frame is still produced.
+    #[test]
+    fn a_static_screen_emits_stats_without_encoding() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        let mut encoded = 0u64;
+        let mut stats_emitted = 0u64;
+        let mut last_stats_at = Instant::now();
+        let mut now = last_stats_at;
+
+        // Tick 0: the gate has no reference, so this frame is encoded and the
+        // stream emits its first stats frame.
+        assert!(!gate.should_skip(&solid_frame(4, 4, 0x10, 0)));
+        encoded += 1;
+        stats_emitted += 1;
+
+        // 60 ticks at ~16.667 ms each = 1.00002 s, so the throttle fires exactly
+        // once across the loop. Integer microseconds keep that arithmetic exact.
+        for seq in 1..=60u64 {
+            now += Duration::from_micros(16_667);
+            if gate.should_skip(&solid_frame(4, 4, 0x10, seq)) {
+                if stats_due_while_skipping(last_stats_at, now) {
+                    last_stats_at = now;
+                    stats_emitted += 1;
+                }
+                continue;
+            }
+            encoded += 1;
+            stats_emitted += 1;
+        }
+
+        assert_eq!(encoded, 1, "every frame in the window was skipped");
+        assert_eq!(
+            stats_emitted, 2,
+            "one stats frame at stream start, one from the skip throttle"
         );
     }
 
