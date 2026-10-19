@@ -3,9 +3,15 @@ import type { AppContext } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
 import { agents } from '../db/schema.js';
-import { eq, and, count } from 'drizzle-orm';
+import type { Database } from '../db/client.js';
+import { eq, and, count, or } from 'drizzle-orm';
 import { sha256Hex } from '../utils/crypto.js';
 import { getSystemSettings } from '../utils/settings.js';
+import {
+  DEVICE_CODE_ALLOCATION_ATTEMPTS,
+  generateDeviceCode,
+  normalizeDeviceCode,
+} from '../utils/device-code.js';
 import {
   generateAgentCredential,
   toPublicAgent,
@@ -28,6 +34,29 @@ router.get('/', async (c) => {
     list.map((agent) => toPublicAgent(agent, agentConnections.has(agent.id))),
   );
 });
+
+/**
+ * Allocate a code that is not already taken.
+ *
+ * The pre-check is an optimisation; `idx_agents_device_code` is the guarantee.
+ * The insert below retries on a unique violation for the same reason.
+ */
+async function allocateDeviceCode(db: Database): Promise<string> {
+  for (let attempt = 0; attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS; attempt += 1) {
+    const candidate = generateDeviceCode();
+    const clash = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.deviceCode, candidate))
+      .get();
+    if (!clash) return candidate;
+  }
+  throw new AppError(
+    'Failed to allocate a device code',
+    500,
+    'INTERNAL_SERVER_ERROR',
+  );
+}
 
 router.post('/', async (c) => {
   const user = c.get('user');
@@ -85,23 +114,35 @@ router.post('/', async (c) => {
   // is never created would leave a live secret with no owner (Week 5 D18).
   const credential = generateAgentCredential();
 
-  const [created] = await db
-    .insert(agents)
-    .values({
-      id: body.id,
-      userId: user.id,
-      hostname: body.hostname ?? null,
-      platform: body.platform ?? null,
-      osVersion: body.osVersion ?? null,
-      agentVersion: body.agentVersion ?? null,
-      publicKey,
-      isOnline: false,
-      credentialHash: await sha256Hex(credential),
-      capabilities: body.capabilities
-        ? JSON.stringify(body.capabilities)
-        : null,
-    })
-    .returning();
+  let created: typeof agents.$inferSelect | undefined;
+  for (let attempt = 0; attempt < DEVICE_CODE_ALLOCATION_ATTEMPTS; attempt += 1) {
+    const deviceCode = await allocateDeviceCode(db);
+    try {
+      [created] = await db
+        .insert(agents)
+        .values({
+          id: body.id,
+          userId: user.id,
+          hostname: body.hostname ?? null,
+          platform: body.platform ?? null,
+          osVersion: body.osVersion ?? null,
+          agentVersion: body.agentVersion ?? null,
+          publicKey,
+          isOnline: false,
+          credentialHash: await sha256Hex(credential),
+          capabilities: body.capabilities
+            ? JSON.stringify(body.capabilities)
+            : null,
+          deviceCode,
+        })
+        .returning();
+      break;
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      const unique = code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT';
+      if (!unique || attempt === DEVICE_CODE_ALLOCATION_ATTEMPTS - 1) throw err;
+    }
+  }
 
   if (!created) {
     throw new AppError(
@@ -124,11 +165,17 @@ router.get('/:id', async (c) => {
   const user = c.get('user');
   const agentId = c.req.param('id');
   const db = c.get('db');
+  const normalized = normalizeDeviceCode(agentId);
 
   const agent = await db
     .select()
     .from(agents)
-    .where(and(eq(agents.id, agentId), eq(agents.userId, user.id)))
+    .where(
+      and(
+        or(eq(agents.id, agentId), eq(agents.deviceCode, normalized)),
+        eq(agents.userId, user.id),
+      ),
+    )
     .get();
 
   if (!agent) {

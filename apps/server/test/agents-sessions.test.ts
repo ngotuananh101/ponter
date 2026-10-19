@@ -55,6 +55,7 @@ type AgentResponse = {
   lastHeartbeat: string | null;
   capabilities: string[];
   createdAt: string;
+  deviceCode: string | null;
 };
 
 type SessionResponse = {
@@ -1072,9 +1073,161 @@ describe('Agents, Devices & Sessions REST API', () => {
       });
 
       const res = await app.request('/api/sessions', {
+        method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('Device Code resolution (ADR-91)', () => {
+    const agentHeaders = () => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    });
+
+    async function createAgent(
+      app: ReturnType<typeof createApp>,
+      id: string,
+    ): Promise<{ id: string; deviceCode: string | null }> {
+      const res = await app.request('/api/agents', {
+        method: 'POST',
+        headers: agentHeaders(),
+        body: JSON.stringify({ id, publicKey: 'pk_device_code' }),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { agent: AgentResponse };
+      return body.agent;
+    }
+
+    it('returns a nine-digit device code on registration', async () => {
+      const app = createApp();
+      const agent = await createAgent(app, 'dev_code0001');
+      expect(agent.deviceCode).toMatch(/^[1-9]\d{8}$/);
+    });
+
+    it('resolves a session from a spaced device code to the canonical agent id', async () => {
+      const app = createApp();
+      const agent = await createAgent(app, 'dev_code0002');
+      const spaced = `${agent.deviceCode!.slice(0, 3)} ${agent.deviceCode!.slice(3, 6)} ${agent.deviceCode!.slice(6)}`;
+
+      const res = await app.request('/api/sessions', {
+        method: 'POST',
+        headers: agentHeaders(),
+        body: JSON.stringify({ agentId: spaced }),
+      });
+
+      expect(res.status).toBe(201);
+      const session = (await res.json()) as SessionResponse;
+      expect(session.agentId).toBe(agent.id);
+    });
+
+    it.each(['spaced', 'hyphenated', 'padded', 'plain'] as const)(
+      'resolves a session from a %s device code',
+      async (form) => {
+        const app = createApp();
+        const agent = await createAgent(app, `dev_form${form.slice(0, 4)}`);
+        const digits = agent.deviceCode!;
+        let typed: string;
+        if (form === 'spaced') {
+          typed = `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+        } else if (form === 'hyphenated') {
+          typed = `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+        } else if (form === 'padded') {
+          typed = `  ${digits}  `;
+        } else {
+          typed = digits;
+        }
+
+        const res = await app.request('/api/sessions', {
+          method: 'POST',
+          headers: agentHeaders(),
+          body: JSON.stringify({ agentId: typed }),
+        });
+
+        expect(res.status).toBe(201);
+        expect(((await res.json()) as SessionResponse).agentId).toBe(agent.id);
+      },
+    );
+
+    it('still resolves a legacy dev_ identifier unchanged', async () => {
+      const app = createApp();
+      const agent = await createAgent(app, 'dev_legacy01');
+      const res = await app.request('/api/sessions', {
+        method: 'POST',
+        headers: agentHeaders(),
+        body: JSON.stringify({ agentId: agent.id }),
+      });
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as SessionResponse).agentId).toBe(agent.id);
+    });
+
+    it('hides another user code behind the same 404 as a missing one', async () => {
+      const app = createApp();
+      const agent = await createAgent(app, 'dev_mine0001');
+
+      const otherReg = await app.request('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'other',
+          password: 'Password123!',
+          publicKey: 'pk_other',
+        }),
+      });
+      const other = (await otherReg.json()) as AuthResponse;
+      const otherHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${other.token}`,
+      };
+
+      const foreign = await app.request('/api/sessions', {
+        method: 'POST',
+        headers: otherHeaders,
+        body: JSON.stringify({ agentId: agent.deviceCode }),
+      });
+      const missing = await app.request('/api/sessions', {
+        method: 'POST',
+        headers: otherHeaders,
+        body: JSON.stringify({ agentId: '111222333' }),
+      });
+
+      expect(foreign.status).toBe(404);
+      expect(missing.status).toBe(404);
+      const foreignBody = (await foreign.json()) as ErrorResponse;
+      const missingBody = (await missing.json()) as ErrorResponse;
+      expect(foreignBody.code).toBe('NOT_FOUND');
+      expect(foreignBody).toEqual(missingBody);
+    });
+
+    it('GET /api/agents/:id resolves a device code to the canonical agent', async () => {
+      const app = createApp();
+      const agent = await createAgent(app, 'dev_get00001');
+      const res = await app.request(`/api/agents/${agent.deviceCode}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as AgentResponse;
+      expect(body.id).toBe(agent.id);
+    });
+
+    it('GET /api/agents/:id 404s for a non-owner', async () => {
+      const app = createApp();
+      const agent = await createAgent(app, 'dev_get00002');
+      const otherReg = await app.request('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'other2',
+          password: 'Password123!',
+          publicKey: 'pk_other2',
+        }),
+      });
+      const other = (await otherReg.json()) as AuthResponse;
+      const res = await app.request(`/api/agents/${agent.deviceCode}`, {
+        headers: { Authorization: `Bearer ${other.token}` },
+      });
+      expect(res.status).toBe(404);
     });
   });
 });
