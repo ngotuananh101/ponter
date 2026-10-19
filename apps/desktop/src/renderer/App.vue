@@ -27,13 +27,16 @@ onMounted(async () => {
   neutral shell background — no view decision until the first route is possible. -->
   <div
     data-testid="app-shell"
-    class="min-h-screen flex items-center justify-center p-4 sm:p-6 bg-gradient-to-b from-background via-background to-muted/20 select-none text-foreground"
+    class="min-h-screen w-full flex flex-col items-center p-4 sm:p-6 bg-gradient-to-b from-background via-background to-muted/20 select-none text-foreground overflow-y-auto overflow-x-hidden"
   >
-    <template v-if="config.configLoaded">
+    <div
+      v-if="config.configLoaded"
+      class="w-full my-auto flex flex-col items-center"
+    >
       <ServerSetupView v-if="!config.hasServerUrl || config.editing" />
       <LoginView v-else-if="!auth.isAuthenticated" />
       <WizardView v-else-if="wizard.inProgress" />
       <DevicesView v-else />
-    </template>
+    </div>
   </div>
 </template>
