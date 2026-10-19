@@ -43,8 +43,8 @@ The following requirements have been approved by the owner and are binding:
    - Upon entering the main authenticated view, if the local machine does not possess a `localAgentId` in `config.json` and keychain, the app silently registers the device in the background using the operating system hostname and full capabilities (`['desktop', 'terminal', 'files']`).
    - If "Allow Remote Access" is enabled (default on initial setup), the local agent sidecar starts automatically without requiring user clicks.
 4. **IPC Remote Session Invocation:**
-   - Introduce IPC channel `desktop:open-remote-session` accepting `{ targetId: string, mode: 'desktop' | 'terminal' | 'files' }`.
-   - The Electron main process resolves the active `serverUrl`, constructs the target URL `${serverUrl}/workspace/${targetId}?mode=${mode}`, and opens it in the user's default browser via `shell.openExternal`.
+   - Introduce IPC channel `desktop:open-remote-session` accepting `{ agentId: string, mode?: 'desktop' | 'terminal' | 'files' }`.
+   - The Electron main process resolves the active `serverUrl`, constructs the target URL `${serverUrl}/workspace/${agentId}?mode=${mode}`, and opens it in the user's default browser via `shell.openExternal`.
 5. **Component System & Window Constraints:**
    - Exclusively construct the UI using shadcn-vue primitives exported by `@ponter/ui-components`.
    - Maintain the standard desktop window geometry: 800x600 default dimensions with 480x500 minimum constraints, ensuring clean responsive stacking without clipping or scrollbar distortion.
@@ -135,7 +135,7 @@ The right column provides instant initiation of remote desktop, terminal, or fil
   - Label: `"Connect"` with an outgoing icon (`ArrowUpRight`).
   - Disabled state: Disabled when partner ID is blank, invalid, or during IPC dispatch.
   - Action on Click:
-    - Calls `window.ponter.openRemoteSession({ targetId, mode })`.
+    - Calls `window.ponter.openRemoteSession({ agentId, mode })`.
     - Handles failure gracefully: displays inline alert if server URL is missing or if URL invocation fails.
 
 ---
@@ -173,7 +173,7 @@ Located directly underneath the two hero cards, providing seamless 1-click acces
     - Active when `device.isOnline === true` and `device.id !== localAgentId`.
     - Button variant `default` or `outline` size `sm`.
     - Clicking connects with default mode (`desktop`) or opens a compact dropdown for `Desktop`, `Terminal`, `Files`.
-    - Dispatches `openRemoteSession({ targetId: device.id, mode })`.
+    - Dispatches `openRemoteSession({ agentId: device.id, mode })`.
     - Disabled when the target device is offline or represents the local machine itself.
   - **Delete:**
     - Button variant `destructive` size `sm` with `Trash2` icon.
@@ -256,22 +256,25 @@ To allow the desktop client to initiate remote connections seamlessly, Electron'
 export type RemoteSessionMode = 'desktop' | 'terminal' | 'files';
 
 export interface OpenRemoteSessionPayload {
-  targetId: string;
-  mode: RemoteSessionMode;
+  agentId: string;
+  mode?: RemoteSessionMode;
 }
 
 export interface OpenRemoteSessionResult {
   ok: boolean;
-  error?: string;
+  url?: string;
+  message?: string;
 }
 
 export interface PonterDesktopApi {
   // Existing channels 1-20...
-  
+
   /**
    * Launch a remote session to a partner machine in the default system browser (Channel 21).
    */
-  openRemoteSession(payload: OpenRemoteSessionPayload): Promise<OpenRemoteSessionResult>;
+  openRemoteSession(
+    payload: OpenRemoteSessionPayload,
+  ): Promise<OpenRemoteSessionResult>;
 }
 ```
 
@@ -282,46 +285,62 @@ import { shell } from 'electron';
 // Channel 21: desktop:open-remote-session
 ipcMain.handle(
   'desktop:open-remote-session',
-  async (_event, payload: OpenRemoteSessionPayload): Promise<OpenRemoteSessionResult> => {
+  async (
+    _event,
+    payload: OpenRemoteSessionPayload,
+  ): Promise<OpenRemoteSessionResult> => {
     // 1. Input validation
-    if (!payload || typeof payload.targetId !== 'string') {
-      return { ok: false, error: 'Invalid target agent ID' };
-    }
-    const targetId = payload.targetId.trim();
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(targetId)) {
-      return { ok: false, error: 'Target ID contains invalid characters' };
+    if (
+      !payload ||
+      typeof payload.agentId !== 'string' ||
+      !payload.agentId.trim()
+    ) {
+      return { ok: false, message: 'Invalid or missing agentId' };
     }
 
-    const validModes: RemoteSessionMode[] = ['desktop', 'terminal', 'files'];
-    const mode = validModes.includes(payload.mode) ? payload.mode : 'desktop';
+    const rawAgentId = payload.agentId.trim();
+    const allowedModes: RemoteSessionMode[] = ['desktop', 'terminal', 'files'];
+    const mode =
+      payload.mode && allowedModes.includes(payload.mode)
+        ? payload.mode
+        : 'desktop';
 
     // 2. Resolve active server URL
-    const effectiveUrl = config.load().serverUrl;
-    if (!effectiveUrl) {
-      return { ok: false, error: 'Server URL is not configured' };
+    const appConfig = config.load();
+    const serverUrl = appConfig.serverUrl;
+    if (!serverUrl) {
+      return { ok: false, message: 'Server URL not configured' };
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(serverUrl);
+    } catch {
+      return { ok: false, message: 'Invalid server URL format' };
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, message: 'Invalid server URL protocol' };
     }
 
     // 3. Normalize URL and construct workspace destination
-    try {
-      const baseUrl = new URL(effectiveUrl);
-      if (baseUrl.protocol !== 'http:' && baseUrl.protocol !== 'https:') {
-        return { ok: false, error: 'Invalid server URL protocol' };
-      }
-      
-      const destination = new URL(
-        `/workspace/${encodeURIComponent(targetId)}`,
-        baseUrl
-      );
-      destination.searchParams.set('mode', mode);
+    const basePath = parsed.pathname.replace(/\/+$/, '');
+    parsed.pathname = `${basePath}/workspace/${encodeURIComponent(rawAgentId)}`;
+    parsed.search = `?mode=${encodeURIComponent(mode)}`;
+    parsed.hash = '';
 
-      // 4. Open in default operating system browser
-      await shell.openExternal(destination.toString());
-      return { ok: true };
+    // 4. Open in default operating system browser
+    try {
+      await shell.openExternal(parsed.toString());
+      return { ok: true, url: parsed.toString() };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: `Failed to open remote session: ${message}` };
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        message: `Failed to open external browser: ${errorMsg}`,
+      };
     }
-  }
+  },
 );
 ```
 
@@ -335,7 +354,7 @@ openRemoteSession: (payload: OpenRemoteSessionPayload) =>
 
 ### 5.2 Web Companion Integration (`apps/web`)
 
-When `shell.openExternal` launches `${serverUrl}/workspace/${targetId}?mode=${mode}`, the web application's `WorkspaceView.vue` consumes the query parameter:
+When `shell.openExternal` launches `${serverUrl}/workspace/${agentId}?mode=${mode}`, the web application's `WorkspaceView.vue` consumes the query parameter:
 
 ```ts
 // apps/web/src/views/WorkspaceView.vue
@@ -415,7 +434,7 @@ This guarantees seamless end-to-end routing whether the user requests screen sha
 - **"Remote Control" Hero Card:**
   - Assert validation of partner ID input field.
   - Assert mode selector toggles between Desktop, Terminal, and Files.
-  - Assert clicking "Connect" invokes `window.ponter.openRemoteSession({ targetId, mode })`.
+  - Assert clicking "Connect" invokes `window.ponter.openRemoteSession({ agentId, mode })`.
 - **"My Devices" Fleet Table:**
   - Assert device list renders in compact table with online/offline indicators.
   - Assert "This device" badge appears exclusively on the local machine's row.
