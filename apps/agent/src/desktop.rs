@@ -1663,6 +1663,16 @@ pub struct DesktopEncoder {
     bitrate_bps: u32,
 }
 
+/// The keyframe interval in frames: two seconds of the profile's cadence.
+///
+/// Derived from the profile rather than fixed at 60 so a 60 FPS stream keeps a
+/// two-second GOP (120 frames) instead of an IDR every second, and a 30 FPS
+/// stream keeps the historical 60. A pure function so the mapping is testable
+/// without constructing an encoder.
+pub(crate) fn gop_frames_for(profile: StreamProfile) -> u32 {
+    (profile.fps * 2.0).round().max(1.0) as u32
+}
+
 impl DesktopEncoder {
     pub fn new(profile: StreamProfile) -> Result<Self> {
         let config = EncoderConfig::new()
@@ -1680,7 +1690,7 @@ impl DesktopEncoder {
             .background_detection(false)
             .rate_control_mode(RateControlMode::Bitrate)
             .complexity(Complexity::Low)
-            .intra_frame_period(IntraFramePeriod::from_num_frames(60))
+            .intra_frame_period(IntraFramePeriod::from_num_frames(gop_frames_for(profile)))
             .vui(VuiConfig::bt709());
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .context("creating the H.264 encoder")?;
@@ -2314,6 +2324,27 @@ mod tests {
             }
         }
         assert!(saw_idr, "the first frame must be an IDR access unit");
+    }
+
+    #[test]
+    fn gop_frames_are_two_seconds_of_the_profile_fps() {
+        // 30 FPS keeps the historical 60-frame GOP byte-for-byte.
+        assert_eq!(gop_frames_for(StreamProfile::DEFAULT_1080P30), 60);
+        assert_eq!(gop_frames_for(StreamProfile::SAFE_720P30), 60);
+        // 60 FPS doubles it, so the keyframe interval stays two seconds.
+        assert_eq!(gop_frames_for(StreamProfile::DEFAULT_1080P60), 120);
+        assert_eq!(gop_frames_for(StreamProfile::SAFE_720P60), 120);
+    }
+
+    #[test]
+    fn gop_frames_never_collapse_to_zero() {
+        let degenerate = StreamProfile {
+            max_width: 640,
+            max_height: 360,
+            fps: 0.2,
+            bitrate_bps: 1_000_000,
+        };
+        assert_eq!(gop_frames_for(degenerate), 1);
     }
 
     #[test]
