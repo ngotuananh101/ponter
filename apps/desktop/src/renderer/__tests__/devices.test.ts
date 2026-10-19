@@ -421,7 +421,7 @@ function defaultPonterMocks(overrides: Record<string, () => unknown> = {}) {
   }
 }
 
-describe('DevicesView — header & layout', () => {
+describe('DevicesView.vue', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     resetPonterMock();
@@ -434,732 +434,676 @@ describe('DevicesView — header & layout', () => {
     vi.useRealTimers();
   });
 
-  it('renders the username badge signed-in-as text', async () => {
-    defaultPonterMocks();
-    const auth = useAuthStore();
-    auth.user = { id: 'u1', username: 'alice', role: 'user' } as any;
+  describe('header & layout', () => {
+    it('renders the username badge signed-in-as text', async () => {
+      defaultPonterMocks();
+      const auth = useAuthStore();
+      auth.user = { id: 'u1', username: 'alice', role: 'user' } as any;
 
-    const wrapper = await mountView();
+      const wrapper = await mountView();
 
-    const user = wrapper.find('[data-testid="devices-username"]');
-    expect(user.exists()).toBe(true);
-    expect(user.text()).toContain('Signed in as alice');
-    wrapper.unmount();
-  });
-
-  it('logout button calls authStore.logout', async () => {
-    defaultPonterMocks();
-
-    const authStoreInstance = useAuthStore();
-    const logoutSpy = vi
-      .spyOn(authStoreInstance, 'logout')
-      .mockResolvedValue(undefined);
-
-    const wrapper = await mountView();
-
-    const logoutBtn = wrapper.find('[data-testid="devices-logout"]');
-    expect(logoutBtn.exists()).toBe(true);
-    await logoutBtn.trigger('click');
-
-    expect(logoutSpy).toHaveBeenCalledTimes(1);
-    wrapper.unmount();
-  });
-
-  it('renders the two-column grid with This Device and Remote Control cards', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-
-    // Header card + This Device card + Remote Control card + My Devices card
-    expect(
-      wrapper.findAll('[data-testid="devices-root"] card, card').length,
-    ).toBeGreaterThanOrEqual(0);
-    expect(wrapper.find('[data-testid="this-device-id"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="remote-agent-id-input"]').exists()).toBe(
-      true,
-    );
-    wrapper.unmount();
-  });
-});
-
-describe('DevicesView — This Device card', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    resetPonterMock();
-    vi.clearAllTimers();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
-  it('displays hostname, platform, and the local device ID', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-
-    expect(wrapper.find('[data-testid="this-device-hostname"]').text()).toBe(
-      localDevice.hostname,
-    );
-    expect(wrapper.find('[data-testid="this-device-platform"]').text()).toBe(
-      localDevice.platform,
-    );
-    expect(wrapper.find('[data-testid="this-device-id"]').text()).toBe(
-      localDevice.id,
-    );
-    wrapper.unmount();
-  });
-
-  it('copy ID button writes localAgentId to clipboard and shows feedback', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const originalNav = window.navigator;
-    Object.defineProperty(window, 'navigator', {
-      value: { ...originalNav, clipboard: { writeText } },
-      configurable: true,
-      writable: true,
-    });
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-    const copyBtn = wrapper.find('[data-testid="copy-device-id"]');
-    expect(copyBtn.exists()).toBe(true);
-    expect(copyBtn.attributes('disabled')).toBeUndefined();
-
-    await copyBtn.trigger('click');
-
-    expect(writeText).toHaveBeenCalledWith(localDevice.id);
-    // Visual feedback: the check icon appears while copied (2s window).
-    expect(wrapper.find('[data-testid="copy-device-id"]').html()).toContain(
-      'lucide-check',
-    );
-
-    vi.advanceTimersByTime(2000);
-    await nextTick();
-
-    // After 2s the check icon is gone, reverted to the Copy icon.
-    expect(wrapper.find('[data-testid="copy-device-id"]').html()).not.toContain(
-      'lucide-check',
-    );
-    expect(wrapper.find('[data-testid="copy-device-id"]').html()).toContain(
-      'lucide-copy',
-    );
-
-    Object.defineProperty(window, 'navigator', {
-      value: originalNav,
-      configurable: true,
-      writable: true,
-    });
-    wrapper.unmount();
-  });
-
-  it('runtime status reflects getRuntimeStatus and labels "Running" when connected', async () => {
-    defaultPonterMocks({ getRuntimeStatus: () => 'connected' });
-
-    const wrapper = await mountView();
-
-    const statusEl = wrapper.find('[data-testid="runtime-status"]');
-    expect(statusEl.attributes('data-status')).toBe('connected');
-    expect(statusEl.text()).toContain('Ready for remote connections');
-    wrapper.unmount();
-  });
-
-  it('runtime-status event updates the indicator in real time', async () => {
-    defaultPonterMocks({ getRuntimeStatus: () => 'stopped' });
-    const rt = mockOnRuntimeStatus();
-
-    const wrapper = await mountView();
-
-    const statusEl = wrapper.find('[data-testid="runtime-status"]');
-    expect(statusEl.attributes('data-status')).toBe('stopped');
-    expect(rt.handler).not.toBeNull();
-
-    rt.handler!('connected');
-    await nextTick();
-
-    expect(statusEl.attributes('data-status')).toBe('connected');
-    wrapper.unmount();
-  });
-
-  it('allow-remote-control toggle is ON when running and OFF when stopped', async () => {
-    defaultPonterMocks({
-      getRuntimeStatus: () => 'connected',
-      startAgent: () => ({ ok: true, message: '' }),
+      const user = wrapper.find('[data-testid="devices-username"]');
+      expect(user.exists()).toBe(true);
+      expect(user.text()).toContain('Signed in as alice');
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    const toggle = wrapper.find('[data-testid="allow-remote-control-toggle"]');
-    expect(toggle.attributes('data-state')).toBe('on');
-    expect(toggle.text()).toContain('Allowing connections');
-    wrapper.unmount();
+    it('logout button calls authStore.logout', async () => {
+      defaultPonterMocks();
 
-    // Now stopped state.
-    const ponter = getPonterMock();
-    ponter.getRuntimeStatus.mockResolvedValue('stopped');
-    ponter.getLocalAgentId.mockResolvedValue(localDevice.id);
-    const wrapper2 = await mountView();
-    const toggle2 = wrapper2.find(
-      '[data-testid="allow-remote-control-toggle"]',
-    );
-    expect(toggle2.attributes('data-state')).toBe('off');
-    expect(toggle2.text()).toContain('Allow remote control');
-    wrapper2.unmount();
-  });
+      const authStoreInstance = useAuthStore();
+      const logoutSpy = vi
+        .spyOn(authStoreInstance, 'logout')
+        .mockResolvedValue(undefined);
 
-  it('toggle ON (running) calls stopAgent when clicked', async () => {
-    defaultPonterMocks({
-      getRuntimeStatus: () => 'connected',
-      stopAgent: () => undefined,
+      const wrapper = await mountView();
+
+      const logoutBtn = wrapper.find('[data-testid="devices-logout"]');
+      expect(logoutBtn.exists()).toBe(true);
+      await logoutBtn.trigger('click');
+
+      expect(logoutSpy).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    await wrapper
-      .find('[data-testid="allow-remote-control-toggle"]')
-      .trigger('click');
-    await flushPromises();
+    it('renders the two-column grid with This Device and Remote Control cards', async () => {
+      defaultPonterMocks();
 
-    expect(getPonterMock().stopAgent).toHaveBeenCalledTimes(1);
-    wrapper.unmount();
+      const wrapper = await mountView();
+
+      // Header card + This Device card + Remote Control card + My Devices card
+      expect(
+        wrapper.findAll('[data-testid="devices-root"] card, card').length,
+      ).toBeGreaterThanOrEqual(0);
+      expect(wrapper.find('[data-testid="this-device-id"]').exists()).toBe(
+        true,
+      );
+      expect(
+        wrapper.find('[data-testid="remote-agent-id-input"]').exists(),
+      ).toBe(true);
+      wrapper.unmount();
+    });
   });
 
-  it('toggle OFF (stopped) calls startAgent when clicked', async () => {
-    defaultPonterMocks({
-      getRuntimeStatus: () => 'stopped',
-      startAgent: () => ({ ok: true, message: '' }),
+  describe('This Device card', () => {
+    it('displays hostname, platform, and the local device ID', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+
+      expect(wrapper.find('[data-testid="this-device-hostname"]').text()).toBe(
+        localDevice.hostname,
+      );
+      expect(wrapper.find('[data-testid="this-device-platform"]').text()).toBe(
+        localDevice.platform,
+      );
+      expect(wrapper.find('[data-testid="this-device-id"]').text()).toBe(
+        localDevice.id,
+      );
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    await wrapper
-      .find('[data-testid="allow-remote-control-toggle"]')
-      .trigger('click');
-    await flushPromises();
+    it('copy ID button writes localAgentId to clipboard and shows feedback', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      const originalNav = window.navigator;
+      Object.defineProperty(window, 'navigator', {
+        value: { ...originalNav, clipboard: { writeText } },
+        configurable: true,
+        writable: true,
+      });
+      defaultPonterMocks();
 
-    expect(getPonterMock().startAgent).toHaveBeenCalledTimes(1);
-    wrapper.unmount();
-  });
+      const wrapper = await mountView();
+      const copyBtn = wrapper.find('[data-testid="copy-device-id"]');
+      expect(copyBtn.exists()).toBe(true);
+      expect(copyBtn.attributes('disabled')).toBeUndefined();
 
-  it('toggle disables while agentPending or registering', async () => {
-    defaultPonterMocks({ getRuntimeStatus: () => 'stopped' });
+      await copyBtn.trigger('click');
 
-    const wrapper = await mountView();
-    // No pending state initially → enabled.
-    expect(
-      wrapper
+      expect(writeText).toHaveBeenCalledWith(localDevice.id);
+      // Visual feedback: the check icon appears while copied (2s window).
+      expect(wrapper.find('[data-testid="copy-device-id"]').html()).toContain(
+        'lucide-check',
+      );
+
+      vi.advanceTimersByTime(2000);
+      await nextTick();
+
+      // After 2s the check icon is gone, reverted to the Copy icon.
+      expect(
+        wrapper.find('[data-testid="copy-device-id"]').html(),
+      ).not.toContain('lucide-check');
+      expect(wrapper.find('[data-testid="copy-device-id"]').html()).toContain(
+        'lucide-copy',
+      );
+
+      Object.defineProperty(window, 'navigator', {
+        value: originalNav,
+        configurable: true,
+        writable: true,
+      });
+      wrapper.unmount();
+    });
+
+    it('runtime status reflects getRuntimeStatus and labels "Running" when connected', async () => {
+      defaultPonterMocks({ getRuntimeStatus: () => 'connected' });
+
+      const wrapper = await mountView();
+
+      const statusEl = wrapper.find('[data-testid="runtime-status"]');
+      expect(statusEl.attributes('data-status')).toBe('connected');
+      expect(statusEl.text()).toContain('Ready for remote connections');
+      wrapper.unmount();
+    });
+
+    it('runtime-status event updates the indicator in real time', async () => {
+      defaultPonterMocks({ getRuntimeStatus: () => 'stopped' });
+      const rt = mockOnRuntimeStatus();
+
+      const wrapper = await mountView();
+
+      const statusEl = wrapper.find('[data-testid="runtime-status"]');
+      expect(statusEl.attributes('data-status')).toBe('stopped');
+      expect(rt.handler).not.toBeNull();
+
+      rt.handler!('connected');
+      await nextTick();
+
+      expect(statusEl.attributes('data-status')).toBe('connected');
+      wrapper.unmount();
+    });
+
+    it('allow-remote-control toggle is ON when running and OFF when stopped', async () => {
+      defaultPonterMocks({
+        getRuntimeStatus: () => 'connected',
+        startAgent: () => ({ ok: true, message: '' }),
+      });
+
+      const wrapper = await mountView();
+      const toggle = wrapper.find(
+        '[data-testid="allow-remote-control-toggle"]',
+      );
+      expect(toggle.attributes('data-state')).toBe('on');
+      expect(toggle.text()).toContain('Allowing connections');
+      wrapper.unmount();
+
+      // Now stopped state.
+      const ponter = getPonterMock();
+      ponter.getRuntimeStatus.mockResolvedValue('stopped');
+      ponter.getLocalAgentId.mockResolvedValue(localDevice.id);
+      const wrapper2 = await mountView();
+      const toggle2 = wrapper2.find(
+        '[data-testid="allow-remote-control-toggle"]',
+      );
+      expect(toggle2.attributes('data-state')).toBe('off');
+      expect(toggle2.text()).toContain('Allow remote control');
+      wrapper2.unmount();
+    });
+
+    it('toggle ON (running) calls stopAgent when clicked', async () => {
+      defaultPonterMocks({
+        getRuntimeStatus: () => 'connected',
+        stopAgent: () => undefined,
+      });
+
+      const wrapper = await mountView();
+      await wrapper
         .find('[data-testid="allow-remote-control-toggle"]')
-        .attributes('disabled'),
-    ).toBeUndefined();
-    wrapper.unmount();
-  });
+        .trigger('click');
+      await flushPromises();
 
-  it('surfaces a refused start in the alert', async () => {
-    defaultPonterMocks({
-      getRuntimeStatus: () => 'stopped',
-      startAgent: () => ({
-        ok: false,
-        message: 'Device credential is missing; re-register this device',
-      }),
+      expect(getPonterMock().stopAgent).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    await wrapper
-      .find('[data-testid="allow-remote-control-toggle"]')
-      .trigger('click');
-    await flushPromises();
+    it('toggle OFF (stopped) calls startAgent when clicked', async () => {
+      defaultPonterMocks({
+        getRuntimeStatus: () => 'stopped',
+        startAgent: () => ({ ok: true, message: '' }),
+      });
 
-    expect(wrapper.find('[data-testid="devices-error"]').text()).toContain(
-      'Device credential is missing',
-    );
-    wrapper.unmount();
-  });
-});
+      const wrapper = await mountView();
+      await wrapper
+        .find('[data-testid="allow-remote-control-toggle"]')
+        .trigger('click');
+      await flushPromises();
 
-describe('DevicesView — This Device auto-register on mount', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    resetPonterMock();
-    vi.clearAllTimers();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
-  it('auto-registers with terminal+desktop when localAgentId is null', async () => {
-    defaultPonterMocks({ getLocalAgentId: () => null });
-
-    const wrapper = await mountView();
-    await flushPromises();
-    await nextTick();
-
-    expect(getPonterMock().registerDevice).toHaveBeenCalledWith({
-      capabilities: ['terminal', 'desktop'],
-    });
-    expect(getPonterMock().getLocalAgentId).toHaveBeenCalled();
-    wrapper.unmount();
-  });
-
-  it('does not auto-register when a localAgentId already exists', async () => {
-    defaultPonterMocks({ getLocalAgentId: () => localDevice.id });
-
-    const wrapper = await mountView();
-    await flushPromises();
-    await nextTick();
-
-    expect(getPonterMock().registerDevice).not.toHaveBeenCalled();
-    wrapper.unmount();
-  });
-});
-
-describe('DevicesView — Remote Control card', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    resetPonterMock();
-    vi.clearAllTimers();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
-  it('connect button is disabled with no partner ID', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-    const btn = wrapper.find('[data-testid="remote-connect-btn"]');
-    expect(btn.attributes('disabled')).toBeDefined();
-    wrapper.unmount();
-  });
-
-  it('connect button enables when a partner ID is typed', async () => {
-    defaultPonterMocks({
-      openRemoteSession: () => ({ ok: true, url: 'ws://x' }),
+      expect(getPonterMock().startAgent).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    const input = wrapper.find('[data-testid="remote-agent-id-input"]');
-    await input.setValue('partner-device-id');
+    it('toggle disables while agentPending or registering', async () => {
+      defaultPonterMocks({ getRuntimeStatus: () => 'stopped' });
 
-    const btn = wrapper.find('[data-testid="remote-connect-btn"]');
-    expect(btn.attributes('disabled')).toBeUndefined();
-    wrapper.unmount();
+      const wrapper = await mountView();
+      // No pending state initially → enabled.
+      expect(
+        wrapper
+          .find('[data-testid="allow-remote-control-toggle"]')
+          .attributes('disabled'),
+      ).toBeUndefined();
+      wrapper.unmount();
+    });
+
+    it('surfaces a refused start in the alert', async () => {
+      defaultPonterMocks({
+        getRuntimeStatus: () => 'stopped',
+        startAgent: () => ({
+          ok: false,
+          message: 'Device credential is missing; re-register this device',
+        }),
+      });
+
+      const wrapper = await mountView();
+      await wrapper
+        .find('[data-testid="allow-remote-control-toggle"]')
+        .trigger('click');
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="devices-error"]').text()).toContain(
+        'Device credential is missing',
+      );
+      wrapper.unmount();
+    });
   });
 
-  it('mode selector defaults to desktop and toggles desktop/terminal/files', async () => {
-    defaultPonterMocks();
+  describe('This Device auto-register on mount', () => {
+    it('auto-registers with terminal+desktop when localAgentId is null', async () => {
+      defaultPonterMocks({ getLocalAgentId: () => null });
 
-    const wrapper = await mountView();
+      const wrapper = await mountView();
+      await flushPromises();
+      await nextTick();
 
-    expect(
-      wrapper
-        .find('[data-testid="remote-mode-desktop"]')
-        .attributes('aria-pressed'),
-    ).toBe('true');
-    expect(
-      wrapper
+      expect(getPonterMock().registerDevice).toHaveBeenCalledWith({
+        capabilities: ['terminal', 'desktop'],
+      });
+      expect(getPonterMock().getLocalAgentId).toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it('does not auto-register when a localAgentId already exists', async () => {
+      defaultPonterMocks({ getLocalAgentId: () => localDevice.id });
+
+      const wrapper = await mountView();
+      await flushPromises();
+      await nextTick();
+
+      expect(getPonterMock().registerDevice).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+  });
+
+  describe('Remote Control card', () => {
+    it('connect button is disabled with no partner ID', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+      const btn = wrapper.find('[data-testid="remote-connect-btn"]');
+      expect(btn.attributes('disabled')).toBeDefined();
+      wrapper.unmount();
+    });
+
+    it('connect button enables when a partner ID is typed', async () => {
+      defaultPonterMocks({
+        openRemoteSession: () => ({ ok: true, url: 'ws://x' }),
+      });
+
+      const wrapper = await mountView();
+      const input = wrapper.find('[data-testid="remote-agent-id-input"]');
+      await input.setValue('partner-device-id');
+
+      const btn = wrapper.find('[data-testid="remote-connect-btn"]');
+      expect(btn.attributes('disabled')).toBeUndefined();
+      wrapper.unmount();
+    });
+
+    it('mode selector defaults to desktop and toggles desktop/terminal/files', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+
+      expect(
+        wrapper
+          .find('[data-testid="remote-mode-desktop"]')
+          .attributes('aria-pressed'),
+      ).toBe('true');
+      expect(
+        wrapper
+          .find('[data-testid="remote-mode-terminal"]')
+          .attributes('aria-pressed'),
+      ).toBe('false');
+      expect(
+        wrapper
+          .find('[data-testid="remote-mode-files"]')
+          .attributes('aria-pressed'),
+      ).toBe('false');
+
+      await wrapper
         .find('[data-testid="remote-mode-terminal"]')
-        .attributes('aria-pressed'),
-    ).toBe('false');
-    expect(
-      wrapper
-        .find('[data-testid="remote-mode-files"]')
-        .attributes('aria-pressed'),
-    ).toBe('false');
+        .trigger('click');
+      await nextTick();
+      expect(
+        wrapper
+          .find('[data-testid="remote-mode-terminal"]')
+          .attributes('aria-pressed'),
+      ).toBe('true');
+      expect(
+        wrapper
+          .find('[data-testid="remote-mode-desktop"]')
+          .attributes('aria-pressed'),
+      ).toBe('false');
 
-    await wrapper.find('[data-testid="remote-mode-terminal"]').trigger('click');
-    await nextTick();
-    expect(
-      wrapper
+      await wrapper.find('[data-testid="remote-mode-files"]').trigger('click');
+      await nextTick();
+      expect(
+        wrapper
+          .find('[data-testid="remote-mode-files"]')
+          .attributes('aria-pressed'),
+      ).toBe('true');
+      wrapper.unmount();
+    });
+
+    it('connect calls openRemoteSession with partner ID and desktop mode', async () => {
+      defaultPonterMocks({
+        openRemoteSession: () => ({ ok: true, url: 'wss://example' }),
+      });
+      const openSpy = vi.fn();
+      vi.stubGlobal('open', openSpy);
+
+      const wrapper = await mountView();
+      const input = wrapper.find('[data-testid="remote-agent-id-input"]');
+      await input.setValue('partner-abc');
+      await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
+      await flushPromises();
+
+      expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
+        agentId: 'partner-abc',
+        mode: 'desktop',
+      });
+      expect(openSpy).toHaveBeenCalledWith('wss://example', '_blank');
+      expect(wrapper.find('[data-testid="remote-error"]').exists()).toBe(false);
+      vi.unstubAllGlobals();
+      wrapper.unmount();
+    });
+
+    it('connect with terminal mode passes mode="terminal"', async () => {
+      defaultPonterMocks({
+        openRemoteSession: () => ({ ok: true, url: 'wss://example' }),
+      });
+      vi.stubGlobal('open', vi.fn());
+
+      const wrapper = await mountView();
+      await wrapper
+        .find('[data-testid="remote-agent-id-input"]')
+        .setValue('partner-x');
+      await wrapper
         .find('[data-testid="remote-mode-terminal"]')
-        .attributes('aria-pressed'),
-    ).toBe('true');
-    expect(
-      wrapper
-        .find('[data-testid="remote-mode-desktop"]')
-        .attributes('aria-pressed'),
-    ).toBe('false');
+        .trigger('click');
+      await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
+      await flushPromises();
 
-    await wrapper.find('[data-testid="remote-mode-files"]').trigger('click');
-    await nextTick();
-    expect(
-      wrapper
-        .find('[data-testid="remote-mode-files"]')
-        .attributes('aria-pressed'),
-    ).toBe('true');
-    wrapper.unmount();
-  });
-
-  it('connect calls openRemoteSession with partner ID and desktop mode', async () => {
-    defaultPonterMocks({
-      openRemoteSession: () => ({ ok: true, url: 'wss://example' }),
-    });
-    const openSpy = vi.fn();
-    vi.stubGlobal('open', openSpy);
-
-    const wrapper = await mountView();
-    const input = wrapper.find('[data-testid="remote-agent-id-input"]');
-    await input.setValue('partner-abc');
-    await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
-    await flushPromises();
-
-    expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
-      agentId: 'partner-abc',
-      mode: 'desktop',
-    });
-    expect(openSpy).toHaveBeenCalledWith('wss://example', '_blank');
-    expect(wrapper.find('[data-testid="remote-error"]').exists()).toBe(false);
-    vi.unstubAllGlobals();
-    wrapper.unmount();
-  });
-
-  it('connect with terminal mode passes mode="terminal"', async () => {
-    defaultPonterMocks({
-      openRemoteSession: () => ({ ok: true, url: 'wss://example' }),
-    });
-    vi.stubGlobal('open', vi.fn());
-
-    const wrapper = await mountView();
-    await wrapper
-      .find('[data-testid="remote-agent-id-input"]')
-      .setValue('partner-x');
-    await wrapper.find('[data-testid="remote-mode-terminal"]').trigger('click');
-    await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
-    await flushPromises();
-
-    expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
-      agentId: 'partner-x',
-      mode: 'terminal',
-    });
-    vi.unstubAllGlobals();
-    wrapper.unmount();
-  });
-
-  it('surfaces a refused remote session in the error alert', async () => {
-    defaultPonterMocks({
-      openRemoteSession: () => ({
-        ok: false,
-        message: 'Partner is offline',
-      }),
+      expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
+        agentId: 'partner-x',
+        mode: 'terminal',
+      });
+      vi.unstubAllGlobals();
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    await wrapper
-      .find('[data-testid="remote-agent-id-input"]')
-      .setValue('ghost');
-    await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
-    await flushPromises();
+    it('surfaces a refused remote session in the error alert', async () => {
+      defaultPonterMocks({
+        openRemoteSession: () => ({
+          ok: false,
+          message: 'Partner is offline',
+        }),
+      });
 
-    expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
-      agentId: 'ghost',
-      mode: 'desktop',
-    });
-    const err = wrapper.find('[data-testid="remote-error"]');
-    expect(err.exists()).toBe(true);
-    expect(err.text()).toContain('Partner is offline');
-    wrapper.unmount();
-  });
+      const wrapper = await mountView();
+      await wrapper
+        .find('[data-testid="remote-agent-id-input"]')
+        .setValue('ghost');
+      await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
+      await flushPromises();
 
-  it('uses the default error message when ok=false and no message is returned', async () => {
-    defaultPonterMocks({
-      openRemoteSession: () => ({ ok: false }),
-    });
-
-    const wrapper = await mountView();
-    await wrapper
-      .find('[data-testid="remote-agent-id-input"]')
-      .setValue('ghost');
-    await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
-    await flushPromises();
-
-    expect(wrapper.find('[data-testid="remote-error"]').text()).toContain(
-      'Failed to open remote session',
-    );
-    wrapper.unmount();
-  });
-});
-
-describe('DevicesView — My Devices list', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    resetPonterMock();
-    vi.clearAllTimers();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
-  it('shows the loading placeholder only while loading and empty', async () => {
-    // Return a never-resolving listDevices to keep `loading` true via the
-    // store's foreground branch... instead, simulate empty + loading=false then
-    // empty list renders the empty state. We test the loading state separately.
-    defaultPonterMocks({ listDevices: () => Promise.resolve([]) });
-
-    const wrapper = await mountView();
-
-    const empty = wrapper.find('[data-testid="devices-empty"]');
-    expect(empty.exists()).toBe(true);
-    expect(empty.text()).toContain('No devices registered yet');
-    wrapper.unmount();
-  });
-
-  it('renders device rows after refresh with hostname, platform, online, and ID', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-
-    const rows = wrapper.findAll('[data-testid="device-row"]');
-    expect(rows).toHaveLength(1);
-    expect(wrapper.find('[data-testid="device-hostname"]').text()).toBe(
-      localDevice.hostname,
-    );
-    expect(wrapper.find('[data-testid="device-platform"]').text()).toBe(
-      String(localDevice.platform),
-    );
-    expect(wrapper.find('[data-testid="device-online"]').text()).toContain(
-      'online',
-    );
-    expect(wrapper.find('[data-testid="device-local-badge"]').exists()).toBe(
-      true,
-    );
-    expect(wrapper.find('[data-testid="device-id"]').text()).toBe(
-      localDevice.id,
-    );
-    wrapper.unmount();
-  });
-
-  it('marks only the row matching localAgentId with the "This device" badge', async () => {
-    const other = { ...sampleDevice, id: 'other-device', hostname: 'otherbox' };
-    defaultPonterMocks({ listDevices: () => [localDevice, other] });
-
-    const wrapper = await mountView();
-
-    const rows = wrapper.findAll('[data-testid="device-row"]');
-    expect(rows).toHaveLength(2);
-    // localDevice is the first because listDevices returns [localDevice, other]
-    expect(rows[0]!.find('[data-testid="device-local-badge"]').exists()).toBe(
-      true,
-    );
-    expect(rows[1]!.find('[data-testid="device-local-badge"]').exists()).toBe(
-      false,
-    );
-    wrapper.unmount();
-  });
-
-  it('device [Connect] button calls openRemoteSession in desktop mode', async () => {
-    const remote = {
-      ...localDevice,
-      id: 'remote-peer-9999',
-      hostname: 'peerbox',
-    };
-    defaultPonterMocks({
-      listDevices: () => [remote],
-      openRemoteSession: () => ({ ok: true, url: 'wss://x' }),
-    });
-    // Stub window.open so the wss navigation doesn't blow up in happy-dom.
-    const openSpy = vi.fn();
-    vi.stubGlobal('open', openSpy);
-
-    const wrapper = await mountView();
-    await wrapper.find('[data-testid="device-connect"]').trigger('click');
-    await flushPromises();
-
-    expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
-      agentId: remote.id,
-      mode: 'desktop',
-    });
-    expect(openSpy).toHaveBeenCalledWith('wss://x', '_blank');
-    vi.unstubAllGlobals();
-    wrapper.unmount();
-  });
-
-  it('device [Connect] is disabled for offline devices', async () => {
-    const offline = { ...localDevice, isOnline: false };
-    defaultPonterMocks({ listDevices: () => [offline] });
-
-    const wrapper = await mountView();
-    expect(
-      wrapper.find('[data-testid="device-connect"]').attributes('disabled'),
-    ).toBeDefined();
-    wrapper.unmount();
-  });
-
-  it('device [Connect] is disabled for the local device', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-    expect(
-      wrapper.find('[data-testid="device-connect"]').attributes('disabled'),
-    ).toBeDefined();
-    wrapper.unmount();
-  });
-
-  it('delete button opens the confirmation dialog', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView({ stubTeleport: true });
-    await wrapper.find('[data-testid="device-delete"]').trigger('click');
-    await flushPromises();
-    await nextTick();
-
-    expect(wrapper.find('[data-slot="alert-dialog-action"]').exists()).toBe(
-      true,
-    );
-    expect(wrapper.find('[data-testid="device-hostname"]').exists()).toBe(true);
-    wrapper.unmount();
-  });
-
-  it('delete confirmation calls store.remove with the device id and refreshes localAgentId', async () => {
-    defaultPonterMocks({
-      deleteDevice: () => true,
+      expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
+        agentId: 'ghost',
+        mode: 'desktop',
+      });
+      const err = wrapper.find('[data-testid="remote-error"]');
+      expect(err.exists()).toBe(true);
+      expect(err.text()).toContain('Partner is offline');
+      wrapper.unmount();
     });
 
-    const store = useDevicesStore();
-    const removeSpy = vi.spyOn(store, 'remove');
+    it('uses the default error message when ok=false and no message is returned', async () => {
+      defaultPonterMocks({
+        openRemoteSession: () => ({ ok: false }),
+      });
 
-    const wrapper = await mountView({ stubTeleport: true });
-    await wrapper.find('[data-testid="device-delete"]').trigger('click');
-    await flushPromises();
-    await nextTick();
+      const wrapper = await mountView();
+      await wrapper
+        .find('[data-testid="remote-agent-id-input"]')
+        .setValue('ghost');
+      await wrapper.find('[data-testid="remote-connect-btn"]').trigger('click');
+      await flushPromises();
 
-    const actionBtn = wrapper.find('[data-slot="alert-dialog-action"]');
-    await actionBtn.trigger('click');
-    await flushPromises();
-
-    expect(removeSpy).toHaveBeenCalledWith(localDevice.id);
-    expect(getPonterMock().deleteDevice).toHaveBeenCalledWith(localDevice.id);
-    wrapper.unmount();
-  });
-});
-
-describe('DevicesView — background refresh & unmount', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    resetPonterMock();
-    vi.clearAllTimers();
-    vi.useFakeTimers();
+      expect(wrapper.find('[data-testid="remote-error"]').text()).toContain(
+        'Failed to open remote session',
+      );
+      wrapper.unmount();
+    });
   });
 
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
+  describe('My Devices list', () => {
+    it('shows the loading placeholder only while loading and empty', async () => {
+      // Return a never-resolving listDevices to keep `loading` true via the
+      // store's foreground branch... instead, simulate empty + loading=false then
+      // empty list renders the empty state. We test the loading state separately.
+      defaultPonterMocks({ listDevices: () => Promise.resolve([]) });
 
-  it('does not show devices-loading placeholder during background refresh when devices are present', async () => {
-    defaultPonterMocks();
+      const wrapper = await mountView();
 
-    const wrapper = await mountView();
-    expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
-      false,
-    );
-
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-    await nextTick();
-
-    expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
-      false,
-    );
-    expect(wrapper.find('[data-testid="devices-list"]').exists()).toBe(true);
-    expect(wrapper.findAll('[data-testid="device-row"]')).toHaveLength(1);
-    wrapper.unmount();
-  });
-
-  it('devices list remains mounted during background refresh', async () => {
-    defaultPonterMocks();
-
-    const wrapper = await mountView();
-    const listBefore = wrapper.find('[data-testid="devices-list"]');
-    expect(listBefore.exists()).toBe(true);
-
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-    await nextTick();
-
-    const listAfter = wrapper.find('[data-testid="devices-list"]');
-    expect(listAfter.exists()).toBe(true);
-    expect(wrapper.findAll('[data-testid="device-row"]')).toHaveLength(1);
-    wrapper.unmount();
-  });
-
-  it('background refresh interval passes { background: true } to store.refresh', async () => {
-    defaultPonterMocks();
-
-    const store = useDevicesStore();
-    const refreshSpy = vi.spyOn(store, 'refresh');
-    const wrapper = await mountView();
-    refreshSpy.mockClear();
-
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-
-    expect(refreshSpy).toHaveBeenCalledWith({ background: true });
-    wrapper.unmount();
-  });
-
-  it('unmount stops auto-refresh and unlistens runtime status', async () => {
-    const rt = mockOnRuntimeStatus();
-    defaultPonterMocks({ onRuntimeStatus: () => rt.unsubscribe });
-
-    const wrapper = await mountView();
-    expect(getPonterMock().onRuntimeStatus).toHaveBeenCalled();
-    expect(rt.unsubscribe).not.toHaveBeenCalled();
-
-    const listBefore = getPonterMock().listDevices.mock.calls.length;
-
-    wrapper.unmount();
-    expect(rt.unsubscribe).toHaveBeenCalled();
-
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-
-    expect(getPonterMock().listDevices.mock.calls.length).toBe(listBefore);
-  });
-});
-
-describe('DevicesView — error handling', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    resetPonterMock();
-    vi.clearAllTimers();
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.clearAllTimers();
-    vi.useRealTimers();
-  });
-
-  it('surfaces a store error in the devices-error alert', async () => {
-    defaultPonterMocks({
-      listDevices: () => Promise.reject(new Error('boom')),
+      const empty = wrapper.find('[data-testid="devices-empty"]');
+      expect(empty.exists()).toBe(true);
+      expect(empty.text()).toContain('No devices registered yet');
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    const err = wrapper.find('[data-testid="devices-error"]');
-    expect(err.exists()).toBe(true);
-    expect(err.text()).toContain('boom');
-    wrapper.unmount();
-  });
+    it('renders device rows after refresh with hostname, platform, online, and ID', async () => {
+      defaultPonterMocks();
 
-  it('never writes a credential or secret to webview storage', async () => {
-    // A registered device projection must never carry a credential field.
-    defaultPonterMocks({
-      registerDevice: () => sampleDevice,
-      getLocalAgentId: () => sampleDevice.id,
+      const wrapper = await mountView();
+
+      const rows = wrapper.findAll('[data-testid="device-row"]');
+      expect(rows).toHaveLength(1);
+      expect(wrapper.find('[data-testid="device-hostname"]').text()).toBe(
+        localDevice.hostname,
+      );
+      expect(wrapper.find('[data-testid="device-platform"]').text()).toBe(
+        String(localDevice.platform),
+      );
+      expect(wrapper.find('[data-testid="device-online"]').text()).toContain(
+        'online',
+      );
+      expect(wrapper.find('[data-testid="device-local-badge"]').exists()).toBe(
+        true,
+      );
+      expect(wrapper.find('[data-testid="device-id"]').text()).toBe(
+        localDevice.id,
+      );
+      wrapper.unmount();
     });
 
-    const wrapper = await mountView();
-    await flushPromises();
+    it('marks only the row matching localAgentId with the "This device" badge', async () => {
+      const other = {
+        ...sampleDevice,
+        id: 'other-device',
+        hostname: 'otherbox',
+      };
+      defaultPonterMocks({ listDevices: () => [localDevice, other] });
 
-    expect(storageLength(window, 'l')).toBe(0);
-    expect(storageLength(window, 's')).toBe(0);
-    wrapper.unmount();
+      const wrapper = await mountView();
+
+      const rows = wrapper.findAll('[data-testid="device-row"]');
+      expect(rows).toHaveLength(2);
+      // localDevice is the first because listDevices returns [localDevice, other]
+      expect(rows[0]!.find('[data-testid="device-local-badge"]').exists()).toBe(
+        true,
+      );
+      expect(rows[1]!.find('[data-testid="device-local-badge"]').exists()).toBe(
+        false,
+      );
+      wrapper.unmount();
+    });
+
+    it('device [Connect] button calls openRemoteSession in desktop mode', async () => {
+      const remote = {
+        ...localDevice,
+        id: 'remote-peer-9999',
+        hostname: 'peerbox',
+      };
+      defaultPonterMocks({
+        listDevices: () => [remote],
+        openRemoteSession: () => ({ ok: true, url: 'wss://x' }),
+      });
+      // Stub window.open so the wss navigation doesn't blow up in happy-dom.
+      const openSpy = vi.fn();
+      vi.stubGlobal('open', openSpy);
+
+      const wrapper = await mountView();
+      await wrapper.find('[data-testid="device-connect"]').trigger('click');
+      await flushPromises();
+
+      expect(getPonterMock().openRemoteSession).toHaveBeenCalledWith({
+        agentId: remote.id,
+        mode: 'desktop',
+      });
+      expect(openSpy).toHaveBeenCalledWith('wss://x', '_blank');
+      vi.unstubAllGlobals();
+      wrapper.unmount();
+    });
+
+    it('device [Connect] is disabled for offline devices', async () => {
+      const offline = { ...localDevice, isOnline: false };
+      defaultPonterMocks({ listDevices: () => [offline] });
+
+      const wrapper = await mountView();
+      expect(
+        wrapper.find('[data-testid="device-connect"]').attributes('disabled'),
+      ).toBeDefined();
+      wrapper.unmount();
+    });
+
+    it('device [Connect] is disabled for the local device', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+      expect(
+        wrapper.find('[data-testid="device-connect"]').attributes('disabled'),
+      ).toBeDefined();
+      wrapper.unmount();
+    });
+
+    it('delete button opens the confirmation dialog', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView({ stubTeleport: true });
+      await wrapper.find('[data-testid="device-delete"]').trigger('click');
+      await flushPromises();
+      await nextTick();
+
+      expect(wrapper.find('[data-slot="alert-dialog-action"]').exists()).toBe(
+        true,
+      );
+      expect(wrapper.find('[data-testid="device-hostname"]').exists()).toBe(
+        true,
+      );
+      wrapper.unmount();
+    });
+
+    it('delete confirmation calls store.remove with the device id and refreshes localAgentId', async () => {
+      defaultPonterMocks({
+        deleteDevice: () => true,
+      });
+
+      const store = useDevicesStore();
+      const removeSpy = vi.spyOn(store, 'remove');
+
+      const wrapper = await mountView({ stubTeleport: true });
+      await wrapper.find('[data-testid="device-delete"]').trigger('click');
+      await flushPromises();
+      await nextTick();
+
+      const actionBtn = wrapper.find('[data-slot="alert-dialog-action"]');
+      await actionBtn.trigger('click');
+      await flushPromises();
+
+      expect(removeSpy).toHaveBeenCalledWith(localDevice.id);
+      expect(getPonterMock().deleteDevice).toHaveBeenCalledWith(localDevice.id);
+      wrapper.unmount();
+    });
+  });
+
+  describe('background refresh & unmount', () => {
+    it('does not show devices-loading placeholder during background refresh when devices are present', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+      expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
+        false,
+      );
+
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+      await nextTick();
+
+      expect(wrapper.find('[data-testid="devices-loading"]').exists()).toBe(
+        false,
+      );
+      expect(wrapper.find('[data-testid="devices-list"]').exists()).toBe(true);
+      expect(wrapper.findAll('[data-testid="device-row"]')).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it('devices list remains mounted during background refresh', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+      const listBefore = wrapper.find('[data-testid="devices-list"]');
+      expect(listBefore.exists()).toBe(true);
+
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+      await nextTick();
+
+      const listAfter = wrapper.find('[data-testid="devices-list"]');
+      expect(listAfter.exists()).toBe(true);
+      expect(wrapper.findAll('[data-testid="device-row"]')).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it('background refresh interval passes { background: true } to store.refresh', async () => {
+      defaultPonterMocks();
+
+      const store = useDevicesStore();
+      const refreshSpy = vi.spyOn(store, 'refresh');
+      const wrapper = await mountView();
+      refreshSpy.mockClear();
+
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+
+      expect(refreshSpy).toHaveBeenCalledWith({ background: true });
+      wrapper.unmount();
+    });
+
+    it('unmount stops auto-refresh and unlistens runtime status', async () => {
+      const rt = mockOnRuntimeStatus();
+      defaultPonterMocks({ onRuntimeStatus: () => rt.unsubscribe });
+
+      const wrapper = await mountView();
+      expect(getPonterMock().onRuntimeStatus).toHaveBeenCalled();
+      expect(rt.unsubscribe).not.toHaveBeenCalled();
+
+      const listBefore = getPonterMock().listDevices.mock.calls.length;
+
+      wrapper.unmount();
+      expect(rt.unsubscribe).toHaveBeenCalled();
+
+      vi.advanceTimersByTime(5000);
+      await flushPromises();
+
+      expect(getPonterMock().listDevices.mock.calls).toHaveLength(listBefore);
+    });
+  });
+
+  describe('error handling', () => {
+    it('surfaces a store error in the devices-error alert', async () => {
+      defaultPonterMocks({
+        listDevices: () => Promise.reject(new Error('boom')),
+      });
+
+      const wrapper = await mountView();
+      const err = wrapper.find('[data-testid="devices-error"]');
+      expect(err.exists()).toBe(true);
+      expect(err.text()).toContain('boom');
+      wrapper.unmount();
+    });
+
+    it('never writes a credential or secret to webview storage', async () => {
+      // A registered device projection must never carry a credential field.
+      defaultPonterMocks({
+        registerDevice: () => sampleDevice,
+        getLocalAgentId: () => sampleDevice.id,
+      });
+
+      const wrapper = await mountView();
+      await flushPromises();
+
+      expect(storageLength(window, 'l')).toBe(0);
+      expect(storageLength(window, 's')).toBe(0);
+      wrapper.unmount();
+    });
   });
 });

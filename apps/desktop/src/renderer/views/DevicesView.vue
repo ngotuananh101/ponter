@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, type Component } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { useDevicesStore } from '@/stores/devices';
 import {
@@ -98,23 +98,22 @@ const setDomTimer = (
 const clearDomTimer = (t: ReturnType<typeof setTimeout>): void =>
   clearTimeout(t);
 
+/** Remote session mode supported by the minimalist UI. */
+type RemoteSessionMode = 'desktop' | 'terminal' | 'files';
+
 /** Remote-control form state. */
 const remoteAgentId = ref('');
-const remoteMode = ref<'desktop' | 'terminal' | 'files'>('desktop');
+const remoteMode = ref<RemoteSessionMode>('desktop');
 const connectPending = ref(false);
 const remoteError = ref<string | null>(null);
 
-const MODES: ('desktop' | 'terminal' | 'files')[] = [
-  'desktop',
-  'terminal',
-  'files',
-];
-const MODE_LABELS: Record<'desktop' | 'terminal' | 'files', string> = {
+const MODES: RemoteSessionMode[] = ['desktop', 'terminal', 'files'];
+const MODE_LABELS: Record<RemoteSessionMode, string> = {
   desktop: 'Desktop',
   terminal: 'Terminal',
   files: 'Files',
 };
-const MODE_ICONS: Record<'desktop' | 'terminal' | 'files', any> = {
+const MODE_ICONS: Record<RemoteSessionMode, Component> = {
   desktop: Monitor,
   terminal: Terminal,
   files: Folder,
