@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { useFleetStore } from '@/stores/fleet';
 import { apiClient } from '@/services/client';
+import { formatDeviceCode, normalizeDeviceCode } from '@ponter/shared';
 import type { Device, Agent } from '@ponter/shared';
 import {
   Card,
@@ -85,14 +86,17 @@ const onlineAgentsCount = computed(() => {
 });
 
 const filteredAgents = computed(() => {
+  const query = searchQuery.value.toLowerCase();
+  const normalizedQuery = normalizeDeviceCode(query);
   return agents.value.filter((a) => {
     const matchesSearch =
       searchQuery.value === '' ||
-      (a.hostname &&
-        a.hostname.toLowerCase().includes(searchQuery.value.toLowerCase())) ||
-      a.id.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-      (a.platform &&
-        a.platform.toLowerCase().includes(searchQuery.value.toLowerCase()));
+      (a.hostname && a.hostname.toLowerCase().includes(query)) ||
+      a.id.toLowerCase().includes(query) ||
+      (a.platform && a.platform.toLowerCase().includes(query)) ||
+      normalizeDeviceCode(a.deviceCode ?? '')
+        .toLowerCase()
+        .includes(normalizedQuery);
 
     const matchesStatus =
       statusFilter.value === 'all' ||
@@ -123,6 +127,26 @@ function handleDeleted(id: string) {
   toast.success('Agent deleted');
 }
 
+/** Device code whose copy control currently shows its confirmation. */
+const copiedCode = ref<string | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Copy a device code as raw digits (no grouping) and flash the confirmation.
+ * The clipboard is optional — a denied permission must not throw into the UI.
+ */
+function copyCode(code: string | null) {
+  if (!code) return;
+  if (navigator?.clipboard?.writeText) {
+    void navigator.clipboard.writeText(code);
+  }
+  copiedCode.value = code;
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    copiedCode.value = null;
+  }, 2000);
+}
+
 onMounted(() => {
   loadDashboardData();
   pollInterval = setInterval(() => {
@@ -138,6 +162,10 @@ onUnmounted(() => {
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
+  }
+  if (copiedTimer) {
+    clearTimeout(copiedTimer);
+    copiedTimer = null;
   }
   unsubscribeFleet?.();
   fleetStore.stop();
@@ -381,8 +409,9 @@ onUnmounted(() => {
               />
               <Input
                 v-model="searchQuery"
+                data-testid="agent-search"
                 type="text"
-                placeholder="Filter by hostname, platform, or agent ID..."
+                placeholder="Filter by hostname, platform, device code, or agent ID..."
                 class="pl-9 h-9 text-xs font-mono bg-background/60"
               />
             </div>
@@ -433,6 +462,7 @@ onUnmounted(() => {
               <div
                 v-for="a in filteredAgents"
                 :key="a.id"
+                :data-testid="`agent-card-${a.id}`"
                 class="group p-3.5 rounded-lg border border-border/80 bg-card hover:bg-accent/40 hover:border-primary/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div class="flex items-start gap-3">
@@ -474,8 +504,30 @@ onUnmounted(() => {
                     <p
                       class="text-xs font-mono text-muted-foreground flex items-center gap-1.5"
                     >
+                      <span>Device Code:</span>
+                      <span
+                        :data-testid="`agent-device-code-${a.id}`"
+                        class="font-mono text-foreground"
+                        >{{ formatDeviceCode(a.deviceCode) }}</span
+                      >
+                      <button
+                        v-if="a.deviceCode"
+                        :data-testid="`copy-device-code-${a.id}`"
+                        class="text-xs text-muted-foreground hover:text-foreground"
+                        @click="copyCode(a.deviceCode)"
+                      >
+                        {{ copiedCode === a.deviceCode ? 'Copied' : 'Copy' }}
+                      </button>
+                    </p>
+                    <!-- The canonical id stays visible: every route, session
+                         row, and keychain entry is keyed on it. -->
+                    <p
+                      class="text-xs font-mono text-muted-foreground flex items-center gap-1.5"
+                    >
                       <span>ID:</span>
-                      <span class="text-foreground/80">{{ a.id }}</span>
+                      <span class="text-muted-foreground/70 font-mono">{{
+                        a.id
+                      }}</span>
                     </p>
                   </div>
                 </div>
@@ -483,6 +535,7 @@ onUnmounted(() => {
                 <div class="flex items-center gap-2 self-end sm:self-center">
                   <Button
                     v-if="a.isOnline"
+                    :data-testid="`launch-shell-${a.id}`"
                     size="sm"
                     class="h-8 px-3 text-xs font-medium flex items-center gap-1.5 shadow-xs"
                     @click.stop="
