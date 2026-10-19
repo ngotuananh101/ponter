@@ -18,7 +18,11 @@ export function formatDeviceCode(code: string | null | undefined): string {
  *
  * Only whitespace and dashes are removed. Every other character survives, so a
  * legacy `dev_ab12cd34` identifier is returned unchanged.
+ *
+ * `String.replace` with a global regex rather than `replaceAll`: the desktop
+ * renderer compiles against `lib: ES2020`, where `replaceAll` does not exist.
+ * The two are equivalent for a global pattern.
  */
 export function normalizeDeviceCode(raw: string): string {
-  return raw.replaceAll(/[\s-]/g, '').trim();
+  return raw.replace(/[\s-]/g, '').trim();
 }
