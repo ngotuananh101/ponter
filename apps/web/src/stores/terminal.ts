@@ -950,10 +950,12 @@ export const useTerminalStore = defineStore('terminal', () => {
         discardDesktopConnection(agentId),
       );
 
+      // 40 ms is ~2.4 frames at 60 FPS: enough to absorb jitter, 60 ms less
+      // standing latency than the 30 FPS-era 100 ms buffer.
       const client = new DesktopClient(
         agentId,
         peer,
-        { playoutDelayMs: 100 },
+        { playoutDelayMs: 40 },
         e2eeContext ? new TerminalE2ee(e2eeContext) : undefined,
       );
       const inputSentTimes = new Map<number, number>();
