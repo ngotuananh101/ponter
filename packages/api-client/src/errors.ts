@@ -32,10 +32,14 @@ export class ApiError extends Error {
         data.details ?? null,
       );
     } catch {
+      // A body that is not JSON is not a transport failure: the server answered.
+      // A 5xx is the server's own fault, a 4xx is the caller's — `NETWORK_ERROR`
+      // is reserved for the branch in `client.ts` where `fetch` itself rejects.
+      const isServerError = response.status >= 500 && response.status < 600;
       return new ApiError(
         response.statusText || `HTTP ${response.status}`,
         response.status,
-        'NETWORK_ERROR',
+        isServerError ? 'SERVER_ERROR' : 'API_ERROR',
         null,
       );
     }
