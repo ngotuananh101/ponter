@@ -61,6 +61,9 @@ export interface DeviceSummary {
   createdAt: string;
 }
 
+/** Desktop stream profiles, mirroring `shared/ipc-types.ts` (ADR-92). */
+export type DesktopProfileName = '1080p30' | '720p30' | '1080p60' | '720p60';
+
 /** Persisted desktop config as returned by the `get_config` command. */
 export interface AppConfig {
   serverUrl: string | null;
@@ -71,6 +74,8 @@ export interface AppConfig {
   localAgentId: string | null;
   /** This machine's own Device Code, cached for offline display (ADR-91). */
   deviceCode: string | null;
+  /** Desktop stream profile forwarded to the sidecar (ADR-92). */
+  desktopProfile: DesktopProfileName;
   /** Whether the local agent should start on launch (Ticket #154). */
   agentAutoStart: boolean;
   /** Whether login credentials / session should be remembered (Ticket #156). Defaults to true. */

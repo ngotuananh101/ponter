@@ -64,8 +64,8 @@ struct Cli {
     #[arg(long, env = "AGENT_DESKTOP_SOURCE", value_enum, default_value_t = DesktopSource::Screen)]
     desktop_source: DesktopSource,
 
-    /// Desktop quality profile. `1080p30` is the default; `720p30` is the safe
-    /// floor for a host that cannot sustain 1080p30 (ADR-24).
+    /// Desktop quality profile: `1080p30` (default), `720p30` (safe floor),
+    /// `1080p60`, or `720p60`.
     #[arg(long, env = "AGENT_DESKTOP_PROFILE", default_value = "1080p30")]
     desktop_profile: String,
 

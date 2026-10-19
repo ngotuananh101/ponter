@@ -158,6 +158,26 @@ describe('AgentControlService (Ticket #154)', () => {
   });
 
   /**
+   * Phase 16: the profile must reach the supervisor. The start-payload test
+   * above cannot prove this on its own — a missing key and a key set to
+   * `undefined` compare equal under `toHaveBeenCalledWith` — so this test
+   * configures a non-default profile and asserts the exact value arrives.
+   */
+  it('forwards the configured desktop profile to the supervisor', async () => {
+    const { deps, supervisor, configMock } = buildDeps();
+    configMock.current.desktopProfile = '1080p60';
+    const service = new AgentControlService(deps);
+
+    const pending = service.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    await pending;
+
+    expect(supervisor.start).toHaveBeenCalledWith(
+      expect.objectContaining({ desktopProfile: '1080p60' }),
+    );
+  });
+
+  /**
    * PM ruling C: the agent exits immediately on a corrupt identity file. A
    * start that returns `ok: true` here would leave the UI claiming success
    * while the process is already dead.

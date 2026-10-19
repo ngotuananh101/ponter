@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import type { AppConfig, SaveConfigPayload } from '../shared/ipc-types';
+import { normalizeDesktopProfile } from '../shared/ipc-types';
 
 export interface ConfigOptions {
   runtimeEnvUrl?: string;
@@ -76,6 +77,10 @@ export class ConfigManager {
         typeof persisted.deviceCode === 'string' && persisted.deviceCode
           ? persisted.deviceCode
           : null,
+      // Phase 16: an unknown or absent profile resolves to the safe 30 FPS
+      // default, so a hand-edited config can never request a profile the
+      // bundled agent does not accept.
+      desktopProfile: normalizeDesktopProfile(persisted.desktopProfile),
       agentAutoStart: persisted.agentAutoStart === true,
       rememberMe: persisted.rememberMe !== false,
       savedUsername:
@@ -144,6 +149,12 @@ export class ConfigManager {
             ? payload.deviceCode
             : null
           : persistedDeviceCode,
+      // Phase 16: undefined = unchanged. A payload value is normalised, so an
+      // out-of-contract caller cannot persist a profile the agent rejects.
+      desktopProfile:
+        payload.desktopProfile !== undefined
+          ? normalizeDesktopProfile(payload.desktopProfile)
+          : normalizeDesktopProfile(persisted.desktopProfile),
       agentAutoStart:
         payload.agentAutoStart ?? persisted.agentAutoStart === true,
       rememberMe:

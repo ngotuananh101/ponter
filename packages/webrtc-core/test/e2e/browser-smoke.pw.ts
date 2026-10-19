@@ -260,9 +260,9 @@ test('browser desktop stream connects, verifies peer, applies playout tuning, an
   });
   expect(receiverKnobs).not.toBeNull();
   if (receiverKnobs?.hasJitterBufferTarget) {
-    expect(receiverKnobs.jitterBufferTarget).toBe(100);
+    expect(receiverKnobs.jitterBufferTarget).toBe(40);
   } else if (receiverKnobs?.hasPlayoutDelayHint) {
-    expect(receiverKnobs.playoutDelayHint).toBeCloseTo(0.1);
+    expect(receiverKnobs.playoutDelayHint).toBeCloseTo(0.04);
   }
 
   // 5. Carry the ADR-47 glass-to-glass (g2g) protocol via test-pattern bar decode

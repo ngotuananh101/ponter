@@ -284,4 +284,27 @@ describe('AgentSupervisor (ADR-86 Sidecar Contract)', () => {
     // stderr stays piped: PM ruling C needs the tail.
     expect(options.stdio[2]).toBe('pipe');
   });
+
+  it('emits AGENT_DESKTOP_PROFILE with the configured value', () => {
+    keychainMock.getSecret.mockReturnValue('ag_credential');
+    const supervisor = new AgentSupervisor(keychainMock as any);
+    const env = supervisor.buildEnvironment({
+      agentId: 'dev_aaaaaaaa',
+      serverUrl: 'http://localhost:8787',
+      allowInput: false,
+      desktopProfile: '1080p60',
+    });
+    expect(env.AGENT_DESKTOP_PROFILE).toBe('1080p60');
+  });
+
+  it('emits the safe default when no profile is configured', () => {
+    keychainMock.getSecret.mockReturnValue('ag_credential');
+    const supervisor = new AgentSupervisor(keychainMock as any);
+    const env = supervisor.buildEnvironment({
+      agentId: 'dev_aaaaaaaa',
+      serverUrl: 'http://localhost:8787',
+      allowInput: false,
+    });
+    expect(env.AGENT_DESKTOP_PROFILE).toBe('1080p30');
+  });
 });

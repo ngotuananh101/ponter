@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import { toWsUrl } from '@ponter/webrtc-core';
 import type { KeychainService } from './keychain';
 import type { ConfigManager } from './config';
+import type { DesktopProfileName } from '../shared/ipc-types';
+import { DEFAULT_DESKTOP_PROFILE } from '../shared/ipc-types';
 
 export interface AgentSupervisorOptions {
   spawn?: typeof spawn;
@@ -18,6 +20,8 @@ export interface SupervisorConfig {
   filesRoot?: string;
   identityPath?: string;
   stunServer?: string;
+  /** Desktop stream profile; the agent defaults to 1080p30 when absent. */
+  desktopProfile?: DesktopProfileName;
 }
 
 export class AgentSupervisor {
@@ -131,6 +135,10 @@ export class AgentSupervisor {
       AGENT_CREDENTIAL: resolved,
       STUN_SERVER: config.stunServer || 'stun:stun.l.google.com:19302',
       AGENT_ALLOW_INPUT: config.allowInput ? 'true' : 'false',
+      // Phase 16: the agent's `--desktop-profile` / `AGENT_DESKTOP_PROFILE`.
+      // Always set, so the sidecar's effective profile is the one the app
+      // persisted rather than whatever an inherited environment carried.
+      AGENT_DESKTOP_PROFILE: config.desktopProfile ?? DEFAULT_DESKTOP_PROFILE,
     };
 
     if (config.filesRoot) {

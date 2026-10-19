@@ -94,6 +94,7 @@ export class AgentControlService {
         serverUrl: cfg.serverUrl ?? '',
         allowInput: cfg.allowInput,
         identityPath: this.deps.identityPath,
+        desktopProfile: cfg.desktopProfile,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start';

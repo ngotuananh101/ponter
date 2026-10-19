@@ -464,6 +464,22 @@ impl StreamProfile {
         fps: 30.0,
         bitrate_bps: 4_000_000,
     };
+    /// 1080p at 60 FPS, 8 Mbps. The 60 FPS ticker budget is 16.67 ms, so the
+    /// SIMD downscale plus a software H.264 encode must fit in one tick.
+    pub const DEFAULT_1080P60: Self = Self {
+        max_width: 1920,
+        max_height: 1080,
+        fps: 60.0,
+        bitrate_bps: 8_000_000,
+    };
+    /// 720p at 60 FPS, 5 Mbps. The preferred 60 FPS rung on a host that cannot
+    /// sustain 1080p60: same cadence, 55% of the pixels per frame.
+    pub const SAFE_720P60: Self = Self {
+        max_width: 1280,
+        max_height: 720,
+        fps: 60.0,
+        bitrate_bps: 5_000_000,
+    };
 
     /// The frame budget in seconds — `1 / fps`.
     pub fn frame_budget(&self) -> Duration {
@@ -473,16 +489,20 @@ impl StreamProfile {
 
 /// Parse `--desktop-profile` / `AGENT_DESKTOP_PROFILE`.
 ///
-/// Only the two named profiles exist; anything else is an error rather than a
+/// Only the four named profiles exist; anything else is an error rather than a
 /// silent default, so a typo in a deployment fails loudly at startup.
 impl std::str::FromStr for StreamProfile {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self> {
         match value {
+            "1080p60" => Ok(Self::DEFAULT_1080P60),
+            "720p60" => Ok(Self::SAFE_720P60),
             "1080p30" => Ok(Self::DEFAULT_1080P30),
             "720p30" => Ok(Self::SAFE_720P30),
-            other => bail!("unknown desktop profile {other:?}; expected 1080p30 or 720p30"),
+            other => {
+                bail!("unknown desktop profile {other:?}; expected 1080p60, 720p60, 1080p30 or 720p30")
+            }
         }
     }
 }
@@ -3311,7 +3331,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_profile_parses_the_two_named_profiles() {
+    fn stream_profile_parses_the_four_named_profiles() {
         assert_eq!(
             "1080p30".parse::<StreamProfile>().unwrap(),
             StreamProfile::DEFAULT_1080P30
@@ -3320,18 +3340,35 @@ mod tests {
             "720p30".parse::<StreamProfile>().unwrap(),
             StreamProfile::SAFE_720P30
         );
+        assert_eq!(
+            "1080p60".parse::<StreamProfile>().unwrap(),
+            StreamProfile::DEFAULT_1080P60
+        );
+        assert_eq!(
+            "720p60".parse::<StreamProfile>().unwrap(),
+            StreamProfile::SAFE_720P60
+        );
     }
 
     #[test]
     fn stream_profile_rejects_an_unknown_name() {
-        let err = "1080p60".parse::<StreamProfile>().unwrap_err();
-        assert!(format!("{err:#}").contains("expected 1080p30 or 720p30"));
+        let err = "1440p60".parse::<StreamProfile>().unwrap_err();
+        assert!(format!("{err:#}").contains("expected 1080p60, 720p60, 1080p30 or 720p30"));
     }
 
     #[test]
     fn stream_profile_frame_budget_matches_fps() {
         let budget = StreamProfile::DEFAULT_1080P30.frame_budget();
         assert!((budget.as_secs_f32() - 1.0 / 30.0).abs() < 1e-6);
+
+        let fast = StreamProfile::DEFAULT_1080P60.frame_budget();
+        assert!((fast.as_secs_f32() - 1.0 / 60.0).abs() < 1e-6);
+        // 1.0f32 / 60.0f32 rounds up to 0.016666668 s = 16_666_668 ns.
+        assert_eq!(fast.as_millis(), 16);
+        assert_eq!(fast.as_nanos(), 16_666_668);
+
+        let fast720 = StreamProfile::SAFE_720P60.frame_budget();
+        assert_eq!(fast720, fast, "the ticker depends on fps, not resolution");
     }
 
     // ------------------------------------------------------------------

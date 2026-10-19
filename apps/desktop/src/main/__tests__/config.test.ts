@@ -86,6 +86,7 @@ describe('ConfigManager', () => {
       theme: 'dark',
       localAgentId: null,
       deviceCode: null,
+      desktopProfile: '1080p30',
       agentAutoStart: false,
       rememberMe: true,
       savedUsername: null,
@@ -246,5 +247,38 @@ describe('ConfigManager', () => {
     );
     expect(written.rememberMe).toBe(false);
     expect(written.savedUsername).toBeNull();
+  });
+
+  it('defaults desktopProfile to 1080p30 and persists a valid value', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.writeFileSync).mockClear();
+
+    expect(manager.load().desktopProfile).toBe('1080p30');
+
+    manager.save({ desktopProfile: '1080p60' });
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.desktopProfile).toBe('1080p60');
+
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(written));
+    expect(manager.load().desktopProfile).toBe('1080p60');
+  });
+
+  it('normalises an unknown persisted desktopProfile to 1080p30', () => {
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ desktopProfile: '1080p' }),
+    );
+    expect(manager.load().desktopProfile).toBe('1080p30');
   });
 });

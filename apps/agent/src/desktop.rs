@@ -556,27 +556,32 @@ fn run_capture<R: CaptureRecorder>(
 #[allow(dead_code)]
 const GDI_DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Parse `AGENT_DESKTOP_POLL_INTERVAL_MS` into a `Duration`; returns the
-/// default on an absent, empty, zero, or unparseable value.
+/// Parse `AGENT_DESKTOP_POLL_INTERVAL_MS` into a `Duration`; returns `fallback`
+/// on an absent, empty, zero, or unparseable value.
 ///
-/// Split from `gdi_poll_interval` so the parsing logic is unit-testable on
-/// every platform without touching the process environment.
+/// The fallback is the profile's frame budget, so the `capture_image` path
+/// polls at the stream's cadence: a fixed 33 ms would cap a 60 FPS session at
+/// 30 FPS. Split from `gdi_poll_interval` so the parsing logic is unit-testable
+/// on every platform without touching the process environment.
 #[allow(dead_code)]
-fn parse_poll_interval(raw: Option<String>) -> Duration {
+fn parse_poll_interval(raw: Option<String>, fallback: Duration) -> Duration {
     raw.and_then(|s| s.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
         .map(Duration::from_millis)
-        .unwrap_or(GDI_DEFAULT_POLL_INTERVAL)
+        .unwrap_or(fallback)
 }
 
 /// The poll interval for the `capture_image` fallback path (Task 3).
 ///
-/// Reads `AGENT_DESKTOP_POLL_INTERVAL_MS`; defaults to 33 ms (~30 Hz) which
-/// matches the streaming ticker so `drain_latest` has a fresh frame each tick.
-/// A value of 0 or an unparseable string is treated as the default.
+/// Reads `AGENT_DESKTOP_POLL_INTERVAL_MS`; defaults to the profile's frame
+/// budget (16.7 ms at 60 FPS, 33.3 ms at 30 FPS). A value of 0 or an
+/// unparseable string is treated as the default.
 #[cfg(windows)]
-fn gdi_poll_interval() -> Duration {
-    parse_poll_interval(std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS").ok())
+fn gdi_poll_interval(profile: StreamProfile) -> Duration {
+    parse_poll_interval(
+        std::env::var("AGENT_DESKTOP_POLL_INTERVAL_MS").ok(),
+        profile.frame_budget(),
+    )
 }
 
 /// Abstraction over image capture for the polling fallback loop,
@@ -712,7 +717,7 @@ impl ScreenSource {
     /// An id absent from the live enumeration is reported as `unknown source
     /// id`, the same refusal `source_for` gives for a bad scheme — a hostile
     /// `desktop-select` can never name a source the agent did not offer (§9).
-    pub async fn for_monitor(monitor_id: u32) -> Result<Self> {
+    pub async fn for_monitor(monitor_id: u32, profile: StreamProfile) -> Result<Self> {
         let (ready_tx, ready_rx) = oneshot::channel::<std::result::Result<(), String>>();
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         let (frame_tx, frame_rx) = std::sync::mpsc::channel::<xcap::Frame>();
@@ -742,18 +747,20 @@ impl ScreenSource {
                             tracing::warn!(
                                 "video recorder unavailable ({e}); falling back to image polling"
                             );
+                            let _ = profile;
                             run_capture_image_poll(
                                 monitor,
                                 ready_tx,
                                 frame_tx,
                                 stop_rx,
-                                gdi_poll_interval(),
+                                gdi_poll_interval(profile),
                                 FIRST_FRAME_TIMEOUT,
                             );
                             return;
                         }
                         #[cfg(not(windows))]
                         {
+                            let _ = profile;
                             let _ = ready_tx.send(Err(e.to_string()));
                             return;
                         }
@@ -912,7 +919,7 @@ pub fn enumerate_sources() -> Result<Vec<DesktopSourceInfo>> {
 /// The id is validated by *lookup against the enumeration*, never parsed into a
 /// platform handle directly: an unknown id is an error, so a hostile
 /// `desktop-select` can never name a source the agent did not offer (§9).
-pub async fn source_for(id: &str, _profile: StreamProfile) -> Result<Box<dyn FrameSource>> {
+pub async fn source_for(id: &str, profile: StreamProfile) -> Result<Box<dyn FrameSource>> {
     let (kind, raw) = id
         .split_once(':')
         .ok_or_else(|| anyhow::anyhow!("unknown source id {id:?}"))?;
@@ -926,7 +933,7 @@ pub async fn source_for(id: &str, _profile: StreamProfile) -> Result<Box<dyn Fra
             // `move` closure — see `ScreenSource::for_monitor` and
             // `find_monitor`. An id absent from the enumeration still fails
             // with `unknown source`, just reported from the thread.
-            Ok(Box::new(ScreenSource::for_monitor(wanted).await?))
+            Ok(Box::new(ScreenSource::for_monitor(wanted, profile).await?))
         }
         "window" => {
             let wanted: u32 = raw
@@ -1271,19 +1278,112 @@ async fn swap_source<S: SwapSource>(
     Ok(encoder)
 }
 
-/// How many consecutive over-budget frames before the agent falls back to
-/// 720p30. 30 frames is ~1 s at 30 fps — long enough to ride out a transient
-/// stall (a GC pause, a scheduler hiccup), short enough that a host which truly
-/// cannot sustain 1080p30 drops within a second (ADR-24).
+/// How many consecutive over-budget frames before the agent falls back one
+/// rung (ADR-24). 30 frames is ~1 s at 30 fps — long enough to ride out a
+/// transient stall (a GC pause, a scheduler hiccup), short enough that a host
+/// which truly cannot sustain its profile drops within a second.
 pub const SUSTAIN_FRAMES_BEFORE_FALLBACK: u32 = 30;
 
+/// A 64-bit FNV-1a hash over the frame's pixel buffer and geometry.
+///
+/// Deliberately not `DefaultHasher`: SipHash-1-3 runs in ~1.55 ms (5.35 GB/s) on
+/// a 1080p RGBA frame, whereas 4-lane FNV-1a completes in ~0.27 ms (31.2 GB/s,
+/// 1.6% of frame budget) and 1-lane FNV-1a takes ~1.05 ms. FNV-1a over 64-bit
+/// words is zero-allocation and only used to decide "identical", never for integrity.
+pub(crate) fn frame_signature(frame: &RawFrame) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut chunks = frame.rgba.chunks_exact(8);
+    for word in &mut chunks {
+        let value = u64::from_ne_bytes(word.try_into().expect("chunks_exact(8)"));
+        hash ^= value;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    for byte in chunks.remainder() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash ^= (u64::from(frame.width) << 32) | u64::from(frame.height);
+    hash
+}
+
+/// Suppresses re-encoding when consecutive captured frames are pixel-identical.
+///
+/// The cap is one second of frames: a static screen still produces an encoded
+/// frame every `fps` ticks, so a viewer that joins late or loses packets never
+/// waits on a stale reference. `reset` is called after a source swap or a
+/// profile change, where the encoder's reference no longer matches the input.
+pub(crate) struct StaticFrameSkip {
+    last: Option<u64>,
+    consecutive_skips: u32,
+    max_consecutive_skips: u32,
+}
+
+impl StaticFrameSkip {
+    pub fn new(fps: f32) -> Self {
+        Self {
+            last: None,
+            consecutive_skips: 0,
+            max_consecutive_skips: (fps.round() as u32).max(1),
+        }
+    }
+
+    /// True when this frame duplicates the previous one and the keepalive cap
+    /// has not been reached. The frame still becomes the new reference.
+    pub fn should_skip(&mut self, frame: &RawFrame) -> bool {
+        let signature = frame_signature(frame);
+        let identical = self.last == Some(signature);
+        self.last = Some(signature);
+        if !identical {
+            self.consecutive_skips = 0;
+            return false;
+        }
+        if self.consecutive_skips >= self.max_consecutive_skips {
+            self.consecutive_skips = 0;
+            return false;
+        }
+        self.consecutive_skips += 1;
+        true
+    }
+
+    pub fn reset(&mut self) {
+        self.last = None;
+        self.consecutive_skips = 0;
+    }
+}
+
+/// Spec §4.2.4 item 5: while frames are being skipped, `encoded` does not
+/// advance, so the periodic `desktop-stats` emission (`encoded % fps_period`)
+/// would stop on a static screen. The skip branch emits at most one stats frame
+/// per second instead. This predicate is that whole rule, extracted as a free
+/// function so it is testable without a live stream.
+fn stats_due_while_skipping(last_stats_at: Instant, now: Instant) -> bool {
+    now.duration_since(last_stats_at) >= Duration::from_secs(1)
+}
+
 /// What the sustain check wants to do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SustainAction {
     /// Stay on the current profile.
     Continue,
-    /// Rebuild at `SAFE_720P30` — a resolution change, so an encoder rebuild.
-    Downgrade,
+    /// Rebuild at the named profile — a resolution and/or cadence change, so
+    /// an encoder rebuild.
+    DowngradeTo(StreamProfile),
+}
+
+/// The next rung below `profile`, or `None` at the floor.
+///
+/// Every rung is strictly cheaper in pixels per second, so a demotion always
+/// reduces the encode load. `1080p30` is deliberately not a rung below
+/// `720p60`: it is the more expensive of the two.
+pub(crate) fn downgrade_for(profile: StreamProfile) -> Option<StreamProfile> {
+    if profile == StreamProfile::DEFAULT_1080P60 {
+        Some(StreamProfile::SAFE_720P60)
+    } else if profile == StreamProfile::SAFE_720P60 || profile == StreamProfile::DEFAULT_1080P30 {
+        Some(StreamProfile::SAFE_720P30)
+    } else {
+        None
+    }
 }
 
 /// The ADR-24 fallback decision, as a pure state machine.
@@ -1297,19 +1397,23 @@ pub struct SustainMonitor {
     budget: Duration,
     /// Consecutive over-budget frames seen so far.
     consecutive_over: u32,
-    /// Set once a downgrade is requested (or immediately, at the floor) so the
-    /// monitor can never ask twice — ADR-24's anti-oscillation hysteresis.
+    /// Set once a downgrade is requested (or when there is no rung below) so
+    /// the monitor can never ask twice — ADR-24's anti-oscillation hysteresis.
     latched: bool,
+    /// The rung to request when the streak trips; `None` at the floor.
+    next: Option<StreamProfile>,
 }
 
 impl SustainMonitor {
     pub fn new(profile: StreamProfile) -> Self {
+        let next = downgrade_for(profile);
         Self {
             budget: profile.frame_budget(),
-            // At the floor there is nowhere to fall back to, so the latch starts
-            // closed and `observe` can never return `Downgrade`.
-            latched: profile == StreamProfile::SAFE_720P30,
             consecutive_over: 0,
+            // At the floor there is nowhere to fall back to, so the latch
+            // starts closed and `observe` can never ask for a downgrade.
+            latched: next.is_none(),
+            next,
         }
     }
 
@@ -1327,7 +1431,9 @@ impl SustainMonitor {
         }
         if self.consecutive_over >= SUSTAIN_FRAMES_BEFORE_FALLBACK {
             self.latched = true;
-            return SustainAction::Downgrade;
+            if let Some(next) = self.next {
+                return SustainAction::DowngradeTo(next);
+            }
         }
         SustainAction::Continue
     }
@@ -1341,7 +1447,7 @@ impl SustainMonitor {
     /// Named `note_bitrate_change`, not `note_manual_bitrate`: the caller does
     /// not (and cannot) distinguish the two sources here, so the old name lied.
     pub fn note_bitrate_change(&mut self, current: StreamProfile) {
-        if current != StreamProfile::SAFE_720P30 {
+        if downgrade_for(current).is_some() {
             self.latched = false;
             self.consecutive_over = 0;
         }
@@ -1413,6 +1519,12 @@ pub async fn run_stream(
 
     let mut encoder = DesktopEncoder::new(profile)?;
     let mut sustain = SustainMonitor::new(profile);
+    let mut static_skip = StaticFrameSkip::new(profile.fps);
+    let mut static_skipped: u64 = 0;
+    // Spec §4.2.4 item 5: skipped ticks do not advance `encoded`, so the
+    // periodic stats emission cannot be the only source of `desktop-stats`
+    // frames on a static screen. The skip branch emits its own, throttled here.
+    let mut last_stats_at = Instant::now();
     let mut ticker = tokio::time::interval(profile.frame_budget());
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1470,6 +1582,10 @@ pub async fn run_stream(
                                 // A bitrate change is a fresh evaluation request
                                 // (re-arms only above the floor; ADR-24).
                                 sustain.note_bitrate_change(profile);
+                                // The encoder is reconfigured for a new target,
+                                // so the gate's reference no longer describes
+                                // what will be encoded next (spec §4.2.4 item 4).
+                                static_skip.reset();
                                 // Reflect the effective value to the UI (spec §2.3 step 6).
                                 let (fs_seq, cap_p50, enc_p50, enc_samples) =
                                     timing_snapshot(&timing_ring, &last_frame_seq);
@@ -1498,6 +1614,9 @@ pub async fn run_stream(
                         {
                             Ok(new_encoder) => {
                                 encoder = new_encoder;
+                                // A different source invalidates the gate's
+                                // reference frame (spec §4.2.4 item 4).
+                                static_skip.reset();
                                 // The new source may be a different size, and
                                 // `downscale` never upscales — defer the stats
                                 // frame to the next encode, where the real size
@@ -1543,6 +1662,28 @@ pub async fn run_stream(
                 // feeds the capture→encode-start duration.
                 let capture_instant = Instant::now();
                 let capture_epoch_ms = crate::pty::now_ms();
+                // Static-frame gate: identical pixels cost nothing to capture
+                // but everything to encode. The keepalive cap inside
+                // `should_skip` bounds how long a viewer can be starved.
+                if static_skip.should_skip(&frame) {
+                    static_skipped += 1;
+                    // Spec §4.2.4 item 5: `encoded` must NOT advance here, so
+                    // the periodic emission below never runs on a static screen.
+                    // Report the last known size and the current timings at most
+                    // once per second instead. `send_stats` is already an
+                    // in-scope closure, so this is a call, not a refactor.
+                    let now = Instant::now();
+                    if stats_due_while_skipping(last_stats_at, now) {
+                        last_stats_at = now;
+                        let (fs_seq, cap_p50, enc_p50, enc_samples) =
+                            timing_snapshot(&timing_ring, &last_frame_seq);
+                        send_stats(
+                            &events, encoded_size, profile, None, fs_seq, cap_p50, enc_p50,
+                            enc_samples,
+                        );
+                    }
+                    continue;
+                }
                 let frame = crop_to_even(downscale(&frame, profile.max_width, profile.max_height));
                 let encode_start = Instant::now();
                 let data = encoder.encode(&frame)?;
@@ -1577,24 +1718,31 @@ pub async fn run_stream(
                     );
                 }
 
-                if sustain.observe(encode_time) == SustainAction::Downgrade {
+                if let SustainAction::DowngradeTo(next) = sustain.observe(encode_time) {
                     // ADR-24: the host cannot sustain the current profile's
-                    // budget, so drop to the guaranteed floor. One rebuild, one
-                    // IDR blip, and the monitor's latch is closed by construction
-                    // (`SustainMonitor::new(SAFE_720P30)` starts latched).
+                    // budget, so drop one rung. One rebuild, one IDR blip, and
+                    // the monitor for the new profile starts with its own
+                    // `next` (closed by construction at the floor).
                     tracing::warn!(
-                        from = ?(profile.max_width, profile.max_height),
+                        from = ?(profile.max_width, profile.max_height, profile.fps),
+                        to = ?(next.max_width, next.max_height, next.fps),
                         encode_ms = encode_time.as_secs_f64() * 1000.0,
-                        "desktop: cannot sustain the profile; falling back to 720p30"
+                        "desktop: cannot sustain the profile; falling back one rung"
                     );
-                    profile = StreamProfile::SAFE_720P30;
+                    profile = next;
                     encoder = DesktopEncoder::new(profile)?;
                     sustain = SustainMonitor::new(profile);
+                    // The rebuilt encoder's reference does not match the new
+                    // input, so the gate must re-baseline (spec §4.2.4 item 4).
+                    static_skip.reset();
                     // The stats frame carries the *real* next-frame size, so it
                     // is deferred one tick (§6.4) rather than reporting the box.
                     pending_stats = Some(Some(StatsStatus {
                         kind: StatsStatusKind::QualityDowngraded,
-                        detail: "720p30 (quality downgraded)".to_string(),
+                        detail: format!(
+                            "{}x{} @ {} fps (quality downgraded)",
+                            next.max_width, next.max_height, next.fps as u32
+                        ),
                     }));
                 }
                 // Diagnostic for the black-video hunt: distinguishes a blank
@@ -1605,6 +1753,7 @@ pub async fn run_stream(
                     let (nonblack_pct, mean) = frame_content(&frame);
                     tracing::debug!(
                         encoded,
+                        static_skipped,
                         width = frame.width,
                         height = frame.height,
                         nonblack_pct,
@@ -1663,6 +1812,16 @@ pub struct DesktopEncoder {
     bitrate_bps: u32,
 }
 
+/// The keyframe interval in frames: two seconds of the profile's cadence.
+///
+/// Derived from the profile rather than fixed at 60 so a 60 FPS stream keeps a
+/// two-second GOP (120 frames) instead of an IDR every second, and a 30 FPS
+/// stream keeps the historical 60. A pure function so the mapping is testable
+/// without constructing an encoder.
+pub(crate) fn gop_frames_for(profile: StreamProfile) -> u32 {
+    (profile.fps * 2.0).round().max(1.0) as u32
+}
+
 impl DesktopEncoder {
     pub fn new(profile: StreamProfile) -> Result<Self> {
         let config = EncoderConfig::new()
@@ -1680,7 +1839,7 @@ impl DesktopEncoder {
             .background_detection(false)
             .rate_control_mode(RateControlMode::Bitrate)
             .complexity(Complexity::Low)
-            .intra_frame_period(IntraFramePeriod::from_num_frames(60))
+            .intra_frame_period(IntraFramePeriod::from_num_frames(gop_frames_for(profile)))
             .vui(VuiConfig::bt709());
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .context("creating the H.264 encoder")?;
@@ -2314,6 +2473,27 @@ mod tests {
             }
         }
         assert!(saw_idr, "the first frame must be an IDR access unit");
+    }
+
+    #[test]
+    fn gop_frames_are_two_seconds_of_the_profile_fps() {
+        // 30 FPS keeps the historical 60-frame GOP byte-for-byte.
+        assert_eq!(gop_frames_for(StreamProfile::DEFAULT_1080P30), 60);
+        assert_eq!(gop_frames_for(StreamProfile::SAFE_720P30), 60);
+        // 60 FPS doubles it, so the keyframe interval stays two seconds.
+        assert_eq!(gop_frames_for(StreamProfile::DEFAULT_1080P60), 120);
+        assert_eq!(gop_frames_for(StreamProfile::SAFE_720P60), 120);
+    }
+
+    #[test]
+    fn gop_frames_never_collapse_to_zero() {
+        let degenerate = StreamProfile {
+            max_width: 640,
+            max_height: 360,
+            fps: 0.2,
+            bitrate_bps: 1_000_000,
+        };
+        assert_eq!(gop_frames_for(degenerate), 1);
     }
 
     #[test]
@@ -3189,7 +3369,7 @@ mod tests {
         }
         assert_eq!(
             monitor.observe(slow),
-            SustainAction::Downgrade,
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30),
             "the 30th consecutive slow frame trips the fallback"
         );
         for _ in 0..200 {
@@ -3214,7 +3394,10 @@ mod tests {
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
-        assert_eq!(monitor.observe(slow), SustainAction::Downgrade);
+        assert_eq!(
+            monitor.observe(slow),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
     }
 
     #[test]
@@ -3240,7 +3423,10 @@ mod tests {
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
-        assert_eq!(monitor.observe(slow), SustainAction::Downgrade);
+        assert_eq!(
+            monitor.observe(slow),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
 
         // At the floor, a bitrate change does not re-arm.
         let mut at_floor = SustainMonitor::new(StreamProfile::SAFE_720P30);
@@ -3248,6 +3434,215 @@ mod tests {
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK * 2 {
             assert_eq!(at_floor.observe(slow), SustainAction::Continue);
         }
+    }
+
+    #[test]
+    fn downgrade_ladder_is_monotonic_in_pixels_per_second() {
+        let pixel_rate =
+            |p: StreamProfile| f64::from(p.max_width) * f64::from(p.max_height) * f64::from(p.fps);
+        for from in [
+            StreamProfile::DEFAULT_1080P60,
+            StreamProfile::SAFE_720P60,
+            StreamProfile::DEFAULT_1080P30,
+        ] {
+            let to = downgrade_for(from).expect("a non-floor profile has a next rung");
+            assert!(
+                pixel_rate(to) < pixel_rate(from),
+                "{:?} -> {:?} must reduce the encode load",
+                (from.max_width, from.max_height, from.fps),
+                (to.max_width, to.max_height, to.fps)
+            );
+        }
+        assert_eq!(downgrade_for(StreamProfile::SAFE_720P30), None);
+    }
+
+    #[test]
+    fn a_1080p60_monitor_demotes_to_720p60_first() {
+        let mut monitor = SustainMonitor::new(StreamProfile::DEFAULT_1080P60);
+        let slow = Duration::from_millis(20); // > the 16.67 ms 60 FPS budget
+        for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
+            assert_eq!(monitor.observe(slow), SustainAction::Continue);
+        }
+        let action = monitor.observe(slow);
+        assert_eq!(
+            action,
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P60),
+            "the first rung below 1080p60 keeps the 60 FPS cadence"
+        );
+        if let SustainAction::DowngradeTo(target) = action {
+            let detail = format!(
+                "{}x{} @ {} fps (quality downgraded)",
+                target.max_width, target.max_height, target.fps as u32
+            );
+            assert!(
+                detail.contains("1280x720 @ 60 fps"),
+                "detail payload must contain the target profile name (Part B AC3)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_720p60_monitor_demotes_to_the_floor() {
+        let mut monitor = SustainMonitor::new(StreamProfile::SAFE_720P60);
+        let slow = Duration::from_millis(20);
+        for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
+            monitor.observe(slow);
+        }
+        assert_eq!(
+            monitor.observe(slow),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P30)
+        );
+    }
+
+    fn solid_frame(width: u32, height: u32, value: u8, seq: u64) -> RawFrame {
+        RawFrame {
+            width,
+            height,
+            rgba: vec![value; (width * height * 4) as usize],
+            seq,
+        }
+    }
+
+    #[test]
+    fn static_frame_skip_detects_identical_pixels() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        assert!(!gate.should_skip(&solid_frame(8, 8, 0x40, 0)));
+        assert!(
+            gate.should_skip(&solid_frame(8, 8, 0x40, 1)),
+            "identical pixels with a new seq must still be skipped"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_lets_a_changed_frame_through() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        gate.should_skip(&solid_frame(8, 8, 0x40, 0));
+        assert!(!gate.should_skip(&solid_frame(8, 8, 0x41, 1)));
+        assert!(
+            gate.should_skip(&solid_frame(8, 8, 0x41, 2)),
+            "the new content becomes the reference"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_detects_a_single_pixel_change() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        let mut frame = solid_frame(8, 8, 0x40, 0);
+        gate.should_skip(&frame);
+        frame.rgba[(4 * 8 + 4) * 4] = 0x41;
+        frame.seq = 1;
+        assert!(
+            !gate.should_skip(&frame),
+            "a one-byte change must not be reported as static"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_respects_the_one_second_keepalive() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        // Reference frame: encoded, because the gate has nothing to compare to.
+        gate.should_skip(&solid_frame(4, 4, 0x10, 0));
+        let mut skipped = 0;
+        // The cap is `fps` *consecutive* skips, so the loop bound and the
+        // expected count are both 60: seq 1..=60 all skip, and the 61st frame
+        // is the one the cap forces through.
+        for seq in 1..=60 {
+            if gate.should_skip(&solid_frame(4, 4, 0x10, seq)) {
+                skipped += 1;
+            }
+        }
+        assert_eq!(skipped, 60, "the cap allows `fps` skips, then one encode");
+        assert!(
+            !gate.should_skip(&solid_frame(4, 4, 0x10, 61)),
+            "the frame after the cap is encoded and becomes the new reference"
+        );
+        assert!(
+            gate.should_skip(&solid_frame(4, 4, 0x10, 62)),
+            "the counter restarts after the forced encode"
+        );
+    }
+
+    #[test]
+    fn static_frame_skip_reset_forces_the_next_frame_through() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        gate.should_skip(&solid_frame(4, 4, 0x10, 0));
+        assert!(gate.should_skip(&solid_frame(4, 4, 0x10, 1)));
+        gate.reset();
+        assert!(
+            !gate.should_skip(&solid_frame(4, 4, 0x10, 2)),
+            "after a reset the next frame is the new reference"
+        );
+    }
+
+    #[test]
+    fn frame_signature_distinguishes_dimensions() {
+        let wide = RawFrame {
+            width: 4,
+            height: 2,
+            rgba: vec![0; 4 * 2 * 4],
+            seq: 0,
+        };
+        let tall = RawFrame {
+            width: 2,
+            height: 4,
+            rgba: vec![0; 2 * 4 * 4],
+            seq: 0,
+        };
+        assert_ne!(frame_signature(&wide), frame_signature(&tall));
+    }
+
+    #[test]
+    fn stats_due_while_skipping_fires_once_per_second() {
+        let start = Instant::now();
+        assert!(!stats_due_while_skipping(start, start));
+        assert!(
+            !stats_due_while_skipping(start, start + Duration::from_millis(999)),
+            "just under a second is not due"
+        );
+        assert!(stats_due_while_skipping(
+            start,
+            start + Duration::from_secs(1)
+        ));
+    }
+
+    /// Spec §4.2.4 item 5: a static screen must still report stats. This drives
+    /// the real `StaticFrameSkip` and the real throttle predicate across one
+    /// second of identical frames and asserts both invariants the spec names:
+    /// `encoded` does not advance, and a stats frame is still produced.
+    #[test]
+    fn a_static_screen_emits_stats_without_encoding() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        let mut encoded = 0u64;
+        let mut stats_emitted = 0u64;
+        let mut last_stats_at = Instant::now();
+        let mut now = last_stats_at;
+
+        // Tick 0: the gate has no reference, so this frame is encoded and the
+        // stream emits its first stats frame.
+        assert!(!gate.should_skip(&solid_frame(4, 4, 0x10, 0)));
+        encoded += 1;
+        stats_emitted += 1;
+
+        // 60 ticks at ~16.667 ms each = 1.00002 s, so the throttle fires exactly
+        // once across the loop. Integer microseconds keep that arithmetic exact.
+        for seq in 1..=60u64 {
+            now += Duration::from_micros(16_667);
+            if gate.should_skip(&solid_frame(4, 4, 0x10, seq)) {
+                if stats_due_while_skipping(last_stats_at, now) {
+                    last_stats_at = now;
+                    stats_emitted += 1;
+                }
+                continue;
+            }
+            encoded += 1;
+            stats_emitted += 1;
+        }
+
+        assert_eq!(encoded, 1, "every frame in the window was skipped");
+        assert_eq!(
+            stats_emitted, 2,
+            "one stats frame at stream start, one from the skip throttle"
+        );
     }
 
     #[test]
@@ -3473,13 +3868,16 @@ mod tests {
 
     #[test]
     fn parse_poll_interval_returns_the_default_for_none() {
-        assert_eq!(parse_poll_interval(None), GDI_DEFAULT_POLL_INTERVAL);
+        assert_eq!(
+            parse_poll_interval(None, GDI_DEFAULT_POLL_INTERVAL),
+            GDI_DEFAULT_POLL_INTERVAL
+        );
     }
 
     #[test]
     fn parse_poll_interval_returns_the_default_for_empty() {
         assert_eq!(
-            parse_poll_interval(Some("".to_string())),
+            parse_poll_interval(Some("".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             GDI_DEFAULT_POLL_INTERVAL
         );
     }
@@ -3487,7 +3885,7 @@ mod tests {
     #[test]
     fn parse_poll_interval_returns_the_default_for_zero() {
         assert_eq!(
-            parse_poll_interval(Some("0".to_string())),
+            parse_poll_interval(Some("0".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             GDI_DEFAULT_POLL_INTERVAL
         );
     }
@@ -3495,7 +3893,7 @@ mod tests {
     #[test]
     fn parse_poll_interval_returns_the_default_for_garbage() {
         assert_eq!(
-            parse_poll_interval(Some("not-a-number".to_string())),
+            parse_poll_interval(Some("not-a-number".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             GDI_DEFAULT_POLL_INTERVAL
         );
     }
@@ -3503,7 +3901,7 @@ mod tests {
     #[test]
     fn parse_poll_interval_uses_an_explicit_millisecond_value() {
         assert_eq!(
-            parse_poll_interval(Some("50".to_string())),
+            parse_poll_interval(Some("50".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             Duration::from_millis(50)
         );
     }
@@ -3511,8 +3909,30 @@ mod tests {
     #[test]
     fn parse_poll_interval_uses_a_large_millisecond_value() {
         assert_eq!(
-            parse_poll_interval(Some("16".to_string())),
+            parse_poll_interval(Some("16".to_string()), GDI_DEFAULT_POLL_INTERVAL),
             Duration::from_millis(16)
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_uses_the_profile_budget_as_its_fallback() {
+        let budget = StreamProfile::DEFAULT_1080P60.frame_budget();
+        assert_eq!(parse_poll_interval(None, budget), budget);
+        assert_eq!(
+            parse_poll_interval(Some("0".to_string()), budget),
+            budget,
+            "an explicit 0 is still the fallback, not a 0 ms poll"
+        );
+    }
+
+    #[test]
+    fn parse_poll_interval_prefers_an_explicit_value_over_the_budget() {
+        assert_eq!(
+            parse_poll_interval(
+                Some("20".to_string()),
+                StreamProfile::DEFAULT_1080P60.frame_budget()
+            ),
+            Duration::from_millis(20)
         );
     }
 

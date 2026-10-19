@@ -709,7 +709,7 @@ describe('useTerminalStore', () => {
     expect(tab?.desktopCursorInFrame).toBe(false);
   });
 
-  it('DesktopClient constructor receives { playoutDelayMs: 100 }', async () => {
+  it('DesktopClient constructor receives { playoutDelayMs: 40 }', async () => {
     const store = useTerminalStore();
     desktopStart.mockResolvedValueOnce({
       track: { kind: 'video' },
@@ -719,7 +719,7 @@ describe('useTerminalStore', () => {
     await store.openDesktopTab('ag-pl', 'Playout Host');
 
     const lastCall = desktopClientCalls.at(-1);
-    expect(lastCall?.options).toEqual({ playoutDelayMs: 100 });
+    expect(lastCall?.options).toEqual({ playoutDelayMs: 40 });
   });
 
   it('purges inputSentTimes entries older than 5 seconds when over 100 items', async () => {
