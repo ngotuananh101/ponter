@@ -37,6 +37,7 @@ function createConfigMock(localAgentId: string | null = null) {
     theme: null,
     hasServerUrl: true,
     localAgentId,
+    deviceCode: null,
     agentAutoStart: false,
   };
   return {
@@ -71,6 +72,7 @@ describe('DeviceManager', () => {
           lastHeartbeat: '2026-01-01T00:00:00Z',
           capabilities: ['capture'],
           createdAt: '2026-01-01T00:00:00Z',
+          deviceCode: '749281903',
         },
       ];
       sessionMock.retryOnceOn401.mockResolvedValue(agents);
@@ -98,7 +100,39 @@ describe('DeviceManager', () => {
         lastHeartbeat: '2026-01-01T00:00:00Z',
         capabilities: ['capture'],
         createdAt: '2026-01-01T00:00:00Z',
+        deviceCode: '749281903',
       });
+    });
+
+    it('maps null deviceCode from agents without a code', async () => {
+      const agents = [
+        {
+          id: 'agent-null-code',
+          userId: 'user-1',
+          hostname: 'host-null',
+          platform: 'linux',
+          osVersion: '5.15.0',
+          agentVersion: '1.0.0',
+          publicKey: 'pubkey-null',
+          signingPublicKey: null,
+          isOnline: true,
+          lastHeartbeat: '2026-01-01T00:00:00Z',
+          capabilities: ['capture'],
+          createdAt: '2026-01-01T00:00:00Z',
+          deviceCode: null,
+        },
+      ];
+      sessionMock.retryOnceOn401.mockResolvedValue(agents);
+
+      const manager = new DeviceManager(
+        apiClientMock as any,
+        sessionMock as any,
+        keychainMock as any,
+        createConfigMock() as any,
+      );
+      const result = await manager.listDevices();
+
+      expect(result[0].deviceCode).toBeNull();
     });
 
     it('handles agents with null optional fields', async () => {
@@ -151,6 +185,7 @@ describe('DeviceManager', () => {
         lastHeartbeat: null,
         capabilities: ['control'],
         createdAt: '2026-01-01T00:00:00Z',
+        deviceCode: '749281903',
       };
       const apiResult = {
         agent: createdAgent,
@@ -169,6 +204,7 @@ describe('DeviceManager', () => {
         hostname: 'my-host',
         capabilities: ['control'],
       });
+      expect(device.deviceCode).toBe('749281903');
 
       // Verify agents.create was called with generated device ID format.
       // `platform` is produced by DeviceManager.detectPlatform() from
@@ -316,6 +352,7 @@ describe('DeviceManager', () => {
           lastHeartbeat: null,
           capabilities: [],
           createdAt: '2026-01-01T00:00:00Z',
+          deviceCode: null,
         },
         credential: 'secret-credential',
       });
@@ -331,6 +368,7 @@ describe('DeviceManager', () => {
 
       expect(configMock.save).toHaveBeenCalledWith({
         localAgentId: 'agent-new',
+        deviceCode: null,
       });
     });
 
@@ -363,7 +401,10 @@ describe('DeviceManager', () => {
       );
 
       expect(manager.getLocalAgentId()).toBeNull();
-      expect(configMock.save).toHaveBeenCalledWith({ localAgentId: null });
+      expect(configMock.save).toHaveBeenCalledWith({
+        localAgentId: null,
+        deviceCode: null,
+      });
     });
 
     it('returns null without a config entry', () => {
@@ -393,7 +434,10 @@ describe('DeviceManager', () => {
       );
       await manager.deleteDevice('agent-1');
 
-      expect(configMock.save).toHaveBeenCalledWith({ localAgentId: null });
+      expect(configMock.save).toHaveBeenCalledWith({
+        localAgentId: null,
+        deviceCode: null,
+      });
     });
 
     it('keeps the local id when a different device is deleted', async () => {
@@ -437,6 +481,7 @@ describe('DeviceManager', () => {
           lastHeartbeat: null,
           capabilities: [],
           createdAt: '2026-01-01T00:00:00Z',
+          deviceCode: null,
         },
         credential: 'cred',
       });
@@ -453,6 +498,7 @@ describe('DeviceManager', () => {
       expect(apiClientMock.agents.delete).toHaveBeenCalledWith('agent-orphan');
       expect(configMock.save).toHaveBeenCalledWith({
         localAgentId: 'agent-fresh',
+        deviceCode: null,
       });
     });
 
@@ -476,6 +522,7 @@ describe('DeviceManager', () => {
           lastHeartbeat: null,
           capabilities: [],
           createdAt: '2026-01-01T00:00:00Z',
+          deviceCode: null,
         },
         credential: 'cred',
       });

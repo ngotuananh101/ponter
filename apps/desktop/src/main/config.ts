@@ -71,6 +71,11 @@ export class ConfigManager {
         typeof persisted.localAgentId === 'string' && persisted.localAgentId
           ? persisted.localAgentId
           : null,
+      // Phase 15: cache of this machine's own non-secret code (spec §3.3, §5.4).
+      deviceCode:
+        typeof persisted.deviceCode === 'string' && persisted.deviceCode
+          ? persisted.deviceCode
+          : null,
       agentAutoStart: persisted.agentAutoStart === true,
       rememberMe: persisted.rememberMe !== false,
       savedUsername:
@@ -104,6 +109,10 @@ export class ConfigManager {
       typeof persisted.localAgentId === 'string' && persisted.localAgentId
         ? persisted.localAgentId
         : null;
+    const persistedDeviceCode =
+      typeof persisted.deviceCode === 'string' && persisted.deviceCode
+        ? persisted.deviceCode
+        : null;
     const updated = {
       serverUrl:
         payload.serverUrl !== undefined
@@ -128,6 +137,13 @@ export class ConfigManager {
         payload.localAgentId !== undefined
           ? payload.localAgentId
           : persistedLocalAgentId,
+      // Phase 15: symmetric with load() — undefined = unchanged, null = forget.
+      deviceCode:
+        payload.deviceCode !== undefined
+          ? typeof payload.deviceCode === 'string' && payload.deviceCode
+            ? payload.deviceCode
+            : null
+          : persistedDeviceCode,
       agentAutoStart:
         payload.agentAutoStart ?? persisted.agentAutoStart === true,
       rememberMe:

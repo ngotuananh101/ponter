@@ -177,7 +177,11 @@ if (!gotTheLock) {
               if (localAgentId) {
                 keychain.deleteSecret(`device_credential_${localAgentId}`);
               }
-              config.save({ localAgentId: null, agentAutoStart: false });
+              config.save({
+                localAgentId: null,
+                deviceCode: null,
+                agentAutoStart: false,
+              });
             },
           },
           effectiveBaseUrl,

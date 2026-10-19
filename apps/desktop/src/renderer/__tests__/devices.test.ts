@@ -25,6 +25,7 @@ const sampleDevice: DesktopDevice = {
   agentVersion: '0.1.0',
   publicKey: '',
   signingPublicKey: null,
+  deviceCode: null,
   isOnline: false,
   lastHeartbeat: null,
   capabilities: [],
@@ -62,8 +63,33 @@ function armAuthFailure(message: string) {
   return logoutSpy;
 }
 
-/** Mount DevicesView, settle onMounted's async work, and return the wrapper. */
-async function mountView(options: { stubTeleport?: boolean } = {}) {
+/**
+ * Mount DevicesView, settle onMounted's async work, and return the wrapper.
+ *
+ * `localDeviceCode` (when given) pins both the fleet row and the config cache
+ * to that value, so a test can exercise the missing-code branch without
+ * duplicating the whole mock setup.
+ */
+async function mountView(
+  options: { stubTeleport?: boolean; localDeviceCode?: string | null } = {},
+) {
+  if (options.localDeviceCode !== undefined) {
+    const deviceCode = options.localDeviceCode;
+    defaultPonterMocks({
+      listDevices: () => [{ ...localDevice, deviceCode }],
+      getConfig: () => ({
+        serverUrl: 'http://localhost:8080',
+        allowInput: false,
+        theme: null,
+        hasServerUrl: true,
+        localAgentId: localDevice.id,
+        deviceCode,
+        agentAutoStart: false,
+        rememberMe: true,
+        savedUsername: null,
+      }),
+    });
+  }
   const wrapper = mount(
     DevicesView,
     options.stubTeleport
@@ -397,6 +423,7 @@ const localDevice: DesktopDevice = {
   id: 'local-dev-1234',
   hostname: 'localhost',
   platform: 'linux',
+  deviceCode: '749281903',
   isOnline: true,
 };
 
@@ -412,6 +439,7 @@ function defaultPonterMocks(overrides: Record<string, () => unknown> = {}) {
     theme: null,
     hasServerUrl: true,
     localAgentId: localDevice.id,
+    deviceCode: localDevice.deviceCode,
     agentAutoStart: false,
     rememberMe: true,
     savedUsername: null,
@@ -503,7 +531,7 @@ describe('DevicesView.vue', () => {
       wrapper.unmount();
     });
 
-    it('copy ID button writes localAgentId to clipboard and shows feedback', async () => {
+    it('copy code button writes the raw device code and shows feedback', async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       const originalNav = window.navigator;
       Object.defineProperty(window, 'navigator', {
@@ -514,15 +542,15 @@ describe('DevicesView.vue', () => {
       defaultPonterMocks();
 
       const wrapper = await mountView();
-      const copyBtn = wrapper.find('[data-testid="copy-device-id"]');
+      const copyBtn = wrapper.find('[data-testid="copy-device-code"]');
       expect(copyBtn.exists()).toBe(true);
       expect(copyBtn.attributes('disabled')).toBeUndefined();
 
       await copyBtn.trigger('click');
 
-      expect(writeText).toHaveBeenCalledWith(localDevice.id);
+      expect(writeText).toHaveBeenCalledWith('749281903');
       // Visual feedback: the check icon appears while copied (2s window).
-      expect(wrapper.find('[data-testid="copy-device-id"]').html()).toContain(
+      expect(wrapper.find('[data-testid="copy-device-code"]').html()).toContain(
         'lucide-check',
       );
 
@@ -531,9 +559,9 @@ describe('DevicesView.vue', () => {
 
       // After 2s the check icon is gone, reverted to the Copy icon.
       expect(
-        wrapper.find('[data-testid="copy-device-id"]').html(),
+        wrapper.find('[data-testid="copy-device-code"]').html(),
       ).not.toContain('lucide-check');
-      expect(wrapper.find('[data-testid="copy-device-id"]').html()).toContain(
+      expect(wrapper.find('[data-testid="copy-device-code"]').html()).toContain(
         'lucide-copy',
       );
 
@@ -542,6 +570,27 @@ describe('DevicesView.vue', () => {
         configurable: true,
         writable: true,
       });
+      wrapper.unmount();
+    });
+
+    it('renders this-device-code with grouped digits', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+
+      const code = wrapper.find('[data-testid="this-device-code"]');
+      expect(code.exists()).toBe(true);
+      expect(code.text()).toBe('749 281 903');
+      wrapper.unmount();
+    });
+
+    it('renders the placeholder and hides copy when deviceCode is null', async () => {
+      const wrapper = await mountView({ localDeviceCode: null });
+
+      expect(wrapper.find('[data-testid="this-device-code"]').text()).toBe('—');
+      expect(wrapper.find('[data-testid="copy-device-code"]').exists()).toBe(
+        false,
+      );
       wrapper.unmount();
     });
 
@@ -851,6 +900,28 @@ describe('DevicesView.vue', () => {
       expect(wrapper.find('[data-testid="remote-error"]').text()).toContain(
         'Failed to open remote session',
       );
+      wrapper.unmount();
+    });
+
+    it('groups partner input digits in threes while typing', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+      const input = wrapper.find('[data-testid="remote-agent-id-input"]');
+      await input.setValue('749281903');
+
+      expect((input.element as HTMLInputElement).value).toBe('749 281 903');
+      wrapper.unmount();
+    });
+
+    it('preserves a pasted legacy agent id verbatim', async () => {
+      defaultPonterMocks();
+
+      const wrapper = await mountView();
+      const input = wrapper.find('[data-testid="remote-agent-id-input"]');
+      await input.setValue('dev_ab12cd34');
+
+      expect((input.element as HTMLInputElement).value).toBe('dev_ab12cd34');
       wrapper.unmount();
     });
   });

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type BetterSqlite3 from 'better-sqlite3';
 import { getDb, closeDb } from '../src/db/client';
 import { users, revokedTokens } from '../src/db/schema';
 import { eq } from 'drizzle-orm';
@@ -43,5 +44,22 @@ describe('Database client', () => {
       .get();
     expect(row).toBeDefined();
     expect(row?.jti).toBe(jti);
+  });
+
+  it('adds the device_code column and its unique index to agents', () => {
+    const sqlite = (db as unknown as { $client: BetterSqlite3.Database })
+      .$client;
+    const columns = sqlite.prepare('PRAGMA table_info(agents)').all() as Array<{
+      name: string;
+    }>;
+    expect(columns.map((c) => c.name)).toContain('device_code');
+    const indexes = sqlite
+      .prepare("PRAGMA index_list('agents')")
+      .all() as Array<{ name: string; unique: number }>;
+    expect(
+      indexes.some(
+        (i) => i.name === 'idx_agents_device_code' && i.unique === 1,
+      ),
+    ).toBe(true);
   });
 });

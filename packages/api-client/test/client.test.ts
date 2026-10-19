@@ -66,7 +66,7 @@ describe('ApiClient general requests & resources', () => {
     });
   });
 
-  it('4. Throws ApiError with code: NETWORK_ERROR when response body is not JSON', async () => {
+  it('4. Classifies a non-JSON 502 response as SERVER_ERROR', async () => {
     const storage = new MemoryStorage();
     const mockFetch = vi.fn().mockResolvedValue(
       new Response('<html>Bad Gateway</html>', {
@@ -79,8 +79,25 @@ describe('ApiClient general requests & resources', () => {
     await expect(client.users.me()).rejects.toMatchObject({
       name: 'ApiError',
       status: 502,
-      code: 'NETWORK_ERROR',
+      code: 'SERVER_ERROR',
       message: 'Bad Gateway',
+    });
+  });
+
+  it('4b. Classifies a non-JSON 404 response as API_ERROR', async () => {
+    const storage = new MemoryStorage();
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response('Not Found', { status: 404, statusText: 'Not Found' }),
+      );
+    const client = makeClient(storage, mockFetch);
+
+    await expect(client.users.me()).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 404,
+      code: 'API_ERROR',
+      message: 'Not Found',
     });
   });
 

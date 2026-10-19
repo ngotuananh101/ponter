@@ -28,8 +28,10 @@ vi.mock('@/services/client', () => ({
   },
 }));
 
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: pushMock }),
   useRoute: () => ({ params: {} }),
 }));
 
@@ -47,6 +49,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     agentVersion: '0.1.0',
     publicKey: 'pk-a',
     signingPublicKey: null,
+    deviceCode: null,
     isOnline: true,
     lastHeartbeat: null,
     capabilities: ['terminal', 'desktop'],
@@ -79,6 +82,7 @@ describe('DashboardView.vue', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
+    pushMock.mockClear();
   });
 
   it('exposes edit and delete controls on each agent card', async () => {
@@ -229,5 +233,44 @@ describe('DashboardView.vue', () => {
     expect(
       wrapper.find('[data-test="encryption-by-channel-dialog"]').exists(),
     ).toBe(false);
+  });
+
+  it('renders the device code in grouped form and the placeholder when absent', async () => {
+    const wrapper = await mountDashboard([
+      makeAgent({ id: 'dev_a', deviceCode: '749281903', hostname: 'a' }),
+      makeAgent({ id: 'dev_b', deviceCode: null, hostname: 'b' }),
+    ]);
+
+    expect(wrapper.find('[data-testid="agent-device-code-dev_a"]').text()).toBe(
+      '749 281 903',
+    );
+    expect(wrapper.find('[data-testid="agent-device-code-dev_b"]').text()).toBe(
+      '—',
+    );
+  });
+
+  it('matches the search query against the device code with and without spaces', async () => {
+    const wrapper = await mountDashboard([
+      makeAgent({ id: 'dev_a', deviceCode: '749281903', hostname: 'a' }),
+    ]);
+
+    await wrapper.find('[data-testid="agent-search"]').setValue('749 281');
+    expect(wrapper.findAll('[data-testid^="agent-card-"]')).toHaveLength(1);
+
+    await wrapper.find('[data-testid="agent-search"]').setValue('749281');
+    expect(wrapper.findAll('[data-testid^="agent-card-"]')).toHaveLength(1);
+  });
+
+  it('still launches a shell with the canonical agent id, not the code', async () => {
+    const wrapper = await mountDashboard([
+      makeAgent({ id: 'dev_a', deviceCode: '749281903', hostname: 'a' }),
+    ]);
+
+    await wrapper.find('[data-testid="launch-shell-dev_a"]').trigger('click');
+
+    expect(pushMock).toHaveBeenCalledWith({
+      name: 'workspace',
+      params: { agentId: 'dev_a' },
+    });
   });
 });

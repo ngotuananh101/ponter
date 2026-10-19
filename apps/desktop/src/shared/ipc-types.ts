@@ -8,6 +8,11 @@ export interface AppConfig {
    * when this install has not registered a device — or the credential is gone.
    */
   localAgentId: string | null;
+  /**
+   * This machine's own Device Code, cached so "This Device" reads offline
+   * (spec §3.3, §5.4; ADR-91).
+   */
+  deviceCode: string | null;
   /** Start the local agent automatically on the next launch (Ticket #154). */
   agentAutoStart: boolean;
   /** Whether login credentials / session should be remembered (Ticket #156). Defaults to true. */
@@ -22,6 +27,8 @@ export interface SaveConfigPayload {
   theme?: 'light' | 'dark' | null;
   /** `undefined` = unchanged, `null` = forget this machine's device. */
   localAgentId?: string | null;
+  /** `undefined` = unchanged, `null` = forget the cached code. */
+  deviceCode?: string | null;
   /** `undefined` = unchanged; persisted so the agent starts on next launch. */
   agentAutoStart?: boolean;
   /** `undefined` = unchanged; whether session should be remembered across restarts. */
@@ -51,6 +58,8 @@ export interface DesktopDevice {
   agentVersion: string | null;
   publicKey: string;
   signingPublicKey: string | null;
+  /** Human-facing 9-digit Device Code (ADR-91), or null before allocation. */
+  deviceCode: string | null;
   isOnline: boolean;
   lastHeartbeat: string | null;
   capabilities: string[];

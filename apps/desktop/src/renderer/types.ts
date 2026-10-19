@@ -43,6 +43,8 @@ export interface DesktopDevice {
   agentVersion: string | null;
   publicKey: string;
   signingPublicKey: string | null;
+  /** Human-facing 9-digit Device Code (ADR-91), or null before allocation. */
+  deviceCode: string | null;
   isOnline: boolean;
   lastHeartbeat: string | null;
   capabilities: string[];
@@ -67,6 +69,8 @@ export interface AppConfig {
   hasServerUrl: boolean;
   /** Registered agent belonging to this machine, or null (Ticket #154). */
   localAgentId: string | null;
+  /** This machine's own Device Code, cached for offline display (ADR-91). */
+  deviceCode: string | null;
   /** Whether the local agent should start on launch (Ticket #154). */
   agentAutoStart: boolean;
   /** Whether login credentials / session should be remembered (Ticket #156). Defaults to true. */

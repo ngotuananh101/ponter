@@ -107,6 +107,7 @@ export function toPublicAgent(
     agentVersion: agent.agentVersion,
     publicKey: agent.publicKey,
     signingPublicKey: agent.signingPublicKey ?? null,
+    deviceCode: agent.deviceCode ?? null,
     isOnline: isAgentOnline(agent, socketPresent),
     lastHeartbeat: agent.lastPingAt,
     capabilities: parseCapabilities(agent.capabilities),

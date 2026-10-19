@@ -31,7 +31,13 @@ export class DeviceManager {
     const agents = await this.session.retryOnceOn401(() =>
       this.apiClient.agents.list(),
     );
-    return this.mapAgentsToDevices(agents);
+    const devices = this.mapAgentsToDevices(agents);
+    const localId = this.config.load().localAgentId;
+    const mine = devices.find((device) => device.id === localId);
+    if (mine) {
+      this.config.save({ deviceCode: mine.deviceCode });
+    }
+    return devices;
   }
 
   private mapAgentsToDevices(agents: Agent[]): DesktopDevice[] {
@@ -44,6 +50,7 @@ export class DeviceManager {
       agentVersion: agent.agentVersion ?? null,
       publicKey: agent.publicKey,
       signingPublicKey: agent.signingPublicKey ?? null,
+      deviceCode: agent.deviceCode ?? null,
       isOnline: agent.isOnline,
       lastHeartbeat: agent.lastHeartbeat ?? null,
       capabilities: agent.capabilities ?? [],
@@ -90,8 +97,12 @@ export class DeviceManager {
     }
 
     // Ticket #154: remember which device belongs to this machine so the UI and
-    // tray can start its agent after a restart.
-    this.config.save({ localAgentId: result.agent.id });
+    // tray can start its agent after a restart. Cache the device code too so
+    // "This Device" reads offline (spec §3.3, §5.4).
+    this.config.save({
+      localAgentId: result.agent.id,
+      deviceCode: result.agent.deviceCode ?? null,
+    });
 
     // Strip credential from response before returning to renderer (credential stored in keychain only)
     return this.mapAgentToDesktopDevice(result.agent);
@@ -162,7 +173,8 @@ export class DeviceManager {
     const id = this.config.load().localAgentId;
     if (!id) return null;
     if (!this.keychain.getSecret(`device_credential_${id}`)) {
-      this.config.save({ localAgentId: null });
+      // Credential is gone: the cached device code is stale too.
+      this.config.save({ localAgentId: null, deviceCode: null });
       return null;
     }
     return id;
@@ -178,6 +190,7 @@ export class DeviceManager {
       agentVersion: agent.agentVersion ?? null,
       publicKey: agent.publicKey,
       signingPublicKey: agent.signingPublicKey ?? null,
+      deviceCode: agent.deviceCode ?? null,
       isOnline: agent.isOnline,
       lastHeartbeat: agent.lastHeartbeat ?? null,
       capabilities: agent.capabilities ?? [],
@@ -196,9 +209,9 @@ export class DeviceManager {
       );
       this.keychain.deleteSecret(`device_credential_${agentId}`);
       // Ticket #154: deleting this machine's device means it no longer has a
-      // local agent to start.
+      // local agent to start. The cached device code is stale too.
       if (this.config.load().localAgentId === agentId) {
-        this.config.save({ localAgentId: null });
+        this.config.save({ localAgentId: null, deviceCode: null });
       }
       return true;
     } catch {

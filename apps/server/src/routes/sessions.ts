@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, or } from 'drizzle-orm';
 import type { AppContext } from '../types.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { AppError } from '../middleware/error.js';
 import { sessions, devices, agents } from '../db/schema.js';
 import { pushToBrowser } from './ws.js';
+import { normalizeDeviceCode } from '../utils/device-code.js';
 
 const router = new Hono<AppContext>();
 router.use('*', authMiddleware);
@@ -25,10 +26,16 @@ router.get('/', async (c) => {
  * `undefined` and `null` mean "not supplied" and resolve to `null` so they
  * are stored as SQL NULL. Any other value must be a non-empty string after
  * trimming, and must exist in the caller's tenancy — otherwise 404 NOT_FOUND.
+ *
+ * The lookup receives both the raw candidate and its normalised form so a
+ * device code entered with spaces or dashes resolves to the canonical agent.
  */
-async function resolveOwnedId(
+async function resolveOwnedId<T extends { id: string }>(
   raw: unknown,
-  lookup: (candidate: string) => unknown,
+  lookup: (
+    candidate: string,
+    normalized: string,
+  ) => T | undefined | Promise<T | undefined>,
   notFoundMessage: string,
 ): Promise<string | null> {
   if (raw === undefined || raw === null) {
@@ -38,11 +45,12 @@ async function resolveOwnedId(
   if (!candidate) {
     throw new AppError(notFoundMessage, 404, 'NOT_FOUND');
   }
-  const found = await lookup(candidate);
+  const normalized = normalizeDeviceCode(candidate);
+  const found = await lookup(candidate, normalized);
   if (!found) {
     throw new AppError(notFoundMessage, 404, 'NOT_FOUND');
   }
-  return candidate;
+  return found.id;
 }
 
 router.post('/', async (c) => {
@@ -74,11 +82,16 @@ router.post('/', async (c) => {
 
   const agentId = await resolveOwnedId(
     body.agentId,
-    (candidate) =>
+    (candidate, normalized) =>
       db
         .select()
         .from(agents)
-        .where(and(eq(agents.id, candidate), eq(agents.userId, user.id)))
+        .where(
+          and(
+            or(eq(agents.id, candidate), eq(agents.deviceCode, normalized)),
+            eq(agents.userId, user.id),
+          ),
+        )
         .get(),
     'Agent not found',
   );

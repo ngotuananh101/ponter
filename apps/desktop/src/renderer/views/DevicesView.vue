@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, type Component } from 'vue';
+import { formatDeviceCode } from '@ponter/shared';
 import { useAuthStore } from '@/stores/auth';
 import { useDevicesStore } from '@/stores/devices';
 import {
@@ -56,6 +57,19 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 /** The device belonging to this machine (Ticket #154), or null. */
 const localAgentId = ref<string | null>(null);
+
+/**
+ * The non-secret device code cached in the config. Kept as a fallback for the
+ * window before the fleet list arrives (or when it cannot be fetched), so the
+ * "This Device" card still shows a usable code offline.
+ */
+const localDeviceCodeCache = ref<string | null>(null);
+
+/** Prefer the fleet projection; fall back to the config cache. */
+const localDeviceCode = computed<string | null>(() => {
+  const mine = store.devices.find((d) => d.id === localAgentId.value);
+  return mine?.deviceCode ?? localDeviceCodeCache.value ?? null;
+});
 
 /** Hostname of this machine, loaded for display. */
 const localHostname = ref<string | null>(null);
@@ -128,23 +142,42 @@ async function loadLocalAgentId() {
     const mine = devices.find((d) => d.id === localAgentId.value) ?? null;
     localHostname.value = mine?.hostname ?? null;
     localPlatform.value = mine?.platform ?? null;
+    // The config cache keeps the code visible before/without a fleet response.
+    try {
+      const cfg = await window.ponter.getConfig();
+      localDeviceCodeCache.value = cfg.deviceCode ?? null;
+    } catch {
+      localDeviceCodeCache.value = null;
+    }
   } catch {
     localAgentId.value = null;
     localHostname.value = null;
     localPlatform.value = null;
+    localDeviceCodeCache.value = null;
   }
 }
 
-function copyDeviceId(id: string | null) {
-  if (!id) return;
+function copyCode(code: string | null) {
+  if (!code) return;
   if (navigator?.clipboard?.writeText) {
-    void navigator.clipboard.writeText(id);
+    void navigator.clipboard.writeText(code);
   }
   copiedId.value = true;
   if (copiedTimer) clearDomTimer(copiedTimer);
   copiedTimer = setDomTimer(() => {
     copiedId.value = false;
   }, 2000);
+}
+
+/**
+ * Digits only, grouped in threes, capped at nine. A pasted legacy agent id
+ * (`dev_ab12cd34`) is returned verbatim so existing IDs keep working.
+ */
+function formatPartnerInput(raw: string): string {
+  const compact = raw.replace(/[\s-]/g, '');
+  if (!compact || !/^\d+$/.test(compact)) return raw;
+  const digits = compact.slice(0, 9);
+  return digits.replace(/(\d{3})(?=\d)/g, '$1 ');
 }
 
 async function probeRuntimeStatus() {
@@ -394,26 +427,32 @@ onUnmounted(() => {
             </Badge>
           </div>
 
-          <!-- Device ID (prominent, copyable) -->
+          <!-- Device Code (primary, copyable as digits only) -->
           <div class="flex items-center gap-2">
             <code
-              data-testid="this-device-id"
-              class="font-mono text-base font-bold select-all break-all"
-              >{{ localAgentId ?? '—' }}</code
+              data-testid="this-device-code"
+              class="font-mono text-lg font-bold tracking-wider select-all"
+              >{{ formatDeviceCode(localDeviceCode) }}</code
             >
             <Button
-              v-if="localAgentId"
-              data-testid="copy-device-id"
+              v-if="localDeviceCode"
+              data-testid="copy-device-code"
               variant="ghost"
               size="xs"
               class="shrink-0"
-              :disabled="!localAgentId"
-              @click="copyDeviceId(localAgentId)"
+              @click="copyCode(localDeviceCode)"
             >
               <Check v-if="copiedId" class="w-3.5 h-3.5 text-emerald-500" />
               <Copy v-else class="w-3.5 h-3.5" />
             </Button>
           </div>
+          <!-- Canonical agent id: the key every route, session row, and
+               keychain entry uses. Kept visible for support correlation. -->
+          <code
+            data-testid="this-device-id"
+            class="font-mono text-[11px] text-muted-foreground select-all break-all"
+            >{{ localAgentId ?? '—' }}</code
+          >
 
           <!-- Status & control -->
           <div class="pt-1 space-y-2.5">
@@ -529,6 +568,11 @@ onUnmounted(() => {
               v-model="remoteAgentId"
               placeholder="Enter partner's Device ID..."
               class="w-full h-9 px-3 py-1.5 text-sm font-mono rounded-md border border-input bg-background/60 shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              @input="
+                remoteAgentId = formatPartnerInput(
+                  ($event.target as HTMLInputElement).value,
+                )
+              "
             />
           </div>
 

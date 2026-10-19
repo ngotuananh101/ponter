@@ -32,8 +32,12 @@ vi.mock('@/services/client', () => ({
   },
 }));
 
+const routeState = vi.hoisted(() => ({
+  params: {} as Record<string, string>,
+}));
+
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: {} }),
+  useRoute: () => ({ params: routeState.params }),
   useRouter: () => ({ push: vi.fn() }),
 }));
 
@@ -105,10 +109,23 @@ function pressNewTabHotkey(): void {
 describe('WorkspaceView.vue', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    routeState.params = {};
   });
 
   it('renders workspace container and sidebar', () => {
     const wrapper = mountWorkspace();
+    expect(wrapper.exists()).toBe(true);
+  });
+
+  it('opens a tab with a device-code route parameter on mount', async () => {
+    const store = useTerminalStore();
+    const openTab = vi.spyOn(store, 'openTab').mockResolvedValue('tab-new');
+    routeState.params = { agentId: '749 281 903' };
+
+    const wrapper = mountWorkspace();
+
+    expect(openTab).toHaveBeenCalledTimes(1);
+    expect(openTab).toHaveBeenCalledWith('749 281 903');
     expect(wrapper.exists()).toBe(true);
   });
 
