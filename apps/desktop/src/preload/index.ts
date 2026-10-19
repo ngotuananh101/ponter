@@ -4,6 +4,7 @@ import type {
   SaveConfigPayload,
   RegisterDevicePayload,
   UpdateStatusInfo,
+  OpenRemoteSessionPayload,
 } from '../shared/ipc-types';
 
 export function createPonterApi(ipc: typeof ipcRenderer): PonterDesktopApi {
@@ -49,6 +50,8 @@ export function createPonterApi(ipc: typeof ipcRenderer): PonterDesktopApi {
       ipc.on('desktop:update-status', listener);
       return () => ipc.removeListener('desktop:update-status', listener);
     },
+    openRemoteSession: (payload: OpenRemoteSessionPayload) =>
+      ipc.invoke('desktop:open-remote-session', payload),
   };
 }
 

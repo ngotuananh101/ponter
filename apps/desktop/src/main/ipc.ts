@@ -1,4 +1,5 @@
-import { ipcMain, BrowserWindow, net } from 'electron';
+import { ipcMain, BrowserWindow, net, shell } from 'electron';
+import { stripTrailingSlashes } from '@ponter/webrtc-core';
 import type { SessionManager } from './session';
 import type { ConfigManager } from './config';
 import type { DeviceManager } from './devices';
@@ -18,6 +19,8 @@ import type {
   AgentControlResult,
   UpdateStatusInfo,
   UpdateCheckResult,
+  OpenRemoteSessionPayload,
+  OpenRemoteSessionResult,
 } from '../shared/ipc-types';
 
 export interface IpcDependencies {
@@ -46,7 +49,7 @@ export interface IpcDependencies {
 /**
  * Registers all `desktop:*` IPC channel handlers on ipcMain.
  *
- * The 20 channels match those defined in src/shared/ipc-types.ts:
+ * The 21 channels match those defined in src/shared/ipc-types.ts:
  *  1. desktop:get-config
  *  2. desktop:save-config
  *  3. desktop:probe-server
@@ -67,6 +70,7 @@ export interface IpcDependencies {
  * 18. desktop:start-agent
  * 19. desktop:stop-agent
  * 20. desktop:restore-session
+ * 21. desktop:open-remote-session
  */
 export function registerIpcHandlers(deps: IpcDependencies): void {
   const {
@@ -268,6 +272,63 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
       return await session.restoreSession();
     },
   );
+
+  // 21. desktop:open-remote-session
+  ipcMain.handle(
+    'desktop:open-remote-session',
+    async (
+      _event,
+      payload: OpenRemoteSessionPayload,
+    ): Promise<OpenRemoteSessionResult> => {
+      if (
+        !payload ||
+        typeof payload.agentId !== 'string' ||
+        !payload.agentId.trim()
+      ) {
+        return { ok: false, message: 'Invalid or missing agentId' };
+      }
+
+      const rawAgentId = payload.agentId.trim();
+      const allowedModes = ['desktop', 'terminal', 'files'];
+      const mode =
+        payload.mode && allowedModes.includes(payload.mode)
+          ? payload.mode
+          : 'desktop';
+
+      const appConfig = config.load();
+      const serverUrl = appConfig.serverUrl;
+      if (!serverUrl) {
+        return { ok: false, message: 'Server URL not configured' };
+      }
+
+      let parsed: URL;
+      try {
+        parsed = new URL(serverUrl);
+      } catch {
+        return { ok: false, message: 'Invalid server URL format' };
+      }
+
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { ok: false, message: 'Invalid server URL protocol' };
+      }
+
+      const basePath = stripTrailingSlashes(parsed.pathname);
+      parsed.pathname = `${basePath}/workspace/${encodeURIComponent(rawAgentId)}`;
+      parsed.search = `?mode=${encodeURIComponent(mode)}`;
+      parsed.hash = '';
+      const targetUrl = parsed.toString();
+
+      try {
+        await shell.openExternal(targetUrl);
+        return { ok: true, url: targetUrl };
+      } catch (err: any) {
+        return {
+          ok: false,
+          message: err?.message || 'Failed to open external URL',
+        };
+      }
+    },
+  );
 }
 
 /**
@@ -297,7 +358,7 @@ function buildHealthUrl(rawUrl: string): string | null {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return null;
   }
-  const basePath = parsed.pathname.replace(/\/+$/, '');
+  const basePath = stripTrailingSlashes(parsed.pathname);
   parsed.pathname = `${basePath}/health`;
   parsed.search = '';
   parsed.hash = '';

@@ -84,6 +84,17 @@ export interface UpdateCheckResult {
   error?: string;
 }
 
+export interface OpenRemoteSessionPayload {
+  agentId: string;
+  mode?: 'desktop' | 'terminal' | 'files';
+}
+
+export interface OpenRemoteSessionResult {
+  ok: boolean;
+  url?: string;
+  message?: string;
+}
+
 export interface PonterDesktopApi {
   getConfig(): Promise<AppConfig>;
   saveConfig(payload: SaveConfigPayload): Promise<void>;
@@ -116,6 +127,9 @@ export interface PonterDesktopApi {
   quitAndInstall(): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusInfo>;
   onUpdateStatus?(callback: (status: UpdateStatusInfo) => void): () => void;
+  openRemoteSession(
+    payload: OpenRemoteSessionPayload,
+  ): Promise<OpenRemoteSessionResult>;
 }
 
 declare global {
