@@ -42,6 +42,10 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
+  app.on('second-instance', () => {
+    window?.restore();
+  });
+
   app.whenReady().then(async () => {
     // Initialize config (ADR-64: server URL resolution precedence)
     config = new ConfigManager();
@@ -102,6 +106,7 @@ if (!gotTheLock) {
     tray = new TrayManager({
       onShowWindow: () => window.restore(),
       onQuit: async () => {
+        window?.setQuitting(true);
         await agentControl?.stop();
         fleet?.destroy();
         tray?.destroy();
@@ -202,6 +207,7 @@ if (!gotTheLock) {
     });
 
     app.on('before-quit', async () => {
+      window?.setQuitting(true);
       await agentControl?.stop();
       fleet?.destroy();
       tray?.destroy();
@@ -209,6 +215,7 @@ if (!gotTheLock) {
 
     app.on('window-all-closed', async () => {
       // ADR-78: macOS not supported — quit on all remaining platforms
+      window?.setQuitting(true);
       await agentControl?.stop();
       fleet?.destroy();
       tray?.destroy();

@@ -12,6 +12,15 @@ export interface WindowOptions {
  */
 export class WindowManager {
   private mainWindow: BrowserWindow | null = null;
+  private isQuitting: boolean = false;
+
+  setQuitting(quitting: boolean): void {
+    this.isQuitting = quitting;
+  }
+
+  isQuittingApp(): boolean {
+    return this.isQuitting;
+  }
 
   createWindow(options: WindowOptions = {}): BrowserWindow {
     const width = options.width ?? 800;
@@ -51,6 +60,13 @@ export class WindowManager {
       this.mainWindow.webContents.openDevTools({ mode: 'detach' });
     }
 
+    this.mainWindow.on('close', (event) => {
+      if (!this.isQuitting) {
+        event.preventDefault();
+        this.mainWindow?.hide();
+      }
+    });
+
     this.mainWindow.on('closed', () => {
       this.mainWindow = null;
     });
@@ -80,6 +96,7 @@ export class WindowManager {
 
   close(): void {
     if (this.mainWindow) {
+      this.isQuitting = true;
       this.mainWindow.close();
       this.mainWindow = null;
     }
