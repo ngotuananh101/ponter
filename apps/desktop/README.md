@@ -32,7 +32,7 @@ Run the desktop client in development with hot module replacement (HMR):
 pnpm --filter @ponter/desktop dev
 ```
 
-Run the Vitest test suite (24 test suites, 264 tests):
+Run the Vitest test suite (24 test suites, 287 tests):
 
 ```bash
 pnpm --filter @ponter/desktop test
@@ -157,3 +157,12 @@ Credentials and tokens are never stored in `config.json` or renderer web storage
   - Authenticated sessions navigate immediately to `DevicesView.vue` (or `WizardView.vue` if initial device setup is pending) without flashing `LoginView.vue`.
   - Integrates with generation-aware token storage (PR #151): checks `apiClient.http.storage.getRefreshToken()`, respects `PURGED (-1)` sentinels to prevent restoring invalidated credentials, and purges credentials on 401 response.
 - **Explicit Logout / Remember Me Disabled:** When `rememberMe === false`, closing and reopening the application lands directly on `LoginView.vue` with `savedUsername` prefilled, but does not auto-restore the session, ensuring a full password prompt is required.
+
+### Minimalist Desktop UI Architecture (RustDesk/TeamViewer Model) & Zero-Click Onboarding (PR #163 / PR #164 / PR #165)
+
+- **Two-Column Hero Operational Layout:** Streamlines `DevicesView.vue` into two primary operational cards:
+  - **This Device (Left Column):** Displays the local machine hostname, operating platform badge, device ID with one-click clipboard copy, real-time connection status indicator, and a single master toggle "Allow Remote Access" governing sidecar lifecycle (`AgentControlService`) and persisting sticky preference (`agentAutoStart`).
+  - **Remote Control (Right Column):** Provides partner device ID input, target session mode selector (`Desktop` | `Terminal` | `Files`), and primary "Connect" button that dispatches remote sessions directly into the user's default system browser.
+  - **My Devices (Bottom Section):** Compact account device fleet ledger below the hero cards with one-click connection and device deletion dialog.
+- **Zero-Click Onboarding Automation:** When the authenticated view mounts, if the machine has no local device registration (`localAgentId === null`), the client automatically calls `DeviceManager.registerDevice()` using the OS hostname and full capabilities (`['desktop', 'terminal', 'files']`). If "Allow Remote Access" is enabled (`agentAutoStart !== false`), it immediately starts the sidecar in the background without requiring user clicks.
+- **IPC Channel 21 (`desktop:open-remote-session`):** Validates partner agent ID format (`^[a-zA-Z0-9_-]{1,64}$`) and target mode, asserts strict `http:`/`https:` server URL protocols, preserves URL subpaths, constructs `${serverUrl}/workspace/${agentId}?mode=${mode}`, and delegates navigation safely to Electron `shell.openExternal`. Preserves absolute zero webview storage in the desktop renderer (R8 storage gate).
