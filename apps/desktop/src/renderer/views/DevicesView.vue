@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, type Component } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { useDevicesStore } from '@/stores/devices';
 import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from '@ponter/ui-components';
@@ -27,10 +26,13 @@ import { ThemeToggle } from '@ponter/ui-components';
 import {
   Laptop,
   LogOut,
-  Plus,
-  Info,
-  Terminal,
+  Copy,
+  Check,
+  Radio,
+  ExternalLink,
+  Trash2,
   Monitor,
+  Terminal,
   Folder,
 } from '@lucide/vue';
 
@@ -40,24 +42,6 @@ const store = useDevicesStore();
 const deleteDialogOpen = ref(false);
 const deleteTarget = ref<string | null>(null);
 
-/** Toggleable capabilities, mirroring the web dialog. */
-const TOGGLEABLE_CAPABILITIES = ['terminal', 'desktop', 'files'] as const;
-
-/** Default: terminal + desktop (files OFF — runtime has no files_root yet). */
-const selectedCapabilities = ref<string[]>(['terminal', 'desktop']);
-
-function toggleCapability(cap: string) {
-  selectedCapabilities.value = selectedCapabilities.value.includes(cap)
-    ? selectedCapabilities.value.filter((c) => c !== cap)
-    : [...selectedCapabilities.value, cap];
-}
-
-function orderedCapabilities(): string[] {
-  return TOGGLEABLE_CAPABILITIES.filter((c) =>
-    selectedCapabilities.value.includes(c),
-  );
-}
-
 /** Runtime status from the backend: connected | disconnected | stopped | unknown */
 const runtimeStatus = ref<string>('unknown');
 
@@ -66,27 +50,35 @@ const runtimeStatus = ref<string>('unknown');
  * the WebSocket — it can still be crash-looping. Label it honestly (PM ruling B,
  * Ticket #154); `data-status` keeps the raw value for machine-readable tests.
  */
-const runtimeStatusLabel = computed(() =>
-  runtimeStatus.value === 'connected' ? 'Running' : runtimeStatus.value,
-);
+
 let unsubscribeRuntime: (() => void) | null = null;
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
-
-/** Tracks whether the *current* device registration is in-flight, independent
- * of the background auto-refresh cycle. */
-const isRegistering = ref(false);
 
 /** The device belonging to this machine (Ticket #154), or null. */
 const localAgentId = ref<string | null>(null);
 
+/** Hostname of this machine, loaded for display. */
+const localHostname = ref<string | null>(null);
+
+/** Platform of this machine, loaded for the badge. */
+const localPlatform = ref<string | null>(null);
+
 /** Error from an agent start/stop attempt, shown in its own alert. */
 const agentError = ref<string | null>(null);
 
-/** True while a start/stop request is in flight (UI disable). */
+/** True while a start/stop request is in-flight (UI disable). */
 const agentPending = ref(false);
 
-/** Start/Stop availability follows the runtime state. `connected` means the
- * process is alive, which is the only signal the supervisor reports. */
+/** True while the current machine is registering (background auto-register). */
+const isRegistering = ref(false);
+
+/** "Allow remote control" toggle state: true when the agent is running. */
+const allowRemoteControl = computed(
+  () =>
+    runtimeStatus.value === 'connected' || runtimeStatus.value === 'starting',
+);
+
+/** Start/Stop availability follows the runtime state. */
 const agentRunning = computed(
   () =>
     runtimeStatus.value === 'connected' || runtimeStatus.value === 'starting',
@@ -95,11 +87,72 @@ const agentRunning = computed(
 /** A start needs a local device to attach to. */
 const canControlAgent = computed(() => localAgentId.value !== null);
 
+/** Copy-ID visual feedback. */
+const copiedId = ref(false);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+// DOM timer helpers (typed for happy-dom / strict env).
+const setDomTimer = (
+  fn: () => void,
+  ms: number,
+): ReturnType<typeof setTimeout> => setTimeout(fn, ms);
+const clearDomTimer = (t: ReturnType<typeof setTimeout>): void =>
+  clearTimeout(t);
+
+/** Remote session mode supported by the minimalist UI. */
+type RemoteSessionMode = 'desktop' | 'terminal' | 'files';
+
+/** Remote-control form state. */
+const remoteAgentId = ref('');
+const remoteMode = ref<RemoteSessionMode>('desktop');
+const connectPending = ref(false);
+const remoteError = ref<string | null>(null);
+
+const MODES: RemoteSessionMode[] = ['desktop', 'terminal', 'files'];
+const MODE_LABELS: Record<RemoteSessionMode, string> = {
+  desktop: 'Desktop',
+  terminal: 'Terminal',
+  files: 'Files',
+};
+const MODE_ICONS: Record<RemoteSessionMode, Component> = {
+  desktop: Monitor,
+  terminal: Terminal,
+  files: Folder,
+};
+
 async function loadLocalAgentId() {
   try {
     localAgentId.value = await window.ponter.getLocalAgentId();
+    // Try to resolve a friendly hostname/platform for "This Device" from the
+    // device list (the backend returns the full fleet); fall back to null.
+    const devices = store.devices;
+    const mine = devices.find((d) => d.id === localAgentId.value) ?? null;
+    localHostname.value = mine?.hostname ?? null;
+    localPlatform.value = mine?.platform ?? null;
   } catch {
     localAgentId.value = null;
+    localHostname.value = null;
+    localPlatform.value = null;
+  }
+}
+
+function copyDeviceId(id: string | null) {
+  if (!id) return;
+  if (navigator?.clipboard?.writeText) {
+    void navigator.clipboard.writeText(id);
+  }
+  copiedId.value = true;
+  if (copiedTimer) clearDomTimer(copiedTimer);
+  copiedTimer = setDomTimer(() => {
+    copiedId.value = false;
+  }, 2000);
+}
+
+async function probeRuntimeStatus() {
+  try {
+    runtimeStatus.value = await window.ponter.getRuntimeStatus();
+  } catch {
+    // Do not break the device list; surface a neutral state.
+    runtimeStatus.value = 'unknown';
   }
 }
 
@@ -132,31 +185,12 @@ async function handleStopAgent() {
   }
 }
 
-/** Combined action-pending flag used to disable interactive controls.
- * True only during an actual user action (registration) or the initial load
- * when there are zero devices — NOT during background auto-refresh. */
-const isAnyActionPending = computed(
-  () => isRegistering.value || (store.loading && store.devices.length === 0),
-);
-
-async function probeRuntimeStatus() {
-  try {
-    runtimeStatus.value = await window.ponter.getRuntimeStatus();
-  } catch {
-    // Do not break the device list; surface a neutral state.
-    runtimeStatus.value = 'unknown';
-  }
-}
-
-async function handleRegister() {
-  isRegistering.value = true;
-  try {
-    await store.register(orderedCapabilities());
-    // Ticket #154: the backend records the new device as this machine's local
-    // agent, so pick it up for the badge and the Start control.
-    await loadLocalAgentId();
-  } finally {
-    isRegistering.value = false;
+/** Single "Allow remote control" toggle: ON(running) -> stop, OFF -> start. */
+function handleAllowRemoteControlToggle() {
+  if (allowRemoteControl.value) {
+    void handleStopAgent();
+  } else {
+    void handleStartAgent();
   }
 }
 
@@ -180,14 +214,78 @@ function cancelDelete() {
   deleteTarget.value = null;
 }
 
+async function handleRemoteConnect() {
+  remoteError.value = null;
+  if (!remoteAgentId.value.trim()) return;
+  connectPending.value = true;
+  try {
+    const res = await window.ponter.openRemoteSession({
+      agentId: remoteAgentId.value.trim(),
+      mode: remoteMode.value,
+    });
+    if (!res.ok) {
+      remoteError.value = res.message || 'Failed to open remote session';
+    } else if (res.url) {
+      // Open the remote session URL in a new window (E2EE/WS tunnel).
+      window.open(res.url, '_blank');
+    }
+  } catch (err) {
+    remoteError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    connectPending.value = false;
+  }
+}
+
+async function handleDeviceConnect(deviceId: string) {
+  remoteError.value = null;
+  try {
+    const res = await window.ponter.openRemoteSession({
+      agentId: deviceId,
+      mode: 'desktop',
+    });
+    if (!res.ok) {
+      remoteError.value = res.message || 'Failed to open remote session';
+    } else if (res.url) {
+      window.open(res.url, '_blank');
+    }
+  } catch (err) {
+    remoteError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
 onMounted(async () => {
-  void store.refresh();
+  await store.refresh();
   await probeRuntimeStatus();
   await loadLocalAgentId();
+
+  // Ticket #154: auto-register this machine in the background if it has no
+  // local agent yet. The capabilities mirror the old default (terminal+desktop).
+  if (localAgentId.value === null) {
+    isRegistering.value = true;
+    try {
+      await store.register(['terminal', 'desktop']);
+      await loadLocalAgentId();
+    } finally {
+      isRegistering.value = false;
+    }
+  }
+
+  // If the agent is allowed to auto-start (or already running), start it.
+  let cfg: Awaited<ReturnType<typeof window.ponter.getConfig>> | null = null;
+  try {
+    cfg = await window.ponter.getConfig();
+  } catch {
+    cfg = null;
+  }
+  if (cfg?.agentAutoStart && !agentRunning.value) {
+    void handleStartAgent();
+  }
+
   // Listen for real-time runtime status updates pushed from the main process.
   unsubscribeRuntime = window.ponter.onRuntimeStatus((status: string) => {
     runtimeStatus.value = status;
   });
+
   // Auto-refresh the device list so online/offline badges stay correct.
   // Background mode avoids toggling `loading`, so the existing device list
   // stays mounted — preventing UI flicker on each 5-second interval tick.
@@ -203,13 +301,17 @@ onUnmounted(() => {
   if (refreshInterval) {
     clearInterval(refreshInterval);
   }
+  if (copiedTimer) {
+    clearDomTimer(copiedTimer);
+  }
 });
 </script>
 
 <template>
-  <div data-testid="devices-root" class="w-full max-w-xl">
+  <div data-testid="devices-root" class="w-full max-w-4xl mx-auto space-y-4">
+    <!-- Header (kept intact) -->
     <Card class="border-border/80 bg-card/95 shadow-xl backdrop-blur-sm">
-      <CardHeader class="space-y-3 pb-4">
+      <CardHeader class="pb-4">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
             <div
@@ -244,79 +346,249 @@ onUnmounted(() => {
           </div>
         </div>
       </CardHeader>
+    </Card>
 
-      <div
-        data-testid="runtime-status"
-        :data-status="runtimeStatus"
-        class="px-6 py-2 flex items-center gap-2 text-xs font-mono"
-      >
-        <span
-          class="w-2 h-2 rounded-full"
-          :class="
-            runtimeStatus === 'connected'
-              ? 'bg-emerald-400'
-              : runtimeStatus === 'disconnected'
-                ? 'bg-amber-400'
-                : runtimeStatus === 'stopped'
-                  ? 'bg-red-400'
-                  : 'bg-muted-foreground'
-          "
-        />
-        <span class="text-muted-foreground">Runtime:</span>
-        <span class="text-foreground font-semibold">{{
-          runtimeStatusLabel
-        }}</span>
+    <!-- Errors -->
+    <Alert v-if="store.error" data-testid="devices-error" variant="destructive">
+      <AlertDescription>{{ store.error }}</AlertDescription>
+    </Alert>
 
-        <!-- Ticket #154: the agent is started from here or the tray. -->
-        <Button
-          v-if="agentRunning"
-          data-testid="agent-stop"
-          variant="outline"
-          size="sm"
-          class="ml-auto h-6 px-2 text-[11px]"
-          :disabled="agentPending"
-          @click="handleStopAgent"
-        >
-          Stop Agent
-        </Button>
-        <Button
-          v-else
-          data-testid="agent-start"
-          variant="outline"
-          size="sm"
-          class="ml-auto h-6 px-2 text-[11px]"
-          :disabled="agentPending || !canControlAgent"
-          @click="handleStartAgent"
-        >
-          Start Agent
-        </Button>
-      </div>
+    <Alert v-if="agentError" data-testid="devices-error" variant="destructive">
+      <AlertDescription>{{ agentError }}</AlertDescription>
+    </Alert>
 
-      <CardContent class="space-y-4">
-        <Alert
-          v-if="store.error"
-          data-testid="devices-error"
-          variant="destructive"
-        >
-          <AlertDescription>{{ store.error }}</AlertDescription>
-        </Alert>
+    <!-- 2-Column Grid: This Device | Remote Control -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- LEFT COLUMN: This Device -->
+      <Card class="border-border/80 bg-card/95">
+        <CardHeader class="pb-3">
+          <CardTitle class="text-lg font-semibold flex items-center gap-2">
+            <Monitor class="w-4 h-4 text-primary" />
+            This Device
+          </CardTitle>
+        </CardHeader>
 
-        <Alert
-          v-if="agentError"
-          data-testid="devices-error"
-          variant="destructive"
-        >
-          <AlertDescription>{{ agentError }}</AlertDescription>
-        </Alert>
+        <CardContent class="space-y-3.5">
+          <!-- Device info: hostname + platform badge -->
+          <div v-if="localAgentId" class="flex items-center gap-2 text-sm">
+            <span
+              v-if="localHostname"
+              data-testid="this-device-hostname"
+              class="font-semibold text-foreground"
+              >{{ localHostname }}</span
+            >
+            <span
+              v-else
+              data-testid="this-device-hostname"
+              class="font-semibold text-foreground"
+            >
+              This machine
+            </span>
+            <Badge
+              v-if="localPlatform"
+              data-testid="this-device-platform"
+              variant="outline"
+              class="text-[11px] font-mono px-1.5 py-0"
+            >
+              {{ localPlatform }}
+            </Badge>
+          </div>
 
-        <p
-          v-if="!canControlAgent"
-          data-testid="agent-control-hint"
-          class="text-xs text-muted-foreground"
-        >
-          Register this device to start its agent.
-        </p>
+          <!-- Device ID (prominent, copyable) -->
+          <div class="flex items-center gap-2">
+            <code
+              data-testid="this-device-id"
+              class="font-mono text-base font-bold select-all break-all"
+              >{{ localAgentId ?? '—' }}</code
+            >
+            <Button
+              v-if="localAgentId"
+              data-testid="copy-device-id"
+              variant="ghost"
+              size="xs"
+              class="shrink-0"
+              :disabled="!localAgentId"
+              @click="copyDeviceId(localAgentId)"
+            >
+              <Check v-if="copiedId" class="w-3.5 h-3.5 text-emerald-500" />
+              <Copy v-else class="w-3.5 h-3.5" />
+            </Button>
+          </div>
 
+          <!-- Status & control -->
+          <div class="pt-1 space-y-2.5">
+            <div
+              data-testid="runtime-status"
+              :data-status="runtimeStatus"
+              class="flex items-center gap-2 text-xs font-mono"
+            >
+              <span
+                class="w-2 h-2 rounded-full"
+                :class="
+                  runtimeStatus === 'connected'
+                    ? 'bg-emerald-400'
+                    : runtimeStatus === 'starting'
+                      ? 'bg-amber-400'
+                      : runtimeStatus === 'stopped'
+                        ? 'bg-red-400'
+                        : 'bg-muted-foreground'
+                "
+              />
+              <span class="text-muted-foreground">Status:</span>
+              <span class="text-foreground font-semibold">{{
+                runtimeStatus === 'connected'
+                  ? 'Ready for remote connections'
+                  : runtimeStatus === 'starting'
+                    ? 'Starting...'
+                    : 'Remote access paused'
+              }}</span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <Button
+                data-testid="allow-remote-control-toggle"
+                :data-state="allowRemoteControl ? 'on' : 'off'"
+                :variant="allowRemoteControl ? 'default' : 'outline'"
+                size="sm"
+                class="h-7 text-xs font-medium"
+                :disabled="agentPending || isRegistering || !canControlAgent"
+                @click="handleAllowRemoteControlToggle"
+              >
+                <span
+                  v-if="allowRemoteControl"
+                  class="flex items-center gap-1.5"
+                >
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span>Allowing connections</span>
+                </span>
+                <span v-else class="flex items-center gap-1.5">
+                  <span class="w-1.5 h-1.5 rounded-full bg-muted-foreground" />
+                  <span>Allow remote control</span>
+                </span>
+              </Button>
+
+              <!-- Backward-compatible Start/Stop elements (hidden visually, keyed for tests). -->
+              <Button
+                v-if="agentRunning"
+                data-testid="agent-stop"
+                variant="outline"
+                size="sm"
+                class="hidden h-6 px-2 text-[11px]"
+                :disabled="agentPending"
+                @click="handleStopAgent"
+              >
+                Stop Agent
+              </Button>
+              <Button
+                v-else
+                data-testid="agent-start"
+                variant="outline"
+                size="sm"
+                class="hidden h-6 px-2 text-[11px]"
+                :disabled="agentPending || !canControlAgent"
+                @click="handleStartAgent"
+              >
+                Start Agent
+              </Button>
+            </div>
+
+            <p
+              v-if="!canControlAgent"
+              data-testid="agent-control-hint"
+              class="text-xs text-muted-foreground"
+            >
+              Register this device to start its agent.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- RIGHT COLUMN: Remote Control -->
+      <Card class="border-border/80 bg-card/95">
+        <CardHeader class="pb-3">
+          <CardTitle class="text-lg font-semibold flex items-center gap-2">
+            <Radio class="w-4 h-4 text-primary" />
+            Remote Control
+          </CardTitle>
+          <CardDescription class="text-xs text-muted-foreground">
+            Connect to a partner's device by ID.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent class="space-y-3.5">
+          <div class="space-y-1.5">
+            <label
+              class="text-xs font-medium text-muted-foreground"
+              for="remote-agent-id-input"
+            >
+              Partner Device ID
+            </label>
+            <input
+              id="remote-agent-id-input"
+              data-testid="remote-agent-id-input"
+              v-model="remoteAgentId"
+              placeholder="Enter partner's Device ID..."
+              class="w-full h-9 px-3 py-1.5 text-sm font-mono rounded-md border border-input bg-background/60 shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            />
+          </div>
+
+          <!-- Mode selector -->
+          <div class="flex gap-1.5">
+            <Button
+              v-for="mode in MODES"
+              :key="mode"
+              :data-testid="`remote-mode-${mode}`"
+              variant="ghost"
+              size="sm"
+              class="h-7 text-xs font-medium"
+              :class="
+                remoteMode === mode
+                  ? 'border border-primary bg-primary/10 text-primary'
+                  : 'border border-border'
+              "
+              :aria-pressed="remoteMode === mode"
+              @click="remoteMode = mode"
+            >
+              <component :is="MODE_ICONS[mode]" class="w-3.5 h-3.5 mr-1" />
+              {{ MODE_LABELS[mode] }}
+            </Button>
+          </div>
+
+          <Button
+            data-testid="remote-connect-btn"
+            class="w-full font-medium"
+            size="sm"
+            :disabled="!remoteAgentId.trim() || connectPending"
+            @click="handleRemoteConnect"
+          >
+            <ExternalLink v-if="!connectPending" class="w-3.5 h-3.5 mr-1.5" />
+            <span>{{ connectPending ? 'Connecting...' : 'Connect' }}</span>
+          </Button>
+
+          <Alert
+            v-if="remoteError"
+            data-testid="remote-error"
+            variant="destructive"
+          >
+            <AlertDescription>{{ remoteError }}</AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
+    </div>
+
+    <!-- Bottom Section: My Devices -->
+    <Card class="border-border/80 bg-card/95">
+      <CardHeader class="pb-3">
+        <CardTitle class="text-lg font-semibold flex items-center gap-2">
+          <Laptop class="w-4 h-4 text-primary" />
+          My Devices
+        </CardTitle>
+        <CardDescription class="text-xs text-muted-foreground">
+          {{ store.devices.length }} device(s) registered
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent>
         <div
           v-if="store.loading && store.devices.length === 0"
           data-testid="devices-loading"
@@ -345,10 +617,8 @@ onUnmounted(() => {
                 <span
                   data-testid="device-hostname"
                   class="font-semibold text-sm text-foreground"
+                  >{{ device.hostname }}</span
                 >
-                  {{ device.hostname }}
-                </span>
-                <!-- Clean sibling badges (NO nesting defect) -->
                 <Badge
                   variant="outline"
                   data-testid="device-platform"
@@ -387,117 +657,59 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <Button
-              data-testid="device-delete"
-              variant="destructive"
-              size="sm"
-              class="shrink-0"
-              @click="handleDelete(device.id)"
-            >
-              Delete
-            </Button>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <Button
+                data-testid="device-connect"
+                variant="outline"
+                size="sm"
+                class="h-7 text-xs"
+                :disabled="!device.isOnline || device.id === localAgentId"
+                @click="handleDeviceConnect(device.id)"
+              >
+                <ExternalLink class="w-3 h-3" />
+                Connect
+              </Button>
+              <Button
+                data-testid="device-delete"
+                variant="destructive"
+                size="sm"
+                class="h-7 text-xs"
+                @click="handleDelete(device.id)"
+              >
+                <Trash2 class="w-3 h-3" />
+              </Button>
+            </div>
           </li>
         </ul>
       </CardContent>
-
-      <CardFooter class="flex flex-col items-stretch gap-2.5 pt-2">
-        <fieldset class="border-0 p-0 m-0 min-w-0">
-          <legend class="text-xs font-semibold text-muted-foreground mb-1.5">
-            Capabilities
-          </legend>
-          <div class="flex gap-1.5 mb-2">
-            <button
-              type="button"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
-              :class="
-                selectedCapabilities.includes('terminal')
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
-              "
-              :aria-pressed="selectedCapabilities.includes('terminal')"
-              :disabled="isAnyActionPending"
-              data-test="register-cap-terminal"
-              @click="toggleCapability('terminal')"
-            >
-              <Terminal class="w-3.5 h-3.5" />
-              Terminal
-            </button>
-            <button
-              type="button"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
-              :class="
-                selectedCapabilities.includes('desktop')
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
-              "
-              :aria-pressed="selectedCapabilities.includes('desktop')"
-              :disabled="isAnyActionPending"
-              data-test="register-cap-desktop"
-              @click="toggleCapability('desktop')"
-            >
-              <Monitor class="w-3.5 h-3.5" />
-              Desktop
-            </button>
-            <button
-              type="button"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all"
-              :class="
-                selectedCapabilities.includes('files')
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border bg-card hover:bg-secondary/60 text-muted-foreground'
-              "
-              :aria-pressed="selectedCapabilities.includes('files')"
-              :disabled="isAnyActionPending"
-              data-test="register-cap-files"
-              @click="toggleCapability('files')"
-            >
-              <Folder class="w-3.5 h-3.5" />
-              Files
-            </button>
-          </div>
-        </fieldset>
-
-        <Button
-          data-testid="devices-register"
-          :disabled="isAnyActionPending"
-          class="w-full font-medium"
-          @click="handleRegister"
-        >
-          <Plus class="w-4 h-4 mr-1.5" />
-          {{ isRegistering ? 'Registering...' : 'Register Device' }}
-        </Button>
-        <p
-          v-if="!store.registered"
-          data-testid="devices-register-hint"
-          class="text-xs text-muted-foreground text-center flex items-center justify-center gap-1.5"
-        >
-          <Info class="w-3.5 h-3.5 text-primary shrink-0" />
-          <span>The agent runtime runs from the system tray.</span>
-        </p>
-      </CardFooter>
-
-      <!-- Delete confirmation dialog -->
-      <AlertDialog
-        :open="deleteDialogOpen"
-        @update:open="
-          (val: boolean) => {
-            deleteDialogOpen = val;
-          }
-        "
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete device?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel @click="cancelDelete">Cancel</AlertDialogCancel>
-            <AlertDialogAction @click="confirmDelete">Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Card>
+
+    <!-- Delete confirmation dialog -->
+    <AlertDialog
+      :open="deleteDialogOpen"
+      @update:open="
+        (val: boolean) => {
+          deleteDialogOpen = val;
+        }
+      "
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete device?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel @click="cancelDelete">Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            data-slot="alert-dialog-action"
+            @click="confirmDelete"
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>
 </template>
