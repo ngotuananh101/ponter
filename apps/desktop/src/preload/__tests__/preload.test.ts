@@ -40,8 +40,32 @@ describe('Preload contextBridge API', () => {
         quitAndInstall: expect.any(Function),
         getUpdateStatus: expect.any(Function),
         onUpdateStatus: expect.any(Function),
+        openRemoteSession: expect.any(Function),
       }),
     );
+  });
+
+  it('routes openRemoteSession to ipcRenderer.invoke with "desktop:open-remote-session"', async () => {
+    const mockResult = {
+      ok: true,
+      url: 'https://example.com/workspace/agent-1?mode=desktop',
+    };
+    ipcRendererMock.invoke.mockResolvedValueOnce(mockResult);
+
+    const api = exposePonterApi(
+      contextBridgeMock as any,
+      ipcRendererMock as any,
+    );
+
+    const result = await api.openRemoteSession({
+      agentId: 'agent-1',
+      mode: 'desktop',
+    });
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(
+      'desktop:open-remote-session',
+      { agentId: 'agent-1', mode: 'desktop' },
+    );
+    expect(result).toEqual(mockResult);
   });
 
   it('routes getConfig to ipcRenderer.invoke', async () => {
