@@ -30,9 +30,12 @@ describe('App flow (ADR-66)', () => {
     ponter.isAutostartEnabled.mockResolvedValue(false);
   });
 
-  it('renders the centered utility window shell', async () => {
+  it('renders the centered utility window shell with vertical scroll support', async () => {
     const wrapper = await mountApp();
-    expect(wrapper.find('[data-testid="app-shell"]').exists()).toBe(true);
+    const shell = wrapper.find('[data-testid="app-shell"]');
+    expect(shell.exists()).toBe(true);
+    expect(shell.classes()).toContain('overflow-y-auto');
+    expect(shell.classes()).toContain('overflow-x-hidden');
   });
 
   it('shows ServerSetupView when no server is configured', async () => {
