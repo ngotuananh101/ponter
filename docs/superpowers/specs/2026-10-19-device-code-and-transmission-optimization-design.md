@@ -2,6 +2,7 @@
 
 - **Status:** Draft (ready for team review)
 - **Phases:** Phase 15 (Device Code Identity & Issue #152) and Phase 16 (Transmission Optimization & 60 FPS Roadmap)
+- **Execution order:** Phase 15 lands **first** and owns `deviceCode` everywhere, including the desktop main IPC contract. Phase 16 lands **second** and is the **single owner** of the desktop-profile plumbing (`desktopProfile`, `AGENT_DESKTOP_PROFILE`, and the profile cases in `config.test.ts` / `agent-supervisor.test.ts`); it edits desktop files Phase 15 already changed and must preserve the `deviceCode` field. Neither phase duplicates the other's tests, so the two TEST-INTEGRITY tables never claim the same delta.
 - **Date:** 2026-10-19
 - **Supersedes / Amends:** Extends the device identity model established in Phase 7 / PR #155 (`localAgentId` + keychain credential) and the streaming profiles established in Phase 3 / ADR-21, ADR-23, ADR-24. Amends the error taxonomy in `packages/api-client` (Issue #152).
 - **Related ADRs:** ADR-13 (agent credentials), ADR-14 (single active session per agent), ADR-21 (resolved stream profile), ADR-22 (source switching), ADR-23 (runtime bitrate retarget), ADR-24 (sustain fallback floor), ADR-41 (admission gate), ADR-47 (frame timing telemetry), ADR-48 (WebCodecs probe — FAIL/DESCOPED), ADR-52 (keychain isolation), ADR-64/65 (config resolution and persistence), ADR-82 (fleet push), ADR-85 (Electron desktop shell), ADR-86 (agent sidecar supervision), ADR-89 (unified API access), **ADR-91 (9-digit Device Code identity — proposed by this spec)**, **ADR-92 (frame-budget-driven transmission profiles and zero-copy GPU roadmap — proposed by this spec)**
@@ -157,12 +158,16 @@ export function generateDeviceCode(): string {
   const buf = new Uint32Array(1);
   // Reject the top partial bucket so the modulo below is unbiased.
   const limit = Math.floor(0x1_0000_0000 / DEVICE_CODE_SPACE) * DEVICE_CODE_SPACE;
+  let value: number;
   do {
     crypto.getRandomValues(buf);
-  } while (buf[0] >= limit);
-  return String(MIN_DEVICE_CODE + (buf[0] % DEVICE_CODE_SPACE));
+    value = buf[0]!;
+  } while (value >= limit);
+  return String(MIN_DEVICE_CODE + (value % DEVICE_CODE_SPACE));
 }
 ```
+
+The `!` on `buf[0]` is required, not cosmetic: `tsconfig.base.json` sets `noUncheckedIndexedAccess: true`, so indexing a `Uint32Array` types as `number | undefined`. Reading the element once into a `number` local narrows it for both the loop condition and the modulo; deleting the assertion reintroduces `TS2532: Object is possibly 'undefined'` on both lines and breaks `pnpm typecheck`.
 
 Allocation on registration is a bounded attempt loop around the unique index:
 
@@ -524,8 +529,10 @@ Its expected `code` changes from `NETWORK_ERROR` to `SERVER_ERROR` (status `502`
 
 | Target | Period | Per-frame budget | Frames per 1 s |
 |---|---|---|---|
-| 30 FPS | 33.33 ms | `33_333_333 ns` | 30 |
-| 60 FPS | 16.67 ms | `16_666_666 ns` | 60 |
+| 30 FPS | 33.33 ms | `33_333_335 ns` | 30 |
+| 60 FPS | 16.67 ms | `16_666_668 ns` | 60 |
+
+> The nanosecond values are the literal result of `Duration::from_secs_f32(1.0 / fps)` evaluated as `f32` then converted to integer nanos: `1.0f32 / 60.0f32 = 0.016666668…`, which rounds to `16_666_668 ns`; `1.0f32 / 30.0f32 = 0.033333335…`, which rounds to `33_333_335 ns`. The millisecond view (`as_millis() == 16` / `33`) is what the test asserts.
 
 `StreamProfile::frame_budget()` already computes `Duration::from_secs_f32(1.0 / self.fps)`, and `run_stream` already builds its ticker from it:
 
@@ -623,7 +630,7 @@ fn gop_frames_for(profile: StreamProfile) -> u32 {
 .intra_frame_period(IntraFramePeriod::from_num_frames(gop_frames_for(profile)))
 ```
 
-`gop_frames_for` is a free function in `desktop.rs`, not a method on `StreamProfile`, because it describes the encoder's policy rather than the stream's identity. Tests assert `gop_frames_for(DEFAULT_1080P30) == 60`, `gop_frames_for(SAFE_720P30) == 60`, `gop_frames_for(DEFAULT_1080P60) == 120`, and `gop_frames_for(SAFE_720P60) == 120`.
+`gop_frames_for` is a free function in `desktop.rs`, not a method on `StreamProfile`, because it describes the encoder's policy rather than the stream's identity. Its placement is part of the design: it is a plain, unconditional function at module scope in `desktop.rs` with **no `#[cfg]` attribute of any kind** — not `#[cfg(windows)]`, not `#[cfg(test)]`. `mod desktop;` in `apps/agent/src/lib.rs` is unconditional and the lib target builds on Linux, so a platform-gated helper would leave its single caller, `DesktopEncoder::new`, unresolved on non-Windows hosts and would hide the helper from the tests below. Tests assert `gop_frames_for(DEFAULT_1080P30) == 60`, `gop_frames_for(SAFE_720P30) == 60`, `gop_frames_for(DEFAULT_1080P60) == 120`, and `gop_frames_for(SAFE_720P60) == 120`; running `cargo test -p ponter-agent --lib` on a non-Windows host is the proof that the placement is unconditional.
 
 `UsageType::ScreenContentRealTime`, `RateControlMode::Bitrate`, `Complexity::Low`, `adaptive_quantization(false)`, `background_detection(false)`, and `VuiConfig::bt709()` are unchanged — each is deliberate (the two disabled flags silence an openh264 `ParamValidation` warning, as documented in the source comment).
 
@@ -727,7 +734,7 @@ This is a declared value change, not a loosened assertion. Dropping the claim fr
 
 The sidecar already accepts `--desktop-profile` / `AGENT_DESKTOP_PROFILE` (`apps/agent/src/main.rs:69`, default `1080p30`), but the Electron shell never sets it. `AgentSupervisor.buildEnvironment()` emits exactly `AGENT_ID`, `AGENT_SERVER`, `AGENT_CREDENTIAL`, `STUN_SERVER`, `AGENT_ALLOW_INPUT`, and optionally `AGENT_FILES_ROOT` / `AGENT_IDENTITY_PATH`. A 60 FPS profile that cannot be selected from the app is not shippable, and a faster ticker with no way to select the previous one is worse than not adding it.
 
-The value travels one path, validated at both ends:
+This section is owned entirely by **Phase 16**; Phase 15 adds only `deviceCode` to the same two contract files. The value travels one path, validated at both ends:
 
 | Layer | File | Change |
 |---|---|---|
@@ -773,7 +780,7 @@ Rules:
 
 #### 4.2.7 Sustain ladder — what must change, and what must not
 
-The current `SustainMonitor` is single-rung and its behaviour is pinned by five tests. A four-profile ladder cannot be bolted on without naming those tests:
+The current `SustainMonitor` is single-rung and its behaviour is pinned by four `sustain_monitor_*` tests (`apps/agent/src/desktop.rs:3183`, `:3205`, `:3221`, `:3230`). A four-profile ladder cannot be bolted on without naming those tests:
 
 | Element | Today | Change |
 |---|---|---|
@@ -783,13 +790,15 @@ The current `SustainMonitor` is single-rung and its behaviour is pinned by five 
 | `note_bitrate_change` re-arm | `current != SAFE_720P30` | `next_profile().is_some()` |
 | `run_stream` downgrade arm | `profile = SAFE_720P30` | `profile = target` from the action; encoder and monitor rebuilt for the target |
 
+The ladder is ordered by **pixels per second**, so every rung is strictly cheaper to encode: 1080p60 (124.4 M px/s) → 720p60 (55.3 M) → 720p30 (27.6 M), and 1080p30 (62.2 M) → 720p30. 1080p30 is therefore **not** a rung below 720p60 — it costs more pixels per second, so demoting to it would make the stall worse. The two paths converge on the floor.
+
 ```rust
 impl SustainMonitor {
     /// The rung below `profile`, or `None` at the floor. One ladder, one definition.
     fn next_profile(&self) -> Option<StreamProfile> {
         match self.profile {
             p if p == StreamProfile::DEFAULT_1080P60 => Some(StreamProfile::SAFE_720P60),
-            p if p == StreamProfile::SAFE_720P60 => Some(StreamProfile::DEFAULT_1080P30),
+            p if p == StreamProfile::SAFE_720P60 => Some(StreamProfile::SAFE_720P30),
             p if p == StreamProfile::DEFAULT_1080P30 => Some(StreamProfile::SAFE_720P30),
             _ => None,
         }
@@ -825,9 +834,11 @@ impl SustainMonitor {
 | `sustain_monitor_resets_the_streak_on_an_on_budget_frame` | `Downgrade` | `DowngradeTo(SAFE_720P30)` | same |
 | `sustain_monitor_never_downgrades_from_the_floor` | unchanged | **unchanged verbatim** — the floor is still `SAFE_720P30` (33.33 ms budget) and the 50 ms probe still exceeds it, so the test keeps asserting "no downgrade at the floor" without modification | proves the ladder's bottom rung did not move |
 | `sustain_monitor_reopens_only_above_the_floor` | `Downgrade` | `DowngradeTo(SAFE_720P30)` | same |
-| new: `sustain_ladder_descends_one_rung_per_downgrade` | — | +1 `#[test]`: from `DEFAULT_1080P60`, a chain of monitors/bitrate re-arms descends `SAFE_720P60 → DEFAULT_1080P30 → SAFE_720P30` and then latches | pins the four-rung order |
+| new: `downgrade_ladder_is_monotonic_in_pixels_per_second` | — | +1 `#[test]`: for each non-floor profile, `downgrade_for` yields a strictly lower `max_width * max_height * fps`, and `downgrade_for(SAFE_720P30)` is `None` | pins the ladder's order against the cost it exists to reduce |
+| new: `a_1080p60_monitor_demotes_to_720p60_first` | — | +1 `#[test]`: 30 slow frames from `DEFAULT_1080P60` yield `DowngradeTo(SAFE_720P60)` | pins the first rung, not a jump straight to the floor |
+| new: `a_720p60_monitor_demotes_to_the_floor` | — | +1 `#[test]`: 30 slow frames from `SAFE_720P60` yield `DowngradeTo(SAFE_720P30)` | pins the second rung |
 
-No assertion is deleted or relaxed. The two `Downgrade` → `DowngradeTo(SAFE_720P30)` renames are forced by the type change and assert the identical decision.
+No assertion is deleted or relaxed. The three `Downgrade` → `DowngradeTo(SAFE_720P30)` renames are forced by the type change and assert the identical decision. Net: +3 `#[test]` (57 → 60 for the sustain path alone; the file-level running total is tracked in the plan).
 
 
 ### 4.3 Stage 2 — zero-copy GPU hardware pipeline (roadmap)
@@ -941,7 +952,7 @@ Rules:
 - Rejected `fetch` → `NETWORK_ERROR`, status `0` (unchanged).
 - **Declared change:** the existing non-JSON test's expected `code` moves from `NETWORK_ERROR` to `SERVER_ERROR`; `it()` and `expect()` counts are unchanged.
 
-### 6.3 Desktop (`apps/desktop/src/renderer/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/ipc.test.ts`, `apps/desktop/src/main/__tests__/config.test.ts`, `apps/desktop/src/main/__tests__/agent-supervisor.test.ts`)
+### 6.3 Desktop — Phase 15 (`apps/desktop/src/renderer/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/devices.test.ts`, `apps/desktop/src/main/__tests__/ipc.test.ts`, `apps/desktop/src/main/__tests__/config.test.ts`)
 
 - "This Device" renders `749 281 903` when the local device carries `deviceCode: "749281903"`, and falls back to the `AppConfig` cache when the fleet list is empty.
 - Copy writes digits only (`749281903`) to the clipboard and shows the confirmation icon.
@@ -950,10 +961,9 @@ Rules:
 - Partner input preserves a pasted `dev_ab12cd34` verbatim.
 - `desktop:open-remote-session` normalises `"749 281 903"` to `749281903` in the constructed URL, and leaves `dev_ab12cd34` unchanged.
 - `mapAgentToDesktopDevice` and `mapAgentsToDevices` propagate `deviceCode`, including `null`.
-- `normalizeDesktopProfile` accepts the four names and maps everything else (absent, `'1080p'`, `42`, `null`) to `1080p30`.
-- `ConfigManager.load()` returns `desktopProfile: '1080p30'` for an empty config file and preserves a valid persisted value; `save()` round-trips it.
-- `AgentSupervisor.buildEnvironment()` emits `AGENT_DESKTOP_PROFILE` with the configured value, and `AgentControlService.startNow()` forwards `cfg.desktopProfile`.
-- Baseline counts for the touched files: `devices.test.ts` (renderer) 53 `it()` + 1 `it.each` (54 declarations) / 140 `expect()`; `devices.test.ts` (main) 20 / 41; `ipc.test.ts` 23 test declarations (20 `it()` + 3 `it.each`) / 53 `expect()`; `config.test.ts` 12 / 27; `agent-supervisor.test.ts` 11 / 27. Every count is re-measured at execution time and declared before→after for each file the diff touches.
+- Baseline counts for the touched files: `devices.test.ts` (renderer) 53 `it()` + 1 `it.each` (54 declarations) / 140 `expect()`; `devices.test.ts` (main) 20 / 41; `ipc.test.ts` 23 test declarations (20 `it()` + 3 `it.each`) / 53 `expect()`; `config.test.ts` 12 / 27. Every count is re-measured at execution time and declared before→after for each file the diff touches. `config.test.ts` keeps its counts here — one exact-object `toEqual` gains `deviceCode: null`, which is forced by the new `save()` key and adds no test.
+
+**Desktop-profile tests are Phase 16's.** `normalizeDesktopProfile`, `AppConfig.desktopProfile`, `AGENT_DESKTOP_PROFILE`, and the `config.test.ts` / `agent-supervisor.test.ts` cases that pin them are specified in §4.2.6 and implemented by Phase 16 Task 4. Phase 15 does not touch `agent-supervisor.test.ts` at all, so the two plans' TEST-INTEGRITY deltas never overlap.
 
 ### 6.4 Web (`apps/web/src/__tests__/`)
 
@@ -966,14 +976,14 @@ Rules:
 
 The crate is `ponter-agent` (`apps/agent/Cargo.toml:2`); the lib target is `ponter_agent` and the binary is `ponter-agent`. `cargo test -p` takes the **package** name, so every gate command uses `ponter-agent`.
 
-- `"1080p60"` and `"720p60"` parse; `frame_budget()` is `16_666_666 ns` (asserted as `as_millis() == 16` plus a nanosecond-level assertion).
+- `"1080p60"` and `"720p60"` parse; `frame_budget()` is `16_666_668 ns` (asserted as `as_millis() == 16` plus a nanosecond-level assertion).
 - `"720p30"` still parses and still yields a 33.33 ms budget.
 - An unknown profile string fails with an error naming all four accepted values — the assertion is reached with a genuinely invalid probe (`"1080p61"`), not with `"1080p60"` now that it is valid (see the TEST-INTEGRITY declaration in §4.2.1).
 - `gop_frames_for` returns 60 for both 30 FPS profiles and 120 for both 60 FPS profiles.
 - Poll interval defaults to `profile.frame_budget()` when the environment variable is absent, and the environment variable still wins when present; the six existing `parse_poll_interval_*` tests keep their assertions and gain the explicit fallback argument (§4.2.3).
 - Static-frame detection returns "unchanged" for an identical buffer and "changed" for a one-pixel mutation.
 - The skip counter honours the keepalive cap and resets on a control event.
-- The sustain ladder descends `1080p60 → 720p60 → 1080p30 → 720p30` and latches at the floor.
+- The sustain ladder descends `1080p60 → 720p60 → 720p30` and `1080p30 → 720p30`, and latches at the floor. Every rung is strictly cheaper in pixels per second, so `1080p30` is never a rung below `720p60`.
 - No test deletes, skips, or weakens an existing assertion (TEST-INTEGRITY).
 
 Baseline for the two touched files: `apps/agent/src/lib.rs` 20 `#[test]` + 8 `#[tokio::test]`; `apps/agent/src/desktop.rs` 57 `#[test]` + 9 `#[tokio::test]`. Both are re-measured at execution time and declared before→after.
@@ -1011,7 +1021,7 @@ Baseline for the two touched files: `apps/agent/src/lib.rs` 20 `#[test]` + 8 `#[
 | Ticker = `profile.frame_budget()` | Unchanged mechanism; 60 FPS profiles yield 16.67 ms automatically | None |
 | GOP = 60 frames (2 s at 30 FPS) | GOP = `round(fps * 2)` frames (2 s at any rate) | Behaviour preserved at 30 FPS, corrected at 60 FPS |
 | GDI poll interval 33 ms | Derived from `frame_budget()`; env override preserved | Enables 60 FPS on the fallback path |
-| Sustain fallback = `SAFE_720P30` | Ladder `1080p60 → 720p60 → 1080p30 → 720p30`, latched at the floor | Supersedes ADR-24's single-rung rule; the floor is unchanged |
+| Sustain fallback = `SAFE_720P30` | Ladder `1080p60 → 720p60 → 720p30` and `1080p30 → 720p30`, latched at the floor | Supersedes ADR-24's single-rung rule; the floor is unchanged; every rung is strictly cheaper in pixels per second |
 | Client playout = `<video>` + 100 ms | `<video>` retained; `playoutDelayMs` set to 40 ms at the web call site; WebCodecs gated behind a new ADR | Declared value change; ADR-48 verdict preserved |
 | Server imports `@ponter/shared` only as types | `normalizeDeviceCode` is mirrored in `apps/server/src/utils/device-code.ts`; a drift test pins it | Keeps `node apps/server/dist/index.js` bootable |
 | Desktop profile fixed at the sidecar default `1080p30` | Persisted `desktopProfile` in `AppConfig`, forwarded as `AGENT_DESKTOP_PROFILE` | Additive; default unchanged |

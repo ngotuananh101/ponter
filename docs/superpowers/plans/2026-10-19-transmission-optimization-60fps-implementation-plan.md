@@ -4,6 +4,8 @@
 
 **Goal:** Raise the desktop stream from 30 FPS to 60 FPS on the existing SIMD CPU pipeline, skip re-encoding of unchanged frames, scale the fallback ladder to the selected profile, and lower the web playout delay to match the new cadence.
 
+**Execution Order:** Phase 15 (9-digit device code) lands **first**; Phase 16 (this plan) lands **second**. Task 4 builds on top of Phase 15 Task 6: it edits `apps/desktop/src/shared/ipc-types.ts`, `apps/desktop/src/renderer/types.ts`, and `apps/desktop/src/main/config.ts` where `deviceCode` already exists, and must preserve the `deviceCode` fields.
+
 **Architecture:** The agent already drives its loop from `StreamProfile::frame_budget()` (`tokio::time::interval` at line 1416 of `apps/agent/src/desktop.rs`), so a 60 FPS profile changes the ticker with no separate constant. Two new profiles (`1080p60`, `720p60`) join `StreamProfile`; the encoder's GOP becomes a pure function of the profile (`fps * 2` seconds, preserving the existing 60-frame GOP at 30 FPS); the Windows `capture_image` fallback poll interval follows the profile's budget instead of a fixed 33 ms; the sustain monitor gains an explicit per-profile next rung instead of a single hard-coded floor; and a content-hash gate in the tick loop skips identical consecutive frames while a keepalive cap guarantees the encoder still emits. No new dependency is added, and no hardware encoder is introduced — that remains ADR-92's out-of-scope Level 4 roadmap, tracked separately.
 
 **Tech Stack:** Rust, OpenH264 (`openh264 0.9.8`), `fast_image_resize` (already wired), Tokio, `tracing`; TypeScript/Vue for the web playout change.
@@ -17,7 +19,7 @@
 - **TEST-INTEGRITY:** Never delete, skip, or weaken an existing test. Every touched test file carries a declared before→after `it()` / `expect()` (or `#[test]`) pair with a reason. An undeclared test change is BLOCKING.
 - **Crate name for `cargo test -p`:** `ponter-agent` (hyphen), from `apps/agent/Cargo.toml`. The lib target's underscore spelling is not a package name and does not resolve.
 - **Floor profile:** `SAFE_720P30` stays the guaranteed floor and keeps its name. `DEFAULT_1080P30` stays the CLI default.
-- **Cross-plan ordering:** the device-code plan also edits `apps/desktop/src/shared/ipc-types.ts`, `apps/desktop/src/main/config.ts`, `apps/desktop/src/main/agent-supervisor.ts`, and `apps/desktop/src/main/agent-control.ts`. If that plan has landed first, add the fields below beside the existing `deviceCode` entries; do not replace them.
+- **Phase ordering & single ownership:** Phase 15 (device code) lands before Phase 16 (60 FPS); Phase 16 Task 4 edits files Phase 15 Task 6 already changed (`ipc-types.ts`, `renderer/types.ts`, `config.ts`), and must preserve the `deviceCode` field. Phase 16 Task 4 is the **single owner** of all desktop-profile plumbing: `desktopProfile`, `AGENT_DESKTOP_PROFILE`, and the profile tests in `config.test.ts` and `agent-supervisor.test.ts`.
 - **No WebCodecs, no hardware encoder, no new crate.** ADR-48 is descoped and ADR-92 keeps the GPU path as roadmap only.
 
 ## Review Focus
@@ -40,11 +42,10 @@
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `StreamProfile::P1080P60` — 1920×1080, 60.0 fps, 8_000_000 bps
-  - `StreamProfile::P720P60` — 1280×720, 60.0 fps, 5_000_000 bps
+  - `StreamProfile::DEFAULT_1080P60` — 1920×1080, 60.0 fps, 8_000_000 bps
+  - `StreamProfile::SAFE_720P60` — 1280×720, 60.0 fps, 5_000_000 bps
   - `FromStr` accepts `1080p60`, `720p60`, `1080p30`, `720p30`.
 
-**Naming:** the constants are `P1080P60` / `P720P60`, not `DEFAULT_1080P60` / `SAFE_720P60`. The existing `DEFAULT_` prefix means "the CLI default" and `SAFE_` means "the guaranteed floor"; a 60 FPS profile is neither, and giving it a `SAFE_` name would invite code to treat it as a fallback target.
 
 - [ ] **Step 1: Update the failing tests**
 
@@ -63,11 +64,11 @@ In `apps/agent/src/lib.rs`, replace `stream_profile_parses_the_two_named_profile
         );
         assert_eq!(
             "1080p60".parse::<StreamProfile>().unwrap(),
-            StreamProfile::P1080P60
+            StreamProfile::DEFAULT_1080P60
         );
         assert_eq!(
             "720p60".parse::<StreamProfile>().unwrap(),
-            StreamProfile::P720P60
+            StreamProfile::SAFE_720P60
         );
     }
 ```
@@ -90,11 +91,13 @@ Extend `stream_profile_frame_budget_matches_fps`:
         let budget = StreamProfile::DEFAULT_1080P30.frame_budget();
         assert!((budget.as_secs_f32() - 1.0 / 30.0).abs() < 1e-6);
 
-        let fast = StreamProfile::P1080P60.frame_budget();
+        let fast = StreamProfile::DEFAULT_1080P60.frame_budget();
         assert!((fast.as_secs_f32() - 1.0 / 60.0).abs() < 1e-6);
-        assert_eq!(fast.as_nanos(), 16_666_666);
+        // 1.0f32 / 60.0f32 rounds up to 0.016666668 s = 16_666_668 ns.
+        assert_eq!(fast.as_millis(), 16);
+        assert_eq!(fast.as_nanos(), 16_666_668);
 
-        let fast720 = StreamProfile::P720P60.frame_budget();
+        let fast720 = StreamProfile::SAFE_720P60.frame_budget();
         assert_eq!(fast720, fast, "the ticker depends on fps, not resolution");
     }
 ```
@@ -102,7 +105,7 @@ Extend `stream_profile_frame_budget_matches_fps`:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p ponter-agent stream_profile`
-Expected: FAIL to compile — `no associated item named P1080P60 found for struct StreamProfile`.
+Expected: FAIL to compile — `no associated item named DEFAULT_1080P60 found for struct StreamProfile`.
 
 - [ ] **Step 3: Add the constants and the parsing arms**
 
@@ -111,7 +114,7 @@ In `impl StreamProfile` in `apps/agent/src/lib.rs`, after `SAFE_720P30`:
 ```rust
     /// 1080p at 60 FPS, 8 Mbps. The 60 FPS ticker budget is 16.67 ms, so the
     /// SIMD downscale plus a software H.264 encode must fit in one tick.
-    pub const P1080P60: Self = Self {
+    pub const DEFAULT_1080P60: Self = Self {
         max_width: 1920,
         max_height: 1080,
         fps: 60.0,
@@ -119,7 +122,7 @@ In `impl StreamProfile` in `apps/agent/src/lib.rs`, after `SAFE_720P30`:
     };
     /// 720p at 60 FPS, 5 Mbps. The preferred 60 FPS rung on a host that cannot
     /// sustain 1080p60: same cadence, 55% of the pixels per frame.
-    pub const P720P60: Self = Self {
+    pub const SAFE_720P60: Self = Self {
         max_width: 1280,
         max_height: 720,
         fps: 60.0,
@@ -131,8 +134,8 @@ In the `FromStr` match:
 
 ```rust
         match value {
-            "1080p60" => Ok(Self::P1080P60),
-            "720p60" => Ok(Self::P720P60),
+            "1080p60" => Ok(Self::DEFAULT_1080P60),
+            "720p60" => Ok(Self::SAFE_720P60),
             "1080p30" => Ok(Self::DEFAULT_1080P30),
             "720p30" => Ok(Self::SAFE_720P30),
             other => {
@@ -194,8 +197,8 @@ Add beside the existing encoder tests in `apps/agent/src/desktop.rs`:
         assert_eq!(gop_frames_for(StreamProfile::DEFAULT_1080P30), 60);
         assert_eq!(gop_frames_for(StreamProfile::SAFE_720P30), 60);
         // 60 FPS doubles it, so the keyframe interval stays two seconds.
-        assert_eq!(gop_frames_for(StreamProfile::P1080P60), 120);
-        assert_eq!(gop_frames_for(StreamProfile::P720P60), 120);
+        assert_eq!(gop_frames_for(StreamProfile::DEFAULT_1080P60), 120);
+        assert_eq!(gop_frames_for(StreamProfile::SAFE_720P60), 120);
     }
 
     #[test]
@@ -217,7 +220,7 @@ Expected: FAIL to compile — `cannot find function gop_frames_for`.
 
 - [ ] **Step 3: Implement the helper and wire it in**
 
-Above `DesktopEncoder::new` in `apps/agent/src/desktop.rs`:
+Add `gop_frames_for` at module scope in `apps/agent/src/desktop.rs`, immediately above `DesktopEncoder::new`. It is a plain, unconditional free function with **no `#[cfg]` attribute of any kind** — not `#[cfg(windows)]`, not `#[cfg(test)]` — so it is compiled on every platform. This is required, not stylistic: `mod desktop;` at `apps/agent/src/lib.rs:16` is unconditional, the lib target builds on Linux, and `DesktopEncoder::new` is its single caller. A Windows-only cfg would leave the call site unresolved on Linux and hide the helper from the tests below.
 
 ```rust
 /// The keyframe interval in frames: two seconds of the profile's cadence.
@@ -242,6 +245,9 @@ Replace the hard-coded line in `DesktopEncoder::new`:
 Run: `cargo test -p ponter-agent gop_frames`
 Expected: PASS — 2 tests.
 
+Run the lib target from this non-Windows host: `cargo test -p ponter-agent --lib`
+Expected: PASS. This is the placement proof: on Linux the lib target compiles only because `gop_frames_for` carries no `#[cfg]`, and the `gop_frames_*` tests in the same module call it directly.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -249,7 +255,7 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): derive the encoder gop from the stream profile"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 13 `#[tokio::test]`): +2 `#[test]`, 6 assertions. No existing test touched.
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`, measured on the base commit): +2 `#[test]`, 6 assertions. No existing test touched. Running total after this task: 59 `#[test]` + 9 `#[tokio::test]`.
 
 ---
 
@@ -327,7 +333,7 @@ Add the two new tests:
 ```rust
     #[test]
     fn parse_poll_interval_uses_the_profile_budget_as_its_fallback() {
-        let budget = StreamProfile::P1080P60.frame_budget();
+        let budget = StreamProfile::DEFAULT_1080P60.frame_budget();
         assert_eq!(parse_poll_interval(None, budget), budget);
         assert_eq!(
             parse_poll_interval(Some("0".to_string()), budget),
@@ -341,7 +347,7 @@ Add the two new tests:
         assert_eq!(
             parse_poll_interval(
                 Some("20".to_string()),
-                StreamProfile::P1080P60.frame_budget()
+                StreamProfile::DEFAULT_1080P60.frame_budget()
             ),
             Duration::from_millis(20)
         );
@@ -428,7 +434,7 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): derive the capture poll interval from the stream profile"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs`): the six `parse_poll_interval_*` tests gain a second argument (`GDI_DEFAULT_POLL_INTERVAL`); every assertion is unchanged, so their counts and meaning are preserved. +2 `#[test]`, 5 assertions. No test removed or skipped.
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 2: 59 + 9): the six `parse_poll_interval_*` tests gain a second argument (`GDI_DEFAULT_POLL_INTERVAL`); every assertion is unchanged, so their counts and meaning are preserved. +2 `#[test]`, 5 assertions. No test removed or skipped. Running total after this task: 61 `#[test]` + 9 `#[tokio::test]`.
 
 ---
 
@@ -451,6 +457,8 @@ git commit -m "feat(agent): derive the capture poll interval from the stream pro
   - `SupervisorConfig.desktopProfile?: DesktopProfileName`
   - `AGENT_DESKTOP_PROFILE` in the sidecar environment
 
+**Dependency on Phase 15:** this task assumes Phase 15 Task 6 has already landed. `AppConfig.deviceCode`, `DesktopDevice.deviceCode`, and `SaveConfigPayload.deviceCode` will already exist in `apps/desktop/src/shared/ipc-types.ts` and `apps/desktop/src/renderer/types.ts`. Add the profile fields beside them; do not remove or overwrite `deviceCode`.
+
 **Why the desktop side needs this at all:** the sidecar reads `AGENT_DESKTOP_PROFILE` (`apps/agent/src/main.rs:69`), but nothing in `apps/desktop/src/` sets it today. A 60 FPS profile is therefore unreachable from the shipped app — only from a hand-written environment.
 
 - [ ] **Step 1: Write the failing tests**
@@ -459,18 +467,31 @@ In `apps/desktop/src/main/__tests__/config.test.ts`, append:
 
 ```ts
   it('defaults desktopProfile to 1080p30 and persists a valid value', () => {
-    const manager = new ConfigManager('/tmp/test-config.json', {});
-    vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}));
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.writeFileSync).mockClear();
+
     expect(manager.load().desktopProfile).toBe('1080p30');
 
     manager.save({ desktopProfile: '1080p60' });
-    const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1];
-    expect(String(written)).toContain('"desktopProfile":"1080p60"');
+    const written = JSON.parse(
+      vi.mocked(fs.writeFileSync).mock.calls[0]![1] as string,
+    );
+    expect(written.desktopProfile).toBe('1080p60');
+
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(written));
+    expect(manager.load().desktopProfile).toBe('1080p60');
   });
 
   it('normalises an unknown persisted desktopProfile to 1080p30', () => {
-    const manager = new ConfigManager('/tmp/test-config.json', {});
+    const manager = new ConfigManager('/tmp/test-config.json', {
+      runtimeEnvUrl: '',
+      buildDefaultUrl: '',
+    });
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({ desktopProfile: '1080p' }),
@@ -479,7 +500,9 @@ In `apps/desktop/src/main/__tests__/config.test.ts`, append:
   });
 ```
 
-This file mocks the whole `fs` module, so these tests follow the same `vi.mocked(fs.readFileSync).mockReturnValue(...)` shape the other cases use rather than writing real temp files.
+This file mocks the whole `fs` module, so these tests follow the same `vi.mocked(fs.readFileSync).mockReturnValue(...)` and `mock.calls[0]![1]` shapes the existing cases use rather than writing real temp files.
+
+The file also contains one exact-object assertion, `expect(written).toEqual({ ... })` in `does not persist the localhost fallback when no URL was ever set`. `save()` now writes one more key, so add `desktopProfile: '1080p30',` to that literal. `deviceCode: null` is already there from Phase 15 Task 6 — leave it.
 
 In `apps/desktop/src/main/__tests__/agent-supervisor.test.ts`, append:
 
@@ -605,12 +628,14 @@ git add apps/desktop/src/shared/ipc-types.ts apps/desktop/src/renderer/types.ts 
 git commit -m "feat(desktop): forward the desktop stream profile to the sidecar"
 ```
 
-**TEST-INTEGRITY** (re-measured at execution):
+**TEST-INTEGRITY** (re-measured at execution; baselines from `main`):
 
 | File | Before | After (expected) | Reason |
 |---|---|---|---|
-| `main/__tests__/config.test.ts` | 12 `it()` / 27 `expect()` | +2 `it()`, +4 `expect()` | pins the profile default, round-trip, and invalid-value fallback |
-| `main/__tests__/agent-supervisor.test.ts` | 11 `it()` / 27 `expect()` | +2 `it()`, +2 `expect()` | pins the environment variable and its default |
+| `main/__tests__/config.test.ts` | 12 `it()` / 27 `expect()` | 14 `it()` / 31 `expect()` (+2 `it()`, +4 `expect()`) | pins the profile default, round-trip, and invalid-value fallback |
+| `main/__tests__/agent-supervisor.test.ts` | 11 `it()` / 27 `expect()` | 13 `it()` / 29 `expect()` (+2 `it()`, +2 `expect()`) | pins `AGENT_DESKTOP_PROFILE` and its default; `AgentSupervisor` is instantiated with `keychainMock as any` |
+
+`keychainMock` and `AgentSupervisor` patterns match the existing tests in `agent-supervisor.test.ts` verbatim: the mock is created once per file and `getSecret.mockReturnValue(...)` is set before each construction, and `AgentSupervisor` takes a single argument.
 
 ---
 
@@ -622,15 +647,15 @@ git commit -m "feat(desktop): forward the desktop stream profile to the sidecar"
 **Interfaces:**
 - Consumes: `StreamProfile` (Task 1).
 - Produces:
-  - `pub enum SustainAction { Continue, DowngradeTo(StreamProfile) }` (drops the `Eq` derive — `StreamProfile` holds an `f32`)
+  - `pub enum SustainAction { Continue, DowngradeTo(StreamProfile) }` (drops the `Eq` derive — `StreamProfile` holds an `f32`, and its own derive list at `apps/agent/src/lib.rs:444` is `Clone, Copy, Debug, PartialEq` with no `Eq`)
   - `pub(crate) fn downgrade_for(profile: StreamProfile) -> Option<StreamProfile>`
 
 **The ladder** (ordered by pixels per second, so every rung is strictly cheaper to encode):
 
 | From | To | Pixels/s |
 |---|---|---|
-| `P1080P60` | `P720P60` | 124.4 M → 55.3 M |
-| `P720P60` | `SAFE_720P30` | 55.3 M → 27.6 M |
+| `DEFAULT_1080P60` | `SAFE_720P60` | 124.4 M → 55.3 M |
+| `SAFE_720P60` | `SAFE_720P30` | 55.3 M → 27.6 M |
 | `DEFAULT_1080P30` | `SAFE_720P30` | 62.2 M → 27.6 M |
 | `SAFE_720P30` | none (floor) | — |
 
@@ -638,7 +663,7 @@ git commit -m "feat(desktop): forward the desktop stream profile to the sidecar"
 
 - [ ] **Step 1: Update the failing tests**
 
-The five sustain tests currently compare against the unit variant `SustainAction::Downgrade`. Update each expected value; the loop counts and messages stay as they are.
+Three of the four `sustain_monitor_*` tests currently compare against the unit variant `SustainAction::Downgrade`; the fourth (`sustain_monitor_never_downgrades_from_the_floor`) only asserts `Continue` and compiles unchanged. Update the three expected values; the loop counts and messages stay as they are.
 
 `sustain_monitor_downgrades_once_and_never_oscillates`:
 
@@ -677,8 +702,8 @@ Add three new tests:
             f64::from(p.max_width) * f64::from(p.max_height) * f64::from(p.fps)
         };
         for from in [
-            StreamProfile::P1080P60,
-            StreamProfile::P720P60,
+            StreamProfile::DEFAULT_1080P60,
+            StreamProfile::SAFE_720P60,
             StreamProfile::DEFAULT_1080P30,
         ] {
             let to = downgrade_for(from).expect("a non-floor profile has a next rung");
@@ -694,21 +719,21 @@ Add three new tests:
 
     #[test]
     fn a_1080p60_monitor_demotes_to_720p60_first() {
-        let mut monitor = SustainMonitor::new(StreamProfile::P1080P60);
+        let mut monitor = SustainMonitor::new(StreamProfile::DEFAULT_1080P60);
         let slow = Duration::from_millis(20); // > the 16.67 ms 60 FPS budget
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             assert_eq!(monitor.observe(slow), SustainAction::Continue);
         }
         assert_eq!(
             monitor.observe(slow),
-            SustainAction::DowngradeTo(StreamProfile::P720P60),
+            SustainAction::DowngradeTo(StreamProfile::SAFE_720P60),
             "the first rung below 1080p60 keeps the 60 FPS cadence"
         );
     }
 
     #[test]
     fn a_720p60_monitor_demotes_to_the_floor() {
-        let mut monitor = SustainMonitor::new(StreamProfile::P720P60);
+        let mut monitor = SustainMonitor::new(StreamProfile::SAFE_720P60);
         let slow = Duration::from_millis(20);
         for _ in 0..SUSTAIN_FRAMES_BEFORE_FALLBACK - 1 {
             monitor.observe(slow);
@@ -746,9 +771,9 @@ pub enum SustainAction {
 /// reduces the encode load. `1080p30` is deliberately not a rung below
 /// `720p60`: it is the more expensive of the two.
 pub(crate) fn downgrade_for(profile: StreamProfile) -> Option<StreamProfile> {
-    if profile == StreamProfile::P1080P60 {
-        Some(StreamProfile::P720P60)
-    } else if profile == StreamProfile::P720P60
+    if profile == StreamProfile::DEFAULT_1080P60 {
+        Some(StreamProfile::SAFE_720P60)
+    } else if profile == StreamProfile::SAFE_720P60
         || profile == StreamProfile::DEFAULT_1080P30
     {
         Some(StreamProfile::SAFE_720P30)
@@ -854,7 +879,7 @@ The `detail` string changes from the hard-coded `"720p30 (quality downgraded)"` 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p ponter-agent sustain`
-Expected: PASS — 8 tests (5 updated + 3 new).
+Expected: PASS — 7 tests run by this filter: the four existing `sustain_monitor_*` tests, adapted in place, plus the three new tests. (`abr_next_target_ignores_the_unmoved_seed` is not selected by the `sustain` filter and is not touched by this task.)
 
 - [ ] **Step 5: Commit**
 
@@ -863,17 +888,18 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): fall back one rung at a time with a per-profile sustain ladder"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs`):
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 3: 61 + 9):
 
 | Test | Before | After | Reason |
 |---|---|---|---|
 | `sustain_monitor_downgrades_once_and_never_oscillates` | expects `SustainAction::Downgrade` | expects `DowngradeTo(SAFE_720P30)` | the variant now names its target; the profile is the same one the old code hard-coded |
-| `sustain_monitor_resets_the_streak_on_an_on_budget_frame` | same | same | same |
-| `sustain_monitor_reopens_only_above_the_floor` | same | same | same |
-| `sustain_monitor_never_downgrades_from_the_floor` | `Continue` only | unchanged | still true: `downgrade_for(SAFE_720P30)` is `None` |
-| `abr_next_target_ignores_the_unmoved_seed` | — | unchanged | does not touch the sustain path |
+| `sustain_monitor_resets_the_streak_on_an_on_budget_frame` | `Downgrade` | `DowngradeTo(SAFE_720P30)` | same |
+| `sustain_monitor_reopens_only_above_the_floor` | `Downgrade` | `DowngradeTo(SAFE_720P30)` | same |
+| `sustain_monitor_never_downgrades_from_the_floor` | `Continue` only | unchanged verbatim | still true: `downgrade_for(SAFE_720P30)` is `None` |
 
-+3 `#[test]`, 12 assertions. Assertion counts in the updated tests are unchanged.
+Only these four `sustain_monitor_*` tests exist in the file (`apps/agent/src/desktop.rs:3183`, `:3205`, `:3221`, `:3230`). Three of them change an expectation (`Downgrade` → `DowngradeTo(SAFE_720P30)`); the fourth, `sustain_monitor_never_downgrades_from_the_floor`, only asserts `Continue` and is untouched. `abr_next_target_ignores_the_unmoved_seed` (`:3254`) calls the unrelated `abr_next_target()` helper, never mentions `SustainAction`, and is **not** touched by this task.
+
++3 `#[test]` (all new behaviour: the monotonic ladder, the 1080p60 first rung, and the 720p60 floor rung), 12 assertions, plus four existing tests mechanically adapted. Assertion counts in the adapted tests are unchanged. Running total after this task: 64 `#[test]` + 9 `#[tokio::test]`.
 
 ---
 
@@ -888,7 +914,9 @@ git commit -m "feat(agent): fall back one rung at a time with a per-profile sust
   - `pub(crate) struct StaticFrameSkip` with `new(fps: f32)`, `should_skip(&mut self, frame: &RawFrame) -> bool`, `reset(&mut self)`
   - `pub(crate) fn frame_signature(frame: &RawFrame) -> u64`
 
-**Design:** the gate hashes pixel content (not `seq`, which increments on every capture and would make every frame look new). Identical frames are skipped before the downscale and the encode, so the saving covers both the ~7 ms resize and the ~4 ms encode. A keepalive cap of `fps` frames (one second) forces an encode even on a perfectly static screen, so a late joiner and a loss-recovering viewer always get fresh data; the counter resets on every encode, so the cap is a bound on *consecutive* skips, not a total. A source swap and a downgrade both reset the gate, because the reference frame the encoder holds no longer describes the new input.
+**Design:** the gate hashes pixel content (not `seq`, which increments on every capture and would make every frame look new). Identical frames are skipped before the downscale and the encode, so the saving covers both the ~7 ms resize and the ~4 ms encode. A keepalive cap of `fps` frames (one second) forces an encode even on a perfectly static screen, so a late joiner and a loss-recovering viewer always get fresh data; the counter resets on every encode, so the cap is a bound on *consecutive* skips, not a total. A source swap, a bitrate retarget, and a profile downgrade all reset the gate, because the reference frame the encoder holds no longer describes the new input (spec §4.2.4 item 4). Skipped ticks are not encoded ticks, so they do not advance `encoded`; the periodic `desktop-stats` emission would therefore freeze on a static screen, so the skip branch emits its own stats frame at most once per second (spec §4.2.4 item 5).
+
+**Open question — signature cost vs spec §4.2.4 item 1.** The spec sketches a two-stage signature: a sparse probe over the buffer, with a full-buffer FNV-1a pass only when the probe matches. This plan implements a single-stage full-buffer FNV-1a over 64-bit words on every frame, because the sparse probe as written is unsound for this pipeline: a solid-colour surface makes every sampled pixel identical regardless of what changed between samples, so a probe that samples only every 64th pixel would report "unchanged" for a frame whose entire content moved inside a sampled gap — the very case `static_frame_skip_detects_a_single_pixel_change` pins. Making the probe sound needs a tile-grid maximum-difference pass, which costs a second full read of the buffer and buys nothing over the single pass. **Recommended default:** keep the single-pass FNV-1a and treat the spec's item 1 wording as illustrative, as its own "(for example, …)" clause signals. **If wrong:** a static 1080p screen pays one extra full-buffer read per frame (~8.3 MB) that the two-stage design would avoid only on frames where the probe already matched — and those are exactly the frames where the full pass runs anyway. Recorded here rather than resolved silently; PM and the owner should confirm at review.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -941,17 +969,25 @@ Add to `apps/agent/src/desktop.rs`:
     #[test]
     fn static_frame_skip_respects_the_one_second_keepalive() {
         let mut gate = StaticFrameSkip::new(60.0);
+        // Reference frame: encoded, because the gate has nothing to compare to.
         gate.should_skip(&solid_frame(4, 4, 0x10, 0));
         let mut skipped = 0;
+        // The cap is `fps` *consecutive* skips, so the loop bound and the
+        // expected count are both 60: seq 1..=60 all skip, and the 61st frame
+        // is the one the cap forces through.
         for seq in 1..=60 {
             if gate.should_skip(&solid_frame(4, 4, 0x10, seq)) {
                 skipped += 1;
             }
         }
-        assert_eq!(skipped, 59, "59 skips, then the cap forces one encode");
+        assert_eq!(skipped, 60, "the cap allows `fps` skips, then one encode");
         assert!(
-            gate.should_skip(&solid_frame(4, 4, 0x10, 61)),
-            "the counter restarts after a forced encode"
+            !gate.should_skip(&solid_frame(4, 4, 0x10, 61)),
+            "the frame after the cap is encoded and becomes the new reference"
+        );
+        assert!(
+            gate.should_skip(&solid_frame(4, 4, 0x10, 62)),
+            "the counter restarts after the forced encode"
         );
     }
 
@@ -982,6 +1018,57 @@ Add to `apps/agent/src/desktop.rs`:
             seq: 0,
         };
         assert_ne!(frame_signature(&wide), frame_signature(&tall));
+    }
+
+    #[test]
+    fn stats_due_while_skipping_fires_once_per_second() {
+        let start = Instant::now();
+        assert!(!stats_due_while_skipping(start, start));
+        assert!(
+            !stats_due_while_skipping(start, start + Duration::from_millis(999)),
+            "just under a second is not due"
+        );
+        assert!(stats_due_while_skipping(start, start + Duration::from_secs(1)));
+    }
+
+    /// Spec §4.2.4 item 5: a static screen must still report stats. This drives
+    /// the real `StaticFrameSkip` and the real throttle predicate across one
+    /// second of identical frames and asserts both invariants the spec names:
+    /// `encoded` does not advance, and a stats frame is still produced.
+    #[test]
+    fn a_static_screen_emits_stats_without_encoding() {
+        let mut gate = StaticFrameSkip::new(60.0);
+        let mut encoded = 0u64;
+        let mut stats_emitted = 0u64;
+        let mut last_stats_at = Instant::now();
+        let mut now = last_stats_at;
+
+        // Tick 0: the gate has no reference, so this frame is encoded and the
+        // stream emits its first stats frame.
+        assert!(!gate.should_skip(&solid_frame(4, 4, 0x10, 0)));
+        encoded += 1;
+        stats_emitted += 1;
+
+        // 60 ticks at ~16.667 ms each = 1.00002 s, so the throttle fires exactly
+        // once across the loop. Integer microseconds keep that arithmetic exact.
+        for seq in 1..=60u64 {
+            now += Duration::from_micros(16_667);
+            if gate.should_skip(&solid_frame(4, 4, 0x10, seq)) {
+                if stats_due_while_skipping(last_stats_at, now) {
+                    last_stats_at = now;
+                    stats_emitted += 1;
+                }
+                continue;
+            }
+            encoded += 1;
+            stats_emitted += 1;
+        }
+
+        assert_eq!(encoded, 1, "every frame in the window was skipped");
+        assert_eq!(
+            stats_emitted, 2,
+            "one stats frame at stream start, one from the skip throttle"
+        );
     }
 ```
 
@@ -1062,6 +1149,15 @@ impl StaticFrameSkip {
         self.consecutive_skips = 0;
     }
 }
+
+/// Spec §4.2.4 item 5: while frames are being skipped, `encoded` does not
+/// advance, so the periodic `desktop-stats` emission (`encoded % fps_period`)
+/// would stop on a static screen. The skip branch emits at most one stats frame
+/// per second instead. This predicate is that whole rule, extracted as a free
+/// function so it is testable without a live stream.
+fn stats_due_while_skipping(last_stats_at: Instant, now: Instant) -> bool {
+    now.duration_since(last_stats_at) >= Duration::from_secs(1)
+}
 ```
 
 - [ ] **Step 4: Wire the gate into the tick body**
@@ -1071,7 +1167,13 @@ In `run_stream`, beside `let mut sustain = SustainMonitor::new(profile);`:
 ```rust
     let mut static_skip = StaticFrameSkip::new(profile.fps);
     let mut static_skipped: u64 = 0;
+    // Spec §4.2.4 item 5: skipped ticks do not advance `encoded`, so the
+    // periodic stats emission cannot be the only source of `desktop-stats`
+    // frames on a static screen. The skip branch emits its own, throttled here.
+    let mut last_stats_at = Instant::now();
 ```
+
+`Instant` is already imported at the top of the file (`use std::time::{Duration, Instant};`, line 7), so no new import is needed.
 
 In the tick arm, after `next_frame` succeeds and before `downscale`:
 
@@ -1081,11 +1183,32 @@ In the tick arm, after `next_frame` succeeds and before `downscale`:
                 // `should_skip` bounds how long a viewer can be starved.
                 if static_skip.should_skip(&frame) {
                     static_skipped += 1;
+                    // Spec §4.2.4 item 5: `encoded` must NOT advance here, so
+                    // the periodic emission below never runs on a static screen.
+                    // Report the last known size and the current timings at most
+                    // once per second instead. `send_stats` is already an
+                    // in-scope closure, so this is a call, not a refactor.
+                    let now = Instant::now();
+                    if stats_due_while_skipping(last_stats_at, now) {
+                        last_stats_at = now;
+                        let (fs_seq, cap_p50, enc_p50, enc_samples) =
+                            timing_snapshot(&timing_ring, &last_frame_seq);
+                        send_stats(
+                            &events, encoded_size, profile, None, fs_seq, cap_p50, enc_p50,
+                            enc_samples,
+                        );
+                    }
                     continue;
                 }
 ```
 
-In the `SourceSwap` success arm (the `Ok(new_encoder)` branch), add `static_skip.reset();` next to `encoder = new_encoder;`. In the downgrade arm (Task 5), add `static_skip.reset();` beside `sustain = SustainMonitor::new(profile);`.
+`send_stats` is defined earlier in `run_stream` as a closure capturing `events`, so it is callable here without threading anything through. The call passes `encoded_size` — the last *encoded* frame's dimensions, which is what the spec means by "last known `encoded_size`" — and `None` for the status, because a skip is not a state transition.
+
+The gate must be invalidated on every control event the spec names (spec §4.2.4 item 4). Add `static_skip.reset();` in all three places:
+
+1. **Bitrate retarget** — in the `StreamControl::SetBitrate(bps)` success arm, beside `sustain.note_bitrate_change(profile);`. The encoder is reconfigured for a new target, so the signature the gate holds no longer describes what will be encoded next.
+2. **Source swap** — in the `Ok(new_encoder)` arm, next to `encoder = new_encoder;`.
+3. **Profile downgrade** — in the downgrade arm (Task 5), beside `sustain = SustainMonitor::new(profile);`.
 
 In the debug diagnostic line, include the skip count so the behaviour is observable:
 
@@ -1108,7 +1231,11 @@ git add apps/agent/src/desktop.rs
 git commit -m "feat(agent): skip re-encoding pixel-identical frames with a keepalive cap"
 ```
 
-**TEST-INTEGRITY** (`apps/agent/src/desktop.rs`): +6 `#[test]`, 12 assertions, plus one local helper `solid_frame`. No existing test touched; `TestPatternSource` is untouched, so no test that depends on its output changes.
+**TEST-INTEGRITY** (`apps/agent/src/desktop.rs` — baseline 57 `#[test]` + 9 `#[tokio::test]`; after Task 5: 64 + 9): **+8 `#[test]`**, 16 assertions, plus one local helper `solid_frame`. The eight are `static_frame_skip_detects_identical_pixels`, `static_frame_skip_lets_a_changed_frame_through`, `static_frame_skip_detects_a_single_pixel_change`, `static_frame_skip_respects_the_one_second_keepalive`, `static_frame_skip_reset_forces_the_next_frame_through`, `frame_signature_distinguishes_dimensions`, `stats_due_while_skipping_fires_once_per_second`, and `a_static_screen_emits_stats_without_encoding`. No existing test is touched; `TestPatternSource` is untouched, so no test that depends on its output changes.
+
+The last two are the spec §4.2.4 item 5 pins: the first asserts the throttle predicate itself, the second drives the real `StaticFrameSkip` and the real predicate across one second of identical frames and asserts both invariants — `encoded` stays at 1 and a second stats frame is still produced. The keepalive test's `skipped == 60` count is checkable from its own loop bound: `for seq in 1..=60` with `max_consecutive_skips = fps.round() as u32 = 60`, and the counter is incremented *after* the cap check, so all sixty iterations skip and the 61st frame is the one the cap forces through.
+
+Running total after this task: 72 `#[test]` + 9 `#[tokio::test]` (+15 `#[test]`, +0 tokio across Tasks 2, 3, 5, 6).
 
 ---
 

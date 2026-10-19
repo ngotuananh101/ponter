@@ -4,6 +4,8 @@
 
 **Goal:** Give every agent a human-friendly 9-digit Device Code (`XXX XXX XXX`) that resolves through the API, the desktop app, and the web dashboard, and classify non-JSON 5xx HTTP responses as `SERVER_ERROR` (Issue #152).
 
+**Execution Order:** Phase 15 (this plan) lands **first**; Phase 16 (60 FPS transmission optimization) lands **second**. This plan owns `deviceCode` across the server, shared types, desktop main IPC, and renderer views. Phase 16 owns the desktop-profile plumbing (`desktopProfile`, `AGENT_DESKTOP_PROFILE`, and the profile tests in `config.test.ts` / `agent-supervisor.test.ts`), which builds on the `AppConfig` and `ipc-types.ts` structures this plan establishes.
+
 **Architecture:** The shared `@ponter/shared` package owns the two pure helpers (`formatDeviceCode`, `normalizeDeviceCode`). The Node server cannot import `@ponter/shared` at runtime — it ships raw TypeScript and production runs compiled JS — so the server keeps a byte-for-byte mirror of `normalizeDeviceCode` plus the allocator and the backfill, pinned by a drift test modelled on `apps/server/test/identity-proof-mirror.test.ts`. The database column is added by the inline migration in `apps/server/src/db/client.ts` (this repo has no Drizzle migration folder). `POST /api/sessions` and `GET /api/agents/:id` resolve either the canonical `agents.id` or a normalised device code, always scoped to the caller's tenancy, and always return the canonical id.
 
 **Tech Stack:** TypeScript, Drizzle ORM (better-sqlite3 driver), Hono, Electron 35, Vue 3, Vitest, Prettier.
@@ -20,6 +22,7 @@
 - **UI primitives:** do not modify generated files in `packages/ui-components/src/components/ui/**`. Wrap outside them.
 - **Storage:** zero `localStorage` / `sessionStorage` in the desktop renderer (R8). The desktop persists configuration through the `desktop:save-config` IPC only.
 - **Backward compatibility:** every existing endpoint keeps accepting the raw `agentId` (`dev_xxxxxxxx`), and `agents.id` remains the primary key, the keychain suffix, and the session foreign key.
+- **Phase ordering & single ownership:** Phase 15 (device code) lands before Phase 16 (60 FPS); Phase 16 Task 4 edits files Phase 15 Task 6 already changed, and must preserve the `deviceCode` field. All desktop-profile plumbing (`desktopProfile`, `AGENT_DESKTOP_PROFILE`, and their tests in `config.test.ts` / `agent-supervisor.test.ts`) is owned solely by Phase 16 Task 4 and is not duplicated here.
 
 ## Review Focus
 
@@ -289,12 +292,18 @@ export function normalizeDeviceCode(raw: string): string {
  */
 export function generateDeviceCode(): string {
   const buf = new Uint32Array(1);
+  // Reject the top partial bucket so the modulo below is unbiased.
   const limit =
     Math.floor(0x1_0000_0000 / DEVICE_CODE_SPACE) * DEVICE_CODE_SPACE;
+  let value: number;
   do {
     crypto.getRandomValues(buf);
-  } while (buf[0] >= limit);
-  return String(MIN_DEVICE_CODE + (buf[0] % DEVICE_CODE_SPACE));
+    // `noUncheckedIndexedAccess` (tsconfig.base.json) types `buf[0]` as
+    // `number | undefined`; narrow once into a local so both the loop
+    // condition and the modulo are checked.
+    value = buf[0]!;
+  } while (value >= limit);
+  return String(MIN_DEVICE_CODE + (value % DEVICE_CODE_SPACE));
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -522,15 +531,50 @@ In `apps/server/src/utils/agent.ts`, inside the `toPublicAgent` object literal, 
     deviceCode: agent.deviceCode ?? null,
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 5: Update every typed `Agent` fixture in the repository**
 
-Run: `pnpm --filter @ponter/server test`
-Expected: PASS, including the pre-existing `db.test.ts` and every other server suite.
+`Agent` is a **required** contract, so every object literal typed as `Agent` now fails typecheck until it carries `deviceCode`. Add `deviceCode: null,` beside the existing `signingPublicKey` line in each literal below (or a real 9-digit value where the test asserts on it).
 
-- [ ] **Step 6: Commit**
+The list below was produced by adding `deviceCode: string | null;` to `Agent` on the base commit and running `pnpm typecheck` for each package. Every row is a line the compiler named; nothing here is inferred from a `signingPublicKey` grep. **Exactly six literals break, all in `@ponter/web`; `@ponter/desktop` typechecks clean at this step**, because `DesktopDevice` and `AppConfig` do not gain the field until Task 6.
+
+| File | Literal | Compiler line | `signingPublicKey` line | Why it breaks |
+|---|---|---|---|---|
+| `apps/web/src/__tests__/DashboardView.test.ts` | return value of `makeAgent(): Agent` (declared line 40) | 41 | 49 | the function's return type is `Agent` |
+| `apps/web/src/__tests__/EditAgentDialog.test.ts` | return value of `createMockAgent(): Agent` (declared line 7) | 8 | 16 | same |
+| `apps/web/src/__tests__/DeleteAgentDialog.test.ts` | return value of `createMockAgent(): Agent` (declared line 7) | 8 | 16 | same |
+| `apps/web/src/__tests__/RegisterAgentDialog.test.ts` | return value of `createMockAgent(): Agent` (declared line 7) | 8 | 16 | same |
+| `apps/web/src/__tests__/TerminalComponents.test.ts` | first agent literal inside `mockResolvedValue([...])` | 191 | 199 | `apiClient.agents.list` is typed `Promise<Agent[]>`, so the array is checked against `Agent` |
+| `apps/web/src/__tests__/TerminalComponents.test.ts` | second agent literal in the same array | 205 | 213 | same |
+
+Add `deviceCode: null,` on the line directly after each of those six `signingPublicKey` lines. Nothing else in those files changes.
+
+Three groups look like they need the field but **do not**, and changing them would be noise:
+
+| File | Why no change |
+|---|---|
+| `apps/web/src/__tests__/AppHeader.test.ts` (`makeUser`, line 15), `AdminView.test.ts` (`makeUser`, line 39), `RegisterView.test.ts` (`mockUser: User`, line 67), `router-admin-guard.test.ts` (`makeAdminUser` line 12, `makeRegularUser` line 26) | every one of these is typed `User`, not `Agent`; `User` does not gain `deviceCode` |
+| `apps/desktop/src/main/__tests__/devices.test.ts` (eight `signingPublicKey` lines: 69, 96, 114, 149, 204, 314, 435, 474) | these are untyped object literals handed to `sessionMock.retryOnceOn401` (`vi.fn()`, no signature) and to `apiClientMock.agents.create` (also untyped), so typecheck does not force the field. The exact-object assertion at line 88 **does** fail at runtime once the mapper starts emitting the key — but that happens in Task 6, and Task 6 Step 1 owns that fixture. Leave these literals alone here. |
+| `apps/desktop/src/renderer/__tests__/devices.test.ts` (`sampleDevice: DesktopDevice`, line 19; `localDevice` at line 395 spreads it) | `DesktopDevice` does not gain `deviceCode` until Task 6 Step 3. Adding the field here would be an excess-property error against today's type. Task 6 Step 5 owns it. |
+| `apps/desktop/src/main/__tests__/fleet.test.ts` | `{ id: 'agent-1', hostname: 'test-host' }` flows through `vi.fn()`; there is no `Agent` annotation anywhere in the file. `apps/desktop/src/main/fleet.ts` has no object literal at all — only `private currentAgents: Agent[] = []` and `getAgents(): Agent[]`, both satisfied by the API's own values. |
+
+`apps/server/src/utils/agent.ts` also fails typecheck at this point (line 101, `toPublicAgent`'s literal). That is Step 4 of this task, not a fixture.
+
+This is a **mechanical fixture update**, not a TEST-INTEGRITY event: zero assertions change, no `it()` is added or removed, and no `expect()` is added or removed. The `it()` / `expect()` counts for every file above stay exactly as they are.
+
+- [ ] **Step 6: Run the typecheck and the tests to verify the list is complete**
+
+Run: `pnpm typecheck`
+Expected: PASS with 0 errors. This is the gate that proves the fixture list is complete: a missed literal is a type error, not a runtime failure, so the suite alone would not catch it.
+
+**Scope note.** The repo-wide `pnpm typecheck` runs `tsc --noEmit` for every package. `apps/server/tsconfig.json` excludes its `test/` directory, so server-side test fixtures are **not** type-checked by this gate — for example `apps/server/test/cleanup.test.ts:23` inserts an agent row directly via `db.insert(agents).values({...})` and no compiler pass would flag it. Those fixtures are validated by the `pnpm --filter @ponter/server test` run in Step 6 of this task, and by the server test run in Task 9. `apps/web`, `apps/desktop`, `packages/shared`, and `packages/api-client` all typecheck their `__tests__` directories, so those fixtures are caught here.
+
+Run: `pnpm --filter @ponter/server test && pnpm --filter @ponter/desktop test && pnpm --filter @ponter/web test`
+Expected: PASS, including the pre-existing `db.test.ts` and every other suite.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add apps/server/src/db/schema.ts apps/server/src/db/client.ts apps/server/src/utils/agent.ts apps/server/src/utils/device-code.ts packages/shared/src/types/user.ts apps/server/test/db.test.ts apps/server/test/device-code.test.ts
+git add apps/server/src/db/schema.ts apps/server/src/db/client.ts apps/server/src/utils/agent.ts apps/server/src/utils/device-code.ts packages/shared/src/types/user.ts apps/server/test/db.test.ts apps/server/test/device-code.test.ts apps/desktop/src/main/__tests__/devices.test.ts apps/desktop/src/renderer/__tests__/devices.test.ts apps/web/src/__tests__/DashboardView.test.ts apps/web/src/__tests__/TerminalComponents.test.ts apps/web/src/__tests__/EditAgentDialog.test.ts apps/web/src/__tests__/DeleteAgentDialog.test.ts apps/web/src/__tests__/RegisterAgentDialog.test.ts
 git commit -m "feat(server): add device_code column, inline migration, and backfill"
 ```
 
@@ -540,6 +584,13 @@ git commit -m "feat(server): add device_code column, inline migration, and backf
 |---|---|---|---|
 | `apps/server/test/db.test.ts` | 2 `it()` / 4 `expect()` (re-measure at execution) | +1 `it()`, +3 `expect()` | pins the column and the unique index added by the inline migration |
 | `apps/server/test/device-code.test.ts` | 3 `it()` / ~2,000 assertions from Task 2 | +2 `it()`, +5 `expect()` | pins backfill idempotency and the exported normaliser |
+| `apps/desktop/src/main/__tests__/devices.test.ts` | 20 `it()` / 41 `expect()` | unchanged — fixture-only | the required `Agent.deviceCode` field is added to every typed literal; no assertion changes |
+| `apps/desktop/src/renderer/__tests__/devices.test.ts` | 53 `it()` + 1 `it.each` / 140 `expect()` | unchanged — fixture-only | same |
+| `apps/web/src/__tests__/DashboardView.test.ts` | 9 `it()` / 23 `expect()` | unchanged — fixture-only | same |
+| `apps/web/src/__tests__/TerminalComponents.test.ts` | re-measure at execution | unchanged — fixture-only | same |
+| `apps/web/src/__tests__/EditAgentDialog.test.ts` | re-measure at execution | unchanged — fixture-only | same |
+| `apps/web/src/__tests__/DeleteAgentDialog.test.ts` | re-measure at execution | unchanged — fixture-only | same |
+| `apps/web/src/__tests__/RegisterAgentDialog.test.ts` | re-measure at execution | unchanged — fixture-only | same |
 
 ---
 
@@ -1000,7 +1051,7 @@ git commit -m "fix(api-client): classify non-JSON 5xx responses as SERVER_ERROR 
 
 ---
 
-### Task 6: Desktop main contracts and profile plumbing
+### Task 6: Desktop main contracts
 
 **Files:**
 - Modify: `apps/desktop/src/shared/ipc-types.ts`
@@ -1008,16 +1059,14 @@ git commit -m "fix(api-client): classify non-JSON 5xx responses as SERVER_ERROR 
 - Modify: `apps/desktop/src/main/devices.ts`
 - Modify: `apps/desktop/src/main/ipc.ts`
 - Modify: `apps/desktop/src/main/config.ts`
-- Modify: `apps/desktop/src/main/agent-supervisor.ts`
-- Modify: `apps/desktop/src/main/agent-control.ts`
 - Test: `apps/desktop/src/main/__tests__/devices.test.ts`
 - Test: `apps/desktop/src/main/__tests__/ipc.test.ts`
-- Test: `apps/desktop/src/main/__tests__/config.test.ts`
-- Test: `apps/desktop/src/main/__tests__/agent-supervisor.test.ts`
 
 **Interfaces:**
 - Consumes: `Agent.deviceCode` (Task 3); `normalizeDeviceCode` from `@ponter/shared` (Task 1).
-- Produces: `DesktopDevice.deviceCode: string | null`; `AppConfig.deviceCode`; `AppConfig.desktopProfile`; `SupervisorConfig.desktopProfile`; `AGENT_DESKTOP_PROFILE` in the sidecar environment.
+- Produces: `DesktopDevice.deviceCode: string | null`; `AppConfig.deviceCode`; `SaveConfigPayload.deviceCode`; the normalised partner URL.
+
+**Scope:** this task carries the device code only. Desktop-profile plumbing (`desktopProfile`, `AGENT_DESKTOP_PROFILE`, and their `config.test.ts` / `agent-supervisor.test.ts` cases) belongs to Phase 16 Task 4 and must not be added here.
 
 **Why `@ponter/shared` is safe here but not on the server:** `apps/desktop/electron.vite.config.ts` lists `@ponter/shared` in `WORKSPACE_PACKAGES` and excludes it from `externalizeDepsPlugin`, so the main and preload bundles inline the TypeScript. The renderer bundles it natively through Vite. Nothing resolves it through Node at runtime.
 
@@ -1059,94 +1108,18 @@ In `apps/desktop/src/main/__tests__/ipc.test.ts`, inside `describe('desktop:open
       },
 ```
 
-In `apps/desktop/src/main/__tests__/config.test.ts`, append:
-
-```ts
-  it('defaults desktopProfile to 1080p30 and persists a valid value', () => {
-    const manager = new ConfigManager('/tmp/test-config.json', {});
-    vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}));
-    expect(manager.load().desktopProfile).toBe('1080p30');
-
-    manager.save({ desktopProfile: '1080p60' });
-    const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1];
-    expect(String(written)).toContain('"desktopProfile":"1080p60"');
-  });
-
-  it('normalises an unknown persisted desktopProfile to 1080p30', () => {
-    const manager = new ConfigManager('/tmp/test-config.json', {});
-    vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ desktopProfile: '1080p' }),
-    );
-    expect(manager.load().desktopProfile).toBe('1080p30');
-  });
-```
-
-This file mocks the whole `fs` module, so these tests follow the same `vi.mocked(fs.readFileSync).mockReturnValue(...)` shape the other cases use rather than writing real temp files.
-
-In `apps/desktop/src/main/__tests__/agent-supervisor.test.ts`, append:
-
-```ts
-  it('emits AGENT_DESKTOP_PROFILE with the configured value', () => {
-    keychainMock.getSecret.mockReturnValue('ag_credential');
-    const supervisor = new AgentSupervisor(keychainMock as any);
-    const env = supervisor.buildEnvironment({
-      agentId: 'dev_aaaaaaaa',
-      serverUrl: 'http://localhost:8787',
-      allowInput: false,
-      desktopProfile: '1080p60',
-    });
-    expect(env.AGENT_DESKTOP_PROFILE).toBe('1080p60');
-  });
-
-  it('emits the safe default when no profile is configured', () => {
-    keychainMock.getSecret.mockReturnValue('ag_credential');
-    const supervisor = new AgentSupervisor(keychainMock as any);
-    const env = supervisor.buildEnvironment({
-      agentId: 'dev_aaaaaaaa',
-      serverUrl: 'http://localhost:8787',
-      allowInput: false,
-    });
-    expect(env.AGENT_DESKTOP_PROFILE).toBe('1080p30');
-  });
-```
-
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm --filter @ponter/desktop test -- devices.test ipc.test config.test agent-supervisor.test`
-Expected: FAIL — `deviceCode` is `undefined`, the spaced code URL-encodes to `749%20281%20903`, and `desktopProfile` / `AGENT_DESKTOP_PROFILE` do not exist.
+Run: `pnpm --filter @ponter/desktop test -- devices.test ipc.test`
+Expected: FAIL — `deviceCode` is `undefined` and the spaced code URL-encodes to `749%20281%20903`.
 
-- [ ] **Step 3: Extend the IPC contract and profile guard**
+- [ ] **Step 3: Extend the IPC contract**
 
-In `apps/desktop/src/shared/ipc-types.ts`, add above `interface AppConfig`:
-
-```ts
-export const DESKTOP_PROFILES = [
-  '1080p30',
-  '720p30',
-  '1080p60',
-  '720p60',
-] as const;
-export type DesktopProfileName = (typeof DESKTOP_PROFILES)[number];
-export const DEFAULT_DESKTOP_PROFILE: DesktopProfileName = '1080p30';
-
-/** Any absent, unknown, or non-string value resolves to the safe default. */
-export function normalizeDesktopProfile(raw: unknown): DesktopProfileName {
-  return typeof raw === 'string' &&
-    (DESKTOP_PROFILES as readonly string[]).includes(raw)
-    ? (raw as DesktopProfileName)
-    : DEFAULT_DESKTOP_PROFILE;
-}
-```
-
-Add to `AppConfig`:
+In `apps/desktop/src/shared/ipc-types.ts`, add to `AppConfig`:
 
 ```ts
   /** This machine's own Device Code, cached so "This Device" reads offline. */
   deviceCode: string | null;
-  /** Desktop stream profile forwarded to the sidecar as AGENT_DESKTOP_PROFILE. */
-  desktopProfile: DesktopProfileName;
 ```
 
 Add to `SaveConfigPayload`:
@@ -1154,8 +1127,6 @@ Add to `SaveConfigPayload`:
 ```ts
   /** `undefined` = unchanged, `null` = forget the cached code. */
   deviceCode?: string | null;
-  /** `undefined` = unchanged. An invalid value is normalised to 1080p30. */
-  desktopProfile?: DesktopProfileName;
 ```
 
 Add to `interface DesktopDevice` (in the same file), after `signingPublicKey`:
@@ -1198,7 +1169,7 @@ In `listDevices()`, refresh the cache when the local agent is present:
 
 In `getLocalAgentId()`, clear the cache when the id is forgotten, using the existing `this.config.save({ localAgentId: null });` call (extend it with `deviceCode: null`). In `deleteDevice()`, where a delete clears `localAgentId`, also clear `deviceCode`.
 
-- [ ] **Step 5: Normalise the IPC URL and plumb the profile**
+- [ ] **Step 5: Normalise the IPC URL and cache the code**
 
 In `apps/desktop/src/main/ipc.ts`, import the shared helper and normalise:
 
@@ -1212,14 +1183,13 @@ import { normalizeDeviceCode } from '@ponter/shared';
 
 Everything after it — the mode whitelist, the URL parse, the protocol check, the subpath preservation, and `shell.openExternal` — is unchanged.
 
-In `apps/desktop/src/main/config.ts`, add `normalizeDesktopProfile` to the existing `../shared/ipc-types` import; in `load()` return:
+In `apps/desktop/src/main/config.ts`, in `load()` return:
 
 ```ts
       deviceCode:
         typeof persisted.deviceCode === 'string' && persisted.deviceCode
           ? persisted.deviceCode
           : null,
-      desktopProfile: normalizeDesktopProfile(persisted.desktopProfile),
 ```
 
 and in `save()`'s `updated` object:
@@ -1230,46 +1200,25 @@ and in `save()`'s `updated` object:
         payload.deviceCode !== undefined
           ? payload.deviceCode
           : persisted.deviceCode ?? null,
-      desktopProfile:
-        payload.desktopProfile !== undefined
-          ? normalizeDesktopProfile(payload.desktopProfile)
-          : normalizeDesktopProfile(persisted.desktopProfile),
 ```
 
-In `apps/desktop/src/main/agent-supervisor.ts`, add to `SupervisorConfig`:
-
-```ts
-  desktopProfile?: DesktopProfileName;
-```
-
-import the type from `../shared/ipc-types`, and add to the `env` literal in `buildEnvironment()`:
-
-```ts
-      AGENT_DESKTOP_PROFILE: config.desktopProfile ?? DEFAULT_DESKTOP_PROFILE,
-```
-
-In `apps/desktop/src/main/agent-control.ts`, forward it in `startNow()`:
-
-```ts
-      this.deps.supervisor.start({
-        agentId,
-        serverUrl: cfg.serverUrl ?? '',
-        allowInput: cfg.allowInput,
-        identityPath: this.deps.identityPath,
-        desktopProfile: cfg.desktopProfile,
-      });
-```
+`apps/desktop/src/main/__tests__/config.test.ts` contains one exact-object assertion, `expect(written).toEqual({ ... })` in `does not persist the localhost fallback when no URL was ever set`. The written object now has one more key, so add `deviceCode: null,` to that literal. Nothing else in the file changes: no `it()` is added, removed, or renamed, and no other assertion is touched.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `pnpm --filter @ponter/desktop typecheck && pnpm --filter @ponter/desktop test`
-Expected: PASS. Any test fixture that constructs an `AppConfig` or `DesktopDevice` literal now needs the new required fields; add them with real values (`deviceCode: null`, `desktopProfile: '1080p30'`) rather than weakening an assertion.
+Expected: PASS. Any test fixture that constructs an `AppConfig` or `DesktopDevice` literal now needs `deviceCode`; add it with a real value (`deviceCode: null`) rather than weakening an assertion.
+
+**Exact-object assertions.** Two existing fixtures assert full mapped/converted objects and must be extended in place, not rewritten:
+
+- `apps/desktop/src/main/__tests__/devices.test.ts:88` — `expect(result[0]).toEqual({ ... })`, the `listDevices` mapping test. Add `deviceCode: '749281903',` to the expected literal (the fixture at line 69 gets the same value in Step 1).
+- `apps/desktop/src/main/__tests__/config.test.ts:83` — `expect(written).toEqual({ ... })` in `does not persist the localhost fallback when no URL was ever set`. Add `deviceCode: null,` to the expected literal, forced by the new key in `save()`'s output (Step 5).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/desktop/src/shared/ipc-types.ts apps/desktop/src/renderer/types.ts apps/desktop/src/main/devices.ts apps/desktop/src/main/ipc.ts apps/desktop/src/main/config.ts apps/desktop/src/main/agent-supervisor.ts apps/desktop/src/main/agent-control.ts apps/desktop/src/main/__tests__/
-git commit -m "feat(desktop): carry deviceCode through the IPC contract and forward the desktop profile"
+git add apps/desktop/src/shared/ipc-types.ts apps/desktop/src/renderer/types.ts apps/desktop/src/main/devices.ts apps/desktop/src/main/ipc.ts apps/desktop/src/main/config.ts apps/desktop/src/main/__tests__/
+git commit -m "feat(desktop): carry deviceCode through the IPC contract"
 ```
 
 **TEST-INTEGRITY** (re-measured at execution; baselines from the spec's base commit):
@@ -1278,8 +1227,9 @@ git commit -m "feat(desktop): carry deviceCode through the IPC contract and forw
 |---|---|---|---|
 | `main/__tests__/devices.test.ts` | 20 `it()` / 41 `expect()` | +0 `it()`, +2 `expect()` | asserts both mappers propagate `deviceCode`, including `null` |
 | `main/__tests__/ipc.test.ts` | 23 declarations (20 `it()` + 3 `it.each`) / 53 `expect()` | +3 rows on the existing `it.each` (declaration count unchanged), +0 `expect()` | pins spaced/hyphenated normalisation and legacy preservation |
-| `main/__tests__/config.test.ts` | 12 `it()` / 27 `expect()` | +2 `it()`, +4 `expect()` | pins the profile default, round-trip, and invalid-value fallback |
-| `main/__tests__/agent-supervisor.test.ts` | 11 `it()` / 27 `expect()` | +1 `it()`, +1 `expect()` | pins `AGENT_DESKTOP_PROFILE` |
+| `main/__tests__/config.test.ts` | 12 `it()` / 27 `expect()` | 12 `it()` / 27 `expect()` — unchanged counts | the single exact-object `toEqual` gains `deviceCode: null`, forced by the new field in `save()`'s output; no test is added, removed, or weakened |
+
+`agent-supervisor.test.ts` is **not** touched by this task: the profile cases it gains belong to Phase 16 Task 4, which also adds its own `it()` cases to `config.test.ts`.
 
 ---
 
@@ -1470,25 +1420,47 @@ git commit -m "feat(desktop): show the device code on this-device and group part
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `apps/web/src/__tests__/DashboardView.test.ts`:
+In `apps/web/src/__tests__/DashboardView.test.ts`, the `useRouter` mock currently returns a fresh object per call:
+
+```ts
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  useRoute: () => ({ params: {} }),
+}));
+```
+
+That mock is module-scoped and hoisted, so a test cannot reach the `push` it produced. Hoist one shared spy above the mock (vitest hoists `vi.mock` above the file body, so the variable must be created with `vi.hoisted`):
+
+```ts
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }));
+
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: pushMock }),
+  useRoute: () => ({ params: {} }),
+}));
+```
+
+Clear it in the existing `beforeEach` — add `pushMock.mockClear();` there alongside the other `resetHistory()` / `mockReset()` calls, so each test starts with an empty call log and the `expect(pushMock).toHaveBeenCalledWith(...)` assertion in the third new test is isolated from the router pushes the mount helper triggers. Without the clear, a prior test's `push` call leaks into this test and the assertion becomes order-dependent. `mountDashboard(agents: Agent[])` takes fully typed `Agent` values, so build every fixture with the file's `makeAgent()` factory rather than a partial literal — a partial literal is a type error once the array parameter is `Agent[]`.
+
+Then append:
 
 ```ts
   it('renders the device code in grouped form and the placeholder when absent', async () => {
     const wrapper = await mountDashboard([
-      { id: 'dev_a', deviceCode: '749281903', hostname: 'a' },
-      { id: 'dev_b', deviceCode: null, hostname: 'b' },
+      makeAgent({ id: 'dev_a', deviceCode: '749281903', hostname: 'a' }),
+      makeAgent({ id: 'dev_b', deviceCode: null, hostname: 'b' }),
     ]);
     expect(
       wrapper.find('[data-testid="agent-device-code-dev_a"]').text(),
-    ).toContain('749 281 903');
+    ).toBe('749 281 903');
     expect(
       wrapper.find('[data-testid="agent-device-code-dev_b"]').text(),
-    ).toContain('—');
+    ).toBe('—');
   });
 
   it('matches the search query against the device code with and without spaces', async () => {
     const wrapper = await mountDashboard([
-      { id: 'dev_a', deviceCode: '749281903', hostname: 'a' },
+      makeAgent({ id: 'dev_a', deviceCode: '749281903', hostname: 'a' }),
     ]);
     await wrapper.find('[data-testid="agent-search"]').setValue('749 281');
     expect(wrapper.findAll('[data-testid^="agent-card-"]')).toHaveLength(1);
@@ -1499,7 +1471,7 @@ Append to `apps/web/src/__tests__/DashboardView.test.ts`:
 
   it('still launches a shell with the canonical agent id, not the code', async () => {
     const wrapper = await mountDashboard([
-      { id: 'dev_a', deviceCode: '749281903', hostname: 'a' },
+      makeAgent({ id: 'dev_a', deviceCode: '749281903', hostname: 'a' }),
     ]);
     await wrapper.find('[data-testid="launch-shell-dev_a"]').trigger('click');
     expect(pushMock).toHaveBeenCalledWith({
@@ -1509,17 +1481,76 @@ Append to `apps/web/src/__tests__/DashboardView.test.ts`:
   });
 ```
 
-Use the file's existing mount helper and router mock; if the current search input and launch button have no test ids, add `data-testid="agent-search"` and `data-testid="launch-shell-${a.id}"` in Step 3 and keep the assertions as written.
+**Test attributes.** `apps/web/src/views/DashboardView.vue` currently has three test attributes, and all three use the older `data-test` spelling:
 
-Append to `apps/web/src/__tests__/WorkspaceView.test.ts`:
+| Existing attribute | Element | Line |
+|---|---|---|
+| `data-test="security-details-toggle"` | the details toggle on the security tile | 299 |
+| `` :data-test="`edit-agent-${a.id}`" `` | the Edit button on each card | 520 |
+| `` :data-test="`delete-agent-${a.id}`" `` | the Delete button on each card | 530 |
+
+The search input (line ~383), the card container (line ~433), and the Launch Shell button (line ~486) have **no** test attribute at all.
+
+Step 3 adds five new attributes, all deliberately spelled **`data-testid`** to match the newer convention used by the rest of the desktop and web suites:
+
+| Attribute to add | Element |
+|---|---|
+| `data-testid="agent-search"` | the search `<Input>` (line ~383) |
+| `` :data-testid="`agent-card-${a.id}`" `` | the `<div v-for="a in filteredAgents">` container (line ~433) |
+| `` :data-testid="`launch-shell-${a.id}`" `` | the Launch Shell `<Button>` (line ~486) |
+| `` :data-testid="`agent-device-code-${a.id}`" `` | the device-code `<span>` that replaces the `ID:` line |
+| `` :data-testid="`copy-device-code-${a.id}`" `` | the Copy `<button>` beside it |
+
+The three existing `data-test` attributes must **not** be renamed. The pre-existing tests select them by `[data-test="edit-agent-..."]` and `[data-test="delete-agent-..."]`, so a rename breaks five tests that have nothing to do with this change. Adding `data-testid` alongside `data-test` on the same element is also unnecessary — the two manage buttons keep their `data-test` untouched.
+
+In `apps/web/src/__tests__/WorkspaceView.test.ts`:
+
+The suite's `vue-router` mock returns a fixed empty params object, and its `mountWorkspace()` helper takes no arguments:
 
 ```ts
-  it('opens a tab with a device-code route parameter and passes it to sessions.create', async () => {
-    const wrapper = await mountWorkspace('749 281 903');
-    expect(terminalStore.openTab).toHaveBeenCalledWith('749 281 903');
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ params: {} }),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
+function mountWorkspace() {
+  return mount(WorkspaceView, { global: { stubs: STUBS } });
+}
+```
+
+`vi.mock` is hoisted above the file body, so a plain `let` declared below it would be in its temporal dead zone when the factory runs. Hoist the mutable params object with `vi.hoisted` instead:
+
+```ts
+const routeState = vi.hoisted(() => ({
+  params: {} as Record<string, string>,
+}));
+
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ params: routeState.params }),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+```
+
+Reset it in the existing `beforeEach`: `routeState.params = {};`.
+
+Then append the new test. It keeps the zero-argument `mountWorkspace()` helper and drives the route through the hoisted state:
+
+```ts
+  it('opens a tab with a device-code route parameter on mount', async () => {
+    const store = useTerminalStore();
+    const openTab = vi.spyOn(store, 'openTab').mockResolvedValue('tab-new');
+    routeState.params = { agentId: '749 281 903' };
+
+    const wrapper = mountWorkspace();
+
+    expect(openTab).toHaveBeenCalledTimes(1);
+    expect(openTab).toHaveBeenCalledWith('749 281 903');
     expect(wrapper.exists()).toBe(true);
   });
 ```
+
+The route parameter is still named `agentId`, because `WorkspaceView.vue` reads `route.params.agentId` and forwards it unchanged to `terminalStore.openTab` — the *value* may now be a device code, but the route shape does not change and no router config is touched. The test pins exactly that: whatever string arrives in `agentId`, the store receives it verbatim, and the server resolves it in Task 4.
+
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1544,7 +1575,12 @@ Extend the search predicate in `filteredAgents` (line ~87):
 
 with `const query = searchQuery.value.toLowerCase();` computed once above the predicate, and keep the existing `hostname`, `id`, and `platform` clauses untouched.
 
-Replace the `ID:` block (lines ~477-478) with:
+In `apps/web/src/views/DashboardView.vue`:
+
+1. On the search `<Input>` (line ~383), add `data-testid="agent-search"`.
+2. On the card container `<div v-for="a in filteredAgents">` (line ~433), add `` :data-testid="`agent-card-${a.id}`" ``.
+3. On the Launch Shell `<Button>` (line ~486), add `` :data-testid="`launch-shell-${a.id}`" ``.
+4. Replace the `ID:` block (lines ~477-478) with:
 
 ```vue
                       <span>Device Code:</span>
@@ -1606,7 +1642,7 @@ git commit -m "feat(web): show and search by device code on the dashboard"
 
 - [ ] **Step 1: Append the trail entry**
 
-Append one entry to the §8 trail in `docs/ARCHITECTURE.md`, following the existing format, naming ADR-91 and the device-code change once the implementation PR's squash SHA exists. Leave the SHA as the literal `\`(squash SHA in next §8 update)\`` if this task lands before the squash, matching the convention used for PR #115.
+Append one entry to the §8 trail in `docs/ARCHITECTURE.md`, following the existing format, naming ADR-91 and the device-code change once the implementation PR's squash SHA exists. Leave the SHA as the literal placeholder `(squash SHA in next §8 update)` if this task lands before the squash, matching the convention used for PR #115.
 
 - [ ] **Step 2: Run the full gate**
 
