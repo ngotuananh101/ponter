@@ -2,6 +2,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema.js';
+import { backfillDeviceCodes } from '../utils/device-code.js';
 
 export type Database = BetterSQLite3Database<typeof schema>;
 
@@ -51,6 +52,7 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
       is_online INTEGER NOT NULL DEFAULT 0,
       last_ping_at TEXT,
       credential_hash TEXT UNIQUE,
+      device_code TEXT,
       capabilities TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -136,6 +138,19 @@ function runMigrations(sqlite: BetterSqlite3.Database): void {
       ALTER TABLE agents ADD COLUMN signing_public_key TEXT;
     `);
   } catch {}
+  // Phase 15: nullable device_code column (SQLite cannot ALTER ... UNIQUE,
+  // so uniqueness is enforced by the index below).
+  try {
+    sqlite.exec(`
+      ALTER TABLE agents ADD COLUMN device_code TEXT;
+    `);
+  } catch {}
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_device_code
+    ON agents(device_code);
+  `);
+  // Assign a code to every pre-existing agent row.
+  backfillDeviceCodes(sqlite);
 }
 
 /**

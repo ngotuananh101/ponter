@@ -57,6 +57,8 @@ export const agents = sqliteTable('agents', {
   lastPingAt: text('last_ping_at'),
   signingPublicKey: text('signing_public_key'),
   credentialHash: text('credential_hash'),
+  /** Phase 15: human-facing 9-digit code (ADR-91). Unique via `idx_agents_device_code`. */
+  deviceCode: text('device_code'),
   capabilities: text('capabilities'),
   createdAt: text('created_at')
     .notNull()

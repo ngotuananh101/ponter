@@ -70,6 +70,8 @@ export interface Agent {
   publicKey: string;
   /** WS2 Ed25519 signing public key (base64 raw), or null before first connect. */
   signingPublicKey: string | null;
+  /** Phase 15: human-facing 9-digit code (ADR-91), or null before allocation. */
+  deviceCode: string | null;
   isOnline: boolean;
   lastHeartbeat: string | null;
   capabilities: string[];

@@ -14,6 +14,7 @@ function createMockAgent(overrides: Partial<Agent> = {}): Agent {
     agentVersion: '0.1.0',
     publicKey: 'pk-1',
     signingPublicKey: null,
+    deviceCode: null,
     isOnline: true,
     lastHeartbeat: null,
     capabilities: ['terminal'],
