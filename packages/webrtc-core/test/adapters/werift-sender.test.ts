@@ -16,6 +16,21 @@ function fmtpLine(sdp: string, payloadType: number): string | undefined {
     .find((line) => line.startsWith(`a=fmtp:${payloadType} `));
 }
 
+/**
+ * The payload types on the answer's `m=video` line, in the order werift wrote
+ * them. This order is what `transceiver.codecs` reordering actually moves —
+ * `fmtp` content does not change at all, because werift echoes the offer's
+ * parameters verbatim regardless of which entry the sender points at.
+ */
+function answerPayloadTypeOrder(sdp: string): number[] {
+  const mLine = sdp.split(/\r\n|\n/).find((line) => line.startsWith('m=video'));
+  if (!mLine) return [];
+  return mLine
+    .split(' ')
+    .slice(3)
+    .map((token) => Number(token));
+}
+
 describe('WeriftAdapter.addTrack', () => {
   it('R-S1: with an H.264-only local list the negotiated sender is H.264', async () => {
     const adapter = new WeriftAdapter({
@@ -80,7 +95,15 @@ describe('WeriftAdapter.addTrack', () => {
     expect(sender.codec?.parameters).toBe(H264_MODE1);
   });
 
-  it('R-S3: the answer still echoes the browser fmtp verbatim, byte for byte', async () => {
+  /**
+   * This test pins a TRUE fact that is NOT R-S3's work: werift echoes the
+   * offer's `fmtp` parameters verbatim. It passes with or without
+   * `selectNegotiatedCodec` — werift never rewrites the parameters, whichever
+   * entry the sender points at. It is kept because that property is worth
+   * pinning, and it is named accordingly. R-S3's actual coverage is the
+   * ordering test below.
+   */
+  it('werift does not rewrite the fmtp parameters it echoes into the answer', async () => {
     const offer = buildOffer({ h264Order: 'mode-0-first' });
     const adapter = new WeriftAdapter({
       iceServers: [],
@@ -101,6 +124,43 @@ describe('WeriftAdapter.addTrack', () => {
     expect(fmtpLine(answer.sdp ?? '', PT_H264_MODE1)).toBe(
       fmtpLine(offer, PT_H264_MODE1),
     );
+  });
+
+  /**
+   * R-S3's real coverage: `selectNegotiatedCodec` moves the answer's
+   * payload-type order, and NOT calling it leaves the mode-0 entry first.
+   *
+   * The negative half is what makes this discriminating — without the call
+   * the same query returns `[104, 102]`, so this test fails on a sender-only
+   * implementation that never reorders `transceiver.codecs`.
+   */
+  it('R-S3: re-pointing moves the answer m-line order to 102 first; without it 104 leads', async () => {
+    const offer = buildOffer({ h264Order: 'mode-0-first' });
+
+    const withoutRepoint = new WeriftAdapter({
+      iceServers: [],
+      codecs: { audio: [], video: [useH264()] },
+    });
+    withoutRepoint.addTrack(withoutRepoint.createOutboundTrack('video'));
+    await withoutRepoint.setRemoteDescription({ type: 'offer', sdp: offer });
+    await withoutRepoint.createAnswer();
+    const before = await withoutRepoint.createAnswer();
+    expect(answerPayloadTypeOrder(before.sdp ?? '')[0]).toBe(PT_H264_MODE0);
+
+    const withRepoint = new WeriftAdapter({
+      iceServers: [],
+      codecs: { audio: [], video: [useH264()] },
+    });
+    withRepoint.addTrack(withRepoint.createOutboundTrack('video'));
+    await withRepoint.setRemoteDescription({ type: 'offer', sdp: offer });
+    await withRepoint.createAnswer();
+    withRepoint.getSenders()[0]!.selectNegotiatedCodec({
+      mimeType: 'video/H264',
+      payloadType: PT_H264_MODE1,
+      parameters: H264_MODE1,
+    });
+    const after = await withRepoint.createAnswer();
+    expect(answerPayloadTypeOrder(after.sdp ?? '')[0]).toBe(PT_H264_MODE1);
   });
 
   it('R-S3: selecting a codec that was never negotiated throws', async () => {
