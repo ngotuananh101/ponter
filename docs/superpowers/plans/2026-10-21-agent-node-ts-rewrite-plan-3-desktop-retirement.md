@@ -176,6 +176,17 @@ a deletion needs no correction on the way out.
       `receiverEstimatedMaxBitrate` (`rtpSender.js:693`) and nothing reads the
       field — `grep -rn receiverEstimatedMaxBitrate` over `lib/` finds only the
       declaration, that write, and the `.d.ts`.
+      - **Where the pacer sits is a design trap, not an implementation
+        detail.** `sendRtp` (`rtpSender.js:538`) rewrites the header on the way
+        out: `header.timestamp` gains `this.timestampOffset` (`:546`) and
+        `header.sequenceNumber` gains `this.seqOffset` (`:547`), and both
+        offsets are re-based by `replaceRTP` when the encoder reconfigures.
+        A pacing queue that sits **below** `sendRtp` therefore paces on RTP
+        units that a later `replaceRTP` will shift underneath it, which
+        desynchronises the departure schedule from the frames it was scheduled
+        against — silently, and only after the first codec change. The queue
+        must sit **above** `sendRtp` and reason in presentation time; the
+        rewrite then happens once, inside the paced send.
     - **The estimator's leak.** `senderBWE.js:133-142` (function), `:134-140`
       (the defect) iterates `Object.keys(sentInfo)` — the field names of the
       single packet just sent — so the eviction loop runs over four `NaN`s and
