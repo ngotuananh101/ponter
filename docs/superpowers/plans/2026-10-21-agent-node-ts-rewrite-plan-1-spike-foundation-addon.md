@@ -30,7 +30,14 @@ These apply to every task in this plan. They are copied verbatim from the spec.
 - **CI facts this plan must not forget** (all verified against the tree at `798e9df`):
   - `@ponter/shared`'s tests are **non-gating**: `ci-node.yml` runs them under `continue-on-error: true`. A green assertion in `packages/shared/test/**` cannot fail the build. Every shared-table assertion Task 5 adds is therefore *also* pinned from a gating package — that is what `agent-api-access-gate.test.ts` in `@ponter/api-client` is for.
   - `ci-node.yml`'s `paths:` filter lists `apps/server/**`, `apps/web/**`, `apps/mobile/**`, `packages/**` and the config files — **`apps/agent/**` is absent**. Until Plan 3 adds it, a commit that touches only `apps/agent/**` runs **no Node CI at all**. Task verification must run the suites locally and say so.
-  - The three `--filter='!@ponter/agent'` exclusions in `ci-node.yml` (lines 73, 76, 98) are keyed on the *package name*. Renaming `apps/agent/package.json` to `@ponter/agent-node` turns all three into no-ops — the agent would be picked up by the standard gate as soon as the `paths:` filter lets it run. Do not rely on the exclusion; Plan 3 removes it.
+  - The three `--filter='!@ponter/agent'` exclusions in `ci-node.yml` (lines 73, 76, 98) are keyed on the *package name*. Renaming `apps/agent/package.json` to `@ponter/agent-node` turns all three into **hard failures**, not no-ops — measured at `6dce0ac`:
+    ```
+    pnpm exec turbo run lint --filter='!@ponter/agent'
+      x No package found with name '@ponter/agent' in workspace
+    exit 1
+    ```
+    Turbo treats an unresolvable filter as a fatal error, so **both** `Lint workspace` and `Typecheck workspace` go red, and `Run Node test suites` goes red too, on **every** Node push — including a PR that touches only `apps/server/**`. An earlier draft of this bullet said the exclusions "turn into no-ops"; that is the opposite of what happens and it inverts the urgency. Renaming the package and fixing these three lines is one atomic change; they must land in the same commit, in **Task 1**, not in Plan 3.
+  - **But that same rename is also what makes the agent gating**, which is the intended end state: once the `paths:` filter admits `apps/agent/**` (Plan 3), the standard gate picks the agent up. Two consequences the plan must not lose: (a) fix the filters so the rename does not break CI *now*, and (b) note that `apps/agent/package.json`'s `test` script is `vitest run --passWithNoTests`, so the gate runs green over an empty suite until Task 3 lands real tests — `--passWithNoTests` is a scaffolding affordance, and Plan 3 must remove it when the suite is real, or a deleted test file goes unnoticed.
   - `pnpm-workspace.yaml`'s `allowBuilds` is keyed on the **package name that owns the install script**. The addon must have its own `package.json` (`@ponter/agent-native`) for its entry to take effect; a bare `native/` subdirectory of `@ponter/agent-node` cannot be allowed separately.
 
 ## Review Focus
@@ -230,6 +237,53 @@ pnpm --filter @ponter/agent-node exec vitest --version
 Expected: a version string. If it prints "none", the package was not linked — run `pnpm install` (no `--lockfile-only`) before continuing.
 
 > **Known environment issue, not a defect in this plan.** On some machines `pnpm install` fails at `apps/desktop`'s `postinstall` with `ENOENT … @cloudflare/workerd-darwin-64`. That is pre-existing and unrelated to the agent. If the filter command above trips the same postinstall, invoke the binary directly — `./node_modules/.bin/vitest run` — and note it in the report rather than treating it as a Task 1 failure.
+
+- [ ] **Step 0b: Fix the three `ci-node.yml` filters the rename broke — same commit as the rename**
+
+**Status: NOT yet landed.** Step 0 renamed the package to `@ponter/agent-node` at
+`acf6d05` and left `.github/workflows/ci-node.yml` untouched. Turbo fails the run
+when a filter names a package that does not exist, so the rename turned three
+lines from "exclude the Rust crate" into "abort the whole workspace verify step":
+
+```
+$ pnpm exec turbo run lint --filter='!@ponter/agent'
+  x No package found with name '@ponter/agent' in workspace
+exit 1
+```
+
+The same happens at line 76 (`typecheck`) and line 98 (`test`). `Lint workspace`,
+`Typecheck workspace` and `Run Node test suites` therefore all fail on **any**
+Node push, not only an agent one — `ci-node.yml` also triggers on
+`packages/**`, and a PR touching `packages/webrtc-core/**` alone reaches these
+steps. (A branch touching *only* `apps/agent/**` does not: `paths:` omits it, so
+that branch runs no Node CI at all — the defect is invisible exactly where the
+work is happening.) The branch is currently red for every unrelated PR.
+
+Change three strings, `@ponter/agent` → `@ponter/agent-node`, at lines 73, 76 and
+98, and update the surrounding comments: they explain that the exclusion exists
+because the agent's `test` script shells out to `cargo`, which stops being true
+once the package is TypeScript.
+
+**Do NOT simply delete the filters.** Until Plan 3 adds `apps/agent/**` to the
+`paths:` list, the agent is not gating, and the rename above is what makes it
+gating once Plan 3 lands. Deleting the filters now means the Rust-era `cargo`
+scripts — still in the manifest at this point in the plan — would be invoked by
+a job with no Rust toolchain, which is the failure the exclusions were added to
+prevent.
+
+Verify with the exact CI command, from the repo root:
+
+```bash
+pnpm exec turbo run lint --filter='!@ponter/agent-node' --dry=json >/dev/null; echo "lint exit=$?"
+pnpm exec turbo run typecheck --filter='!@ponter/agent-node' --dry=json >/dev/null; echo "typecheck exit=$?"
+```
+
+Expected: `lint exit=0`, `typecheck exit=0`. Before the change, the same two
+commands with `!@ponter/agent` exit `1`.
+
+Commit this with the rename, not separately — a tree where the package is
+renamed but the filters still name the old package is a tree whose Node CI
+cannot run at all.
 
 - [ ] **Step 1: Write the failing test — the synthetic offer builders**
 
@@ -1193,7 +1247,34 @@ export function packetizeAnnexB(
  * Used by the conformance fixtures and by the codec's own smoke tests.
  */
 export function annexbNalTypes(annexB: Buffer): number[];
+
+/**
+ * The Annex-B splitter, exported because the spike consumes it.
+ *
+ * Step 8 deletes `spike/packetizer-copy.ts` and the spike's own test must stop
+ * importing it, but the spike needs `splitAnnexB` (to strip parameter sets out
+ * of a fixture and provoke a PLI) and `spsProfileLevelId`. There is no second
+ * Annex-B parser in the package, so those two have to be public here. See
+ * Step 8's ruling.
+ */
+export function splitAnnexB(annexB: Buffer): Buffer[];
+
+/**
+ * Read the `profile-level-id` out of an access unit's SPS, if it carries one.
+ * The three bytes after the SPS header octet: profile_idc, constraint flags,
+ * level_idc — exactly the hex an SDP quotes. `null` when there is no SPS.
+ * Exported for the same reason as `splitAnnexB`.
+ */
+export function spsProfileLevelId(annexB: Buffer): string | null;
 ```
+
+**An earlier draft of this Interfaces block listed six exports and was wrong.**
+The spike at `spike.ts` imported three symbols from `packetizer-copy.ts` —
+`packetizeAnnexB`, `splitAnnexB` and `spsProfileLevelId` — and only the first
+existed in the declared surface. That is the same defect as Plan 2's
+unconsumed `packetizeAnnexB`: a producer declared without checking what the
+consumer actually imports. The rule to carry forward is to read the consumer's
+import block, not its prose.
 
 **The parity reference — this is a port, not a fresh implementation.** The Rust agent never wrote RTP itself: it handed Annex-B bytes to `TrackLocalStaticSample.sample_writer(ssrc, payload_type).write_sample(&sample)` (`apps/agent/src/desktop.rs:1767-1776`), and the `rtc-rtp` crate did the packetization. The TypeScript packetizer's behaviour is pinned to that implementation, not to the RFC's freedom. Every rule below was read out of the vendored crate:
 
@@ -1475,6 +1556,11 @@ The literal fixtures are taken from the **crate's own test vectors** where one e
 Run: `pnpm --filter @ponter/agent-node exec vitest run test/session/packetizer.test.ts`
 Expected: PASS.
 
+Then run the package's own lint, which Steps 1–6's verification omits and this task's implementation has already been caught by once (Step 8, ruling 2):
+
+Run: `pnpm --filter @ponter/agent-node lint`
+Expected: exit 0. A `no-unused-vars` error here is not cosmetic — the same rule runs in `pnpm lint` at the workspace root.
+
 - [ ] **Step 7: Add `src/**/*.ts` to the tsconfig, then prove the typecheck actually covers it**
 
 This task creates the first file under `apps/agent/src/`, and Task 1 wrote `apps/agent/tsconfig.json` before any such file existed — its `include` is `["spike/**/*.ts", "test/**/*.ts"]`. Add `src/**/*.ts`:
@@ -1522,6 +1608,14 @@ git commit -m "feat(agent): add the RFC 6184 mode-1 packetizer with table-driven
 ```
 
 **TEST-INTEGRITY note:** Task 1's spike test keeps the same `it()`/`expect()` counts across this step. The copy is deleted, not the assertions — the spike's packetizing assertions move onto the real module. If the spike test's counts *drop* when the copy goes, something was asserted through the copy that the real module does not satisfy, and that is a finding, not a cleanup.
+
+**Two rulings this step produced when it ran, both worth carrying forward.**
+
+**(1) "Fix the import" can only mean "export the symbol", and that widens the module's surface.** The spike imported three symbols from the copy, not one. There is no other Annex-B parser in the package, so Step 8's own guard — *fix the import first* — forces `splitAnnexB` and `spsProfileLevelId` to become exports of `src/session/packetizer.ts`. The alternative readings are worse: hoisting them into a third module creates the second parser this step exists to remove, and inlining them in the spike duplicates the crate's zero-run accounting in a file no test in `src/` covers. Cost if wrong: two extra public symbols. The Interface block above now declares them, so the next reader is not surprised by a surface the plan called six-of-six.
+
+**(2) The copy and the real splitter are NOT equivalent, and repointing the spike is a behaviour change in the spike.** The copy scanned 3-byte start codes only; the real `splitAnnexB` does the crate's zero-run accounting and handles 4-byte codes as well. The spike's 9 tests stayed green because its fixtures use 3-byte codes, but the repoint is not a no-op and the report must not call it one. It moves the spike *toward* the crate's behaviour, which is the point.
+
+**Run `eslint`, not only `vitest` and `tsc`, before committing a task that adds a module.** An earlier run of this task shipped a dead constant (`STAP_A_NALU_TYPE = 24`, assigned and never read — the code uses `STAP_A_HEADER_BYTE = 0x78`) because the task verified with vitest and tsc only. `eslint` reports it as `@typescript-eslint/no-unused-vars`, an **error**, and `pnpm lint` runs the same config. Whether that particular error reached CI is a separate question this plan gets wrong elsewhere — see the note about `ci-node.yml`'s `paths:` filter — but a task whose verification omits the package's own `lint` script is not verified. Add it to Step 4's run list.
 
 ---
 
