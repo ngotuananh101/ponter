@@ -2294,7 +2294,8 @@ git commit -m "feat(agent): wire the WS1 terminal E2EE handshake fail-closed"
   - `function selectH264PayloadType(codecs: { mimeType: string; payloadType: number }[]): number | null`
   - `function requiredH264PayloadType(codecs): number` — throws `'the desktop sender has no negotiated H.264 codec'`
   - `function narrowMlineIndex(raw: unknown): number | null` — `null` for out-of-u16-range and negatives
-  - `class SessionPeer { answer(offerSdp, opts): Promise<{ answerSdp; dataChannel }> }`
+  - `function h264Mode1Codec(offerSdp: string): { mimeType; payloadType; parameters? } | null` — the browser's H.264 `packetization-mode=1` entry; `null` when absent (an absent `packetization-mode` is mode **0**)
+  - `class SessionPeer { answer(offerSdp, opts): Promise<{ answerSdp; sender: RTCRtpSenderLike | null }> }` — **the returned `sender` is Task 19's `RtpSenderSink`**; `answer()` performs the R-S3 re-point and throws for a desktop offer with no mode-1 H.264 entry
 
 - [ ] **Step 1: Write the failing ICE + payload-type tests**
 
@@ -2515,45 +2516,220 @@ export function narrowMlineIndex(raw: unknown): number | null {
 ```ts
 // apps/agent/test/session/peer.test.ts
 import { describe, expect, it, vi } from 'vitest';
-import { SessionPeer } from '../../src/session/peer.js';
+import { h264Mode1Codec, SessionPeer } from '../../src/session/peer.js';
+
+/**
+ * Minimal Chrome-shaped H.264 offers. Only the lines `h264Mode1Codec` reads are
+ * here — `a=rtpmap:` and `a=fmtp:` — because these tests exercise THIS task's
+ * parsing, not werift's negotiation. Package-internal, so the offers are
+ * inlined rather than imported from `@ponter/webrtc-core`'s test fixtures.
+ */
+const MODE1_FIRST = [
+  'v=0',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 102 104',
+  'a=rtpmap:96 VP8/90000',
+  'a=rtpmap:102 H264/90000',
+  'a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  'a=rtpmap:104 H264/90000',
+  'a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  '',
+].join('\r\n');
+
+const MODE0_FIRST = [
+  'v=0',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 104 102',
+  'a=rtpmap:96 VP8/90000',
+  'a=rtpmap:104 H264/90000',
+  'a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  'a=rtpmap:102 H264/90000',
+  'a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  '',
+].join('\r\n');
+
+/** An offer with H.264, but no mode-1 entry at all. */
+const MODE0_ONLY = [
+  'v=0',
+  'm=video 9 UDP/TLS/RTP/SAVPF 104',
+  'a=rtpmap:104 H264/90000',
+  'a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  '',
+].join('\r\n');
+
+describe('h264Mode1Codec', () => {
+  it('picks the mode-1 entry even when the mode-0 entry comes first', () => {
+    expect(h264Mode1Codec(MODE0_FIRST)).toEqual({
+      mimeType: 'video/H264',
+      payloadType: 102,
+      parameters:
+        'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    });
+  });
+
+  it('returns the whole fmtp string as parameters, so the caller can echo it', () => {
+    expect(h264Mode1Codec(MODE1_FIRST)?.parameters).toBe(
+      'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    );
+  });
+
+  it('treats an ABSENT packetization-mode as mode 0 and returns null', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 102',
+      'a=rtpmap:102 H264/90000',
+      'a=fmtp:102 profile-level-id=42e01f',
+      '',
+    ].join('\r\n');
+    // RFC 6184 §8.1: the default is 0. Reading absence as mode 1 would select
+    // an entry the browser is not depacketizing as mode 1 — R-S3 defeated on
+    // exactly the peers it exists to protect.
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+
+  it('returns null for an H.264 entry with no fmtp line at all', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 102',
+      'a=rtpmap:102 H264/90000',
+      '',
+    ].join('\r\n');
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+
+  it('returns null when the offer carries no H.264', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 96',
+      'a=rtpmap:96 VP8/90000',
+      '',
+    ].join('\r\n');
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+
+  it('parses an LF-only offer as well as a CRLF one', () => {
+    expect(h264Mode1Codec(MODE0_FIRST.replace(/\r\n/g, '\n'))?.payloadType).toBe(102);
+  });
+
+  it('does not match a non-90000 H.264 clock rate as video/H264', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 102',
+      'a=rtpmap:102 H264/45000',
+      'a=fmtp:102 packetization-mode=1',
+      '',
+    ].join('\r\n');
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+});
 
 function fakePeerFactory() {
   const calls: string[] = [];
+  const sender = {
+    codec: undefined,
+    selectNegotiatedCodec: vi.fn(() => {
+      calls.push('selectNegotiatedCodec');
+    }),
+    writeRtp: vi.fn(),
+  };
   const peer = {
-    addTrack: vi.fn(async () => {
+    addTrack: vi.fn(() => {
       calls.push('addTrack');
+      return sender;
     }),
     setRemoteDescription: vi.fn(async () => {
       calls.push('setRemoteDescription');
     }),
     createAnswer: vi.fn(async () => {
       calls.push('createAnswer');
-      return { sdp: 'v=0 answer', type: 'answer' };
+      return { sdp: 'v=0 answer', type: 'answer' as const };
     }),
     setLocalDescription: vi.fn(async () => {
       calls.push('setLocalDescription');
     }),
-    onDataChannel: undefined as ((dc: unknown) => void) | undefined,
     close: vi.fn(async () => {}),
   };
-  return { peer, calls };
+  return { peer, sender, calls };
 }
 
-describe('SessionPeer', () => {
+const TRACK = { track: { id: 'video' } };
+
+describe('SessionPeer.answer', () => {
   it('attaches the desktop track before setRemoteDescription', async () => {
     const { peer, calls } = fakePeerFactory();
     const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
-    await session.answer('v=0 offer', { desktop: true });
+    await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
     expect(calls.indexOf('addTrack')).toBeLessThan(calls.indexOf('setRemoteDescription'));
   });
 
-  it('answers an offer with no desktop track when desktop is not requested', async () => {
+  /**
+   * The ordering that R-S3 depends on, and the reason this test asserts the
+   * call sequence rather than the result: `selectNegotiatedCodec` throws
+   * "was not negotiated" before `setRemoteDescription` has populated the
+   * transceiver's codec list, and does nothing useful for the emitted SDP
+   * after `createAnswer` has already built the m-line from it.
+   */
+  it('re-points the sender after setRemoteDescription and before createAnswer', async () => {
     const { peer, calls } = fakePeerFactory();
-    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
-    await session.answer('v=0 offer', { desktop: false });
-    expect(calls).not.toContain('addTrack');
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(calls).toEqual([
+      'addTrack',
+      'setRemoteDescription',
+      'selectNegotiatedCodec',
+      'createAnswer',
+      'setLocalDescription',
+    ]);
   });
 
+  it('re-points at the payload type parsed out of the offer', async () => {
+    const { peer, sender } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(sender.selectNegotiatedCodec).toHaveBeenCalledWith({
+      mimeType: 'video/H264',
+      payloadType: 102,
+      parameters:
+        'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    });
+  });
+
+  it('returns the sender, so the desktop loop has something to write RTP to', async () => {
+    const { peer, sender } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    const result = await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(result.sender).toBe(sender);
+    expect(result.answerSdp).toBe('v=0 answer');
+  });
+
+  it('throws rather than answering when the offer has no mode-1 H.264 entry', async () => {
+    const { peer, sender } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await expect(
+      session.answer(MODE0_ONLY, { desktop: true, track: TRACK }),
+    ).rejects.toThrow(/no H\.264 entry with packetization-mode=1/);
+    // The re-point must NOT have happened: selecting the mode-0 entry would
+    // make the failure invisible instead of loud.
+    expect(sender.selectNegotiatedCodec).not.toHaveBeenCalled();
+  });
+
+  it('throws when a desktop session is answered with no track', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await expect(session.answer(MODE0_FIRST, { desktop: true })).rejects.toThrow(
+      /no outbound track/,
+    );
+  });
+
+  it('answers a non-desktop session without attaching a track or re-pointing', async () => {
+    const { peer, sender, calls } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    const result = await session.answer(MODE1_FIRST, { desktop: false });
+    expect(calls).not.toContain('addTrack');
+    expect(sender.selectNegotiatedCodec).not.toHaveBeenCalled();
+    expect(result.sender).toBeNull();
+  });
+});
+
+describe('SessionPeer.handleDataChannel', () => {
   it('closes a data channel with the wrong label', async () => {
     const { peer } = fakePeerFactory();
     const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
@@ -2608,12 +2784,73 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/session/peer.ts
+import type { RTCRtpSenderLike } from '@ponter/webrtc-core';
+
 export interface PeerLike {
-  addTrack(track: unknown, stream: unknown): Promise<unknown>;
+  /**
+   * Attach the outbound track. Returns the sender — the SAME handle whose
+   * `writeRtp` the desktop loop calls, which is why `answer()` returns it.
+   * Plan 1 Task 2's `RTCRtpSenderLike` is the real type; this is the slice.
+   * werift's `addTrack` is synchronous (`peerConnection.js:981`), so the
+   * return is not awaited here — but a mock may return a promise, and `await`
+   * covers both.
+   */
+  addTrack?(track: unknown, stream?: unknown): RTCRtpSenderLike | Promise<RTCRtpSenderLike>;
   setRemoteDescription(desc: { type: 'offer'; sdp: string }): Promise<void>;
   createAnswer(): Promise<{ type: 'answer'; sdp: string }>;
   setLocalDescription(desc: { type: 'answer'; sdp: string }): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * **R-S3 is a method on the SENDER, not on the peer connection.**
+ *
+ * `RTCPeerConnectionLike` has no `selectNegotiatedCodec` (`types.ts:78-127`);
+ * the adapter attaches it to the `RTCRtpSenderLike` its `addTrack` returns
+ * (`adapters/werift.ts:338`). An earlier draft of this task put it on
+ * `PeerLike` and called it as `this.peer.selectNegotiatedCodec(...)`, which
+ * would have been `undefined` at runtime — the re-point silently skipped, the
+ * sender left on the browser's mode-0 entry, and every frame depacketized
+ * wrongly with no error anywhere. This is the third time a per-task seam in
+ * this plan has been guessed at a layer above where it lives; the rule is to
+ * read the adapter, never to infer the shape from the method's name.
+ */
+
+/**
+ * Find the browser's H.264 `packetization-mode=1` entry in an offer.
+ *
+ * This is R-S3's input. It parses the offer's `a=rtpmap:`/`a=fmtp:` pairs and
+ * returns the first H.264 entry whose fmtp explicitly carries
+ * `packetization-mode=1`. Returns `null` when the browser offered no such
+ * entry, in which case no re-point is possible and the caller treats that as a
+ * hard failure for a desktop session: the packetizer emits mode-1 framing and a
+ * mode-0-only peer cannot decode it.
+ *
+ * An **absent** `packetization-mode` is mode 0, not mode 1 — RFC 6184 §8.1
+ * states the default is 0. Treating absence as mode 1 would silently select a
+ * non-existent mode-1 entry and defeat R-S3 on exactly the peers it protects.
+ */
+export function h264Mode1Codec(offerSdp: string): {
+  mimeType: string;
+  payloadType: number;
+  parameters?: string;
+} | null {
+  const lines = offerSdp.split(/\r\n|\n/);
+  for (const line of lines) {
+    const rtpmap = /^a=rtpmap:(\d+) (H264)\/90000$/i.exec(line);
+    if (!rtpmap) continue;
+    const payloadType = Number(rtpmap[1]);
+    const fmtp = lines.find((l) => l.startsWith(`a=fmtp:${payloadType} `));
+    const parameters = fmtp ? fmtp.slice(`a=fmtp:${payloadType} `.length) : '';
+    // RFC 6184 §8.1: `packetization-mode` defaults to 0, but every real H.264
+    // offer carries it explicitly. An absent key means mode 0 by the letter of
+    // the RFC — do NOT treat absent as mode 1.
+    const mode = /(?:^|;)packetization-mode=(\d+)/.exec(parameters);
+    if (mode && mode[1] === '1') {
+      return { mimeType: 'video/H264', payloadType, parameters };
+    }
+  }
+  return null;
 }
 
 export interface DataChannelLike {
@@ -2655,13 +2892,59 @@ export class SessionPeer {
 
   async answer(
     offerSdp: string,
-    opts: { desktop: boolean; track?: { track: unknown; stream: unknown } },
-  ): Promise<{ answerSdp: string }> {
-    if (opts.desktop && opts.track) await this.peer.addTrack(opts.track.track, opts.track.stream);
+    opts: { desktop: boolean; track?: { track: unknown; stream?: unknown } },
+  ): Promise<{ answerSdp: string; sender: RTCRtpSenderLike | null }> {
+    // B12: the track is attached BEFORE setRemoteDescription. `addTrack` is what
+    // creates the transceiver and therefore the offer's video m-line; doing it
+    // after means the m-line is answered `inactive` and the browser gets no
+    // video — silently, with no error anywhere.
+    let sender: RTCRtpSenderLike | null = null;
+    if (opts.desktop) {
+      if (!opts.track) {
+        throw new Error('a desktop session was answered with no outbound track to send');
+      }
+      sender = await this.peer.addTrack?.(opts.track.track, opts.track.stream);
+      if (!sender) {
+        throw new Error('the peer connection has no addTrack; it cannot answer a desktop session');
+      }
+    }
     await this.peer.setRemoteDescription({ type: 'offer', sdp: offerSdp });
+
+    // R-S3: re-point the sender at the browser's H.264 `packetization-mode=1`
+    // entry, and do it HERE — after `setRemoteDescription`, before
+    // `createAnswer`.
+    //
+    //   - It must be after `setRemoteDescription`: that call is what runs
+    //     `prepareSend` and assigns `transceiver.codecs` from the offer
+    //     (transceiverManager.js:276-277), so before it there is nothing
+    //     negotiated to select from and `selectNegotiatedCodec` would throw
+    //     "was not negotiated".
+    //   - It must be before `createAnswer`: that call builds the answer's
+    //     `m=video` payload-type order from `transceiver.codecs`
+    //     (sdpManager.js:90-100). Re-pointing afterwards leaves the emitted SDP
+    //     advertising the old order while the sender writes the new payload
+    //     type — a mismatch the browser resolves by dropping the packets.
+    //
+    // The entry comes from the OFFER, parsed by `h264Mode1Codec` — the adapter
+    // exposes senders, not the transceiver's codec list, so there is no
+    // accessor to ask.
+    if (sender) {
+      const mode1 = h264Mode1Codec(offerSdp);
+      if (!mode1) {
+        // The packetizer only emits mode-1 framing (single-NAL / STAP-A /
+        // FU-A). A mode-0-only peer cannot decode any of it. Failing here is
+        // the only place this is visible at all: the connection would come up
+        // healthy and the video would simply be black.
+        throw new Error(
+          'the desktop offer carries no H.264 entry with packetization-mode=1; the packetizer cannot serve this peer',
+        );
+      }
+      sender.selectNegotiatedCodec(mode1);
+    }
+
     const answer = await this.peer.createAnswer();
     await this.peer.setLocalDescription(answer);
-    return { answerSdp: answer.sdp };
+    return { answerSdp: answer.sdp, sender };
   }
 
   async handleDataChannel(channel: DataChannelLike): Promise<void> {
@@ -2693,7 +2976,17 @@ git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): add the werift answerer, ICE mapping and data-channel gate"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **22 new `it()` / 31 new `expect()`**. Ports all 16 `rtc.rs` tests except `answer_advertises_e2ee_only_when_offer_proposed_it` (that becomes Task 14's B55 assertion, `advertisesE2ee`) and `reporting_estimator_publishes_its_initial_target` (moves to Task 19's runtime). Two are **new**: the `SESSION_ERROR`-style guard that `requiredH264PayloadType` throws a named message, and the "second right-label channel is closed" case the Rust had but did not test.
+**TEST-INTEGRITY declaration:** two new files, **36 new `it()` / 48 new `expect()`** (`ice.test.ts` 17/23, `peer.test.ts` 19/25). Ports all 16 `rtc.rs` tests except `answer_advertises_e2ee_only_when_offer_proposed_it` (that becomes Task 14's B55 assertion, `advertisesE2ee`) and `reporting_estimator_publishes_its_initial_target` (moves to Task 19's runtime).
+
+The count is 36, not the 22 an earlier draft of this declaration claimed. That draft predated the R-S3 repair and was never re-derived against the block: the 16-port arithmetic was carried in the prose while `h264Mode1Codec`'s seven parsing tests and `answer()`'s seven R-S3 tests were written underneath it. The same error class — a count written from a story about the task rather than from the task's own `it()` lines — is what produced the `api.rs` 12/8 split corrected in R3. Every declaration in this plan is now counted, not recalled.
+
+**New coverage this task owes and now carries** (seven tests, all in the `SessionPeer.answer` and `h264Mode1Codec` blocks) — none of which the Rust could have had, because there was no `h264Mode1Codec` and no re-point:
+- the re-point's **position in the call sequence** (`addTrack → setRemoteDescription → selectNegotiatedCodec → createAnswer → setLocalDescription`). This is the load-bearing one: before `setRemoteDescription` the selection throws "not negotiated", and after `createAnswer` the emitted SDP still advertises the old payload-type order;
+- the payload type actually selected, parsed from the offer rather than from an adapter accessor;
+- `answer()` returning the sender, so Task 19's `sendRtp` has a `writeRtp` to call;
+- a hard throw — and **no re-point** — when the offer has no mode-1 entry;
+- a hard throw when a desktop session is answered with no track;
+- absent `packetization-mode` read as **mode 0** (RFC 6184 §8.1), which is the difference between R-S3 working and R-S3 selecting a non-existent entry.
 
 ---
 
@@ -6520,12 +6813,26 @@ git commit -m "feat(agent): route peer data channels behind the label gate"
 - Test: `apps/agent/test/runtime.test.ts`, `apps/agent/test/desktop/session.test.ts`
 
 **Interfaces:**
-- Consumes: every prior task.
+- Consumes: every prior task, and — load-bearing — **`packetizeAnnexB`** (Plan 1 Task 3) and the **`RTCRtpSenderLike`** seam (Plan 1 Task 2).
 - Produces:
   - `class DesktopSession { constructor(deps); start(source, profile, bitrate): Promise<void>; control(control: StreamControl): void; select(source: DesktopSource): Promise<void>; stop(): Promise<void> }`
   - `function resolveDefaultSource(config, sources): DesktopSource`
   - `class AgentRuntime { static async start(config): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }`
   - `function createAgentRuntime(config): Promise<AgentRuntime>`
+
+**⚠️ The video path, stated once because an earlier draft of this task got it
+wrong.** Desktop frames do **not** travel over a data channel. They leave the
+agent as **RTP**, through `sender.writeRtp(packet)` on the werift adapter's
+sender (Plan 1 Task 2), after `packetizeAnnexB` (Plan 1 Task 3) turns the
+encoder's Annex-B access unit into RFC 6184 mode-1 packets. That is what the
+Rust did — `apps/agent/src/desktop.rs:1767-1776` hands the buffer to
+`TrackLocalStaticSample.sample_writer(ssrc, payload_type).write_sample(&sample)`
+and the `rtc-rtp` crate packetizes it. `deps.send('desktop', …)` in this task
+is **not** the video path: it is for the JSON control/status frames
+(`desktop-stats`, `desktop-cursor`, `desktop-sources` — B56/B58/B61) which do
+travel on the `desktop` data channel. An earlier draft routed `encoded.data`
+straight to `deps.send('desktop', …)`, which would have put raw Annex-B bytes
+on a data channel and produced a black video with no error anywhere.
 
 - [ ] **Step 1: Write the failing default-source test**
 
@@ -6689,9 +6996,19 @@ function deps() {
       encode: vi.fn(async () => ({ data: new Uint8Array([1, 2, 3]), keyframe: true })),
       close: vi.fn(),
     },
+    /**
+     * The RTP sink. Left as a null sender by default so the existing
+     * encode/skip/ladder tests are unaffected; the RTP path has its own tests
+     * below, which install a real fake sender.
+     */
+    rtp: {
+      sender: vi.fn(() => null as { writeRtp(packet: Uint8Array): void } | null),
+      payloadType: vi.fn(() => null as number | null),
+    },
     send: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     now: () => 0,
+    rtpClock: () => 0,
   };
 }
 
@@ -6768,13 +7085,58 @@ describe('DesktopSession', () => {
     expect(session.stats().profile).toBe('1080p60');
   });
 
-  it('encodes and sends a changed frame on pump', async () => {
+  it('encodes a changed frame on pump and writes it to RTP, not to a data channel', async () => {
+    // The bug this pins: an earlier draft of this task sent the encoder's
+    // Annex-B buffer to `deps.send('desktop', …)`, i.e. down a data channel.
+    // That produces no error and a black video, because a data channel does not
+    // carry RTP. The assertion that matters is therefore NOT "a frame was
+    // delivered somewhere" — it is that the bytes reached `writeRtp` after
+    // being packetized, and that `deps.send` was NOT used for them.
     const d = deps();
+    // A real Annex-B access unit: 4-byte start code + one NAL (type 5, IDR).
+    // The default mock returns `[1,2,3]`, which has no start code at all and
+    // would make `packetizeAnnexB` throw — so this test installs its own.
+    d.encode.encode = vi.fn(async () => ({
+      data: new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3]),
+      keyframe: true,
+    }));
+    const written: Buffer[] = [];
+    d.rtp.sender = vi.fn(() => ({ writeRtp: (p: Uint8Array) => written.push(Buffer.from(p)) }));
+    d.rtp.payloadType = vi.fn(() => 102);
     const session = new DesktopSession(d as never);
+    session.setRtpIdentity(0x1234);
     await session.start({ kind: 'test' }, '720p30', 1_000_000);
+
     expect(await session.pump()).toBe(true);
     expect(d.encode.encode).toHaveBeenCalledTimes(1);
-    expect(d.send).toHaveBeenCalledWith('desktop', new Uint8Array([1, 2, 3]));
+
+    // One NAL unit in one packet: a single type-5 slice under 1188 bytes
+    // becomes one single-NAL-unit packet.
+    expect(written).toHaveLength(1);
+    const packet = written[0]!;
+    // 12-byte RTP header + the 4 NAL bytes (start code stripped).
+    expect(packet.length).toBe(12 + 4);
+    expect(packet[0]! >> 6).toBe(2); // RTP version 2
+    expect(packet[1]! & 0x7f).toBe(102); // the negotiated payload type
+    expect(packet.readUInt32BE(8)).toBe(0x1234); // SSRC from setRtpIdentity
+    // Annex-B framing is gone: the start code must not survive into the payload.
+    expect([...packet.subarray(12, 16)]).not.toEqual([0, 0, 0, 1]);
+    expect(packet[12]).toBe(0x65); // the NAL header byte
+
+    // And the video did NOT go down a data channel.
+    expect(d.send).not.toHaveBeenCalled();
+  });
+
+  it('drops a frame instead of throwing when no sender exists yet', async () => {
+    // The zero-click path starts capture before the browser offers, so the
+    // first frames have nowhere to go. Dropping is correct; buffering would
+    // replay a stale picture the moment a peer connected.
+    const d = deps();
+    d.rtp.sender = vi.fn(() => null);
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    await expect(session.pump()).resolves.toBe(true);
+    expect(d.send).not.toHaveBeenCalled();
   });
 
   it('skips a repeated frame but keeps the keepalive', async () => {
@@ -6815,10 +7177,22 @@ Expected: FAIL — module unresolved.
 ```ts
 // apps/agent/src/desktop/session.ts
 import type { ProfileId } from '@ponter/shared';
+import { packetizeAnnexB } from '../session/packetizer.js';
 import { clampBitrate, gopForFps, type DesktopSource, type StreamControl } from './control.js';
 import { StaticFrameSkip, type RawFrame } from './static-skip.js';
 import { SustainLadder } from './sustain.js';
 import { FrameTimingRing } from './timing-ring.js';
+
+/**
+ * The slice of `RTCRtpSenderLike` (Plan 1 Task 2) this module needs.
+ *
+ * `writeRtp` takes the **complete** RTP packet — the packetizer builds the
+ * 12-byte header, the adapter only adds SSRC/PT/seq/timestamp bookkeeping. This
+ * is the RTP path, not a data channel; see the task preamble.
+ */
+export interface RtpSenderSink {
+  writeRtp(packet: Uint8Array): void;
+}
 
 const PROFILES: Record<ProfileId, { fps: number; width: number; height: number }> = {
   '1080p60': { fps: 60, width: 1920, height: 1080 },
@@ -6839,9 +7213,30 @@ export interface DesktopSessionDeps {
     encode(frame: RawFrame): Promise<{ data: Uint8Array; keyframe: boolean }>;
     close(): void;
   };
+  /**
+   * The RTP sink for video. **Not** a data channel — see the task preamble.
+   *
+   * The adapter's sender stamps SSRC, payload type, sequence number and
+   * timestamp; this dep supplies only the header fields the packetizer needs
+   * to build the packet, and the packet bytes back. Injectable so the loop can
+   * be tested with no encoder, no display and no peer.
+   */
+  rtp: {
+    /** The sender for the negotiated video track, or `null` before one exists. */
+    sender(): RtpSenderSink | null;
+    /** The negotiated payload type, read from the sender after the answer. */
+    payloadType(): number | null;
+  };
+  /**
+   * JSON control/status frames on the `desktop` **data channel** — B56/B58/B61.
+   * Never the video. Confusing this with the RTP sink above is the bug an
+   * earlier draft of this task contained.
+   */
   send(label: 'desktop', frame: unknown): void;
   logger: { info(m: string): void; warn(m: string): void; error(m: string): void; debug(m: string): void };
   now?: () => number;
+  /** Injectable clock for the 90 kHz RTP timestamp. Defaults to `Date.now`. */
+  rtpClock?: () => number;
 }
 
 /**
@@ -6873,9 +7268,35 @@ export class DesktopSession {
   private skipWasReset = false;
   private seq = 0;
   private skippedFrames = 0;
+  /** The RTP sequencer. Wraps at 2^16 inside the packetizer, per RFC 3550. */
+  private rtpSequence = 0;
+  /**
+   * The SSRC stamped into each packet header.
+   *
+   * Zero is a legal SSRC, and werift overwrites `header.ssrc` with the sender's
+   * own on the way out (`rtpSender.js:544`), so this value never reaches the
+   * wire when the real adapter is used. It is set from the sender when one
+   * exists so the packetizer's own conformance tests can assert a non-zero
+   * header; see `setRtpIdentity`.
+   */
+  private rtpSsrc = 0;
   private started = false;
 
   constructor(private readonly deps: DesktopSessionDeps) {}
+
+  /**
+   * Record the SSRC the packets should carry.
+   *
+   * Called by the runtime once the peer's answer exists. Kept separate from
+   * `start()` because the zero-click path starts capture **before** the browser
+   * has offered, so the identity is not known at start time and may arrive
+   * later. Not knowing it is not fatal: `sendRtp` drops frames until a sender
+   * exists anyway, and the real werift sender overrides `header.ssrc` with its
+   * own on the way out (`rtpSender.js:544`).
+   */
+  setRtpIdentity(ssrc: number): void {
+    this.rtpSsrc = ssrc;
+  }
 
   async start(source: DesktopSource, profile: ProfileId, bitrate: number): Promise<void> {
     this.profile = profile;
@@ -6988,8 +7409,51 @@ export class DesktopSession {
     const encoded = await this.deps.encode.encode(frame);
     const encodeMs = now() - started;
     this.timing?.record(this.seq, started, encodeMs, started);
-    this.deps.send('desktop', encoded.data);
+    this.sendRtp(encoded.data);
     return encodeMs;
+  }
+
+  /**
+   * Annex-B → RFC 6184 packets → `sender.writeRtp`, once per packet.
+   *
+   * This is the whole video path and it is deliberately not `deps.send`. The
+   * encoder emits one Annex-B access unit per frame; `packetizeAnnexB` splits
+   * it into single-NAL / STAP-A / FU-A packets at the negotiated payload type;
+   * the werift sender stamps SSRC, sequence and timestamp onto each and pushes
+   * it out. Skipping the packetizer — or handing the buffer to a data channel —
+   * produces no error anywhere and a black video, which is why the test below
+   * asserts `writeRtp` was called with a packet whose `payloadType` is the
+   * negotiated one.
+   *
+   * The sequencer lives here, not in the packetizer: `packetizeAnnexB` returns
+   * `nextSequenceNumber` and the caller owns the counter, exactly as the Rust
+   * agent's `SampleWriter` did.
+   *
+   * A missing sender is not an error at frame time. `start()` can run before
+   * the browser's offer arrives (the zero-click path does exactly that), and a
+   * frame captured then has no one to send to yet. Dropping it and letting the
+   * next tick pick up is correct — the alternative, buffering, would replay a
+   * stale picture the moment the peer connected.
+   */
+  private sendRtp(annexB: Uint8Array): void {
+    const sender = this.deps.rtp.sender();
+    if (!sender) return;
+    const payloadType = this.deps.rtp.payloadType();
+    if (payloadType === null) return;
+
+    const clock = this.deps.rtpClock ?? Date.now;
+    // 90 kHz RTP clock. Milliseconds × 90 overflows 2^32 after ~13 hours, so
+    // the multiplication is done modulo 2^32 rather than on the raw product.
+    const rtpTimestamp = Math.floor((clock() * 90) % 2 ** 32);
+
+    const { packets, nextSequenceNumber } = packetizeAnnexB(Buffer.from(annexB), {
+      payloadType,
+      sequenceNumber: this.rtpSequence,
+      timestamp: rtpTimestamp,
+      ssrc: this.rtpSsrc,
+    });
+    for (const packet of packets) sender.writeRtp(packet.bytes);
+    this.rtpSequence = nextSequenceNumber;
   }
 
   private applyProfile(profile: ProfileId): void {
@@ -7045,7 +7509,11 @@ git add apps/agent
 git commit -m "feat(agent): wire the runtime lifecycle and the desktop session"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **16 new `it()` / 21 new `expect()`**. Ports `resolve_default_source_prefers_primary`, `…honours_an_explicit_id`, `…resolves_test`, `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture`, `…stops_capture_before_the_encoder`, `…reconfigures_on_a_quality_change`. `reporting_estimator_publishes_its_initial_target` re-homes here from Task 8. **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** (P5 #15, a defect in the Rust); the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that P5 #11 got wrong.
+**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 30 new `expect()`**. Ports `resolve_default_source_prefers_primary`, `…honours_an_explicit_id`, `…resolves_test`, `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture`, `…stops_capture_before_the_encoder`, `…reconfigures_on_a_quality_change`. `reporting_estimator_publishes_its_initial_target` re-homes here from Task 8. **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** (P5 #15, a defect in the Rust); the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that P5 #11 got wrong.
+
+The `expect()` count is larger than the `it()` count by more than usual because the RTP test is one `it()` with ten assertions: it is checking a serialized packet byte by byte, and a packet is not one property.
+
+**New, and the most important two in this task:** the RTP-path test and the no-sender drop. An earlier draft of this task wired the encoder's Annex-B output to `deps.send('desktop', …)` — a data channel — which would have shipped a black video with no error anywhere. Both are **new**, not ports: the Rust never tested the write path in isolation because `write_sample` did the packetizing for it. The RTP test asserts the header's payload type, SSRC, RTP version, that the Annex-B start code is **absent** from the payload, and that `deps.send` was **not** called.
 
 ---
 
@@ -7095,6 +7563,28 @@ Before this plan's work can be called done, the coverage matrix must record:
 (backoff/close, Task 3), §4.1–4.7 (files, Tasks 10–11), §6.1 (terminal, Tasks 12,
 18), §8 (desktop, Tasks 13, 16–17, 19), §8.1 (static skip, Task 13), §9.1
 (input, Task 15), §9.4 (coverage gate, above), §11.1 (identity proof, Task 14).
+
+**A gap this self-review found, and it was the worst one.** The first draft of
+this plan had **no consumer at all** for `packetizeAnnexB` (Plan 1 Task 3) and
+**no reference at all** to `RTCRtpSenderLike` (Plan 1 Task 2) — two artifacts
+Plan 1's own Interfaces block says "Task 3 and Plan 2 consume". Task 19's
+`encodeAndSend` sent the encoder's Annex-B buffer to `deps.send('desktop', …)`,
+i.e. down a **data channel**, where it would have produced no error and a black
+video. The Rust never did that: `apps/agent/src/desktop.rs:1767-1776` hands the
+buffer to `sample_writer(ssrc, payload_type).write_sample(&sample)` and the
+`rtc-rtp` crate packetizes it.
+
+This is exactly the failure class a self-review exists to catch — not a typo in
+one line, but two halves of a plan each internally consistent and jointly
+broken, joined by an interface nobody checked was consumed. Fixed by: naming
+both dependencies in Task 19's Interfaces, adding the `rtp` dep and
+`sendRtp()` to `DesktopSession`, splitting `deps.send` (JSON control frames on
+the data channel) from `deps.rtp` (video over RTP) by comment and by type, and
+adding the two tests that fail if the wire path regresses to a data channel.
+The general lesson, written down so the next planner applies it: **for every
+artifact a plan declares it "produces for a later plan", grep the later plan for
+that name.** An unconsumed producer is either dead code or a missing call site,
+and nothing else in the document distinguishes the two.
 
 **Placeholder scan.** No task says "similar to Task N"; every code block is
 complete; no step says "add error handling" without showing it. Three steps
