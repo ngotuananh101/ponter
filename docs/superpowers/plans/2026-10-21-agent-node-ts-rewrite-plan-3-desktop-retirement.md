@@ -84,6 +84,21 @@ keeps the not-yet-gating package out of a job that runs on unrelated pushes"
 edit** that adds the path, so that sentence describes a state that never exists
 and must be corrected by this task's commit.
 
+**`CONTRIBUTING.md` moves in the same commit.** It carries the same three
+commands at lines 16, 17 and 19 as the documented pre-PR workflow, and it is
+the occurrence a `grep` over `.github/workflows/` does not find — Plan 1's
+`0030391`-era text is right about that, and the filter strings it names are the
+filter strings this task removes. Leaving them behind splits one invariant
+across two states: CI without the filters, and the guide contributors follow
+with them. On a clean clone, anyone following the guide hits a fatal
+`No package found with name '@ponter/agent-node'` — the exact error `0030391`
+fixed — which is why the two strings cannot be separated in time.
+
+The guide's `For the Rust agent` `cargo fmt` / `cargo clippy` / `cargo test`
+block (lines 22-27, currently missing `--locked` relative to
+`build-agent.yml:118,121,124`) is **not** this task's: it retires with T6, and
+a deletion needs no correction on the way out.
+
 ### T4. `build-desktop.yml`: retire the Rust steps, add the addon build and the agent's vitest suite
 
 - Remove the Rust toolchain setup, the cargo cache, "Build Rust agent binary",
