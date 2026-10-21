@@ -667,23 +667,34 @@ explicitly.
 
 Deleting `api.rs` as a unit on R3's authority would take thirteen covered behaviours with it and the §8.1 accounting would silently drop them. Plan 3's Rust removal must keep `to_ws_url` and `with_bearer` alive in TypeScript before it deletes the module.
 
-**Where the 13 land.** `@ponter/webrtc-core/src/url.ts` already exports `toWsUrl` and `stripTrailingSlashes` (§3.4), so the URL half *looks* like a **reuse** rather than a port. It is not, and adopting it silently would corrupt caller input.
+**Where the 13 land.** `@ponter/webrtc-core/src/url.ts` already exports `toWsUrl` and `stripTrailingSlashes` (§3.4), so the URL half *looks* like a **reuse** rather than a port. It is not. **The TS helper behaves like the pre-G3-W1 Rust implementation — adopting it as-is reintroduces a defect Rust found and fixed.**
 
-The two are not equivalent. Rust's `to_ws_url` splits the query/fragment suffix off **before** trimming path slashes, then reattaches it byte-for-byte; TS's `toWsUrl` calls `stripTrailingSlashes` on the **whole string**, so a trailing slash *inside a query value* is eaten. Verified by running both against `http://h/a/?next=/`:
+Rust splits the query/fragment suffix off **before** trimming path slashes, then reattaches it byte-for-byte (`api.rs:28-40`), and the comment at `:32-34` records why:
+
+> `// Split off any query/fragment suffix *before* trimming path-ending slashes`
+> `// (URL-3/4 + G3-W1: a query value such as `?next=/` must survive byte-for-byte).`
+
+The comment also records that the earlier implementation "ran over the whole URL and dropped the trailing slash in the value". TS's `toWsUrl` calls `stripTrailingSlashes` on the **whole string** — that is that earlier behaviour, reached independently rather than by copying. Verified by running both:
 
 | Input | Rust `to_ws_url` | TS `toWsUrl` |
 |---|---|---|
 | `http://h/a/?next=/` | `ws://h/a?next=/` | `ws://h/a/?next=` |
 
-TS silently truncates the caller's query value. The Rust tests pin this deliberately — `preserves_a_ws_query_value_ending_in_slash`, `trims_a_path_slash_before_the_query_without_altering_it`, `preserves_a_fragment_suffix_unchanged` — and the comments at `api.rs:23-27` say why (URL-3/4 + G3-W1). Plan 2 must either keep the Rust semantics in the agent's own call site or fix `toWsUrl` first; picking one is a decision, not a refactor, because it changes which `AGENT_SERVER` values are accepted. Whatever it picks, the three Rust tests above must have a TS equivalent. `with_bearer` has no TS equivalent and is a small, direct port.
+**The TS test suite cannot tell you this.** `packages/webrtc-core/test/url.test.ts` has 8 `toWsUrl` assertions and **not one** contains a query or a fragment, let alone one with a slash in its value. A Plan 2 step that "runs the existing url tests and finds them green" proves nothing about this case. The check must add it.
 
-**A third caller composes the URL differently, and this is the part Plan 2 must not miss.** `apps/desktop/src/main/agent-supervisor.ts:131` appends the path itself:
+So Plan 2 has two honest options and must pick one explicitly: keep the Rust semantics at the agent's call site, or fix `toWsUrl` (and give it the three missing cases). It is a decision, not a refactor, because it changes which `AGENT_SERVER` values are accepted. Whichever it picks, `preserves_a_ws_query_value_ending_in_slash`, `trims_a_path_slash_before_the_query_without_altering_it` and `preserves_a_fragment_suffix_unchanged` must have TS equivalents. `with_bearer` has no TS equivalent and is a small, direct port.
 
-```ts
-const wsUrl = `${toWsUrl(config.serverUrl)}/api/ws/agent`;
-```
+**Three callers compose a WS URL by appending a path to `toWsUrl`'s output. Rust appends nothing.** This is not one collision waiting to happen but three:
 
-while the Rust agent assumes `AGENT_SERVER` is *already* a complete WS URL and appends nothing (`api.rs:21-22`, "No path is appended"). Both are internally consistent today because the supervisor is the only producer of `AGENT_SERVER` and it always appends. When the agent stops being a separate process and runs in-process (§5), that contract moves: whichever side ends up composing the URL must do it exactly once. Composing it twice yields `/api/ws/agent/api/ws/agent` and the failure is a 404 on the upgrade, which reads like an auth problem rather than a URL bug. Plan 2 must state who owns the composition and add the test that pins it — this is a one-line behaviour with a two-hour debugging cost.
+| Caller | Composition |
+|---|---|
+| `apps/desktop/src/main/agent-supervisor.ts:131` | `${toWsUrl(config.serverUrl)}/api/ws/agent` |
+| `apps/desktop/src/main/fleet.ts:103` | `${toWsUrl(this.baseUrl)}/api/ws/fleet?ticket=…` |
+| `packages/webrtc-core/src/ws-ticket.ts:4` | `${toWsUrl(baseUrl)}/api/ws/browser?ticket=…` |
+
+This is **already documented and was not carried into this spec.** `docs/notes/2026-10-14-subproject-g-api-standard-be-input.md:161-180` (G3-F3) states it plainly: "Note the desktop's three copies each append a *different* path on top of the common scheme rewrite… **Only the scheme rewrite is the shareable unit; the per-caller path stays with the caller.**" The same note gives the reason the Rust side appends nothing: `--server` defaults to a complete WS URL (`main.rs:29`), so appending would double `/api/ws/agent`.
+
+Today this is stable because `agent-supervisor.ts` is the only producer of `AGENT_SERVER`. When the agent moves in-process (§5), two composers yield `/api/ws/agent/api/ws/agent`, and the symptom is a 404 on the upgrade that reads like an auth failure. Plan 2 must enumerate all three, say which are in scope for the agent, state who owns composition, and add the test that pins it. The fleet and browser composers are desktop/web-side and may never touch the agent path — but "may never" is the assumption that needs writing down, not a discovery to be made later.
 
 **Correction note.** An earlier draft of this row cited a "wire report §5.4", and §3.4's `@ponter/api-client` row cited the same. No such document was ever committed — it was a session scratch file. The claim those rows make is independently true (verified: no caller outside `api.rs` references `ApiError`, `from_response`, `network`, or `is_auth_fatal`), so the citation is replaced rather than the claim retracted. This row also narrows the scope, which the earlier wording overstated.
 
