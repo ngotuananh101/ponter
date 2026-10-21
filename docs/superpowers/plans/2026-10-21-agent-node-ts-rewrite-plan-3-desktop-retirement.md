@@ -135,6 +135,23 @@ a deletion needs no correction on the way out.
 
 - **B19** — if `applyBitrate` did not land in Plan 1 Task 4's addon, it is a gap
   here (Plan 2's coverage-matrix update says so explicitly).
+- **B-10 — the auto-ABR loop** (audit §B-10). This is the only item in this list
+  that is a *behaviour*, not an artifact, and the only one whose disposition is
+  not a repair: the audit established that no sentence in the spec, Plan 1,
+  Plan 2 or this file claims the automatic bitrate loop exists in the
+  TypeScript agent, so the §9.4 "every row of §4" gate cannot fail on it. Two
+  possible landings, and the choice is the owner's (see T9):
+  - **It ships.** Then it needs a new §4 B-row, a task with a declared test
+    count, a decision on the estimator (werift exposes only its TWCC
+    `SenderBandwidthEstimator`, reachable as `pc.getSenders()[0].senderBWE` —
+    a GCC port means re-implementing), and an answer to the SDP delta the Rust
+    emits and the TS does not: `a=rtcp-fb … transport-cc` plus an `extmap`
+    entry on both the video and audio m-lines, plus pacing.
+  - **It does not ship.** Then it needs an R-row in the retirement ledger and
+    an `ARCHITECTURE.md:970` amendment, because that document describes the
+    loop as current behaviour.
+  Do not close this item by observing that the Rust is deleted. That is the
+  failure T6 exists to name.
 - **N-4 — the 16 KiB terminal splitter.** Plan 2's Task 12 adds an
   `emitChunks` splitter that the Rust does not have (`MAX_PTY_CHUNK` at
   `pty.rs:22` is only the read buffer; `frame_pty_output` at `pty.rs:141-143`
