@@ -135,34 +135,47 @@ a deletion needs no correction on the way out.
 
 - **B19** — if `applyBitrate` did not land in Plan 1 Task 4's addon, it is a gap
   here (Plan 2's coverage-matrix update says so explicitly).
-- **B-10 — the auto-ABR loop** (audit §B-10). This is the only item in this list
-  that is a *behaviour*, not an artifact, and the only one whose disposition is
-  not a repair: the audit established that no sentence in the spec, Plan 1,
-  Plan 2 or this file claims the automatic bitrate loop exists in the
-  TypeScript agent, so the §9.4 "every row of §4" gate cannot fail on it. Two
-  possible landings, and the choice is the owner's (see T9):
-  - **It ships.** Then it needs a new §4 B-row, a task with a declared test
-    count, and a decision on the estimator (werift exposes only its TWCC
-    `SenderBandwidthEstimator`, reachable as `pc.getSenders()[0].senderBWE` —
-    a GCC port means re-implementing). The SDP is **not** a separate part of
-    this decision; see the third fact below for why it is already settled.
-  - **It does not ship.** Then it needs an R-row in the retirement ledger and
-    an `ARCHITECTURE.md:970` amendment, because that document describes the
-    loop as current behaviour.
-  - **Facts that bear on the choice.** The first two change what "ship"
-    costs; neither decides ship-or-not by itself. The third is already
-    settled and is recorded only so an executor does not mistake it for an
-    open question.
+- **B-10 — the auto-ABR loop — RULED BY THE OWNER (2026-10-22): it ships.**
+  The audit established that no sentence in the spec, Plan 1, Plan 2 or this
+  file claims the automatic bitrate loop exists in the TypeScript agent, so the
+  §9.4 "every row of §4" gate could not fail on it. The owner was asked to
+  choose between shipping, dropping, and a reduced loop with no pacer, and
+  **chose the full port**. This is now a task, not a question. What it carries:
+  - **A new §4 B-row** for the automatic bitrate loop, citing the behaviour the
+    Rust actually has: `abr_next_target` (`desktop.rs:1958-1974`), the 500 ms
+    ticker (`lib.rs:2235-2268`), the 5% seed dead-band and 15% move dead-band,
+    the `[250 kbps, 20 Mbps]` clamp, and the manual latch that stops auto for
+    the rest of the session once a `desktop-bitrate` frame arrives.
+  - **A task with a declared test count.** The three Rust tests that pin the
+    decision function (`desktop.rs:3649` ignores an unmoved seed, `:3659` the
+    dead band, `:3667` clamps and rejects garbage), plus the loop's own
+    coverage, must each be matched to a TS test or recorded as a retirement.
+    `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is N-5's
+    dropped test and lands here — it is the estimator's observable, which is
+    the first thing the port needs.
+  - **What "ship" costs, recorded as scope rather than as a warning.** The
+    first two are new work the task must carry; the third is already settled
+    and is recorded only so an executor does not mistake it for an open
+    question.
+    - **The estimator.** werift exposes only its TWCC
+      `SenderBandwidthEstimator`, reachable as `pc.getSenders()[0].senderBWE`.
+      It is **not** a GCC implementation: it reports a TWCC-derived estimate,
+      so a faithful port of the Rust's control loop either builds the GCC
+      behaviour on top of that number or declares the divergence explicitly.
+      The task must state which, and the B-row must say what it measures.
     - **The pacer.** `configure_congestion_control` installs `Slot::Pacer`
       (`interceptor_registry.rs:717`), which is what turns a retargeted encoder
       into a measured departure pattern; a congestion loop without it samples
       the frame boundaries instead. **werift has no RTP pacer** — `grep -riE
       'pacer|pacing'` over its whole `lib/` hits one comment in the SCTP stack
-      and nothing in the RTP path. So "port the loop" means porting the
-      estimator *and* building the pacing, or accepting a control loop that
-      measures something the Rust did not. REMB is not an alternative: werift
-      parses it into `receiverEstimatedMaxBitrate` (`rtpSender.js:693`) and
-      nothing reads the field.
+      and nothing in the RTP path (independently confirmed by BA, which is the
+      check that establishes it). So "full port" means **building the pacing**
+      as well as wiring the estimator; a task that skips it has shipped a
+      different control loop, not this one, and must say so in the B-row.
+      REMB is not an alternative: werift parses it into
+      `receiverEstimatedMaxBitrate` (`rtpSender.js:693`) and nothing reads the
+      field — `grep -rn receiverEstimatedMaxBitrate` over `lib/` finds only the
+      declaration, that write, and the `.d.ts`.
     - **The estimator's leak.** `senderBWE.js:133-142` (function), `:134-140`
       (the defect) iterates `Object.keys(sentInfo)` — the field names of the
       single packet just sent — so the eviction loop runs over four `NaN`s and
@@ -219,24 +232,34 @@ a deletion needs no correction on the way out.
   failure T6 exists to name.
 - **N-4 — the 16 KiB terminal splitter — RESOLVED: it ships.** The docs audit
   left this unadjudicated as "a spec/protocol question for the owner". It is
-  not one: the contract is already written down, and only the Rust failed to
-  meet it. The evidence, in order:
+  not one: the contract is already written down and the Rust **met** it. The
+  evidence, in order:
   - **The spec states the chunk size as the wire contract.** C12 (`spec:104`)
-    and B40 (`spec:604`) both say "16 KiB chunks", and both cite
-    `pty.rs:22,123-143` as their evidence. So the Rust citation is wrong about
-    its own source, not the contract being silent.
-  - **The Rust never enforced it.** `MAX_PTY_CHUNK` (`pty.rs:22`) is the
-    **read buffer size** (`pty.rs:392`); `frame_pty_output` (`pty.rs:141-143`)
-    frames whatever one `read()` returned. A chunk smaller than the buffer
-    passes through whole, so the wire carried whatever the OS happened to
-    deliver — usually one frame per read, at whatever size `read()` chose.
-  - **`node-pty` does not deliver 16 KiB either, and can exceed it.** Measured
+    and B40 (`spec:604`) both say "16 KiB chunks". So the contract is not
+    silent and nothing here needs an owner ruling.
+  - **The Rust bounded every chunk at 16 KiB, at the read site rather than at
+    the framer.** `start_reader` allocates `vec![0u8; MAX_PTY_CHUNK]`
+    (`pty.rs:392`) and hands on `buf[..n]` (`:397`); `read()` cannot return
+    more bytes than the buffer holds, so the bound is enforced by
+    construction. `grep -n 'read(&mut' apps/agent/src/pty.rs` returns exactly
+    **one** hit (`:394`) — the crate's only production read. `MAX_PTY_CHUNK`
+    appears in production nowhere else as a limit, and `frame_pty_output`
+    (`pty.rs:141-143`) is length-agnostic by design.
+  - **The spec's citation points at the wrong lines.** C12 and B40 both cite
+    `pty.rs:22,123-143`: `:22` is the constant's declaration (the value, not a
+    use), and `:123-143` is the framer, which proves only that framing does no
+    splitting. The call that establishes the bound is `:392`+`:397`. Both rows
+    now cite `pty.rs:22,392,397` (B40 keeps a note that this is a *read-buffer*
+    bound, which is what tells a port to apply it at the framer when its input
+    is not buffer-bounded).
+  - **`node-pty` does not honour that bound, and exceeds it.** Measured
     against `node-pty` 1.2.0-beta.12 on Linux with a real `/bin/sh`: 8 MiB of
     output arrived in 2 555 `data` events, **three of which were larger than
-    16 KiB — the largest 18 433 bytes**. A manager that framed one event per
-    frame would therefore exceed the size B40 states, on an ordinary workload.
-    So Plan 2's `emitChunks` splitter is what *implements* B40; it is not new
-    behaviour invented on top of the port.
+    16 KiB — the largest 18 433 bytes**. So the port needs an explicit
+    splitter where the Rust needed none, *because* the Rust's bound lived in
+    its read buffer and the port's input source has no such buffer. Plan 2's
+    `emitChunks` is what keeps B40 true in the layer that now owns the wire
+    shape; it neither invents a contract nor restores a broken one.
   - **The margin is the point.** 18 433 raw bytes is 24 580 base64 characters
     under an unsplit frame, still under werift's `DEFAULT_MAX_MESSAGE_SIZE` of
     65 536 (`sctp.js:10`) and under Chromium's 64 KiB data-channel limit — so
@@ -244,9 +267,10 @@ a deletion needs no correction on the way out.
     silently stop honouring, and that is the reason to keep the splitter
     rather than the reason to drop it.
   - **Consequence for the ledger:** N-4 moves out of the owner-question list
-    and into T6 as an R-entry of the *opposite* kind — not "a behaviour
-    dropped" but "a behaviour the Rust only appeared to have, now made real".
-    It needs no §4 B-row change: B40 already says this.
+    and into T6 as a *carried* behaviour — the Rust's read-buffer bound is
+    reproduced by an explicit framer-side split, so the ledger records a
+    re-homing, not a drop and not an invention. It needs no §4 B-row change:
+    B40 already says this.
 
 ### T9. Docs: ARCHITECTURE, ADRs, guides
 

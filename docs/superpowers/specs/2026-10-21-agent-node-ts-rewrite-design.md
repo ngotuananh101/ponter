@@ -101,7 +101,7 @@ constraints that shaped the Rust design and opens the in-process question
 | C9 | The shell allowlist is `/bin/sh` floor ∪ `/etc/shells`, canonicalized, absolute-path-only | `apps/agent/src/shell_policy.rs:19-20,47-99` |
 | C10 | The files binary frame is `[1B type][16B transfer_id][8B BE chunk_index][payload]`, 32 KiB chunks | `apps/agent/src/files.rs:75-104` |
 | C11 | Files path containment is proven by `canonicalize` + component-wise prefix check, not by string prefix | `apps/agent/src/files.rs:760-800` |
-| C12 | The terminal output is standard base64 of raw PTY bytes, 16 KiB chunks | `apps/agent/src/pty.rs:22,123-143` |
+| C12 | The terminal output is standard base64 of raw PTY bytes, 16 KiB chunks | `apps/agent/src/pty.rs:22,392,397` — the constant, the read-buffer allocation, and the hand-off of `buf[..n]`. The bound is the read buffer's; `:141-143` is the framer and is length-agnostic |
 | C13 | The reconnect ladder is 200 ms × 1.5 capped at 2000 ms; close codes 4401/4409 are terminal | `apps/agent/src/signal.rs:104-121,297-301` |
 
 ### 2.2 Constraints discovered during the feasibility survey
@@ -601,7 +601,7 @@ citation and its port target. **No row may be silently dropped.**
 | B37 | `--shell`/`AGENT_SHELL` is always allowed (operator-trusted) | `shell_policy.rs:30-38` | The core |
 | B38 | Windows shell detection: `pwsh` → `powershell` → `cmd.exe` | `main.rs:185-222` | The core |
 | B39 | PTY env: `TERM=xterm-256color`, `LANG=C.UTF-8` | `pty.rs:347-348` | The core |
-| B40 | PTY output: standard base64, 16 KiB chunks, slave end held for correct EOF | `pty.rs:22,123-143,351-353` | The core + `node-pty` |
+| B40 | PTY output: standard base64, 16 KiB chunks, slave end held for correct EOF | `pty.rs:22,392,397,351-353` | The core + `node-pty`. The 16 KiB bound is a *read-buffer* bound in the Rust (`:392` allocates the buffer, `:397` hands on `buf[..n]`), so a port whose input source is not buffer-bounded — `node-pty` delivers events over 16 KiB — must apply it at its framer |
 | B41 | Terminal message set: create / resize / close / exit / error | `pty.rs:263-292` | `@ponter/shared` terminal types |
 | B42 | Files binary frame layout `[1B type][16B id][8B BE index][payload]`, 32 KiB | `files.rs:75-104` | The core |
 | B43 | Files JSON message set (12 inbound, 11 outbound) | `files.rs:489-550` (`FilesInbound` at `:489`, `Outbound` at `:512`) | `@ponter/shared` files types |
