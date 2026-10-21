@@ -4,7 +4,7 @@
 **Read against:** `docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md`, the Rust source it ports (`apps/agent/src/**`), and the plan's own coverage matrix (`…-plan-1-coverage-matrix.md`).
 **Auditor:** BA role session. **Classification:** BLOCKING / non-blocking / refuted.
 
-Every line number below is into the plan **as committed at `8a92601`**. The plan was amended twice during this audit (`406f968` → `8411480` → `5ff4182` → `44d5099` → `0030391` → `a6d86e5` → `8a92601`); where an amendment changed a finding, the finding states which revision it applies to. Findings are pinned to `8a92601` except where a heading says otherwise.
+Every line number below is into the plan **as committed at `8a92601`** unless the finding says otherwise. The plan was amended fifteen times during and after this audit (§9 and §9.0); where an amendment changed a finding, the finding states which revision it applies to, and findings closed by an amendment carry a `CLOSED <revision>` marker in place rather than being deleted — a repair that silently erases its own evidence re-opens the hole on the next pass.
 
 Reproduce any row with the recipe in §10.
 
@@ -14,8 +14,8 @@ Reproduce any row with the recipe in §10.
 
 | Class | Count |
 |---|---|
-| BLOCKING | 9 (B-1…B-9) closed; **B-10** open (owner question); **B-11 closed 2026-10-21 by `d471109`** |
-| Non-blocking | 10 (N-6 partly mine and corrected; N-3a/N-3b closed by `d471109`; N-4 amended and N-4a added 2026-10-22) |
+| BLOCKING | 9 (B-1…B-9) closed; **B-10** open (owner question, carrier landed `c81ae4b`); **B-11 closed 2026-10-21 by `d471109`** |
+| Non-blocking | 10 (N-6 partly mine and corrected; N-3a/N-3b closed by `d471109`; N-4 amended twice — the open part is PM-side and is recorded in §N-4/§N-4a) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
 The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong**, and **21 Rust test names cited as porting sources do not exist anywhere in `apps/agent/src`**. Both are the same class of defect — a number or a name written into a declaration that does not describe the tree — and both are BLOCKING because the declaration is the gate the plan itself defines (Plan 2 line 29: an undeclared change is BLOCKING; a declared change that is false is worse, because it passes the gate while misdescribing it).
@@ -247,7 +247,15 @@ So the sentence is wrong **twice, in two different ways**: one phantom name, one
 
 **Retracted, part 1: "the replacement adds behaviour the Rust does not have".** That conclusion was wrong, and PM is right to call it so. The Rust **does** bound its output at 16 KiB — but at the *read site*, not the framer: `start_reader` allocates `vec![0u8; MAX_PTY_CHUNK]` (`pty.rs:392`) and hands `buf[..n]` to the channel (`:397`), and `read()` **cannot return more bytes than the buffer holds**. I verified that rather than asserting it: a 16 KiB buffer reading a 500 KB file returns exactly `16384`, and a 64 KiB buffer on the same file returns `65536`. `pty.rs:392` is the **only** production read in the crate (`grep -n 'read(&mut' apps/agent/src/pty.rs` → one hit), and `lib.rs:1039` only frames what it is handed. So the Rust's chunks *are* ≤ 16 KiB by construction, and `emitChunks` does not add a behaviour — it **makes explicit, at the framer, a bound the Rust enforced one layer earlier**. B40 says 16 KiB; the Rust met it; the port meets it. The disposition is *"a stated contract made explicit in the layer that owns the wire shape"*, not *"a behaviour change needing a migration note"*.
 
-**Retracted, part 2 — and this one is PM's error, not mine: "the Rust enforced nothing".** This now appears in **both** plans (Plan 3 T8 `:228`, Plan 2 Task 12's declaration `:5531`) and it is **false as written**. The citation given for it is `MAX_PTY_CHUNK` at `:22` being "the read buffer" — but *being the read buffer* is precisely the mechanism by which the bound **is** enforced. A buffer-sized `read()` is a bound, not the absence of one. The only reading under which "enforced nothing" is true is "the framer does not enforce it", which is a different and much narrower statement than the one the plans make.
+**Retracted, part 2 — and this one is PM's error, not mine: "the Rust enforced nothing".** As of `844ba29` the claim appears in **two** plans and **three** places, and all three are **false as written**:
+
+| where | wording |
+|---|---|
+| Plan 3 T8 `:228` | *"**The Rust never enforced it.**"* |
+| Plan 3 T8 `:248` | *"'a behaviour the Rust only appeared to have, now made real'"* |
+| Plan 2 Task 12 declaration `:5531` | *"but the Rust enforced nothing … `emitChunks` is what makes the port meet the contract the Rust merely appeared to meet"* |
+
+The citation given for it is `MAX_PTY_CHUNK` at `:22` being "the read buffer" — but *being the read buffer* is precisely the mechanism by which the bound **is** enforced. A buffer-sized `read()` is a bound, not the absence of one. The only reading under which "enforced nothing" is true is "the framer does not enforce it", which is a different and much narrower statement than the one the plans make. The T8 preamble makes the same move one level higher — *"the contract is already written down, and only the Rust failed to meet it"* (`:222-223`) — so a repair has to catch the framing sentence as well as the three instances above, or the conclusion will be re-derived from the preamble on the next edit.
 
 **The `node-pty` half, which is sound but supports a narrower conclusion than stated.** PM measured 1.2.0-beta.12 with a real `/bin/sh`: 8 MiB of output in 2 555 events, largest **18 433 bytes**. Against `DEFAULT_MAX_MESSAGE_SIZE = 65536` (`werift/lib/webrtc/src/transport/sctp.js:10`) the unsplit worst case is ~24 580 base64 characters, so this is contract drift, not a crash — I agree. But **node-pty's larger events do not imply the Rust had the same exposure**: the Rust's buffer caps its reads regardless of what a JS binding would have delivered. The correct statement is *"node-pty would deliver more than 16 KiB, so the port needs an explicit splitter where the Rust needed none — because the Rust's bound lived in its read buffer"*. That is a real porting hazard and it justifies `emitChunks` completely; it just is not evidence that the Rust was unbounded.
 
@@ -575,13 +583,19 @@ Three real defects in three consecutive tasks, all found the same way — **by e
 
 **Do not execute Plan 2 as it stands.** B-1/B-2 mean no task's gate is trustworthy; B-3/B-5 mean two R-entries would record fabricated parity; B-7/B-8 mean two surfaces leave the Rust tree with no owner.
 
-> **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. The one residual found during that verification (the "six retired noise rules" R-entry line) was closed in `72e8594`. N-4 remains open for the owner by design: whether the Node agent should split terminal output at 16 KiB is a protocol question, not a docs one.
+> **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. The one residual found during that verification (the "six retired noise rules" R-entry line) was closed in `72e8594`. A further eight revisions landed after that and are recorded in §9.0.
 >
-> **Still open, and larger than any of the above: B-10, the auto-ABR loop** (§3). It is not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. It needs an owner ruling on three questions (does auto-ABR ship; against which estimator and seeded how; what divergence is declared, given that it is **two** behaviours — the estimator and an absent pacer — not one). The original fourth question about the `transport-cc` SDP delta is **withdrawn**: `register_default_interceptors` already registers it, so there is nothing to decide there — but the Rust comment saying otherwise is wrong and should be corrected in T9. B-10 needs carrying in Plan 3's T8 alongside N-4, so that Plan 3's T6 "close the retirement ledger" step cannot pass while it is unresolved.
+> **N-4 is no longer an owner question, and that correction is PM's.** `e9fe654` settles it by measurement: C12 and B40 already state 16 KiB as the wire contract, so the splitter is a contract the port must meet, not a behaviour it invents. My earlier framing ("whether the Node agent should split is a protocol question for the owner") was wrong for the reason the empirical §N-4 retraction gives — the Rust met that contract at its read buffer, so there was never a silent contract to reinterpret.
+>
+> **Still open, and larger than any of the above: B-10, the auto-ABR loop** (§3). It is not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. It needs an owner ruling on three questions (does auto-ABR ship; against which estimator and seeded how; what divergence is declared, given that it is **two** behaviours — the estimator and an absent pacer — not one). The original fourth question about the `transport-cc` SDP delta is **withdrawn**: `register_default_interceptors` already registers it, so there is nothing to decide there — but the Rust comment saying otherwise is wrong and should be corrected in T9. **The carry into Plan 3's T8 that this paragraph asked for has since landed (`c81ae4b`); what it cannot supply is the ruling itself.**
 >
 > **B-11, N-3, N-3a and N-3b were all four closed by PM's `d471109`, as one declared before→after — which is what I recommended and what the sequencing required.** I re-verified the repair independently rather than accepting it: all seven `list()` divergences are fixed (path built with `join_rel` semantics, `isDirectory` from `stat`, real directory `size`, `rfc3339Utc(stat.mtimeMs)`, dirs-first `Buffer.compare`, per-entry `statSync` throwing, `readdirSync` inside a try mapped through `errnoToCode`); the three `list_*` tests are present (`:4118`, `:4145`, `:4155`); the phantom `drained .part before resume` is gone; and the declaration is **29 `it()` / 60 `expect()`**, which I recounted from the fences — **both exact**. N-3b's repair also does the thing I asked for rather than the vacuous thing: it asserts only the wire literal `30_000` and **states in a comment why the prod-equals-constant assertion is omitted** (`:4300-4305`), naming the `cfg(test)` divergence explicitly. That is better than what I proposed.
 >
-> **What this does not close.** B-10 is still open and still needs an owner ruling. N-4 is now resolved as a docs matter (PM was right that the contract was written down), but **its stated mechanism is wrong and is now in both plans** — see N-4's retractions and N-4a.
+> **B-10 is now carried, but not yet decided.** `c81ae4b` puts it in Plan 3's T8 (`:138`) with both landings spelled out, and `78dd283`/`f95a921` corrected and tightened the evidence underneath it. I re-verified that evidence line by line (§9.0) and it holds — including the two facts that make "ship" expensive rather than free: werift has **no RTP pacer** (one `pacer` hit in the whole library, in SCTP), and its `SenderBandwidthEstimator` leaks its send history because the eviction loop runs over `Object.keys(sentInfo)` — four field names turned into `NaN` — and deletes nothing. That leaves B-10 exactly where it was: **a behaviour with a carrier and no owner ruling.** `54b1c5c` correctly demoted the fourth question (the `transport-cc` SDP delta) from an owner decision to a settled fact, agreeing with §B-10's withdrawal of it; the remaining three are still the owner's.
+>
+> **N-4's *outcome* is settled and PM's reasoning for it improved.** `e9fe654` resolves it by measurement rather than deferral, which is the right method, and its `node-pty` evidence (8 MiB in 2 555 events, largest 18 433 bytes) is what justifies `emitChunks` when the Rust's own bound sat in its read buffer. What is still wrong is the mechanism sentence, which `844ba29` extended rather than repaired — see §N-4 below.
+>
+> **What this does not close.** B-10 needs an owner ruling. **The "the Rust enforced nothing" claim now appears in three places across two plans plus the T8 preamble** (§N-4), and it is false as written; repairing it and repairing C12/B40's citations (§N-4a) are the same fix.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -598,7 +612,7 @@ Suggested order for the amendments (all of them plan-side; per PM's ruling, I do
 
 ## 9. Amendment log observed during this audit
 
-The plan moved six times while I was reading it. Recording so PM can confirm ownership:
+The plan moved six times while I was reading it — and fifteen times in total before the audit closed. The first table is the window I audited; §9.0 records the rest, each verified against the tree rather than the commit message. Recording so PM can confirm ownership:
 
 | Revision | Change |
 |---|---|
@@ -610,6 +624,37 @@ The plan moved six times while I was reading it. Recording so PM can confirm own
 | `a6d86e5`, `8a92601` | Step 0b rationale; `CONTRIBUTING.md` |
 
 Findings B-3's Task 19 rows and the T19 count were **re-checked against `8a92601`** after `5ff4182` landed. Everything else was stable from `406f968` onward.
+
+### 9.0 The rest of the log — `c989781` … `844ba29`
+
+Nine further revisions landed after `72e8594` and were verified directly against the tree rather than accepted from the commit messages. The two that change a *finding* are `e9fe654`/`844ba29` (N-4, below); the rest are recorded here so the ledger is not silently partial.
+
+| Revision | What it changed | Verified how |
+|---|---|---|
+| `c989781` | Plan 3 gained an obligation list — deferrals now have a destination instead of dying in prose | Read; the list is what §8's "what this does not close" needed |
+| `e71c499` | `CONTRIBUTING.md` added to Plan 3 T3 alongside the CI filters | `CONTRIBUTING.md` exists at repo root; T3 `:87` carries the same-invariant sentence |
+| `c81ae4b` | B-10 given its T8 carrier — the first half of what §8 asked for | Plan 3 `:138` |
+| `78dd283`, `f95a921` | T8's ABR evidence corrected, then the wording tightened | Citations re-checked, below |
+| `54b1c5c` | The `transport-cc` SDP bullet demoted from owner decision to settled fact — **agreed, and it resolves Q4 the way my audit did** (`§B-10`: the premise was wrong because `register_default_interceptors` already registers it) | Below |
+| `9f74f0c` | The extmap rule restated as a conjunction, not a flag | Re-ran the reasoning against the probe output, below |
+| `c692b77` | The probe citation pinned by sha256 | `sha256sum` matches: `probe.mjs` `9f155272…7649b46`, `output.txt` `f2fe9e5f…e5239d6b` |
+| `d471109`, `180efe1`, `e9fe654`, `844ba29` | B-11/N-3 closure, Task 12's byte-fidelity repair, N-4's resolution | §8, §N-4, §N-4a, §7.1 |
+
+**Citations in the new T8 material that I checked line by line, all correct:**
+
+- `interceptor_registry.rs:717` — `.with(Slot::Pacer, PacerBuilder::new().build())`. Confirmed, and the surrounding doc at `:628` calls it *"paces departures"*, which is the claim T8 makes for it.
+- `senderBWE.js:133-142` / `:134-140` — `rtpPacketSent(sentInfo)` then `Object.keys(sentInfo).map(Number).sort().filter(seq => seq < sentInfo.wideSeq).forEach(seq => delete this.sentInfos[seq])`. **The stated defect is real and the mechanism is exactly as described:** `sentInfo` is one packet's field names (`wideSeq`, `size`, `sendingAtMs`, `sentAtMs`, built at `rtpSender.js:612-616`), so `Object.keys` yields four strings, `Number()` turns each into `NaN`, and every `NaN` fails the filter — the eviction loop deletes nothing. `this.sentInfos[sentInfo.wideSeq] = sentInfo` then grows without bound.
+- `rtpSender.js:693` — `this.receiverEstimatedMaxBitrate = feedback.bitrate`. Confirmed, and `grep -rn receiverEstimatedMaxBitrate` over `lib/` shows only the declaration, that write, and the `.d.ts` — **nothing reads it**, so "REMB is not an alternative" holds.
+- **"werift has no RTP pacer"** — `grep -rniE 'pacer|pacing' lib/` excluding `.map` files returns **one** hit, in `sctp/src/sctp.js:1271` ("retransmission pacing is controlled by RTO/T3"), and **zero** in `lib/webrtc` or any RTP path. Confirmed as stated.
+- `interceptor_registry.rs:676`/`:678`/`:686-692` — the `for kind in [Video, Audio]` loop, its `CongestionFeedback::Twcc` arm, and `register_header_extension(…, kind, None)`. All three confirmed.
+- `rtc.rs:220`/`:235` and the audio claim — one `RtpCodecKind::Video` track; `grep -rniE 'audio' apps/agent/src/ --include=*.rs` returns **zero** hits. Confirmed, so "the audio half is dormant registration" is right.
+- `media_engine.rs:917-946` — `update_header_extension`, whose body inserts a negotiated extension **only** when a local extension with the same URI exists. That is the Rust half of the conjunction, and it matches werift's `transceiverManager.js:265-266` filter one-for-one. The symmetric claim is correct.
+- `peerConnection.js:1084-1087` — `headerExtensions: { audio: [], video: [] }`. Confirmed.
+- `.superpowers/probes/be-twcc-sdp/output.txt` — the probe's own matrix is what T8 asserts: default config ⇒ extmap `NONE` for every offer; with `useTransportWideCC()` ⇒ `a=extmap:4` for an offer id of 4 and `a=extmap:7` for 7. Conjunction confirmed, id-from-offer confirmed.
+- `report.json:30` vs `synthetic-offer.ts` — the captured offer carries `a=extmap:4 …transport-wide-cc…` and `a=rtcp-fb:<pt> transport-cc` on sixteen payloads; the fixture carries **only** `a=extmap-allow-mixed` and no `transport-cc` at all. **The gap T8 warns about is real**, and it is the same class as §7.1: a fixture that never exercised the extension cannot tell an implementer whether their config works.
+- `ARCHITECTURE.md:970` — `- [x] GCC auto-ABR — target, verified via spike §3.7 (not an acceptance criterion)`. Confirmed: it describes the loop as **present behaviour**, which is why the "does not ship" branch of B-10 costs a doc amendment.
+
+**One thing worth flagging back, and it is not a defect in PM's text — it is a residual in mine.** `54b1c5c` now separates the RTCP-FB half from the extmap half and says the former *"needs no local config either"*, with the probe showing `rtcp-fb` echo in the `fb only` row where extmap is still `NONE`. That is measured and correct. But it means the demoted bullet is settled by **two different mechanisms** — fb is echo-only, extmap is a conjunction — and the sentence "The old sentence 'the `extmap` id needs no decision' is true only of the id" is the only place both are held apart. An executor skimming the bullet could still take "no local config needed" from the fb half and apply it to the extmap half. The bullet already says otherwise, so this is a review note, not a finding.
 
 ### 9.1 Post-audit verification — `cebe659` (PM's closing amendment)
 
@@ -788,7 +833,22 @@ const f1=fs.openSync(p,'r'),f2=fs.openSync(p,'r');
 console.log('16KiB buffer ->',fs.readSync(f1,a,0,a.length,null),'  64KiB buffer ->',fs.readSync(f2,b,0,b.length,null))"
 #     -> 16384 and 65536 : read() cannot exceed the buffer. So pty.rs:392 bounds every
 #        emitted chunk, and `frame_pty_output` (:141) being length-agnostic proves nothing.
-#        "The Rust enforced nothing" (Plan 3 T8 :228, Plan 2 :5531) is FALSE as written.
+#        "The Rust enforced nothing" is FALSE as written, and as of 844ba29 it is in
+#        THREE places: Plan 3 T8 :228 and :248, Plan 2 Task 12 declaration :5531.
+#        The T8 preamble (:222-223, "only the Rust failed to meet it") frames it the same way.
+
+# §9.0: PM's post-audit Plan 3 evidence, re-checked
+R=.superpowers/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/rtc-0.21.0
+sed -n '717p' $R/src/peer_connection/configuration/interceptor_registry.rs   # Slot::Pacer
+sed -n '676,692p' $R/src/peer_connection/configuration/interceptor_registry.rs # feedback loop + extmap None
+sed -n '917,946p' $R/src/peer_connection/configuration/media_engine.rs       # update_header_extension
+grep -rniE 'audio' apps/agent/src/ --include=*.rs                            # 0 hits
+W=<werift>; grep -rniE 'pacer|pacing' $W/lib/ --include=*.js --include=*.ts  # 1 hit, sctp only
+sed -n '133,142p' $W/lib/webrtc/src/media/sender/senderBWE.js                # the NaN eviction defect
+sed -n '612,620p' $W/lib/webrtc/src/media/rtpSender.js                       # sentInfo's four fields
+sed -n '265p' $W/lib/webrtc/src/transceiverManager.js                        # the extmap conjunction filter
+sed -n '1084,1087p' $W/lib/webrtc/src/peerConnection.js                      # headerExtensions default []
+sha256sum .superpowers/probes/be-twcc-sdp/{probe.mjs,output.txt}             # matches the pinned hashes
 
 # The B-11 repair, re-verified against all seven divergences
 sed -n '4582,4625p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md
