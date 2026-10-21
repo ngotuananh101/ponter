@@ -1375,6 +1375,23 @@ export interface NativeAddon {
    * encodes, and returns the Annex-B access unit.
    */
   encode(handle: number, frame: CapturedFrame): Promise<EncodedFrame>;
+  /**
+   * Retarget the encoder's bitrate on a live handle (spec B19).
+   *
+   * Raising requires two openh264 calls in a specific order — `MAX_BITRATE` on
+   * `SPATIAL_LAYER_0` first, then `BITRATE` on `SPATIAL_LAYER_ALL` — and
+   * lowering needs only the second. Both are encoder-handle state, so this
+   * cannot live in TypeScript: there is no way to reach `SetOption` from the
+   * JS side without the addon exposing it.
+   *
+   * The Rust agent's ordering is `apps/agent/src/desktop.rs:1880-1905`. No
+   * rebuild and no forced IDR on a retarget: the next frame simply encodes at
+   * the new rate.
+   *
+   * `bps` is clamped by the caller, not here — the addon applies what it is
+   * given and reports openh264's failure if the encoder rejects it.
+   */
+  setBitrate(handle: number, bps: number): Promise<void>;
   /** Release an encoder. */
   destroyEncoder(handle: number): Promise<void>;
   /** Inject one input event. */
@@ -1435,8 +1452,44 @@ describe('the native addon smoke test', () => {
     expect(frame.levelIdc).toBeGreaterThan(0);
     await addon.destroyEncoder(handle);
   });
+
+  it('retargets the bitrate on a live handle (spec B19)', async () => {
+    const handle = await addon.createEncoder({ width: 1280, height: 720, fps: 30, bitrate: 4_000_000 });
+    // One frame first: openh264 rejects SetOption with cmInitExpected (rc 4)
+    // until the encoder has encoded at least once.
+    await addon.encode(handle, {
+      pixels: Buffer.alloc(1280 * 720 * 4, 0x40),
+      stride: 1280 * 4,
+      width: 1280,
+      height: 720,
+      timestampUs: 0,
+    });
+
+    // Raise: both MAX_BITRATE (LAYER_0) and BITRATE (LAYER_ALL).
+    await expect(addon.setBitrate(handle, 6_000_000)).resolves.toBeUndefined();
+    // Lower: only BITRATE.
+    await expect(addon.setBitrate(handle, 1_000_000)).resolves.toBeUndefined();
+
+    // The stream keeps encoding at the new rate — a retarget must not
+    // invalidate the handle or force a rebuild.
+    const after = await addon.encode(handle, {
+      pixels: Buffer.alloc(1280 * 720 * 4, 0x80),
+      stride: 1280 * 4,
+      width: 1280,
+      height: 720,
+      timestampUs: 33_333,
+    });
+    expect(after.annexB.length).toBeGreaterThan(0);
+    await addon.destroyEncoder(handle);
+  });
+
+  it('rejects setBitrate on an unknown handle', async () => {
+    await expect(addon.setBitrate(999_999, 2_000_000)).rejects.toThrow();
+  });
 });
 ```
+
+> **What this test can and cannot see.** It proves `setBitrate` is exported, works on a live handle, and leaves the encoder usable. It **cannot** see the two-call order or the layer arguments — openh264 exposes no getter for them, which is the same wall as profile and level. The order is asserted in Step 12 at the C++ level, where the wrapper's `SetOption` calls can be intercepted. Do not delete the Step 12 test on the grounds that the JS test is green; they observe different things.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -1835,11 +1888,43 @@ The encoder must:
 
 - **Downscale to the profile size** in `src/resize.cc` (spec B16) — the SIMD box filter, not a nearest-neighbour sampler. Nearest-neighbour is visibly worse at the zoom levels a remote-desktop user works at, and a bilinear sample is the wrong filter for an exact integer ratio. When the source is smaller than the profile, reject with `NATIVE_INVALID_ARGUMENT` rather than upscaling.
 
+- **Set every encoder parameter spec B17 names, and nothing else.** The Rust agent's list (`desktop.rs:1826-1850`) is the contract:
+
+  | Field | Value | Observable from outside? |
+  |---|---|---|
+  | `usageType` | `SCREEN_CONTENT_REAL_TIME` | no |
+  | `iRCMode` | `RC_BITRATE_MODE` | yes, via `GetBaseParams().iRCMode` |
+  | `iComplexityMode` | `LOW_COMPLEXITY` | no |
+  | `bEnableAdaptiveQuant` | `false` | no |
+  | `bEnableBackgroundDetection` | `false` | no |
+  | `uiIntraPeriod` | `gop_frames_for(profile)` — `(fps * 2).round().max(1)` | yes, indirectly: IDR cadence in the stream |
+  | `sVuiParam` | `bt709()` | no |
+  | `iTargetBitrate` | the profile's bitrate | yes, via `GetBaseParams()` and the SPS level |
+  | `fMaxFrameRate` | the profile's fps | yes, via `GetBaseParams()` |
+
+  The four "no" rows are internal openh264 state with no getter, so **the TS smoke test cannot see them** and neither can an SPS parse. Do not write a TypeScript assertion that pretends otherwise. The honest check lives in Step 12: build the `SEncParamExt` through the same code path the create call uses, and assert the struct's fields **before** handing it to `Initialize`. That is a pure function over a struct — no encoder, no frame, no GPU.
+
+  This matters because three of those four change the bitstream a user would notice: `usageType` drives openh264's screen-content tuning (sharp text edges versus camera noise), `bt709` versus default BT.601 shifts every colour, and adaptive quantisation off is what keeps a static desktop from pulsing. A port that silently dropped them would still produce valid H.264 and would still decode — it would just look wrong, which is the hardest kind of regression to attribute later.
+
 - **Convert RGBA8 → I420** and hand openh264 `I420Buffer` planes directly. The Rust agent did exactly this at `apps/agent/src/desktop.rs:1862` (`YUVBuffer::from_rgba8_source(RgbaSliceU8::new(..))`). Do not send 4 bytes/pixel across the FFI a second time just to convert in JS.
 
 - Return the access unit in **Annex-B** framing. openh264 hands back `SFrameBSInfo`, whose `sLayerInfo[0]` carries `pBsBuf` — already Annex-B, start codes included. Copy it out; do not re-frame it.
 
 - Set `isKeyframe` when the access unit contains an IDR (NAL type 5).
+
+- **Implement `setBitrate` — the retarget order is the whole behaviour** (spec B19). The two-call sequence is not an optimisation, it is what openh264 requires:
+  ```
+  if (target > current) {
+      SetOption(ENCODER_OPTION_MAX_BITRATE, { iLayer: SPATIAL_LAYER_0,   iBitrate: target });
+  }
+  SetOption(ENCODER_OPTION_BITRATE,     { iLayer: SPATIAL_LAYER_ALL, iBitrate: target });
+  ```
+
+  Raise issues **both**, in that order; lower issues **only** the second. Reference: `apps/agent/src/desktop.rs:1880-1905`, which bails with `"... MAX_BITRATE, LAYER_0 ... failed with rc"` on the first call and `"... BITRATE ... failed with rc"` on the second — keep both distinct failure paths rather than collapsing them into one error, because a raise that fails only the first call leaves the encoder at its old ceiling and the symptom (stream stalls at the old rate) is otherwise unattributable.
+
+  `current` is the bitrate the create call was given, updated on every successful `setBitrate`. Track it on the handle; do not read it back from openh264 — `GetBaseParams` returns `iTargetBitrate` but it reflects the *requested* value, not what the rate controller settled on, which is exactly the same trap as profile and level above.
+
+  **On a fresh encoder, openh264 rejects `SetOption` with `cmInitExpected` (rc 4) until one `encode()` has run** — verified in the Rust tests at `desktop.rs:3091-3105`. Production always retargets mid-stream so it never hits this, but a C++ unit test that calls `setBitrate` before the first frame will. Seed the test with one `encode()` call, and let a caller who retargets a fresh handle see the real openh264 error rather than papering over it.
 
 - [ ] **Step 6: Write the capture and input backends**
 
@@ -1894,7 +1979,7 @@ If `OPENH264_NO_ASM=1` was set deliberately, the expected result is **the opposi
 - [ ] **Step 9: Run the test to verify it passes**
 
 Run: `pnpm --filter @ponter/agent-node exec vitest run test/native/smoke.test.ts`
-Expected: PASS.
+Expected: PASS — 5 tests green (platform, error codes, encode+profile, bitrate retarget, unknown-handle rejection).
 
 - [ ] **Step 10: Write the failing test — the fault-containment gate**
 
@@ -2122,6 +2207,15 @@ Expected: FAIL first (the addon does not yet validate its inputs), then PASS aft
 - [ ] **Step 12: Add the C++-level unit tests**
 
 Create `apps/agent/native/test/` — a plain `assert`-based harness for the pure functions (the Annex-B splitter, the RTP-independent helpers, the error-code mapping). These run without the addon being loaded.
+
+**One of these must assert the B19 call order, because nothing above can.** Stub the encoder's `SetOption` entry point (a function pointer, or a thin `EncoderOps` struct the test substitutes) and record `(option, layer, bitrate)` for each call:
+
+- **Raise** `4_000_000 → 6_000_000` must produce exactly two calls, **in this order**: `(ENCODER_OPTION_MAX_BITRATE, SPATIAL_LAYER_0, 6_000_000)` then `(ENCODER_OPTION_BITRATE, SPATIAL_LAYER_ALL, 6_000_000)`.
+- **Lower** `4_000_000 → 1_000_000` must produce exactly **one** call: `(ENCODER_OPTION_BITRATE, SPATIAL_LAYER_ALL, 1_000_000)` — no `MAX_BITRATE`.
+
+Asserting only "two calls happened" is not enough: the regression this guards is the order reversing, or the layer index being wrong on the raise. Both still produce two successful `SetOption` calls and a stream that encodes, so nothing downstream would fail.
+
+**A second test here must pin the B17 encoder config**, for the same reason — four of its nine fields have no getter. Build the `SEncParamExt` through the create call's own code path and assert, before `Initialize`: `usageType == SCREEN_CONTENT_REAL_TIME`, `iRCMode == RC_BITRATE_MODE`, `iComplexityMode == LOW_COMPLEXITY`, `bEnableAdaptiveQuant == false`, `bEnableBackgroundDetection == false`, `sVuiParam` carries BT.709, and `uiIntraPeriod == (fps * 2).round().max(1)` for both 30 and 60 fps. Include the degenerate case: an `fps` below 0.5 must yield `uiIntraPeriod == 1`, not 0 — openh264 rejects 0 and the Rust agent's `.max(1.0)` is what prevents it.
 
 - [ ] **Step 13: Commit**
 
@@ -2381,6 +2475,7 @@ The plan is done when **all** of these hold:
 2. `@ponter/webrtc-core` exposes `RTCRtpSenderLike` and `addTrack`, with the werift adapter's D4b regression test green.
 3. The packetizer's table-driven fixtures pass, and the fixture bytes are literal (not recomputed).
 4. The addon builds against Electron's headers, the smoke test passes, and the fault-containment gate passes.
+   **The addon's surface includes `setBitrate(handle, bps)`** — spec B19 names it as the port destination, and without it a `desktop-bitrate` frame would parse into nothing. The C++ test asserting the raise's two-call order and the lower's one-call shape is part of this criterion, and so is the B17 encoder-config test, because four of those nine fields have no getter and nothing else can observe them.
 5. The shared stream-profile table lives in `@ponter/shared` with the four computed `profile-level-id` values, and `desktop-profile-parity.test.ts` imports both sides as values (D12 replaced, guarantee intact).
 6. The agent API-access gate is written, and its status is stated as **exercised** or **written but not yet exercised** — never as "green" when the tree it guards does not exist.
 7. The coverage matrix has 62 B-rows and 6 R-rows.
@@ -2399,3 +2494,24 @@ These are carried forward to Plan 2 and Plan 3, and are listed here so their abs
 - **Q4, Q5** — the capture source selection and the `capture_image` fallback detection. Task 4's backends must expose the seams; Plan 2 wires the policy.
 - **Q8** — the Electron packaging mechanics. Task 4 builds the addon; Plan 3 packages it.
 - **Q11** — the addon's profile/level reporting surface. Task 4's `EncodedFrame` is a candidate answer; if Plan 2 finds a better shape, it must change Task 4's `index.d.ts` and Task 4's tests **together**, with the before→after counts declared. Note the constraint Task 4 already proves: openh264 exposes **no** getter for profile or level (`GetOption` has no such case, `GetBaseParams` returns neither), so any shape change must still be sourced from SPS parsing.
+
+### A known accounting hole in the spec's B-row inventory
+
+The behaviour inventory is 62 rows (B1–B62), and the Rust agent carries **359** `#[test]`/`#[tokio::test]` functions (spec §8.1). Those two numbers cannot be reconciled, because **29 of the 359 sit in modules the inventory never gives a row to**:
+
+| Module | Tests | Spec §12's port destination |
+|---|---|---|
+| `desktop/warm_capture.rs` | 18 | "The native capture path" |
+| `portal/remote_desktop.rs` | 7 | "The native addon (Linux)" |
+| `portal/token_store.rs` | 4 | "The native addon (Linux)" |
+
+(`portal/injector.rs`'s 5 tests *are* covered — B31 names `injector.rs:110-160` — so it is not in this list.)
+
+This is a **spec gap, not a plan gap**, and this plan does not invent rows to close it. The consequence is concrete and should not be discovered at retirement time: §8.1's guarantee that "each retired Rust test maps to a TS test or to an explicit R-entry" has no home for these 29, so Plan 3's Rust removal would delete them without anything recording what behaviour went with them.
+
+**Owner decision needed before Plan 3.** The two honest options:
+
+1. **Amend the inventory** with rows for warm-capture session reuse, the persistent RemoteDesktop portal restore token, and the portal token store — 3 new rows (B63–B65), each with tests in the plan that owns its port. This is the accurate option and it is what the 29 tests deserve; it costs a spec amendment.
+2. **Add 3 explicit R-entries** declaring those behaviours retired — defensible for `token_store.rs` if the addon handles persistence differently, less defensible for `warm_capture.rs`, whose 18 tests encode the ADR-90 phase-1 behaviour that is very much still a product requirement.
+
+Recommendation: option 1 for `warm_capture.rs` and `remote_desktop.rs`, option 2 only for `token_store.rs` if the addon's own persistence makes it moot. **The plan does not decide this** — it is listed here so Plan 3 cannot silently drop the 29.
