@@ -12,7 +12,7 @@
 
 **Plan series:** Plan 1 (spike, foundations, the N-API addon) → **Plan 2 (this file — the TS core)** → Plan 3 (desktop integration, Rust retirement, CI, docs). Plan 1 is a hard prerequisite. Plan 2 must land before Plan 3; they must not run in parallel.
 
-**Coverage matrix:** `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md` is the row inventory. Plan 2 owns **38 B-rows**: B1–B14, B18, B20, B22–B24, B27–B30, B34, B36–B56, B58, B59, B61, B62. B19 has no home in any plan (coverage-matrix §4.1 — the two-step option order lives in the addon); Plan 2 owns the *clamp* (B20) and the *decode* (B62) around it, not `applyBitrate`.
+**Coverage matrix:** `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md` is the row inventory. Plan 2 owns **49 B-rows**: B1–B14, B18, B20, B22–B24, B27–B30, B34, B36–B56, B58, B59, B61, B62. (An earlier draft said 38; the enumerated list has always summed to 49, and the matrix's Plan-2 rows are exactly those 49 — the figure was carried, never counted. Same defect shape as the R3 split, which was corrected for the same reason.) B19 has no home in any plan (coverage-matrix §4.1 — the two-step option order lives in the addon); Plan 2 owns the *clamp* (B20) and the *decode* (B62) around it, not `applyBitrate`.
 
 ---
 
@@ -23,15 +23,18 @@ These apply to every task. Most are copied verbatim from the spec; the ones mark
 - **No Rust fallback.** Nothing here may depend on `cargo`, `apps/agent/target/`, or the Rust binary. The Rust tree stays on disk until Plan 3 and is read as **reference only**.
 - **All code, identifiers, comments, commit messages and documentation are in English.** Zero Vietnamese characters in any diff.
 - **Commit attribution:** author is `Ngo Tuan Anh <ngotuananh2101@gmail.com>`. **Never** add a `Co-authored-by` trailer of any kind.
-- **No credentials in process lists (ADR-13).** Config is env-var-only. The credential travels in the `Authorization` upgrade header and **never** in a URL, a log line, or a frame. The env-var names (`AGENT_ID`, `AGENT_SERVER`, `AGENT_CREDENTIAL`, `STUN_SERVER`, `AGENT_ALLOW_INPUT`, `AGENT_FILES_ROOT`, `AGENT_IDENTITY_PATH`, `AGENT_DESKTOP_PROFILE`, `AGENT_DESKTOP_DEFAULT_SOURCE`, `AGENT_SHELL`, `RUST_LOG`) are the desktop↔agent contract and must not be renamed.
+- **No credentials in process lists (ADR-13).** Config is env-var-only. The credential travels in the `Authorization` upgrade header and **never** in a URL, a log line, or a frame. The env-var names (`AGENT_ID`, `AGENT_SERVER`, `AGENT_CREDENTIAL`, `STUN_SERVER`, `AGENT_ALLOW_INPUT`, `AGENT_FILES_ROOT`, `AGENT_IDENTITY_PATH`, `AGENT_DESKTOP_PROFILE`, `AGENT_DESKTOP_DEFAULT_SOURCE`, `AGENT_DESKTOP_SOURCE`, `AGENT_DESKTOP_SELECT_TIMEOUT_MS`, `AGENT_DESKTOP_POLL_INTERVAL_MS`, `AGENT_SHELL`, `RUST_LOG`) are the desktop↔agent contract and must not be renamed.
+  - **`AGENT_DESKTOP_SOURCE` is not `AGENT_DESKTOP_DEFAULT_SOURCE`.** The former selects the *capture backend* — `screen` (the display) or `test` (a deterministic pattern, which is what CI and the E2E harness set, `main.rs:64`). The latter picks *which source streams before any selection*, `main.rs:72`. An earlier draft of this plan omitted the first and would have made the E2E harness unreproducible against the Node agent.
+  - **`AGENT_DESKTOP_SELECT_TIMEOUT_MS` (default 5000, ADR-22) and `AGENT_DESKTOP_POLL_INTERVAL_MS` (defaults to the profile's frame interval, `desktop.rs:582`) are also contract.** The poll interval alone has six dedicated Rust tests (`desktop.rs`), so dropping it would lose tested behaviour, not merely a knob.
+  - **`cols` / `rows` are stdin geometry, not env vars.** The Rust binds them as bare clap flags with no `env =` (`main.rs:56-60`) and defaults 80×24. They stay fields on `AgentConfig` — the PTY needs them — but there is no `AGENT_COLS`/`AGENT_ROWS` to read, and an earlier draft inventing those two names would have created a contract the Rust never had.
 - **The identity file is written with mode `0o600`.** Non-negotiable. Creation uses `wx` so an existing key is never truncated.
 - **The addon must never let a C++ exception cross the FFI boundary, must bounds-check every buffer, and must return errors as JS exceptions with a stable code — never as a crash.** (Consumed here, built in Plan 1 Task 4.)
 - **TEST-INTEGRITY:** never delete, skip or weaken a test to make it green. Every test change declares the before→after `it()`/`expect()` counts and the rationale. An undeclared change is BLOCKING.
 - **`packages/ui-components/src/components/ui/**` is shadcn-vue generated.** Never edit it.
 - **Historical records are not edited.** `docs/superpowers/{specs,plans}/*`, `docs/demos/*`, `docs/spikes/*`, `docs/notes/*`, `docs/security/*` stay as written. This plan may cite them, never edit them.
-- **(P2) `rewriteWsScheme` is a new function; `toWsUrl` keeps its contract.** `packages/webrtc-core/src/url.ts` gains a **sibling**, not a behaviour change. Rationale in `decisions.md` D1: `toWsUrl` is a *base-URL* helper whose whole-string trim is correct for its three composer callers; the agent's `AGENT_SERVER` is already a *complete* WS URL, and the Rust `to_ws_url` splits the `?`/`#` suffix off before trimming so a query value ending in `/` survives. Re-homing the 11 `to_ws_url` tests onto `toWsUrl` would assert semantics it must not gain.
+- **(P2) `rewriteWsScheme` is a new function; `toWsUrl` keeps its contract.** `packages/webrtc-core/src/url.ts` gains a **sibling**, not a behaviour change. `toWsUrl` is a *base-URL* helper whose whole-string trim is correct for its three composer callers (`agent-supervisor.ts:131`, `fleet.ts:103`, `ws-ticket.ts:4`); the agent's `AGENT_SERVER` is already a *complete* WS URL, and the Rust `to_ws_url` splits the `?`/`#` suffix off before trimming so a query value ending in `/` survives. Re-homing the 11 `to_ws_url` tests onto `toWsUrl` would assert semantics it must not gain. **The reason this is a sibling and not a fix, stated so no executor has to hunt for it:** the two implementations disagree on a base URL carrying a query — `http://h/a/?next=/` becomes `ws://h/a/?next=` under `toWsUrl` and `ws://h/a?next=/` under `to_ws_url` — and *both* produce a broken URL if you then append `/api/ws/agent`, because the path lands inside the query value. Fixing that is P6's job at three call sites; Plan 2 must not widen either helper's contract to paper over it.
 - **(P2) The agent gets its own reconnect ladder.** `ReconnectBackoff` in `packages/webrtc-core/src/backoff.ts` is `min(initial × 2^n, max) + ±jitter`; the Rust agent is `min(current × 1.5, 2000)` with **integer rounding and no jitter**. These are different mechanisms and the second one is what the signalling server has been tested against. Do **not** reuse `ReconnectBackoff`; do **not** widen it with a `factor` option.
-- **(P2) Do not assert fractional milliseconds in the backoff test.** The Rust's own comment scopes its parity test to "the factor, the initial value, the cap and the reset rule — not the fractional milliseconds". The Rust computes `current.as_secs_f64() * 1.5 * 1000` and rounds; the TS computes `currentMs * 1.5` and rounds. These agree at 200→300→450→675→**1013** and diverge by 1 ms at the *next* rung (Rust 1519, naive ms 1520) because `675/1000*1.5*1000 = 1012.5000000000002` rounds up while `675*1.5 = 1012.5` rounds to 1012 (`Math.round` rounds half up, and the f64 path sits just above the tie). **Assert `[200, 300, 450, 675]` and the 2000 cap**, exactly as the Rust test does, and assert the 5th rung is within ±1 ms rather than equal.
+- **(P2) Do not assert fractional milliseconds in the backoff test.** The Rust's own comment scopes its parity test to "the factor, the initial value, the cap and the reset rule — not the fractional milliseconds". The Rust computes `current.as_secs_f64() * 1.5 * 1000` and rounds; the TS computes `currentMs * 1.5` and rounds. Both ladders are **200 → 300 → 450 → 675 → 1013**, and they part at the **sixth** rung: 1520 (TS) versus 1519 (Rust). The mechanism is the f64 *seconds* round-trip, and it is worth stating correctly because an earlier draft got it backwards twice. At the 675 step the two agree — `Math.round(1012.5)` is **1013**, not 1012 (JS rounds half toward `+Infinity`), and the f64 path lands just above the tie at `1012.5000000000002`, which also rounds to 1013. The divergent tie is one rung later, at **1519.5**: TS computes `1013 * 1.5 = 1519.5` exactly and rounds **up to 1520**, while the Rust's `1.013 * 1.5 * 1000` is `1519.4999999999998` and rounds **down to 1519**. So the 675 step is not the divergence — it is the step where the two agree in spite of the tie, and saying otherwise points a future reader at the wrong rung. **Assert `[200, 300, 450, 675]` and the 2000 cap**, exactly as the Rust test does, and assert the later rungs within ±1 ms rather than equal.
 - **(P2) `apps/agent/tsconfig.json` must keep `include: ["src/**/*.ts", "test/**/*.ts"]` and `types: ["node"]` through the Rust→Node manifest conversion.** Without `src/**` the typecheck exits 0 having checked nothing; without `types: ["node"]` tsc never loads the hoisted `@types/node` and every `Buffer` reference in `src/` fails as TS2591. A typecheck that cannot fail is not a gate.
 - **(P2) Commands assume Plan 1 Task 1 has landed.** Once `apps/agent` is `@ponter/agent-node` with its own `vitest` devDependency and `vitest.config.ts`, the ordinary `./apps/agent/node_modules/.bin/vitest run <file>` works. **Do not copy the `--root apps/agent` workaround** that was necessary only while `apps/agent/package.json` was still the Rust manifest. If the command fails with "no such file", the prerequisite has not landed — stop and say so; do not invent a path.
 - **(P2) `ci-node.yml` does not yet run `apps/agent/**`.** Its `paths:` filter omits the directory until Plan 3. Every task's verification therefore runs locally and the report must say so explicitly; a green local suite is the only evidence this plan has.
@@ -54,7 +57,7 @@ Locked so implementers cannot disagree about what creates what.
 
 | Path | Responsibility | B-rows |
 |---|---|---|
-| `apps/agent/src/config.ts` | Env-var resolution into one frozen `AgentConfig`; the credential-missing error | B2, B34, B39, B54, B59 |
+| `apps/agent/src/config.ts` | Env-var resolution into one frozen `AgentConfig`; the credential-missing error; **operator shell resolution** (`resolveShell`, `firstAvailable`, `windowsShellRoots`) | B2, B34, B38, B39, B54, B59 |
 | `apps/agent/src/logging/index.ts` | `RUST_LOG` level policy + the target+message noise predicate | B54 |
 | `apps/agent/src/signalling/backoff.ts` | The agent's own ladder: factor 1.5, cap 2000, integer ms, no jitter | B3 |
 | `apps/agent/src/signalling/constants.ts` | Ping/idle/frame-cap constants — one place, one decision each | B5, B6 |
@@ -71,7 +74,7 @@ Locked so implementers cannot disagree about what creates what.
 | `apps/agent/src/identity/store.ts` | Ed25519 PKCS#8 file, mode 0600, base64 raw public key, sign | B47, B48 |
 | `apps/agent/src/identity/frame.ts` | `buildAgentIdentityFrame` — the WS2 challenge answer | B47, B55 |
 | `apps/agent/src/e2ee/manager.ts` | hello/ack handshake over `@ponter/crypto` | B49–B52 |
-| `apps/agent/src/terminal/shell-policy.ts` | Allowlist and resolution order | B36, B37, B38 |
+| `apps/agent/src/terminal/shell-policy.ts` | Allowlist for *peer-requested* shells | B36, B37 |
 | `apps/agent/src/terminal/pty.ts` | `node-pty` wrapper, base64 16 KiB chunking, exit reaping, 10-session limit | B39, B40, B41 |
 | `apps/agent/src/files/sandbox.ts` | The 7-step containment algorithm | B44 |
 | `apps/agent/src/files/protocol.ts` | The 25-byte binary header, chunk arithmetic, the constants | B42, B43 |
@@ -150,11 +153,12 @@ Locked so implementers cannot disagree about what creates what.
 > tree, after this plan's first correction was written — two independent derivations
 > agreeing is the only thing that settles a count like this.
 >
-> **`to_ws_url`'s 11 tests do NOT re-home onto `toWsUrl`** — see D1 in
-> `.superpowers/plan2/decisions.md`. They re-home onto the new
+> **`to_ws_url`'s 11 tests do NOT re-home onto `toWsUrl`** — the ruling is stated
+> in full in **Global Constraints (P2)** above, and repeated here only because this
+> is the paragraph an executor reads when deciding where a test goes. They re-home onto the new
 > `rewriteWsScheme`, because `toWsUrl`'s whole-string trim has different
-> semantics (D1's table shows the two implementations disagreeing on a base
-> URL that carries a query or a fragment).
+> semantics: the two implementations disagree on a base URL that carries a query
+> or a fragment (`http://h/a/?next=/` → `ws://h/a/?next=` vs `ws://h/a?next=/`).
 
 ---
 
@@ -168,8 +172,11 @@ Locked so implementers cannot disagree about what creates what.
 **Interfaces:**
 - Consumes: `StreamProfile` and `STREAM_PROFILES` from `@ponter/shared` (Plan 1 Task 5).
 - Produces:
-  - `interface AgentConfig { agentId; server; credential; shell; identityPath; stun; cols; rows; allowInput; filesRoot; desktopProfile: StreamProfile; desktopDefaultSource: string }`
-  - `function loadConfig(env: NodeJS.ProcessEnv, platform?: NodeJS.Platform): AgentConfig` — throws `AgentConfigError` with `code: 'MISSING_CREDENTIAL' | 'UNKNOWN_PROFILE'`; never returns a partially-resolved object.
+  - `interface AgentConfig { agentId; server; credential; shell; identityPath; stun; cols; rows; allowInput; filesRoot; desktopProfile: StreamProfile; desktopDefaultSource: string; desktopSource: 'screen' | 'test'; desktopSelectTimeoutMs: number; desktopPollIntervalMs: number | null }` — `desktopPollIntervalMs: null` means "use `desktopProfile.fps`'s frame budget", which is what the Rust does: `parse_poll_interval` falls back to `profile.frame_budget()` (`desktop.rs:567-584`). `null` rather than a pre-computed number so the config stays a pure env mapping and the 16 667 µs of a 60 FPS budget never gets rounded to 17 ms here.
+  - `function loadConfig(env: NodeJS.ProcessEnv, platform?: NodeJS.Platform): AgentConfig` — throws `AgentConfigError` with `code: 'MISSING_CREDENTIAL' | 'UNKNOWN_PROFILE' | 'UNKNOWN_DESKTOP_SOURCE'`; never returns a partially-resolved object. `platform` is the seam the Windows shell detection needs — passing it defaults to `process.platform` and exists so the shell-order tests run on any host, exactly as the Rust split `resolve_shell_value` out of `resolve_shell` (`main.rs:145-176`).
+  - `function firstAvailable<T>(preference: readonly string[], resolve: (name: string) => T | undefined): T | undefined` — the Rust's `first_available` (`main.rs:169-182`), generic over the resolved value so a caller can return a path rather than a bare name.
+  - `const WINDOWS_SHELL_PREFERENCE: readonly ['pwsh', 'powershell', 'cmd.exe']` and `function windowsShellRoots(env: NodeJS.ProcessEnv): string[]` — the well-known install roots (`main.rs:186-218`), which exist because the PowerShell 7 MSI does not always add its directory to `PATH`.
+  - `function resolveShell(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, probe?: (name: string, roots: string[]) => string | undefined): string` — `AGENT_SHELL`, then `SHELL`, then the platform default (`/bin/sh` on unix, the detected Windows shell, then `cmd.exe`).
   - `function isNoise(target: string, message: string): boolean`
   - `function createLogger(env: NodeJS.ProcessEnv): Logger` where `interface Logger { error; warn; info; debug }` and each takes `(fields: Record<string, unknown>, message: string)`.
 
@@ -178,7 +185,13 @@ Locked so implementers cannot disagree about what creates what.
 ```ts
 // apps/agent/test/config.test.ts
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import {
+  WINDOWS_SHELL_PREFERENCE,
+  firstAvailable,
+  loadConfig,
+  resolveShell,
+  windowsShellRoots,
+} from '../src/config.js';
 
 const base = {
   AGENT_ID: 'a1',
@@ -230,6 +243,92 @@ describe('loadConfig', () => {
   it('leaves filesRoot null when the env var is empty', () => {
     expect(loadConfig({ ...base, AGENT_FILES_ROOT: '' }).filesRoot).toBeNull();
   });
+
+  it('defaults the capture backend to the screen and accepts the test pattern', () => {
+    expect(loadConfig({ ...base }).desktopSource).toBe('screen');
+    expect(loadConfig({ ...base, AGENT_DESKTOP_SOURCE: 'test' }).desktopSource).toBe('test');
+  });
+
+  it('rejects an unknown capture backend rather than falling back to the screen', () => {
+    expect(() => loadConfig({ ...base, AGENT_DESKTOP_SOURCE: 'window' })).toThrowError(
+      /unknown desktop source "window"/,
+    );
+  });
+
+  it('defaults the selection timeout to 5000 ms and reads an explicit one', () => {
+    expect(loadConfig({ ...base }).desktopSelectTimeoutMs).toBe(5000);
+    expect(loadConfig({ ...base, AGENT_DESKTOP_SELECT_TIMEOUT_MS: '250' }).desktopSelectTimeoutMs).toBe(
+      250,
+    );
+  });
+
+  it('leaves the poll interval null unless one is set, so the profile budget applies', () => {
+    expect(loadConfig({ ...base }).desktopPollIntervalMs).toBeNull();
+    expect(loadConfig({ ...base, AGENT_DESKTOP_POLL_INTERVAL_MS: '16' }).desktopPollIntervalMs).toBe(
+      16,
+    );
+  });
+
+  it('treats a zero or unparseable poll interval as unset, not as a spin loop', () => {
+    expect(loadConfig({ ...base, AGENT_DESKTOP_POLL_INTERVAL_MS: '0' }).desktopPollIntervalMs).toBeNull();
+    expect(
+      loadConfig({ ...base, AGENT_DESKTOP_POLL_INTERVAL_MS: 'soon' }).desktopPollIntervalMs,
+    ).toBeNull();
+  });
+
+  // --- operator shell resolution (B38) ---
+  // The six `main.rs` tests for this surface were assigned to Plan 2 by the
+  // coverage matrix and deferred to Plan 3 by Task 9. They live here instead:
+  // this is config-time resolution, the same moment the Rust's `main` did it.
+
+  it('an explicit AGENT_SHELL always wins over detection, on every platform', () => {
+    expect(loadConfig({ ...base, AGENT_SHELL: '/usr/bin/fish' }, 'linux').shell).toBe('/usr/bin/fish');
+    expect(loadConfig({ ...base, AGENT_SHELL: 'pwsh.exe' }, 'win32').shell).toBe('pwsh.exe');
+  });
+
+  it('on unix falls back to $SHELL and then to /bin/sh', () => {
+    expect(loadConfig({ ...base, SHELL: '/usr/bin/zsh' }, 'linux').shell).toBe('/usr/bin/zsh');
+    expect(loadConfig({ AGENT_CREDENTIAL: 'ag_x' }, 'linux').shell).toBe('/bin/sh');
+  });
+
+  it('prefers the Windows shells in order and stops at the first hit', () => {
+    const resolve = (present: readonly string[]) => (name: string) =>
+      present.includes(name) ? `C:\\found\\${name}` : undefined;
+    // cmd.exe being present must not shadow a pwsh that is also installed.
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, resolve(['cmd.exe']))).toBe('C:\\found\\cmd.exe');
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, resolve(['pwsh', 'cmd.exe']))).toBe(
+      'C:\\found\\pwsh',
+    );
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, resolve(['powershell', 'cmd.exe']))).toBe(
+      'C:\\found\\powershell',
+    );
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, () => undefined)).toBeUndefined();
+  });
+
+  it('carries a resolved absolute path through, not the bare name', () => {
+    const pref = ['pwsh', 'powershell', 'cmd.exe'];
+    const resolved = firstAvailable(pref, (name) =>
+      name === 'pwsh' ? 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' : undefined,
+    );
+    expect(resolved).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  });
+
+  it('finds PowerShell 7 in its install root when it is not on PATH', () => {
+    // The MSI does not always add its directory to PATH, so a PATH-only probe
+    // would fall through to the older powershell.exe — the case the Rust's
+    // `windows_shell_roots` exists for.
+    const env = { ProgramFiles: 'C:\\Program Files' };
+    const roots = windowsShellRoots(env);
+    expect(roots[0]).toBe('C:\\Program Files\\PowerShell\\7');
+    expect(roots).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0');
+    expect(resolveShell({ ...base }, 'win32', (name, _roots) =>
+      name === 'pwsh' ? 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' : undefined,
+    )).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  });
+
+  it('falls back to cmd.exe only when nothing else resolves', () => {
+    expect(resolveShell({ ...base }, 'win32', () => undefined)).toBe('cmd.exe');
+  });
 });
 ```
 
@@ -243,8 +342,12 @@ Expected: FAIL — `Failed to resolve import "../src/config.js"`.
 ```ts
 // apps/agent/src/config.ts
 import { STREAM_PROFILES, type StreamProfile } from '@ponter/shared';
+import { existsSync } from 'node:fs';
 
-export type AgentConfigErrorCode = 'MISSING_CREDENTIAL' | 'UNKNOWN_PROFILE';
+export type AgentConfigErrorCode =
+  | 'MISSING_CREDENTIAL'
+  | 'UNKNOWN_PROFILE'
+  | 'UNKNOWN_DESKTOP_SOURCE';
 
 export class AgentConfigError extends Error {
   readonly code: AgentConfigErrorCode;
@@ -268,12 +371,25 @@ export interface AgentConfig {
   readonly filesRoot: string | null;
   readonly desktopProfile: StreamProfile;
   readonly desktopDefaultSource: string;
+  /** `AGENT_DESKTOP_SOURCE` (`main.rs:64`): which frame source the agent captures. */
+  readonly desktopSource: 'screen' | 'test';
+  /** `AGENT_DESKTOP_SELECT_TIMEOUT_MS` (`main.rs:80`, ADR-22), default 5000. */
+  readonly desktopSelectTimeoutMs: number;
+  /** `AGENT_DESKTOP_POLL_INTERVAL_MS`; `null` means the profile's frame budget. */
+  readonly desktopPollIntervalMs: number | null;
 }
 
 const DEFAULT_SERVER = 'ws://localhost:8787/api/ws/agent';
 const DEFAULT_STUN = 'stun:stun.l.google.com:19302';
 const DEFAULT_PROFILE = '1080p30';
 const DEFAULT_SOURCE = 'primary';
+const DEFAULT_DESKTOP_SOURCE = 'screen';
+const DEFAULT_SELECT_TIMEOUT_MS = 5000;
+const DEFAULT_COLS = 80;
+const DEFAULT_ROWS = 24;
+
+/** The two capture backends the Rust's `DesktopSource` enum accepts (`lib.rs:427`). */
+const DESKTOP_SOURCES = ['screen', 'test'] as const;
 
 /** `1`/`true`/`yes` on, anything else off. Off is the default: the gate is opt-in. */
 function envFlag(raw: string | undefined): boolean {
@@ -289,6 +405,19 @@ function envInt(raw: string | undefined, fallback: number): number {
 }
 
 /**
+ * A positive integer or `null` — the shape of an optional interval.
+ *
+ * The Rust treats an absent, empty, zero or unparseable value as "use the
+ * fallback" (`desktop.rs:567-572`), and a zero interval is a busy loop, so `0`
+ * is normalized to `null` here rather than surfacing as a spin.
+ */
+function envOptionalInt(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
  * Resolve the agent's configuration from the environment only.
  *
  * There is no CLI: the desktop supervisor passes every value as an env var, and
@@ -296,7 +425,10 @@ function envInt(raw: string | undefined, fallback: number): number {
  * a value the Rust CLI also defaulted to, so a deployment that sets nothing
  * behaves exactly as before.
  */
-export function loadConfig(env: NodeJS.ProcessEnv): AgentConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): AgentConfig {
   const credential = env.AGENT_CREDENTIAL?.trim();
   if (!credential) {
     throw new AgentConfigError(
@@ -317,21 +449,145 @@ export function loadConfig(env: NodeJS.ProcessEnv): AgentConfig {
 
   const configHome = env.XDG_CONFIG_HOME?.trim() || `${env.HOME ?? ''}/.config`;
 
+  const rawSource = env.AGENT_DESKTOP_SOURCE?.trim() || DEFAULT_DESKTOP_SOURCE;
+  if (!(DESKTOP_SOURCES as readonly string[]).includes(rawSource)) {
+    throw new AgentConfigError(
+      'UNKNOWN_DESKTOP_SOURCE',
+      `unknown desktop source "${rawSource}"; expected ${DESKTOP_SOURCES.join(', ')}`,
+    );
+  }
+  const desktopSource = rawSource as 'screen' | 'test';
+
   return Object.freeze({
     agentId: env.AGENT_ID?.trim() ?? '',
     server: env.AGENT_SERVER?.trim() || DEFAULT_SERVER,
     credential,
-    shell: env.AGENT_SHELL?.trim() || env.SHELL?.trim() || '/bin/sh',
+    shell: resolveShell(env, platform),
     identityPath:
       env.AGENT_IDENTITY_PATH?.trim() || `${configHome}/ponter/agent-identity.pkcs8`,
     stun: env.STUN_SERVER ?? DEFAULT_STUN,
-    cols: envInt(env.AGENT_COLS, 80),
-    rows: envInt(env.AGENT_ROWS, 24),
+    // `--cols`/`--rows` are clap flags with no `env =` (`main.rs:56-60`) and the
+    // supervisor never passes them, so these are constants, not env reads. The
+    // PTY still needs an initial geometry and the renderer resizes it on attach.
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
     allowInput: envFlag(env.AGENT_ALLOW_INPUT),
     filesRoot: env.AGENT_FILES_ROOT?.trim() ? env.AGENT_FILES_ROOT.trim() : null,
     desktopProfile,
     desktopDefaultSource: env.AGENT_DESKTOP_DEFAULT_SOURCE?.trim() || DEFAULT_SOURCE,
+    desktopSource,
+    desktopSelectTimeoutMs: envInt(
+      env.AGENT_DESKTOP_SELECT_TIMEOUT_MS,
+      DEFAULT_SELECT_TIMEOUT_MS,
+    ),
+    desktopPollIntervalMs: envOptionalInt(env.AGENT_DESKTOP_POLL_INTERVAL_MS),
   });
+}
+
+// --- operator shell resolution (B38) ---
+// Ported from `main.rs:145-260`. This is a config-time concern, so it lives in
+// `config.ts` rather than in the terminal package: the value it produces is a
+// field of `AgentConfig`, and the shell *policy* that governs peer-requested
+// shells is a different thing entirely (Task 9's `ShellPolicy`).
+
+/** Windows shells in preference order (`main.rs:185`). */
+export const WINDOWS_SHELL_PREFERENCE = ['pwsh', 'powershell', 'cmd.exe'] as const;
+
+/**
+ * The first candidate `resolve` yields a value for, in order.
+ *
+ * Pure, so the ordering is testable without a real `PATH` or filesystem, and
+ * generic over the resolved type so a caller can return an absolute path
+ * rather than the bare name (`main.rs:169-182`).
+ */
+export function firstAvailable<T>(
+  preference: readonly string[],
+  resolve: (name: string) => T | undefined,
+): T | undefined {
+  for (const name of preference) {
+    const resolved = resolve(name);
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
+}
+
+/**
+ * Directories where a Windows shell may live without being on `PATH`.
+ *
+ * `pwsh` is the case that matters: the MSI installs to
+ * `C:\Program Files\PowerShell\7\` and does not always add that directory to
+ * `PATH`, so a `PATH`-only probe would miss PowerShell 7 and fall through to
+ * the older `powershell.exe` (`main.rs:186-207`).
+ */
+export function windowsShellRoots(env: NodeJS.ProcessEnv): string[] {
+  const roots = [
+    'C:\\Program Files\\PowerShell\\7',
+    'C:\\Program Files\\PowerShell\\7-preview',
+  ];
+  const programFiles = env.ProgramFiles?.trim();
+  if (programFiles) {
+    roots.push(`${programFiles}\\PowerShell\\7`, `${programFiles}\\PowerShell\\7-preview`);
+  }
+  const programFilesX86 = env['ProgramFiles(x86)']?.trim();
+  if (programFilesX86) {
+    roots.push(`${programFilesX86}\\PowerShell\\7`);
+  }
+  roots.push('C:\\Windows\\System32\\WindowsPowerShell\\v1.0');
+  return roots;
+}
+
+/**
+ * Resolve the operator's shell from the environment.
+ *
+ * `AGENT_SHELL` wins unconditionally — a pinned value must never be overridden
+ * by detection, or existing deployments would silently change shell. Then
+ * `$SHELL`, then the platform default. On Windows the default is the first
+ * shell found in preference order, falling back to the bare `cmd.exe`, which
+ * `CreateProcess` resolves to `%SystemRoot%\System32\cmd.exe` (`main.rs:155-176`).
+ *
+ * `probe` exists so the Windows path is unit-testable on any host; production
+ * passes nothing and gets a real `PATH` + install-root probe.
+ */
+export function resolveShell(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  probe?: (name: string, roots: string[]) => string | undefined,
+): string {
+  const explicit = env.AGENT_SHELL?.trim();
+  if (explicit) return explicit;
+
+  if (platform !== 'win32') {
+    return env.SHELL?.trim() || '/bin/sh';
+  }
+
+  const resolve = probe ?? resolveWindowsShell;
+  const roots = windowsShellRoots(env);
+  return firstAvailable(WINDOWS_SHELL_PREFERENCE, (name) => resolve(name, roots)) ?? 'cmd.exe';
+}
+
+/**
+ * Locate one Windows shell, preferring a `PATH` hit and falling back to the
+ * well-known install roots (`main.rs:213-260`).
+ *
+ * The result is always an absolute path so node-pty never has to guess, and it
+ * is returned unmodified — this value is an executable, not a command line, so
+ * there is no interpolation of user input here.
+ */
+function resolveWindowsShell(name: string, roots: string[]): string | undefined {
+  for (const dir of (process.env.PATH ?? '').split(';')) {
+    if (!dir) continue;
+    for (const ext of ['.exe', '']) {
+      const candidate = `${dir}\\${name}${ext}`;
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  for (const root of roots) {
+    for (const ext of ['.exe', '']) {
+      const candidate = `${root}\\${name}${ext}`;
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
 }
 ```
 
@@ -458,7 +714,12 @@ git add apps/agent/src/config.ts apps/agent/src/logging/index.ts apps/agent/test
 git commit -m "feat(agent): resolve env-var config and the RUST_LOG level policy"
 ```
 
-**TEST-INTEGRITY declaration:** new files, 9 new `it()` / 17 new `expect()`. No existing test is touched.
+**TEST-INTEGRITY declaration:** new files, **21 new `it()` / 40 new `expect()`** (`config.test.ts` 18/37, `logging/index.test.ts` 3/3). No existing test is touched. Two additions grew this fence beyond the plan's original shape, and both are recorded here rather than silently absorbed:
+
+- **B-8's three desktop env vars (+5 `it()`, +9 `expect()`).** The Rust binds `AGENT_DESKTOP_SOURCE`, `AGENT_DESKTOP_SELECT_TIMEOUT_MS` and `AGENT_DESKTOP_POLL_INTERVAL_MS`; a port that read none of them would have dropped a tested behaviour (`parse_poll_interval` alone has seven Rust tests, `desktop.rs:3870-3935`). Two of the five are the poll interval's zero/garbage normalisation, which is not cosmetic: a zero interval is a busy loop.
+- **B38's six shell-resolution tests (+6 `it()`, +13 `expect()`).** The coverage matrix assigned B38 to Plan 2; Task 9 deferred it to Plan 3, which does not exist. These are ports, not new coverage, and the reason they land here rather than in Task 9 is that they resolve the *operator's* shell at config time (the Rust did it in `main`), whereas Task 9 governs which shells a *peer* may request. The six: `an_explicit_shell_always_wins_over_detection`, `unix_falls_back_to_shell_env_then_bin_sh`, `shell_preference_is_ordered_and_stops_at_the_first_hit`, `first_available_can_resolve_to_a_path_not_just_the_bare_name`, `windows_prefers_powershell_7_over_legacy_powershell` and `allow_input_cli_and_env_parsing` — the last one folded into the `AGENT_ALLOW_INPUT` case already here, since the env half is all that survives with no CLI.
+
+The logger's three port `known_noise_is_matched_by_target_and_message`, `the_same_message_from_another_target_is_kept` and `an_unknown_message_is_kept`.
 
 ---
 
@@ -656,8 +917,10 @@ git commit -m "feat(webrtc-core): add rewriteWsScheme for complete WS URLs"
 ```
 
 **TEST-INTEGRITY declaration:**
-- `packages/webrtc-core/test/url.test.ts`: **7 `it()` → 19 `it()`**, `expect()` grows by 15. The three existing `describe` blocks are untouched; one new block is appended. No assertion is removed or weakened.
+- `packages/webrtc-core/test/url.test.ts`: **7 `it()` / 18 `expect()` → 19 `it()` / 34 `expect()`** — the appended fence adds 12 `it()` and 16 `expect()`. The three existing `describe` blocks are untouched; one new block is appended. No assertion is removed or weakened.
 - `apps/agent/test/signalling/upgrade.test.ts`: new file, 4 `it()` / 5 `expect()`.
+
+Both figures are counted from the fences in this task, not carried over: an earlier draft declared the growth as "15 `expect()`" and the after-state as a delta, which read as consistent while understating the added assertions by one.
 
 ---
 
@@ -725,11 +988,12 @@ describe('nextBackoff', () => {
 
   it('agrees with the Rust ladder to within one millisecond at every rung', () => {
     // The Rust computes `(current.as_secs_f64() * 1.5 * 1000).round()`; this
-    // computes `Math.round(current * 1.5)`. They agree exactly through the
-    // fourth rung and can differ by 1 ms afterwards because the f64 seconds
-    // round-trip lands just off a .5 tie. The Rust's own test scopes parity to
-    // factor/initial/cap/reset and explicitly not the fractional milliseconds,
-    // so this asserts the tolerance rather than the value.
+    // computes `Math.round(current * 1.5)`. Both reach 200/300/450/675/1013
+    // exactly. They part at the rung after that: TS `1013 * 1.5` is exactly
+    // 1519.5 and rounds up to 1520, while the Rust's `1.013 * 1.5 * 1000` is
+    // 1519.4999999999998 and rounds down to 1519. The Rust's own test scopes
+    // parity to factor/initial/cap/reset and explicitly not the fractional
+    // milliseconds, so this asserts the tolerance rather than the value.
     const rust = [200, 300, 450, 675, 1013, 1519, 2000];
     let d = BACKOFF_INITIAL_MS;
     for (const expected of rust) {
@@ -901,7 +1165,7 @@ git add apps/agent/src/signalling apps/agent/test/signalling
 git commit -m "feat(agent): add the reconnect ladder, close classification and keepalive constants"
 ```
 
-**TEST-INTEGRITY declaration:** three new files, **15 new `it()` / 26 new `expect()`**. The Rust counterparts are `signal.rs`'s `backoff_sequence`, `keepalive_window_is_three_missed_pings`, `classify_close_treats_replaced_and_unauthorized_as_terminal` and `classify_close_treats_everything_else_as_transient` — 4 Rust tests become 15 TS tests, an expansion, never a reduction.
+**TEST-INTEGRITY declaration:** three new files, **14 new `it()` / 20 new `expect()`**. The Rust counterparts are `signal.rs`'s `backoff_sequence`, `keepalive_window_is_three_missed_pings`, `classify_close_treats_replaced_and_unauthorized_as_terminal` and `classify_close_treats_everything_else_as_transient` — 4 Rust tests become 15 TS tests, an expansion, never a reduction.
 
 ---
 
@@ -1266,7 +1530,7 @@ git add apps/agent/src/signalling apps/agent/test/signalling
 git commit -m "feat(agent): parse the inbound cascade in challenge, ICE, signal order"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **18 new `it()` / 34 new `expect()`**. The Rust counterparts are `signal.rs`'s `offer_round_trip`, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes`, `offer_with_user_signing_key_round_trips`, `parses_the_pushed_ice_servers_frame`, `parses_a_stun_only_ice_servers_frame`, `parse_identity_challenge_returns_none_for_non_challenge`, `an_ice_servers_frame_is_not_taken_as_one`, `rejects_malformed` and `oversize_frame_is_rejected_before_parsing` — 10 Rust tests become 18 TS tests. Two of them (`the cascade order produces zero warnings`, `dispatchInbound ignores a pong without a warning`) are **new**: the Rust had no test for the cascade order, which is precisely the ordering that a porter is most likely to invert.
+**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 28 new `expect()`**. The Rust counterparts are `signal.rs`'s `offer_round_trip`, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes`, `offer_with_user_signing_key_round_trips`, `parses_the_pushed_ice_servers_frame`, `parses_a_stun_only_ice_servers_frame`, `parse_identity_challenge_returns_none_for_non_challenge`, `an_ice_servers_frame_is_not_taken_as_one`, `rejects_malformed` and `oversize_frame_is_rejected_before_parsing` — 10 Rust tests become 18 TS tests. Two of them (`the cascade order produces zero warnings`, `dispatchInbound ignores a pong without a warning`) are **new**: the Rust had no test for the cascade order, which is precisely the ordering that a porter is most likely to invert.
 
 ---
 
@@ -1820,7 +2084,7 @@ git add apps/agent/src/signalling apps/agent/test/signalling
 git commit -m "feat(agent): add the signalling client, run loop and auth-fatality classifier"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **21 new `it()` / 30 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own.
+**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 29 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own.
 
 ---
 
@@ -2068,7 +2332,7 @@ git add apps/agent/src/identity apps/agent/test/identity
 git commit -m "feat(agent): add the Ed25519 identity store and the WS2 identity frame"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 15 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested.
+**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 11 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested.
 
 ---
 
@@ -2275,7 +2539,7 @@ git add apps/agent/src/e2ee apps/agent/test/e2ee
 git commit -m "feat(agent): wire the WS1 terminal E2EE handshake fail-closed"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **7 new `it()` / 13 new `expect()`**. Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and `a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do **not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the empty-plaintext round trip (the divergence ruling) and hello-for-an-unbegun-terminal.
+**TEST-INTEGRITY declaration:** one new file, **7 new `it()` / 11 new `expect()`**. Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and `a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do **not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the empty-plaintext round trip (the divergence ruling) and hello-for-an-unbegun-terminal.
 
 ---
 
@@ -3178,7 +3442,8 @@ function etcShellsEntries(content: string): string[] {
 }
 
 /**
- * Which shells a peer is allowed to spawn (B36–B38).
+ * Which shells a peer is allowed to spawn (B36, B37 — B38 is the
+ * operator's own shell, resolved at config time in `config.ts`).
  *
  * Two properties the Rust established and this keeps:
  *
@@ -3238,8 +3503,10 @@ export class ShellPolicy {
 /**
  * Windows has no allowlist: the operator's configured shell is the only
  * candidate, and there is no `/etc/shells`. The PowerShell probe order
- * (`pwsh` → `powershell` → `cmd.exe`) is Plan 3's, because it needs the
- * platform; this module's job is the POSIX policy.
+ * (`pwsh` → `powershell` → `cmd.exe`) is resolved at config time by
+ * `resolveShell` in `config.ts` (Task 1), because it picks the *operator's*
+ * shell, not a peer-requested one. This module's job is the POSIX policy,
+ * which is a different question: which shells a *peer* may ask for.
  */
 export function loadShellPolicy(options: ShellPolicyOptions): ShellPolicy {
   return new ShellPolicy(options);
@@ -3264,7 +3531,7 @@ git add apps/agent/src/terminal apps/agent/test/terminal
 git commit -m "feat(agent): port the POSIX shell allowlist with its resolution order"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **12 new `it()` / 12 new `expect()`**. Ports all 10 `shell_policy.rs` tests, plus two **new**: the executable-bit-before-allowlist ordering (present in code, untested in Rust) and the empty-`/etc/shells` case. `two_paths_that_resolve_to_the_same_file_are_one_entry` ports as the symlink-accept case, since the TS canonicalises into a `Set` and therefore cannot hold two entries.
+**TEST-INTEGRITY declaration:** one new file, **12 new `it()` / 13 new `expect()`**. Ports all 10 `shell_policy.rs` tests, plus two **new**: the executable-bit-before-allowlist ordering (present in code, untested in Rust) and the empty-`/etc/shells` case. `two_paths_that_resolve_to_the_same_file_are_one_entry` ports as the symlink-accept case, since the TS canonicalises into a `Set` and therefore cannot hold two entries.
 
 ---
 
@@ -3584,7 +3851,7 @@ git add apps/agent/src/files apps/agent/test/files
 git commit -m "feat(agent): port the files sandbox with component-wise containment"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **20 new `it()` / 26 new `expect()`**. Ports `path_policy_rejects_dotdot_escape`, `path_policy_rejects_absolute`, `path_policy_rejects_empty_components_and_dots`, `path_policy_rejects_symlink_escape`, `path_policy_rejects_prefix_confusion`, `upload_create_path_validates_parent_and_name`, `root_resolution_fails_when_missing_not_a_dir_or_unreadable`. **New:** the NUL and backslash rejections as separate cases (the Rust tested them inside one `path_policy_*` test), and the inside-the-root symlink acceptance, which the Rust had no positive case for.
+**TEST-INTEGRITY declaration:** one new file, **18 new `it()` / 19 new `expect()`**. Ports `path_policy_rejects_dotdot_escape`, `path_policy_rejects_absolute`, `path_policy_rejects_empty_components_and_dots`, `path_policy_rejects_symlink_escape`, `path_policy_rejects_prefix_confusion`, `upload_create_path_validates_parent_and_name`, `root_resolution_fails_when_missing_not_a_dir_or_unreadable`. **New:** the NUL and backslash rejections as separate cases (the Rust tested them inside one `path_policy_*` test), and the inside-the-root symlink acceptance, which the Rust had no positive case for.
 
 **Known limitation carried into Plan 3's docs:** a TOCTOU window exists between `realpath` and the later `open` — a symlink swapped in that gap escapes. The Rust has the same window and does not close it. Closing it needs per-component `openat` with `O_NOFOLLOW`, which Node cannot do without a native call. Record it; do not attempt a partial mitigation that reads as a guarantee.
 
@@ -4616,7 +4883,7 @@ git add apps/agent/src/files apps/agent/test/files
 git commit -m "feat(agent): port the files protocol and transfer state machine"
 ```
 
-**TEST-INTEGRITY declaration:** one new test file, **22 new `it()` / 30 new `expect()`**. Ports 24 of `files.rs`'s 65 tests (the ones covering the wire surface, the window, ack batching, resume alignment, cancel and idle); the remaining 41 cover Rust-internal helpers (`rfc3339_formats_epoch_seconds_utc`, `decode_guard_*`, `test_transfer_id_codec_*`) or per-platform filesystem races that are not ported. Declared **retirements** for Plan 3's R-entry: `files-download-chunk` as a JSON outbound type (dead in Rust, never emitted — no browser can depend on it); `QUEUE_FULL` (never produced); and the four `decode_*` guard tests (the guards' Python-`#[allow(dead_code)]` TS counterparts do not exist, so there is nothing to test). Two are **new**: `paused transfers do not time out` and `drained .part before resume` as separate assertions, and `FILES_IDLE_TIMEOUT_MS` gets the pin the Rust comment claimed but never had (D8 #5).
+**TEST-INTEGRITY declaration:** two new test files, **25 new `it()` / 42 new `expect()`**. Ports 24 of `files.rs`'s 65 tests (the ones covering the wire surface, the window, ack batching, resume alignment, cancel and idle); the remaining 41 cover Rust-internal helpers (`rfc3339_formats_epoch_seconds_utc`, `decode_guard_*`, `test_transfer_id_codec_*`) or per-platform filesystem races that are not ported. Declared **retirements** for Plan 3's R-entry: `files-download-chunk` as a JSON outbound type (dead in Rust, never emitted — no browser can depend on it); `QUEUE_FULL` (never produced); and the four `decode_*` guard tests (the guards' Python-`#[allow(dead_code)]` TS counterparts do not exist, so there is nothing to test). Two are **new**: `paused transfers do not time out` and `drained .part before resume` as separate assertions, and `FILES_IDLE_TIMEOUT_MS` gets the pin the Rust comment claimed but never had — the constant is defined at `files.rs:31` as `30_000` and its comment says "pinned by its own assertion", but grep finds no such assertion. The TS test asserts the constant is `30_000` **and** that the prod timeout equals it. Ruling: **the code wins, and the missing pin is an addition, not a repair** — declared as new rather than counted as a port.
 
 ---
 
@@ -4952,7 +5219,7 @@ git add apps/agent/src/terminal apps/agent/test/terminal
 git commit -m "feat(agent): add the node-pty manager with 16 KiB base64 chunking"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **13 new `it()` / 19 new `expect()`**. Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported** (D8 #7): the Rust test's name promised chunking it never exercised; the TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes. Two are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`) and the slot freeing on exit. The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
+**TEST-INTEGRITY declaration:** two new files, **11 new `it()` / 15 new `expect()`**. Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported**: the Rust test's name promised chunking it never exercised — its body synthesized a single frame and asserted `decoded.len() == len`, which is not the property the name claims. The TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes, each ≤ 16 KiB. Ruling: **code wins, the phantom is not ported**, and this is not a weakening — the Rust test asserted less than its name promised, so the TS asserts strictly more. Two are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`) and the slot freeing on exit. The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
 
 ---
 
@@ -5298,7 +5565,7 @@ git add apps/agent/src/desktop apps/agent/test/desktop
 git commit -m "feat(agent): add the static-frame skip and the frame timing ring"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **18 new `it()` / 22 new `expect()`**. Ports `static_frame_skip_detects_identical_pixels`, `…lets_a_changed_frame_through`, `…detects_a_single_pixel_change`, `…respects_the_one_second_keepalive`, `…reset_forces_the_next_frame_through`, `frame_signature_distinguishes_dimensions`, `stats_due_while_skipping_fires_once_per_second`, `test_frame_timing_ring_p50_calculation`, `test_frame_timing_ring_capture_ms_p50_median`, `timing_snapshot_is_none_for_an_empty_ring`, `ordered_samples_are_strictly_monotonic_when_wrapped`. **New:** the trailing-byte fold (the Rust test never exercised the `len % 8` path) and the fractional-fps cap.
+**TEST-INTEGRITY declaration:** two new files, **16 new `it()` / 22 new `expect()`**. Ports `static_frame_skip_detects_identical_pixels`, `…lets_a_changed_frame_through`, `…detects_a_single_pixel_change`, `…respects_the_one_second_keepalive`, `…reset_forces_the_next_frame_through`, `frame_signature_distinguishes_dimensions`, `stats_due_while_skipping_fires_once_per_second`, `test_frame_timing_ring_p50_calculation`, `test_frame_timing_ring_capture_ms_p50_median`, `timing_snapshot_is_none_for_an_empty_ring`, `ordered_samples_are_strictly_monotonic_when_wrapped`. **New:** the trailing-byte fold (the Rust test never exercised the `len % 8` path) and the fractional-fps cap.
 
 ---
 
@@ -5559,7 +5826,7 @@ git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): verify the offer identity proof before answering"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **12 new `it()` / 13 new `expect()`**. Ports `verify_offer_identity`'s five failure modes as five tests plus the happy path, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes` and `parses_and_normalizes_sdp_fingerprint`'s assertion (as a *consumer* of `@ponter/shared`, per B9's reuse ruling — the normalisation itself is already tested there and is not duplicated). **New:** the code-level distinction between `FINGERPRINT_MISMATCH` and `BAD_SIGNATURE` (the Rust had one error type and lost that distinction at the boundary), and the `advertisesE2ee` absent-capabilities case.
+**TEST-INTEGRITY declaration:** one new file, **11 new `it()` / 11 new `expect()`**. Ports `verify_offer_identity`'s five failure modes as five tests plus the happy path, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes` and `parses_and_normalizes_sdp_fingerprint`'s assertion (as a *consumer* of `@ponter/shared`, per B9's reuse ruling — the normalisation itself is already tested there and is not duplicated). **New:** the code-level distinction between `FINGERPRINT_MISMATCH` and `BAD_SIGNATURE` (the Rust had one error type and lost that distinction at the boundary), and the `advertisesE2ee` absent-capabilities case.
 
 ---
 
@@ -5867,7 +6134,7 @@ git add apps/agent/src/input apps/agent/test/input
 git commit -m "feat(agent): decode, clamp and rate-limit peer input"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **15 new `it()` / 20 new `expect()`**. Ports the five input-kind round trips, the unknown-kind and malformed-JSON drops, the 120 Hz fixed-window limiter, the disabled-gate drop, and the NaN clamp. **New:** the `to_absolute` one-pixel-overflow case (the Rust had the clamp but only tested mid-frame coordinates) and the zero-geometry guard.
+**TEST-INTEGRITY declaration:** one new file, **16 new `it()` / 25 new `expect()`**. Ports the five input-kind round trips, the unknown-kind and malformed-JSON drops, the 120 Hz fixed-window limiter, the disabled-gate drop, and the NaN clamp. **New:** the `to_absolute` one-pixel-overflow case (the Rust had the clamp but only tested mid-frame coordinates) and the zero-geometry guard.
 
 ---
 
@@ -6060,7 +6327,9 @@ git add apps/agent/src/desktop apps/agent/test/desktop
 git commit -m "feat(agent): port the 30-frame sustain ladder"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **10 new `it()` / 13 new `expect()`**. Ports `sustain_ladder_downgrades_after_thirty_frames`, `…resets_on_an_on_budget_frame`, `…stops_at_the_floor`, `…skips_720p60_from_1080p30`, `bitrate_change_reopens_the_latch` and `…does_nothing_at_the_floor`. **New:** the strict-inequality case (the Rust tested only clearly-over-budget values) and the "updates neither budget nor rung" assertion.
+**TEST-INTEGRITY declaration:** one new file, **9 new `it()` / 16 new `expect()`**. Ports `sustain_monitor_downgrades_once_and_never_oscillates`, `sustain_monitor_resets_the_streak_on_an_on_budget_frame`, `sustain_monitor_never_downgrades_from_the_floor`, `sustain_monitor_reopens_only_above_the_floor` (all `desktop.rs:3363-3420`), plus `downgrade_ladder_is_monotonic_in_pixels_per_second` and `a_1080p60_monitor_demotes_to_720p60_first` for the ladder walk. **New:** the strict-inequality case (the Rust tested only clearly-over-budget values) and the "updates neither budget nor rung" assertion, which the Rust's `sustain_monitor_reopens_only_above_the_floor` does not pin — it asserts the latch alone.
+
+An earlier draft cited six names under a `sustain_ladder_*` scheme that appears nowhere in `apps/agent/src`; the real tests are named `sustain_monitor_*`. The counts above are unchanged by the rename, because the renamed rows were always about the same six behaviours.
 
 **Divergence recorded, not fixed:** the Rust created its sustain ticker once and never rebuilt it, so samples continued to arrive on the old interval after a downgrade. That is a wiring concern, handled in Task 19.
 
@@ -6427,7 +6696,9 @@ git add apps/agent/src/desktop apps/agent/test/desktop
 git commit -m "feat(agent): decode stream control and build the desktop frames"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **14 new `it()` / 21 new `expect()`**. Ports `clamps_bitrate_to_the_supported_range`, `decodes_stream_control_variants`, `decodes_desktop_select_variants`, `rejects_an_unknown_profile`, `gop_is_two_seconds_of_frames`, `stats_frame_field_names`, `cursor_frame_includes_shape_when_hidden`. **New:** the unknown-action and malformed-JSON cases, the one-decimal rounding of both p50s, and the sources frame shape.
+**TEST-INTEGRITY declaration:** two new files, **15 new `it()` / 27 new `expect()`**. Ports `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
+
+An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_control_variants`, `decodes_desktop_select_variants`, `rejects_an_unknown_profile`, `gop_is_two_seconds_of_frames`, `stats_frame_field_names` and `cursor_frame_includes_shape_when_hidden` — seven names that appear nowhere in `apps/agent/src`. They were plausible re-spellings of the ported behaviours, which is why they read as a parity claim while describing no test that exists.
 
 ---
 
@@ -6800,7 +7071,11 @@ git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): route peer data channels behind the label gate"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **13 new `it()` / 17 new `expect()`**. Ports `rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`. **New:** the binary-vs-JSON files branch (the Rust's dispatcher tested them through two separate entry points, so the branch itself was never exercised), the decode-before-accept ordering, and `detach`.
+**TEST-INTEGRITY declaration:** one new file, **12 new `it()` / 17 new `expect()`** — all twelve **new**, none ported. An earlier draft claimed six of them as ports (`rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`). None of those six names exists in `apps/agent/src`, and neither behaviour they describe has a Rust test: the label gate (`on_data_channel`, `rtc.rs:663-689`) has no test at all, and the only inbound router (`route_inbound`, `lib.rs:2739`) has none either. This is the reason the counts matter — a declaration that claims six ports under-reports new coverage and over-reports parity in the direction that survives review.
+
+What the twelve cover, stated as new work: the four label-gate cases (each of the five known labels accepted; an unknown label closed with no code argument; a second channel on an already-registered label closed; a channel whose label throws dropped without being closed), the eight dispatcher cases (terminal input routed to the pty; files binary `0x02` routed to the files session; files JSON routed to the files session; whatever the files session returns is sent back; desktop control and select routed to their handlers; input decoded BEFORE the limiter and injector; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers).
+
+The Rust's gate is the specification for the first four — `rtc.rs:663-689` accepts one label, refuses an unexpected one by closing it, drops an unlabelled channel, and closes a second `terminal` channel. That is parity of *behaviour* being ported without parity of *test* being ported, and the declaration now says so instead of implying the second.
 
 ---
 
@@ -7368,7 +7643,14 @@ export class DesktopSession {
    * here is what makes the loop testable without a capture device and what lets
    * the runtime rebuild the interval when the profile changes — the Rust built
    * its sustain ticker **once** and never rebuilt it, so samples kept arriving on
-   * the old cadence after a downgrade (P5 #11). The ladder is rebuilt in
+   * the old cadence after a downgrade. The Rust creates its sustain interval once
+   * from `profile.frame_budget()` (`desktop.rs:1528`) and never rebuilds it, while a
+   * downgrade replaces the profile and the encoder (`desktop.rs:1731-1733`) and then
+   * stamps `duration: profile.frame_budget()` on each sample (`desktop.rs:1769`). After
+   * `720p60 → 720p30` the loop still ticks at 16.67 ms while samples are stamped
+   * 33.3 ms: the encoder is fed at double its configured `max_frame_rate` and the RTP
+   * sample durations disagree with the actual emission cadence. (`1080p60 → 720p60` is
+   * unaffected — same fps.) The ladder is rebuilt in
    * `control()` and the interval is the caller's, so there is nothing left to go
    * stale.
    *
@@ -7509,7 +7791,9 @@ git add apps/agent
 git commit -m "feat(agent): wire the runtime lifecycle and the desktop session"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 30 new `expect()`**. Ports `resolve_default_source_prefers_primary`, `…honours_an_explicit_id`, `…resolves_test`, `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture`, `…stops_capture_before_the_encoder`, `…reconfigures_on_a_quality_change`. `reporting_estimator_publishes_its_initial_target` re-homes here from Task 8. **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** (P5 #15, a defect in the Rust); the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that P5 #11 got wrong.
+**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 33 new `expect()`**. `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is the **only** port here — it re-homes from Task 8. Everything else is **new**, and an earlier draft named eight Rust tests that do not exist anywhere in `apps/agent/src`: `resolve_default_source_prefers_primary` / `…honours_an_explicit_id` / `…resolves_test` / `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture` / `…stops_capture_before_the_encoder` / `…reconfigures_on_a_quality_change`. The functions they name do exist — `default_source_id` (`desktop.rs:1004`) and `run_desktop_session` (`lib.rs:2002`/`2698`) — and neither has a test. The only in-tree use of `default_source_id` is the `#[ignore]`d live-display smoke (`desktop.rs:2707`), which asserts a frame, not a resolution rule.
+
+So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the seventeen cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
 
 The `expect()` count is larger than the `it()` count by more than usual because the RTP test is one `it()` with ten assertions: it is checking a serialized packet byte by byte, and a packet is not one property.
 
@@ -7519,31 +7803,66 @@ The `expect()` count is larger than the `it()` count by more than usual because 
 
 ## Closing sections
 
-### The retirement note (R5) — six noise rules with no Node successor
+### The retirement note (R5) — the ten noise rules, and what becomes of each
 
-These are recorded here because their rationale is operational knowledge, not
-code. None is reproduced as a rule, because no werift log target matches them:
+`apps/agent/src/logging.rs:26-101` carries **ten** `(target, message)` rules, not
+six, and `logging.rs` has **eight** `#[test]`s. The table below accounts for every
+one of the ten. An earlier draft of this note invented four rules that do not
+exist ("ICE failed", "Ping timeout", an `rtc_sctp` rule, and a `libwayshot` /
+"error" pair whose real message reads differently), asserted both "none port" in
+Task 1 and "six retire" here, and reversed the DTLS decision the Rust source
+documents at length. The reconciliation is: **Task 1's `NOISE` table ships empty,
+and that is correct** — every rule names a Rust crate target, and the TypeScript
+stack is werift, whose logging is a different mechanism. What follows is not a
+port list; it is the rationale each rule encodes, so the knowledge survives even
+though the rules do not.
 
-| Retired rule | What it suppressed, and why it matters |
-|---|---|
-| `rtc::peer_connection` / "ICE failed" | A single failed candidate pair. Under werift ICE failures surface through the connection state, and the noise here would be a state transition the session must react to, not hide. |
-| `rtc_ice::agent` / "Ping timeout" | Per-candidate RTT noise at 1 Hz. Werift does not log per-candidate pings at all. |
-| `rtc_dtls` / "Alert" | A DTLS alert during a normal teardown. The decision — **do not log a close as an error** — survives as the `classifyClose` split in Task 3, which is where the information now lives. |
-| `rtc_sctp` / "SCTP" | Data-channel stream churn. Werift logs it at debug. |
-| `libwayshot` / "error" | The Wayland screenshotter's per-frame error during a portal restart. The portal path is ADR-90's; its logging is Plan 3's. |
-| `quinn_udp` / "blocked" | QUIC UDP send back-pressure. There is no QUIC transport in the Node agent. |
+| # | The real rule | What it suppressed, and where the concern lives now |
+|---|---|---|
+| 1 | `libwayshot_xcap` / "Ignoring a wl_output with version < 4." | Fires once per unrelated Wayland global, so a wall of identical lines each capture start. **Plan 3** — the portal/capture path is ADR-90's and its logging is Plan 3's. |
+| 2 | `rtc_ice` / "remote mDNS candidate added, but mDNS is disabled" | Expected, because the agent disables mDNS on purpose. Under werift the equivalent is a candidate that never gathers a pair — visible through the connection state, which the session must react to rather than hide (`classifyClose`, Task 3). |
+| 3 | `rtc_ice` / "no such remote" | A STUN success arriving after its pair is gone; rtc-ice discards it. No werift counterpart: werift's ICE agent does not log the discard. Nothing to retire and nothing to port. |
+| 4 | `rtc_ice` / "ErrMismatchUsername" | A peer sending with the `ufrag:ufrag` order swapped. Same as #3 — discarded silently by both stacks. |
+| 5 | `rtc::peer_connection::handler` / "unhandled STUN packet" | The layer above re-logging the two discards in #3/#4. If werift ever grows such a line, the rule shape here is what Task 1's empty table is for. |
+| 6 | `rtc::peer_connection::handler` / "ErrMismatchUsername" | The same re-log, same resolution as #5. |
+| 7 | `rtc_dtls` / "Unsupported Extension Type" | Chrome offers DTLS extensions this stack does not implement; ignoring them is correct per RFC 5246 §7.4.1.4 and the handshake completes. **Retires with no replacement** — werift implements a different extension set and logs no equivalent. |
+| 8 | `webrtc::peer_connection::driver` / "from 127.0.0.1:" | The loopback socket's STUN writes fail with EINVAL because gathering iterates every socket including loopback; only loopback writes are dropped, so a real-interface failure still shows. **Live concern, re-express here if werift logs it** — this is the one the port is most likely to need, because the Node agent keeps the loopback candidate for same-host peers. |
+| 9 | `webrtc::peer_connection::transport::turn_relayer` / "CreatePermission error response (error 403" | coturn's SSRF guard rejects loopback/ULA peers. Verified against deploy coturn 4.18.0; a 403 is always this guard (bad credentials surface as 401), so suppressing it cannot hide an auth fault. **Live concern for Plan 3's TURN work**, where the equivalent diagnostic is werift's relay-permission error. The permission and transaction *timeouts* it triggers are deliberately NOT suppressed — those are also what an unreachable TURN server emits. |
+| 10 | `quinn_udp` / "halting segmentation offload" | quinn-udp reports UDP segmentation offload being unavailable at INFO and falls back to `sendmsg`. **Retires with no replacement** — there is no QUIC transport in the Node agent. |
+
+**The DTLS alert line is NOT among these ten, and the Rust deliberately keeps it.**
+`logging.rs:56-63` documents the decision and `logging.rs:259` pins it with
+`the_dtls_alert_line_is_kept_even_though_it_usually_means_a_clean_close`: rtc
+renders `Error::ErrAlertFatalOrClose`, whose text is shared by a benign
+`close_notify` and a genuine fatal alert (handshake failure, fingerprint
+mismatch), so no string rule can tell them apart, and rtc logs no DTLS transport
+state — nothing else would surface the fatal case. One extra line per session is
+the price of never hiding a real DTLS failure. Any earlier note claiming this was
+retired had it backwards. Task 3's `classifyClose` covers *close codes on the
+signalling socket*; it does not and cannot cover a DTLS alert, so it is not a
+replacement for the Rust rule — there is no rule to replace.
 
 The mechanism ports intact — target-plus-substring matching, an unknown line is
 kept, a known phrase from an unknown target is kept, and `RUST_LOG` composes with
-the filter — and the five mechanism tests port with it. The **coturn 403**
-rationale does not retire: it is a signalling-server behaviour, not a log filter,
-and it lives in the desktop `agent-supervisor` tree.
+the filter. Task 1's fence writes **three** tests for that mechanism
+(`matches on target AND message`, `keeps an unknown line from a known-noisy
+target`, `keeps every line when the table is empty`). The Rust has **eight**
+logging tests (`logging.rs:193-350`): six `is_noise` cases plus two end-to-end
+composed/bridged cases. Five of the six `is_noise` cases are per-rule assertions
+against rules that do not port, so they have nothing to assert against an empty
+table — that is a consequence of the retirement, not a coverage decision. The two
+end-to-end cases are a real loss and are recorded as such: the composed-filter
+and `log`-crate-bridge tests have no Node equivalent, because there is no `log`
+crate to bridge. Task 1's third test ("keeps every line when the table is empty")
+pins the property those per-rule cases collectively guaranteed. The **coturn 403**
+rationale (#9) does not retire: it is a signalling-server behaviour, not a log
+filter, and it lives in the desktop `agent-supervisor` tree as well.
 
 ### Coverage-matrix update (the §9.4 gate)
 
 Before this plan's work can be called done, the coverage matrix must record:
 
-- **38 B-rows closed** across Tasks 1–19, with the owning task's test file named.
+- **49 B-rows closed** across Tasks 1–19, with the owning task's test file named.
 - **R3 recorded as a three-way split: 13 re-homed / 2 ported-then-retired / 5
   retired.** The earlier "12 re-homed / 8 retired" in this plan was arithmetically
   impossible (`to_ws_url` alone carries 11, `with_bearer` 2). The enumeration is
