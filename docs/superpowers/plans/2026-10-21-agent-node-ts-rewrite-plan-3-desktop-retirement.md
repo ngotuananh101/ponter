@@ -142,23 +142,17 @@ a deletion needs no correction on the way out.
   TypeScript agent, so the §9.4 "every row of §4" gate cannot fail on it. Two
   possible landings, and the choice is the owner's (see T9):
   - **It ships.** Then it needs a new §4 B-row, a task with a declared test
-    count, a decision on the estimator (werift exposes only its TWCC
+    count, and a decision on the estimator (werift exposes only its TWCC
     `SenderBandwidthEstimator`, reachable as `pc.getSenders()[0].senderBWE` —
-    a GCC port means re-implementing), and an answer to the SDP delta the Rust
-    emits and the TS does not: `a=rtcp-fb … transport-cc` plus an `extmap`
-    entry, **on the one video m-line**. `rtc-0.21.0`'s
-    `configure_congestion_control` registers both on video *and* audio
-    (`interceptor_registry.rs:678` iterates `[Video, Audio]`), but the product
-    has no audio m-line — `rtc.rs:220`/`:235` add a single `RtpCodecKind::Video`
-    track, and `grep -rniE 'audio' apps/agent/src/ --include=*.rs` returns
-    nothing — so the audio half is dormant registration, not a wire behaviour.
-    The `extmap` id needs no decision: werift echoes whatever id the browser
-    offered.
+    a GCC port means re-implementing). The SDP is **not** a separate part of
+    this decision; see the third fact below for why it is already settled.
   - **It does not ship.** Then it needs an R-row in the retirement ledger and
     an `ARCHITECTURE.md:970` amendment, because that document describes the
     loop as current behaviour.
-  - **Two facts the owner needs before choosing, whichever landing wins.**
-    Neither decides ship-or-not by itself; both change what "ship" costs.
+  - **Facts that bear on the choice.** The first two change what "ship"
+    costs; neither decides ship-or-not by itself. The third is already
+    settled and is recorded only so an executor does not mistake it for an
+    open question.
     - **The pacer.** `configure_congestion_control` installs `Slot::Pacer`
       (`interceptor_registry.rs:717`), which is what turns a retargeted encoder
       into a measured departure pattern; a congestion loop without it samples
@@ -178,6 +172,38 @@ a deletion needs no correction on the way out.
       easy to miss). An upstream defect in the estimator itself, present
       whether or not anything uses it — not an argument against exposing it,
       but material to building on it.
+    - **The SDP is settled, and this is not a decision.** Recorded here because
+      an earlier draft of this item presented it as one, which invited the
+      owner to weigh something with no weight. Measured facts:
+      - The Rust registers the TWCC feedback and header extension for
+        `[Video, Audio]` (`interceptor_registry.rs:676` — the loop; `:678` is
+        the `CongestionFeedback::Twcc` arm it contains). The product has no
+        audio m-line: `rtc.rs:220`/`:235` add a single `RtpCodecKind::Video`
+        track and `grep -rniE 'audio' apps/agent/src/ --include=*.rs` returns
+        nothing — so the audio half is dormant registration, not a wire
+        behaviour. The header extension id is `None` in that call
+        (`:686-692`), i.e. it is left to negotiation.
+      - **Both stacks therefore take the extmap id from the offer**, by the
+        same mechanism. Rust: `PeerConnection::answer()` →
+        `update_header_extension` (`media_engine.rs:917-946`). werift: it
+        inherits whatever id the browser offered — measured 4-in/4-out and
+        7-in/7-out.
+      - **The rtcp-fb half needs no local config either.** werift echoes the
+        offer's `a=rtcp-fb … transport-cc` on every payload that carried it,
+        with or without local configuration.
+      - **The one real difference is the extmap's presence, and it turns on a
+        single config line, not a design choice**: werift stamps
+        `a=extmap … transport-wide-cc` only when local config names
+        `useTransportWideCC()`. Its default config drops it even when the offer
+        carries it. So the sentence "the `extmap` id needs no decision" is true
+        **only of the configured case**; unconfigured, werift omits the
+        extension entirely. A port must configure it; that is a task detail,
+        not an owner question.
+      - Note the task fences understate the real offer: the captured Chrome
+        offer (`apps/agent/spike/report.json:30`) carries `a=extmap:4 …` and
+        `a=rtcp-fb:96 transport-cc`, while
+        `packages/webrtc-core/test/synthetic-offer.ts` carries neither. An
+        implementer reasoning from the fixture would be wrong about production.
   Do not close this item by observing that the Rust is deleted. That is the
   failure T6 exists to name.
 - **N-4 — the 16 KiB terminal splitter.** Plan 2's Task 12 adds an
