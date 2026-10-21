@@ -14,8 +14,8 @@ Reproduce any row with the recipe in §10.
 
 | Class | Count |
 |---|---|
-| BLOCKING | 9 (B-1…B-9) closed, plus **B-10** and **B-11** raised 2026-10-21 and still open |
-| Non-blocking | 8 (one corrected after the fact — see N-6; two added 2026-10-21 — see N-3a/N-3b) |
+| BLOCKING | 9 (B-1…B-9) closed; **B-10** open (owner question); **B-11 closed 2026-10-21 by `d471109`** |
+| Non-blocking | 10 (N-6 partly mine and corrected; N-3a/N-3b closed by `d471109`; N-4 amended and N-4a added 2026-10-22) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
 The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong**, and **21 Rust test names cited as porting sources do not exist anywhere in `apps/agent/src`**. Both are the same class of defect — a number or a name written into a declaration that does not describe the tree — and both are BLOCKING because the declaration is the gate the plan itself defines (Plan 2 line 29: an undeclared change is BLOCKING; a declared change that is false is worse, because it passes the gate while misdescribing it).
@@ -24,7 +24,7 @@ The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong*
 
 **B-10 is open and is the largest item in the rewrite:** the **auto-ABR loop** — the 500 ms ticker that reads a congestion estimator and retargets the encoder, latched off by a manual `desktop-bitrate` frame — has **no B-row, no R-entry, no task, and no plan**. The manual bitrate path is covered (B19 + B62 + B20); the automatic one is outside the §9.4 gate's vocabulary entirely, so a "62 of 62" pass cannot fail on it. It needs an owner ruling, not a porter's guess. See §3's B-10 for the evidence, the three surviving questions (the fourth was withdrawn — its premise was wrong), and the landing-spot recommendation.
 
-**B-11 is open and is the same class, one level down:** Plan 2's `FilesSession.list()` emits a **different wire shape** from the Rust's `RemoteFile` — **seven divergences**: four field-shape (no `path`; `kind` where the Rust sends `isDirectory`; `size: null` where the Rust sends the directory's real `metadata.len()`; `modifiedEpochMs: number` where the wire type declares an RFC 3339 `Z` string) and three behavioural (dirs-first byte-wise sort replaced by `localeCompare`; a per-entry `statSync` failure silently substituted with `0` where the Rust fails the whole listing; `ENOTDIR` on `list()` of a file becomes `IO_ERROR` where the Rust sends `NOT_A_DIRECTORY`). Every field is read by the browser and asserted by an existing E2E; Task 11 has **no test of `list()` at all**. Task 11's declaration passes anyway, because B43 is a **count** (12 inbound / 11 outbound) and a count cannot see a shape. See §3's B-11.
+**B-11 — raised 2026-10-21, CLOSED 2026-10-21 by `d471109`.** Plan 2's `FilesSession.list()` emitted a **different wire shape** from the Rust's `RemoteFile` — **seven divergences**: four field-shape (no `path`; `kind` where the Rust sends `isDirectory`; `size: null` where the Rust sends the directory's real `metadata.len()`; `modifiedEpochMs` where the wire type declares an RFC 3339 `Z` string) and three behavioural (dirs-first byte-wise sort replaced by `localeCompare`; a per-entry `statSync` failure silently substituted with `0` where the Rust fails the whole listing; `ENOTDIR` on `list()` of a file becoming `IO_ERROR` where the Rust sends `NOT_A_DIRECTORY`). Task 11 had **no test of `list()` at all**, and its declaration passed anyway because B43 is a **count** (12 inbound / 11 outbound) and a count cannot see a shape. **PM's repair `d471109` fixed all seven and added the three missing `list_*` tests**; I re-verified every one against the crate source and the fence now matches on all seven, with the declaration re-derived to **29 `it()` / 60 `expect()`** and both counts exact. See §3's B-11 for the evidence that stands as the record of what was wrong.
 
 ---
 
@@ -212,6 +212,8 @@ The declaration's retirements are separately checkable and mostly hold: `files-d
 
 #### N-3a. Task 11's declaration names a test that exists in no fence — and mislabels the other as new
 
+> **CLOSED 2026-10-21 by `d471109`.** PM removed the phantom name, and the repair addressed the bucket problem I raised rather than relabelling: the declaration now says **"the counts are per-test-name, derived from the two fences, not from a split estimated by subtraction"** and explicitly records that the old 41's criterion did not cover `paused_state_survives_idle_timeout`. The text below stands as the record of the defect.
+
 > **Raised by PM 2026-10-21; verified here, with one correction to PM's framing.**
 
 `plan-2-core.md:4888` says *"Two are **new**: `paused transfers do not time out` and `drained .part before resume` as separate assertions."* Neither half survives.
@@ -222,6 +224,8 @@ The declaration's retirements are separately checkable and mostly hold: `files-d
 So the sentence is wrong **twice, in two different ways**: one phantom name, one real test misclassified as new. And the misclassification cannot be fixed by moving the name into the other bucket either, because the other bucket's own definition excludes it: the 41 are *"Rust-internal helpers … or per-platform filesystem races"*, and a wire-surface idle behaviour is neither. So the repair has to account for a test that belongs to **neither list as currently defined** — which is a partition repair, not a rename. The count around it is arithmetically fine — I re-walked the Task 11 range (`3888-4887`) and got **25 `it()` / 42 `expect()`**, exactly as declared. **The count is right and the prose is wrong**, which is precisely why re-deriving counts alone was never going to catch it, and why the fence-walker that closed B-1…B-9 is necessary but not sufficient.
 
 #### N-3b. The `FILES_IDLE_TIMEOUT_MS` claim is half right, and its *reason* is inverted
+
+> **CLOSED 2026-10-21 by `d471109`.** The repair added `it('pins the idle timeout to the wire value')` asserting only the literal `30_000`, and — better than what I proposed — carries a comment at `:4300-4305` explaining *why* the prod-equals-constant assertion is deliberately omitted, naming the `cfg(test)` divergence. The text below stands as the record.
 
 > **Raised by PM 2026-10-21; PM's premise verified, PM's explanation corrected.**
 
@@ -235,11 +239,40 @@ So the sentence is wrong **twice, in two different ways**: one phantom name, one
 
 **Sequencing, agreed with PM.** Both go into the same single repair as B-11 and N-3: fence shape + the three `files.rs` list tests + this declaration rewrite, landing as one declared before→after. Neither blocks PR #174 (nothing in it executes Plan 2); both block **starting Task 11**. Neither is an owner question — they are declarations about a plan the owner never sees, which puts them in §3 and not §4.
 
-### N-4. Task 12's "`chunk_boundaries` is replaced, not ported" rationale is sound, but the replacement does not exist in Rust
+### N-4. `chunk_boundaries` never exercised a splitter — but the Rust *did* honour the 16 KiB wire bound. Corrected 2026-10-22.
 
-`chunk_boundaries` (pty.rs:508) does exactly what its name says at the boundary values — it frames 0, `MAX_PTY_CHUNK`, and `MAX_PTY_CHUNK + 1` bytes and asserts the round-trip length — but it does **not** exercise a splitter, because `frame_pty_output` (pty.rs:141) does not split: it delegates straight to `build_terminal_data_frame`. `MAX_PTY_CHUNK` is used in production only as the **read buffer size** (pty.rs:392), never as a frame boundary.
+> **Amended 2026-10-22, after PM's resolution of N-4 in Plan 3 T8. Two of my original claims are retracted below; one stands.**
 
-So Plan 2's claim that "the Rust test's name promised chunking it never exercised" is **correct**, and the TS replacement (`emitChunks`, plan line 4911, splitting at `MAX_PTY_CHUNK`) adds behaviour the Rust does not have. **That is a behaviour change, not a port** — possibly a wanted one, but it belongs in the declaration as a new behaviour with a migration note, not as a test replacement.
+**What stands.** `chunk_boundaries` (`pty.rs:507-519`) does not exercise a splitter. Its body frames 0, `MAX_PTY_CHUNK`, and `MAX_PTY_CHUNK + 1` bytes through `frame_pty_output` and asserts the round-trip *length*; `frame_pty_output` (`:141-143`) delegates straight to `build_terminal_data_frame` (`:123-134`), which base64-encodes whatever slice it is handed and never splits. So Plan 2's claim — *"the Rust test's name promised chunking it never exercised"* — is **correct**, and the TS replacement asserts strictly more than the Rust test did. That part of my N-4 holds.
+
+**Retracted, part 1: "the replacement adds behaviour the Rust does not have".** That conclusion was wrong, and PM is right to call it so. The Rust **does** bound its output at 16 KiB — but at the *read site*, not the framer: `start_reader` allocates `vec![0u8; MAX_PTY_CHUNK]` (`pty.rs:392`) and hands `buf[..n]` to the channel (`:397`), and `read()` **cannot return more bytes than the buffer holds**. I verified that rather than asserting it: a 16 KiB buffer reading a 500 KB file returns exactly `16384`, and a 64 KiB buffer on the same file returns `65536`. `pty.rs:392` is the **only** production read in the crate (`grep -n 'read(&mut' apps/agent/src/pty.rs` → one hit), and `lib.rs:1039` only frames what it is handed. So the Rust's chunks *are* ≤ 16 KiB by construction, and `emitChunks` does not add a behaviour — it **makes explicit, at the framer, a bound the Rust enforced one layer earlier**. B40 says 16 KiB; the Rust met it; the port meets it. The disposition is *"a stated contract made explicit in the layer that owns the wire shape"*, not *"a behaviour change needing a migration note"*.
+
+**Retracted, part 2 — and this one is PM's error, not mine: "the Rust enforced nothing".** This now appears in **both** plans (Plan 3 T8 `:228`, Plan 2 Task 12's declaration `:5531`) and it is **false as written**. The citation given for it is `MAX_PTY_CHUNK` at `:22` being "the read buffer" — but *being the read buffer* is precisely the mechanism by which the bound **is** enforced. A buffer-sized `read()` is a bound, not the absence of one. The only reading under which "enforced nothing" is true is "the framer does not enforce it", which is a different and much narrower statement than the one the plans make.
+
+**The `node-pty` half, which is sound but supports a narrower conclusion than stated.** PM measured 1.2.0-beta.12 with a real `/bin/sh`: 8 MiB of output in 2 555 events, largest **18 433 bytes**. Against `DEFAULT_MAX_MESSAGE_SIZE = 65536` (`werift/lib/webrtc/src/transport/sctp.js:10`) the unsplit worst case is ~24 580 base64 characters, so this is contract drift, not a crash — I agree. But **node-pty's larger events do not imply the Rust had the same exposure**: the Rust's buffer caps its reads regardless of what a JS binding would have delivered. The correct statement is *"node-pty would deliver more than 16 KiB, so the port needs an explicit splitter where the Rust needed none — because the Rust's bound lived in its read buffer"*. That is a real porting hazard and it justifies `emitChunks` completely; it just is not evidence that the Rust was unbounded.
+
+**Net disposition: PM's outcome is right, PM's mechanism is wrong, and the two plans should not ship "the Rust enforced nothing".** The citation in C12 and B40 needs the same treatment — see N-4a.
+
+### N-4a. C12 and B40 are right about the contract and wrong about their evidence
+
+> **Raised by PM 2026-10-22; verified here, and it is a docs defect in my lane.**
+
+Both spec rows state the 16 KiB wire contract correctly and both cite `pty.rs:22,123-143` as the evidence that the Rust implements it. **Neither citation supports that claim:**
+
+| cited | what it actually is | does it show 16 KiB chunks? |
+|---|---|---|
+| `pty.rs:22` | `pub const MAX_PTY_CHUNK: usize = 16 * 1024;` — the constant, with a doc comment about base64 expansion | The *value*, not its use. A constant nobody applies proves nothing. |
+| `pty.rs:123-134` | `build_terminal_data_frame` — base64-encodes the slice it is handed | **No.** It frames `&[u8]` of any length; there is no split. |
+| `pty.rs:141-143` | `frame_pty_output` — one-line delegation to the above, marked `#[allow(dead_code)]` | **No.** And it is dead code: no production path calls it. |
+
+**The call that actually enforces the bound is `pty.rs:392`** — `read(&mut buf)` with `buf = vec![0u8; MAX_PTY_CHUNK]` — plus the `:397` hand-off of `buf[..n]`. That is what makes every emitted chunk ≤ 16 KiB, and it is the citation both rows need.
+
+**The deeper problem with the rows isn't the line numbers — it's that the rows do not distinguish *intent* from *mechanism*.** C12 is a *constraint* ("the terminal output is … 16 KiB chunks"), so citing the read site is exactly right: it shows the property holds. B40 is a *behaviour to port*, and there the row should say what the Rust does rather than imply a framer it does not have. Concretely:
+
+- **C12** should cite `pty.rs:22,392,397` — constant, read buffer, hand-off — and drop `:123-143`, which proves only that the framer is length-agnostic.
+- **B40** should keep the contract wording and add the note that the bound is a **read-buffer** bound (`:392`), so a port whose input source is not buffer-bounded (node-pty, per N-4) must apply it at the framer instead. That phrasing keeps the row true *and* tells an executor what to do — which the current citation does not.
+
+This is the same class as the `desktop/devices.rs` drift Plan 3 T9 already names, and it is why PM asked for it here: an executor reading B40 and following its citation would look at a framer that never splits and conclude the contract is unenforced — which is precisely the wrong conclusion, and the one both plans now draw in prose (`"the Rust enforced nothing"`). **Fixing the citation and fixing that sentence are the same fix.**
 
 ### N-5. Task 19's "`reporting_estimator_publishes_its_initial_target` re-homes here" has no home
 
@@ -506,7 +539,8 @@ The Rust test `preserves_a_ws_query_value_ending_in_slash` (api.rs:182) pins exa
 - **Task 12's `emitChunks` behaviour change** is recorded (N-4) but not adjudicated — whether an agent-side 16 KiB splitter is wanted is an owner/spec question, not a docs question.
 - ~~**Whether the werift TWCC estimator is usable for a 500 ms-tick encoder retarget**, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`.~~ **CLOSED 2026-10-21** — both answered with measured values and verified in package source; see the table under §3 B-10. The headline: reachable via `senderBWE`, seed is `0` not 4 Mbps, the offer's `rtcp-fb` is echoed while `extmap` is not, and the estimator leaks entries unbounded on the port's own path.
 - **Beyond `list()`, I did not audit the other files-protocol message shapes.** B-11 found the `list()` divergence; I did not check `files-download-begin`, `files-upload-ack`, `files-action-result` or the error frame against their Rust counterparts field by field. Given that B-11's shape survived a passing count-based gate, **the same failure is plausible in those** — that is the highest-value next sweep, and it is not done.
-- **I did not audit every sentence of every declaration, only their counts and their named tests.** N-3a and N-3b are both defects in *prose* inside a declaration whose *counts* are exactly right (25 `it()` / 42 `expect()`, re-walked). Task 11 is the largest and most prose-heavy declaration in the plan; it is plausible that the other 18 have sentences of the same kind. The fence-walker cannot find them — it counts `it(`/`expect(` and would report 25/42 as a pass.
+- **I did not audit every sentence of every declaration, only their counts and their named tests.** N-3a and N-3b are both defects in *prose* inside a declaration whose *counts* were exactly right (25 `it()` / 42 `expect()` as it then stood, re-walked). Task 11 is the largest and most prose-heavy declaration in the plan; it is plausible that the other 18 have sentences of the same kind. The fence-walker cannot find them — it counts `it(`/`expect(` and would report the count as a pass.
+- **I typechecked and executed no fence.** PM's `180efe1` found three real defects in Task 12 by running the fences against the real `node-pty` — a UTF-8 corruption on the inbound path, a U+FFFD substitution on the outbound path, and a `PtyProcess.on` seam no real host could satisfy (visible as four `as never` casts). See §7.1: **this is the second failure class, and it is not one my method can rule out.**
 
 ---
 
@@ -518,6 +552,23 @@ The common cause is visible in the plan's own history: T8's declaration is the o
 
 A cheap, mechanical fix exists: for each task, count `it(` and `expect(` **inside the fences only** (not prose), write that number into the declaration, and re-run it whenever a fence moves. The counter I used for §2 is 40 lines of Python; it reproduces B-1 exactly.
 
+### 7.1 The second class: a fence that has never been compiled or executed is not evidence that the code in it is correct
+
+> **Added 2026-10-22 after PM's `180efe1`.** This audit's method was to read and count, and §6 says plainly that I typechecked no fence. PM's Task 12 work shows what that costs, and it upgrades a limitation into a finding about the plan as a class.
+
+Three real defects in three consecutive tasks, all found the same way — **by extracting the fence and running it**, not by reading it:
+
+| Task | Defect | How it would have surfaced |
+|---|---|---|
+| 10/11 | two logic bugs of the same origin | running the fences |
+| 12 | `node-pty` defaults to `encoding: 'utf8'`, so `0xff` reaches `onData` already replaced by U+FFFD *before* base64 runs — the agent would faithfully encode corrupted bytes | running the real binding |
+| 12 | `write(Buffer.from(bytes).toString('utf8'))` turns inbound `41 ff fe 42` into `41 ef bf bd ef bf bd 42` at the child | writing non-UTF-8 through it |
+| 12 | `PtyProcess.on` typed `(arg: never) => void` — no real host is assignable to it, which is why the fence carried four `as never` casts | typechecking against the real host |
+
+**The pattern worth recording: `as never` (or any cast that silences a seam) is a signal that the fence was typed to satisfy a test double rather than a real dependency.** The four casts in Task 12 were not incidental; they were the visible symptom of a seam no implementation could satisfy. A reviewer who treats a cluster of casts at one interface as a smell would have found this without running anything.
+
+**This is a limitation of my audit, not a finding I can close.** I verified *what the fences say*; PM verified *that they run*. Both were necessary, and neither is sufficient: a fence can be arithmetically declared, semantically faithful to the Rust, **and** wrong about the library it calls. §6's "I did not typecheck a single fence" is therefore load-bearing reading, not a footnote.
+
 ---
 
 ## 8. Recommended disposition
@@ -528,9 +579,9 @@ A cheap, mechanical fix exists: for each task, count `it(` and `expect(` **insid
 >
 > **Still open, and larger than any of the above: B-10, the auto-ABR loop** (§3). It is not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. It needs an owner ruling on three questions (does auto-ABR ship; against which estimator and seeded how; what divergence is declared, given that it is **two** behaviours — the estimator and an absent pacer — not one). The original fourth question about the `transport-cc` SDP delta is **withdrawn**: `register_default_interceptors` already registers it, so there is nothing to decide there — but the Rust comment saying otherwise is wrong and should be corrected in T9. B-10 needs carrying in Plan 3's T8 alongside N-4, so that Plan 3's T6 "close the retirement ledger" step cannot pass while it is unresolved.
 >
-> **Also open, and a plan repair rather than an owner question: B-11, the `list()` wire shape** (§3). Seven divergences — four field-shape, three behavioural — inside a message whose owning row (B43) is a *count* and therefore passes regardless. Unlike B-10, no decision is needed: the Rust, `packages/shared`, the browser and the existing E2E already agree, and only the plan disagrees. It cannot be repaired alone, though — the fix requires porting the three `files.rs` list tests, which changes Task 11's declared counts, which makes it a TEST-INTEGRITY declaration that has to land with N-3's partition repair.
+> **B-11, N-3, N-3a and N-3b were all four closed by PM's `d471109`, as one declared before→after — which is what I recommended and what the sequencing required.** I re-verified the repair independently rather than accepting it: all seven `list()` divergences are fixed (path built with `join_rel` semantics, `isDirectory` from `stat`, real directory `size`, `rfc3339Utc(stat.mtimeMs)`, dirs-first `Buffer.compare`, per-entry `statSync` throwing, `readdirSync` inside a try mapped through `errnoToCode`); the three `list_*` tests are present (`:4118`, `:4145`, `:4155`); the phantom `drained .part before resume` is gone; and the declaration is **29 `it()` / 60 `expect()`**, which I recounted from the fences — **both exact**. N-3b's repair also does the thing I asked for rather than the vacuous thing: it asserts only the wire literal `30_000` and **states in a comment why the prod-equals-constant assertion is omitted** (`:4300-4305`), naming the `cfg(test)` divergence explicitly. That is better than what I proposed.
 >
-> **And now two more defects in that same Task 11 declaration: N-3a and N-3b** (§3). N-3a: the sentence naming the two "new" tests names one that exists in **no fence** (`drained .part before resume` — the only occurrence of the string in the whole plan is the sentence claiming it) and mislabels the other, which is a **port** of the Rust's `paused_state_survives_idle_timeout` (`files.rs:3834`), not a new test. N-3b: the `FILES_IDLE_TIMEOUT_MS` pin is promised in prose and **absent from every fence**; the Rust gap it describes is real (the `cfg(test)`-shrunk constant is genuinely unpinned), but the TS repair the declaration describes is *vacuous*, because TS has one constant where Rust had two. Both are plan repairs, not owner questions, and both land in the **same single repair** as B-11 and N-3 — fence shape, the three list tests, and the declaration rewrite, as one declared before→after. They do not block PR #174; they block **starting Task 11**.
+> **What this does not close.** B-10 is still open and still needs an owner ruling. N-4 is now resolved as a docs matter (PM was right that the contract was written down), but **its stated mechanism is wrong and is now in both plans** — see N-4's retractions and N-4a.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -727,4 +778,21 @@ sed -n '40,46p' apps/agent/src/files.rs    # comment says "pinned by ... its own
 awk 'NR>=2287' apps/agent/src/files.rs | grep -c FILES_IDLE_TIMEOUT
 #     -> 0 : the test module (starts :2287) really does contain no pin. The Rust gap is real;
 #        the TS "prod timeout equals it" assertion would be `expect(X).toBe(X)` — vacuous. TS has ONE constant.
+
+# N-4a: the read buffer IS the 16 KiB bound; the framer is not
+grep -n "read(&mut" apps/agent/src/pty.rs          # ONE hit, :394 — the only production read
+sed -n '391,398p' apps/agent/src/pty.rs            # vec![0u8; MAX_PTY_CHUNK] (:392) then buf[..n] (:397)
+node -e "const fs=require('fs');const p='/tmp/r.bin';fs.writeFileSync(p,Buffer.alloc(500000,65));
+const a=Buffer.alloc(16384),b=Buffer.alloc(65536);
+const f1=fs.openSync(p,'r'),f2=fs.openSync(p,'r');
+console.log('16KiB buffer ->',fs.readSync(f1,a,0,a.length,null),'  64KiB buffer ->',fs.readSync(f2,b,0,b.length,null))"
+#     -> 16384 and 65536 : read() cannot exceed the buffer. So pty.rs:392 bounds every
+#        emitted chunk, and `frame_pty_output` (:141) being length-agnostic proves nothing.
+#        "The Rust enforced nothing" (Plan 3 T8 :228, Plan 2 :5531) is FALSE as written.
+
+# The B-11 repair, re-verified against all seven divergences
+sed -n '4582,4625p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md
+grep -n "it('lists entries sorted\|it('reports NOT_A_DIRECTORY\|it('truncates at the cap" \
+  docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md     # :4118 :4145 :4155
+grep -c "drained" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md  # 0 — phantom gone
 ```
