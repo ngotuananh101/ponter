@@ -83,10 +83,12 @@ with Files / Interfaces / steps before this plan is executable.
     pushes only `full.endsWith('.ts')`, so the list is `.ts`-only by
     construction and `every` restates the filter that produced it. Measured at
     this SHA: `walk(AGENT_SRC)` returns 1 file and `every` is `true`, while
-    `apps/agent/src` holds 20 `.rs` files that the `.rs` filter removes before
-    the assertion ever sees them. The live guard in that file is `:58`'s
-    `files.length > 0` alone — and `walk` (`:32`) has **no** `try`, so it throws
-    on a missing directory, which is the property actually doing the work.
+    `apps/agent/src` holds 20 `.rs` files that `:35`'s `.ts` allow-filter drops
+    before the assertion ever sees them — so the assertion is true of a
+    one-element list on a tree that is overwhelmingly not TypeScript. The live
+    guard in that file is `:58`'s `files.length > 0` alone — and `walk` (`:32`)
+    has **no** `try`, so it throws on a missing directory, which is the property
+    actually doing the work.
   - *What T2 must therefore assert.* A control that fails when the walker sees
     the wrong roots — not one that restates the walker's own filter. Concretely:
     the governed set must differ from the walked set by at least one file once

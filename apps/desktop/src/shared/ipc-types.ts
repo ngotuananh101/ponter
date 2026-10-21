@@ -7,7 +7,7 @@
 export const DESKTOP_PROFILES = [
   '1080p30',
   '720p30',
-  '1080p120',
+  '1080p60',
   '720p60',
 ] as const;
 export type DesktopProfileName = (typeof DESKTOP_PROFILES)[number];
