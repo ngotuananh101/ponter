@@ -30,6 +30,8 @@ The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong*
 
 ---
 
+## 2. BLOCKING findings
+
 ### B-1. All 19 TEST-INTEGRITY declarations mismatch the code fences in the same task
 
 Declared counts (the plan's own numbers) against fence-actual counts at `8a92601`. `it()` / `expect()`:
@@ -656,7 +658,7 @@ Three real defects in three consecutive tasks, all found the same way — **by e
 >
 > **N-4's *outcome* is settled and PM's reasoning for it improved.** `e9fe654` resolves it by measurement rather than deferral, which is the right method, and its `node-pty` evidence (8 MiB in 2 555 events, largest 18 433 bytes) is what justifies `emitChunks` when the Rust's own bound sat in its read buffer. What is still wrong is the mechanism sentence, which `844ba29` extended rather than repaired — see §N-4 below.
 >
-> **What this does not close.** B-10 needs an owner ruling. **The "the Rust enforced nothing" claim now appears in three places across two plans plus the T8 preamble** (§N-4), and it is false as written; repairing it and repairing C12/B40's citations (§N-4a) are the same fix.
+> **What this does not close.** B-10 needs an owner ruling. **The "the Rust enforced nothing" claim now appears in three places across two plans plus the T8 preamble** (§N-4), and it is false as written; repairing it and repairing C12/B40's citations (§N-4a) are the same fix. **B-12 is new and open as of 2026-10-22:** Task 11's 41-test criterion is not exhaustive (24 uncovered), three of its twelve dispatch arms have no test at all, and one of those — `files-delete` — silently drops the `recursive` flag three other artefacts carry. It is plan-side, in PM's lane, and it blocks **starting Task 11** for the same reason B-11 did.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -668,6 +670,7 @@ Suggested order for the amendments (all of them plan-side; per PM's ruling, I do
 6. Add `AGENT_DESKTOP_SOURCE`, `AGENT_DESKTOP_SELECT_TIMEOUT_MS`, `AGENT_DESKTOP_POLL_INTERVAL_MS`; remove `AGENT_COLS`/`AGENT_ROWS` or declare them a deliberate addition to the contract (B-8).
 7. Correct 38 → 49 (B-9).
 8. Move the `decisions.md` rulings into the plan text (B-6).
+9. **B-12:** name all 65 (or restate the criterion so it partitions), decide `recursive` against `packages/shared`, add test sites for `files-mkdir` / `files-delete` / `files-rename` / `teardown()`, re-derive the 26-versus-24 count.
 
 ---
 
@@ -778,6 +781,20 @@ grep -c 'AGENT_DESKTOP_SOURCE\|AGENT_DESKTOP_SELECT_TIMEOUT_MS' /tmp/plan2.md  #
 grep -c '^| B[0-9]' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md  # 62
 # enumerate B1-14,B18,B20,B22-24,B27-30,B34,B36-56,B58,B59,B61,B62 → 49
 # matrix rows naming Plan 2                                                   → 49 (same set)
+
+# B-12: the partition criterion is not exhaustive
+grep -nE '^\s*(async )?fn [a-z0-9_]+\(\)' apps/agent/src/files.rs        # 65 anchored test fns
+# the 41's stated criterion covers 17; the 24 in neither category are listed in §3's B-12.
+# Script used: /tmp/p2audit/final.py.
+
+# B-12a: the three untested dispatch arms and the dropped flag
+sed -n '/^  private dispatch/,/^  }/p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md | grep -oE "case '[a-z-]+'"   # 12 arms
+grep -c "type: 'files-mkdir'\|type: 'files-delete'\|type: 'files-rename'" \
+  <(sed -n '3861,5125p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md)   # 0 test sites
+grep -n 'recursive' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md      # only :2241 mkdirSync opt + :4974 a comment
+grep -n 'recursive' packages/shared/src/types/files.ts                                            # :163 — the field exists
+grep -n 'recursive' packages/file-core/src/client.ts                                              # :189,195 — the browser sends it
+sed -n '546,550p;901,941p' apps/agent/src/files.rs                                                # the Rust honours it
 
 # N-6 (corrected): the rewrite is Plan 1 Task 5, landed in 7d723e6
 git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                        # 4  (before)
