@@ -3,6 +3,8 @@ import {
   annexbNalTypes,
   DEFAULT_MAX_PAYLOAD_BYTES,
   packetizeAnnexB,
+  splitAnnexB,
+  spsProfileLevelId,
 } from '../../src/session/packetizer';
 
 const SSRC = 0x11223344;
@@ -200,6 +202,33 @@ describe('annexbNalTypes', () => {
   it('reads the NAL types of an SPS/PPS/IDR access unit', () => {
     const types = annexbNalTypes(buildAnnexB([SPS, PPS, IDR]));
     expect(types).toEqual([7, 8, 5]);
+  });
+});
+
+describe('the helpers the spike consumes', () => {
+  // Task 1's spike needs to strip parameter sets from a fixture (to provoke a
+  // PLI) and to read the encoder's profile-level-id out of the SPS. Both used
+  // to come from `spike/packetizer-copy.ts`; Step 8 deletes that file, so the
+  // real module has to supply them or the spike test breaks on a live import.
+  it('splitAnnexB returns the NAL units with their start codes stripped', () => {
+    const nals = splitAnnexB(buildAnnexB([SPS, PPS, IDR]));
+    expect(nals).toEqual([SPS, PPS, IDR]);
+  });
+
+  it('splitAnnexB keeps a bare buffer as a single NAL unit', () => {
+    // No start code at all: the crate treats the whole buffer as one NAL
+    // (`rtc-rtp-0.21.0/src/codec/h264/mod.rs:62-75`).
+    expect(splitAnnexB(SPS)).toEqual([SPS]);
+  });
+
+  it('spsProfileLevelId reads the three bytes after the SPS header octet', () => {
+    // 0x67 is the SPS NAL header; the next three bytes are profile, constraint
+    // flags and level, which is exactly the `profile-level-id` an SDP quotes.
+    expect(spsProfileLevelId(buildAnnexB([SPS, PPS, IDR]))).toBe('42c01f');
+  });
+
+  it('spsProfileLevelId returns null when the access unit carries no SPS', () => {
+    expect(spsProfileLevelId(buildAnnexB([PPS, IDR]))).toBeNull();
   });
 });
 

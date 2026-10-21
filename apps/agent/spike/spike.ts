@@ -14,7 +14,7 @@ import {
   packetizeAnnexB,
   splitAnnexB,
   spsProfileLevelId,
-} from './packetizer-copy.ts';
+} from '../src/session/packetizer.ts';
 
 export interface SpikeRunResult {
   run: 'r-s1-list' | 'vp8-first-local' | 'mode-0-first-offer';

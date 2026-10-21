@@ -28,8 +28,14 @@ const FILLER_NALU_TYPE = 12;
 const SPS_NALU_TYPE = 7;
 const PPS_NALU_TYPE = 8;
 
-/** The STAP-A NAL unit type, and the header byte the Rust payloader emits. */
-const STAP_A_NALU_TYPE = 24;
+/**
+ * The STAP-A header byte the Rust payloader emits.
+ *
+ * This is `F|NRI|24` over the first aggregated NAL, which for the SPS/PPS pair
+ * the payloader aggregates is always `0x78` (`0x60 | 24`). The bare NAL type
+ * 24 is not named separately because nothing here branches on it: the
+ * aggregate is built and stamped in one place.
+ */
 const STAP_A_HEADER_BYTE = 0x78;
 
 /** The FU-A NAL unit type, and the two header octets it prepends. */
@@ -103,8 +109,12 @@ export interface PacketizeResult {
  * code, not to the preceding NAL — the same accounting as the crate's
  * `next_ind` (`rtc-rtp-0.21.0/src/codec/h264/mod.rs:62-75`). A buffer with no
  * start code at all is one NAL unit.
+ *
+ * Exported because the spike strips parameter sets out of a fixture to
+ * provoke a PLI, and there is no second Annex-B parser in this package to do
+ * it with — `spike/packetizer-copy.ts` used to be that parser and is gone.
  */
-function splitAnnexB(annexB: Buffer): Buffer[] {
+export function splitAnnexB(annexB: Buffer): Buffer[] {
   const nalUnits: Buffer[] = [];
   let nalStart = -1;
   let zeroCount = 0;
@@ -319,4 +329,29 @@ export function packetizeAnnexB(
  */
 export function annexbNalTypes(annexB: Buffer): number[] {
   return splitAnnexB(annexB).map((nalu) => nalu[0]! & NALU_TYPE_MASK);
+}
+
+/**
+ * Read the `profile-level-id` out of an access unit's SPS, if it carries one.
+ *
+ * The three bytes after the SPS's own header octet are profile_idc,
+ * constraint flags and level_idc — exactly the hex the SDP's `profile-level-id`
+ * parameter quotes, so the spike can compare what the encoder emits against
+ * what the browser negotiated. Returns null when there is no SPS, or when the
+ * SPS is too short to carry a level.
+ *
+ * Exported for the same reason as `splitAnnexB`: the spike used to read this
+ * off `spike/packetizer-copy.ts`.
+ */
+export function spsProfileLevelId(annexB: Buffer): string | null {
+  for (const nalu of splitAnnexB(annexB)) {
+    if ((nalu[0]! & NALU_TYPE_MASK) !== SPS_NALU_TYPE) {
+      continue;
+    }
+    if (nalu.length < 4) {
+      return null;
+    }
+    return nalu.subarray(1, 4).toString('hex');
+  }
+  return null;
 }
