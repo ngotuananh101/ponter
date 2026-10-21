@@ -81,10 +81,12 @@ Locked here so the task implementers cannot disagree about what creates what.
 | `apps/agent/test/native/smoke.test.ts` | **New.** The TS-side smoke test that loads the built `.node` and exercises the surface. |
 | `apps/agent/test/native/fault-containment.test.ts` | **New.** The §9.2 gate. |
 | `apps/agent/package.json` | **New.** `@ponter/agent-node`, `workspace:*`, `type: module`. |
-| `apps/agent/tsconfig.json` | **New.** Extends the repo's base config. |
+| `apps/agent/tsconfig.json` | **New.** Extends the repo's base config and **must include `src/**/*.ts` and `test/**/*.ts` and `spike/**/*.ts` from the start**, exactly as `packages/webrtc-core/tsconfig.json` does (`"include": ["src/**/*.ts", "test/**/*.ts"]`). See the note beneath this table: Task 3 creates the first file under `src/`, and a `tsconfig` that omits `src/` makes `pnpm typecheck` pass while never checking it. |
 | `pnpm-workspace.yaml` | **Modify.** `allowBuilds` gains `@ponter/agent-native` so pnpm runs its install script (spec D9). |
 
 **Not created in this plan** (they belong to Plan 2): `apps/agent/src/**` (the TS core), `apps/agent/src/session/packetizer.ts` — *except* for the minimal packetizer Task 1 needs to prove the spike, which Task 3 then promotes into the real module with the full table-driven test suite. `apps/agent/src/desktop/profiles.ts` in spec §6.1 is superseded: the table lives in `@ponter/shared` (Task 5), and the agent imports it.
+
+**`apps/agent/tsconfig.json`'s `include` is a cross-task dependency, not a Task 1 detail.** Task 1 writes this file before any `src/` file exists, so it is tempting to list only `spike/**` and `test/**`. Task 3 then creates `apps/agent/src/session/packetizer.ts` — the first file under `src/` — and Plan 2 puts the entire ported core there. A `tsconfig` whose `include` omits `src/**` means `pnpm typecheck` exits 0 having checked nothing in `src/`, and every type error in the ported core ships green. The file must therefore list `src/**/*.ts`, `test/**/*.ts` and `spike/**/*.ts` at creation time. Task 3's verification step must confirm `pnpm --filter @ponter/agent-node typecheck` **fails** on a deliberately wrong type under `src/` before it passes on the real code — a typecheck that cannot fail is not a gate.
 
 **One cross-package placement to be explicit about:** the Chrome-shaped offer builder lives in **`packages/webrtc-core/test/synthetic-offer.ts`** from the start, created in **Task 1** and consumed by both Task 1's spike and Task 2's adapter tests. It cannot live under `apps/agent/spike/` and be imported from `packages/webrtc-core` — `@ponter/webrtc-core` declares only `@ponter/shared` as a dependency. The package already exports a test helper this way (`"./test/fake-websocket": "./test/fake-websocket.ts"` in `packages/webrtc-core/package.json`), so Task 1 adds one more `exports` entry in the same form rather than inventing a mechanism. Task 1's spike imports it as `@ponter/webrtc-core/test/synthetic-offer`.
 
@@ -1242,7 +1244,28 @@ The literal fixtures are taken from the **crate's own test vectors** where one e
 Run: `pnpm --filter @ponter/agent-node exec vitest run test/session/packetizer.test.ts`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Prove the typecheck actually covers `src/`**
+
+This task creates the first file under `apps/agent/src/`, and Task 1 wrote `apps/agent/tsconfig.json` before any such file existed. Run:
+
+```bash
+cd apps/agent
+# 1. The real check must be green.
+pnpm --filter @ponter/agent-node typecheck
+
+# 2. And it must be capable of failing on this exact file. Introduce a type
+#    error in the file this task just created, confirm typecheck fails, revert.
+cp src/session/packetizer.ts /tmp/packetizer.bak
+printf '\nconst __probe: number = "not a number";\n' >> src/session/packetizer.ts
+pnpm --filter @ponter/agent-node typecheck; echo "exit=$?"
+cp /tmp/packetizer.bak src/session/packetizer.ts
+rm /tmp/packetizer.bak
+pnpm --filter @ponter/agent-node typecheck
+```
+
+Expected: step 1 exits 0; the probe run exits **non-zero** with an error naming `src/session/packetizer.ts`; the final run exits 0 again. **If the probe run exits 0, `tsconfig.json`'s `include` is wrong — stop and fix it before committing.** A typecheck that cannot fail on `src/` is not a gate, and Plan 2 puts the entire ported core in that directory.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add apps/agent/src/session apps/agent/test/session
