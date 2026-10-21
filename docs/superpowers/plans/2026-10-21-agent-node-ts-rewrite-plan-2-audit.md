@@ -14,13 +14,15 @@ Reproduce any row with the recipe in §10.
 
 | Class | Count |
 |---|---|
-| BLOCKING | 9 |
+| BLOCKING | 9 (B-1…B-9), plus **B-10** raised 2026-10-21 and still open |
 | Non-blocking | 6 (one corrected after the fact — see N-6) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
 The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong**, and **21 Rust test names cited as porting sources do not exist anywhere in `apps/agent/src`**. Both are the same class of defect — a number or a name written into a declaration that does not describe the tree — and both are BLOCKING because the declaration is the gate the plan itself defines (Plan 2 line 29: an undeclared change is BLOCKING; a declared change that is false is worse, because it passes the gate while misdescribing it).
 
-**Status: all nine BLOCKING findings are closed** by PM's amendment `cebe659` (2026-10-21), verified independently — see §9.1. One non-blocking finding (N-6) was **partly mine and wrong**; it is corrected in place.
+**Status: B-1…B-9 are closed** by PM's amendment `cebe659` (2026-10-21), verified independently — see §9.1. One non-blocking finding (N-6) was **partly mine and wrong**; it is corrected in place.
+
+**B-10 is open and is the largest item in the rewrite:** the **auto-ABR loop** — the 500 ms ticker that reads a congestion estimator and retargets the encoder, latched off by a manual `desktop-bitrate` frame — has **no B-row, no R-entry, no task, and no plan**. The manual bitrate path is covered (B19 + B62 + B20); the automatic one is outside the §9.4 gate's vocabulary entirely, so a "62 of 62" pass cannot fail on it. It needs an owner ruling, not a porter's guess. See §3's B-10 for the evidence, the four questions, and the landing-spot recommendation.
 
 ---
 
@@ -214,6 +216,84 @@ So Plan 2's claim that "the Rust test's name promised chunking it never exercise
 
 Task 8 (line 2979) moves it to "Task 19's runtime". Task 19's declaration (line 7512) says it re-homes there. Neither fence contains it: the T19 `runtime.test.ts` fence has six tests, all source resolution; the `session.test.ts` fence has eleven, none about an estimator. The Rust test exists (rtc.rs:1179). So the test leaves `rtc.rs` in a declaration and arrives nowhere.
 
+> **N-5 is the small end of a larger hole.** The estimator test is one symptom; the behaviour it belongs to — the auto-ABR loop — has no row, no task, and no plan. That is **B-10** below, and it is a different class: N-5 is a dropped *test*, B-10 is a dropped *behaviour*.
+
+### B-10. The auto-ABR loop has no coverage row in any plan, and no owner in any plan
+
+> **Raised by PM 2026-10-21; independently verified by BA.** Severity: **above N-5**, and below B-1..B-9 only because B-1..B-9 are defects *inside* Plan 2's declared scope, whereas B-10 is a scope hole that predates Plan 2 and reaches all three plans plus the spec. It is the largest open item in the rewrite.
+
+**The distinction that makes it a different class.** B-1..B-9 are all *declarations that do not describe the tree* — a wrong number, a phantom name, a missing citation. Every one of them is repairable by editing a sentence. B-10 is not: **no sentence anywhere claims the auto-ABR behaviour exists in the TypeScript agent.** The §9.4 gate says *"Every row of §4 — all 62 of them, B1 through B62 — plus the six retirements of §4.7 … must be covered by at least one test."* The gate is exact, and the auto-ABR loop is not one of the 62 rows and not one of the 6 retirements. **It is outside the gate's vocabulary.** A gate that is complete over a list that omits a behaviour cannot fail on that behaviour, and a §9.4 "all clear" would be a false negative — exactly the failure mode Plan 3's T6 warns about (*"A deletion that outruns the ledger is a silent coverage loss, and the plan cannot detect it afterwards — the evidence is what gets deleted."*).
+
+**What the Rust does.** Three pieces, all live code on the desktop path:
+
+| Piece | Location | Behaviour |
+|---|---|---|
+| The estimator wrapper | `rtc.rs:97-172` (module `abr`), `rtc.rs:152-158` (`abr::estimator()`) | Wraps `rtc`'s GCC so its target is **observable**: `configure_congestion_control` boxes the estimator inside the interceptor chain, so the wrapper is the only application-supplied object that can carry the number back out, via an `Arc<AtomicU64>` (`rtc.rs:111`, `:121-124`). |
+| The decision function | `desktop.rs:1958-1974` (`abr_next_target`) | Rejects non-finite/≤0; ignores an estimate within 5% of the seed (`ABR_INITIAL_BPS`); clamps to `[250 kbps, 20 Mbps]`; retargets only on a ≥15% move; `None` means "leave the encoder alone". |
+| The loop | `lib.rs:2235-2268` | A 500 ms ticker reads the atomic, calls `abr_next_target`, and sends `StreamControl::SetBitrate` down the **same** path manual control uses. A manual `desktop-bitrate` frame latches an `AtomicBool` (`manual`) and **stops auto for the rest of the session**, so the two never fight. |
+
+It is installed only when `has_control` is true (`rtc.rs:422-434`) — i.e. desktop sessions — and the loop is spawned unconditionally within that arm (`lib.rs:2238`).
+
+**Three Rust tests, none of which can be ported as-is:**
+
+- `desktop.rs:3649` `abr_next_target_ignores_the_unmoved_seed`
+- `desktop.rs:3659` `abr_next_target_applies_a_dead_band`
+- `desktop.rs:3667` `abr_next_target_clamps_and_rejects_garbage`
+
+**The search for a home, and its result.** PM grepped four rewrite documents and the matrix; I grepped the same set plus Plan 3 and the Rust source. Across the **spec** (`…rewrite-design.md`), **Plan 1** (`…plan-1-spike-foundation-addon.md`), **the coverage matrix** (`…plan-1-coverage-matrix.md`), **Plan 2** (`…plan-2-core.md`) and **Plan 3** (`…plan-3-desktop-retirement.md`):
+
+| Term | spec | Plan 1 | matrix | Plan 2 | Plan 3 |
+|---|---|---|---|---|---|
+| `abr_next_target` | 0 | 0 | 0 | 0 | 0 |
+| `auto-ABR` / `dead-band` / `ADR-23` / `GCC` / `congestion` / `autoTarget` / `SenderBandwidthEstimator` / `ReportingEstimator` | 0 | 0 | 0 | 0 | 0 |
+| `abr` (case-insensitive) | 3 | 0 | 0 | 1 | 0 |
+| `ABR_MIN_BPS` / `ABR_MAX_BPS` | 1 | 0 | 0 | 0 | 0 |
+
+The only `abr` in the spec is **B20** (spec:574), the clamp row, whose port target is *"The core's clamp"*. The only `abr` in Plan 2 is inside Task 8's declaration (plan:3243) — the sentence about the estimator test that N-5 covers. **B20 is the boundary of this feature, not the feature**: `clampBitrate` is what a bitrate is bounded *to*, and the auto-ABR loop is what *chooses* the bitrate. Nothing in the ledger spans the second.
+
+**Two adjacent rows that do not close the gap either:**
+
+- **B19** (spec:573) — the encoder-side retarget (`applyBitrate`, Plan 1 Task 4's addon). That is *what happens when* a target is chosen. It does not choose.
+- **B62** (spec:641) — *"the desktop control state machine — `DesktopSelectMessage`, the `StreamControl` enum with its `SetBitrate` and `SourceSwap` variants, and `StatsStatusKind::QualityDowngraded`"*. B62 covers the **enum and the decode**, i.e. the manual path. The auto path is a *producer* of `SetBitrate` that B62 does not mention, and the `manual` latch that stops it is not in B62's description.
+
+**So: the manual bitrate path is covered (B19 + B62 + B20); the automatic one has nothing.**
+
+**The architectural wrinkle that makes this a decision, not a backlog item.** werift **does** expose the needed surface — verified in the installed `werift@0.24.4`:
+
+```
+lib/webrtc/src/media/sender/senderBWE.d.ts
+  export declare class SenderBandwidthEstimator {
+      readonly onAvailableBitrate: Event<[number]>;
+      readonly onCongestion: Event<[boolean]>;
+      receiveTWCC(feedback: TransportWideCC): void;
+      rtpPacketSent(sentInfo: SentInfo): void;
+  }
+```
+
+and `rtpSender.js:619`/`:657` wire it (`this.senderBWE.rtpPacketSent(sentInfo)` on send, `this.senderBWE.receiveTWCC(feedback)` on `RtcpTransportLayerFeedback` of type `TransportWideCC`). **werift's estimator is TWCC-based, and the Rust's was `rtc`'s GCC.** So a port is a re-implementation against a different estimator: the Rust's three tests cannot be ported, the numbers will differ, and the dead-band thresholds carry over as *policy* but not as *measured behaviour*.
+
+**There is a second, sharper dependency the ledger does not record either.** The Rust's GCC is installed via `configure_congestion_control(…, CongestionFeedback::Twcc, …)` (`rtc.rs:424-430`), which **changes the SDP** — it registers `transport-cc` feedback and a header extension on the media engine. The Rust comment at `rtc.rs:417-420` says so and gates it on `has_control` so the terminal path stays byte-identical. **That SDP delta is itself a wire-visible behaviour with no B-row.** `grep -n 'transport-cc\|twcc\|transportCC'` over the spec and both plans returns **0** — the rewrite documents never mention TWCC at all, while the Rust agent's desktop offer carries it. If the Node agent negotiates without it, the browser's SDP answer differs from today's; if it negotiates with it, the terminal path may acquire a header extension it does not have today. Both branches are unowned. (werift's own `transport-cc` support is confined to `media/extension/rtcpFeedback.js` — the *parser*; the negotiation side is not obviously there, which is a further reason this needs an owner's ruling rather than a porter's guess.)
+
+**Severity and disposition.** This is a **spec-level decision**, and the questions are:
+
+1. **Does auto-ABR ship in the Node agent at all?** The Week 8 spec (`…2026-10-03-phase3-week8-stream-quality-design.md:26,562`) says auto-ABR "ships" but is *"a **goal**, not an acceptance criterion (ADR-23, §10.2)"*, and `ARCHITECTURE.md:970` records it as *"GCC auto-ABR — target, verified via spike §3.7 (not an acceptance criterion)"*. **The rewrite spec never mentions it.** So the rewrite is not silently dropping a shipped feature; it is **silently inheriting a feature the governing spec never claimed**. That distinction matters: it makes "do not port it" a *legitimate* answer that still needs writing down, and it makes "port it" a *scope addition* that needs the spec amended.
+2. **Against which estimator?** werift's TWCC `SenderBandwidthEstimator` is the only surface available, and it is not GCC.
+3. **What is the declared divergence?** The Rust's dead-band and 15%-move policy are portable as policy; the measured values are not.
+4. **What happens to the `transport-cc` SDP delta?**
+
+**Why this is not Plan 2's to absorb silently, and not Plan 3's to absorb at all.** Plan 2 is the TS core; the auto-ABR loop is a *session-loop* behaviour, so if it ships it belongs in **Plan 2's Task 19** (`runtime.ts` + `desktop/session.ts`) — the task that owns the desktop session loop and already owns `resolveDefaultSource` and the `DesktopSession` class, and whose declaration (plan:7794) already claims `reporting_estimator_publishes_its_initial_target` as its one port from Task 8. That is the natural home, and it is the only place in any plan where a periodic task that retargets the encoder during a session can exist. **But it cannot be landed there by an implementer**, because the estimator choice, the divergence, and the SDP question are all owner calls, and a plan cannot invent them.
+
+**Recommendation to PM (the landing spot is PM's to rule; this is the evidence, not the decision):**
+
+- **Record B-10 in the audit as an open spec-level item** — done, this section.
+- **Do not let it be absorbed by B20, B19 or B62.** Each of those is a manual-path row; the auto path is a different producer with its own lifecycle (a ticker, a latch, a shared target).
+- **Add it to Plan 3's T6 retirement ledger** as an *unresolved* item, so Plan 3's "close the retirement ledger before deleting the Rust tree" step cannot pass while this is open. Plan 3's T8 is the right list for carried-forward Plan 2 items; B-10 belongs there with the same standing as N-4 (which T8 already carries).
+- **Escalate to the owner with the four questions above**, alongside N-4, which is already on the same list for the same reason: both are *behaviour decisions*, not *docs decisions*.
+- **If the answer is "auto-ABR does not ship in the Node agent"**, then the rewrite spec needs an **R7** retirement row with the reason, and `ARCHITECTURE.md`'s Week 8 line needs amending — otherwise the docs will describe a feature the agent no longer has, and this repo has already paid that price once (the `desktop/devices.rs` drift Plan 3's T9 names).
+- **If the answer is "auto-ABR ships"**, it needs a new B-row (B63) in the spec, a Task 19 fence, a declared divergence against the werift TWCC estimator, and a stated answer on the `transport-cc` SDP delta. The Rust's three `abr_next_target` tests are the *policy* to port; the estimator's own behaviour is new.
+
+**What I could not verify, and am not claiming:** whether the werift TWCC estimator can be made to produce a *usable* number for a 500 ms-tick encoder retarget in this stack, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`. Those are P0-spike questions (spec §9.3 is the werift-as-sender gate) and belong to the spike, not to this audit.
+
 ### N-6. The `desktop-profile-parity` baseline was wrong; Plan 2's correction of it is right
 
 > **Corrected 2026-10-21, after PM's correction.** The original version of this finding said Plan 2's "4→2" was wrong. **That half was wrong** — see the retraction below. The other half stands.
@@ -281,6 +361,7 @@ The Rust test `preserves_a_ws_query_value_ending_in_slash` (api.rs:182) pins exa
 - **`apps/agent/test/session/packetizer.test.ts`.** Plan 1 Task 3 creates it; it is **not in the tree** (`apps/agent/src/session/` does not exist). Task 19 imports `packetizeAnnexB` from it. That is a Plan 1 execution gap, not a Plan 2 defect — but **Task 19 cannot run until Plan 1 Task 3 lands**, and the plan says so at line 69 ("Already written in Plan 1 Task 3. Do not recreate"), which is currently false. Flagging for PM as a Plan-1 status item.
 - **Whether the fences would actually compile.** I counted and read; I did not typecheck a single fence.
 - **Task 12's `emitChunks` behaviour change** is recorded (N-4) but not adjudicated — whether an agent-side 16 KiB splitter is wanted is an owner/spec question, not a docs question.
+- **Whether the werift TWCC estimator is usable for a 500 ms-tick encoder retarget**, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`. Both are P0-spike questions (spec §9.3 is the werift-as-sender gate); I verified the *surface exists* and the *ledger is silent*, not that the feature is implementable as the Rust had it.
 
 ---
 
@@ -299,6 +380,8 @@ A cheap, mechanical fix exists: for each task, count `it(` and `expect(` **insid
 **Do not execute Plan 2 as it stands.** B-1/B-2 mean no task's gate is trustworthy; B-3/B-5 mean two R-entries would record fabricated parity; B-7/B-8 mean two surfaces leave the Rust tree with no owner.
 
 > **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. The one residual found during that verification (the "six retired noise rules" R-entry line) was closed in `72e8594`. N-4 remains open for the owner by design: whether the Node agent should split terminal output at 16 KiB is a protocol question, not a docs one.
+>
+> **Still open, and larger than any of the above: B-10, the auto-ABR loop** (§3). It is not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. It needs an owner ruling on four questions (does auto-ABR ship; against which estimator; what divergence is declared; what happens to the `transport-cc` SDP delta) and it needs to be carried in Plan 3's T8 alongside N-4, so that Plan 3's T6 "close the retirement ledger" step cannot pass while it is unresolved.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -400,4 +483,26 @@ git branch -a --contains 7d723e6                                                
 git show cebe659:docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md > /tmp/p2audit/plan2_cebe659.md
 python3 -I /tmp/p2audit/verify_amend.py     # 0 mismatches across all 19 tasks
 grep -c decisions.md /tmp/p2audit/plan2_cebe659.md                                                 # 0
+
+# B-10: the auto-ABR loop has no row anywhere
+#   the Rust, all three pieces
+grep -n "abr_next_target\|mod abr\|fn estimator()" apps/agent/src/{rtc,desktop}.rs
+grep -n "abr_task\|abr_target" apps/agent/src/lib.rs
+#   the search across every rewrite document
+for f in docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md \
+         docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-spike-foundation-addon.md \
+         docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md \
+         docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md \
+         docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-3-desktop-retirement.md; do
+  printf '%-70s %s\n' "$f" "$(grep -ci 'abr\|estimator\|congestion' "$f")"
+done
+#   the spec's only abr is B20, the clamp — the boundary, not the feature
+grep -n "ABR_MIN_BPS\|ABR_MAX_BPS" docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md
+#   the werift surface (installed copy)
+grep -n "SenderBandwidthEstimator\|receiveTWCC\|onAvailableBitrate" \
+  .claude/worktrees/feat-agent-node-ts-fe/node_modules/.pnpm/werift@0.24.4_supports-color@10.2.2/node_modules/werift/lib/webrtc/src/media/sender/senderBWE.d.ts
+#   the SDP delta nobody records
+grep -rn "transport-cc\|twcc\|transportCC" \
+  docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md \
+  docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-*.md            # 0 hits
 ```
