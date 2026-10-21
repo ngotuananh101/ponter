@@ -38,7 +38,16 @@ The 359 figure is verified against the tree at `798e9df`. Per-file counts:
 | `apps/agent/src/files.rs` | 65 | Plan 2 |
 | `apps/agent/src/lib.rs` | 28 | Plan 1 (profile table, `:445-507`) + Plan 2 |
 | `apps/agent/src/cursor.rs` | 22 | Plan 2 (change detection, wire frame) + Plan 3 (X11 sampling) |
-| `apps/agent/src/api.rs` | 20 | Plan 2 — **and note R3**: the HTTP layer is retired, so these 20 retire with it |
+| `apps/agent/src/api.rs` | 20 | Plan 2 — **but only 7 retire with R3**; see §2's R3 note |
+
+> **Correction to a number I first wrote here.** `api.rs` carries 20 tests, and it is
+> tempting to let R3 retire all 20. Seven of them exercise `ApiError`
+> (`from_response` ×11 call sites, `network` ×3, `is_auth_fatal` ×8), which has no
+> caller outside `api.rs` — that is the dead code R3 names. The other **13 test live
+> code**: eleven cover `to_ws_url` (called from `lib.rs:730`) and two cover
+> `with_bearer` (called from `signal.rs:353`). Those 13 must be re-homed to a TS test,
+> not retirable. R3's row in §2 says 7 for this reason.
+
 | `apps/agent/src/input.rs` | 19 | Plan 1 (`map_code`, addon) + Plan 2 (decoder, rate limiter) |
 | `apps/agent/src/desktop/warm_capture.rs` | 18 | Plan 2 |
 | `apps/agent/src/rtc.rs` | 16 | Plan 2 |
@@ -169,7 +178,7 @@ Plan 3, together with the deletion itself.
 |---|---|---|---|---|
 | R1 | The standalone CLI binary and its `clap` parser — desktop-only; the `AgentSupervisor` already passes configuration via environment variables | Plan 3 | The absence is asserted by the retirement sweep, not by a unit test | Not yet written — Plan 3 |
 | R2 | The musl / terminal-only build variant — no cross-compilation | Plan 3 | Asserted by the absence of the target in the build matrix | Not yet written — Plan 3 |
-| R3 | `apps/agent/src/api.rs`'s HTTP error-mapping layer — dead code; `packages/api-client` owns the concern in TS. **Retires 20 Rust tests** | Plan 2 (the API client call sites) + Plan 3 (the deletion) | `packages/api-client/test/agent-api-access-gate.test.ts` asserts no hand-rolled envelope or HTTP client exists in the agent tree | Partially covered (gate written in Plan 1 Task 5, exercised in Plan 2) |
+| R3 | `apps/agent/src/api.rs`'s `ApiError` type — `from_response`, `network`, `is_auth_fatal` have **no caller outside `api.rs`**, and `packages/api-client` owns error classification in TS. **Retires 7 Rust tests, not 20** — the other 13 in that file cover `to_ws_url` and `with_bearer`, which are live | Plan 2 (the `ApiError` replacement at its call sites if one appears, and the re-homing of the 13 live tests) + Plan 3 (the deletion) | `packages/api-client/test/agent-api-access-gate.test.ts` asserts no hand-rolled envelope or HTTP client exists in the agent tree; the 13 live tests re-home to a Plan 2 `to_ws_url`/`with_bearer` suite | Partially covered (gate written in Plan 1 Task 5, exercised in Plan 2) |
 | R4 | `apps/agent/vendor/xcap` — superseded by the addon's capture; the `PATCH.md` rationale is carried into the addon's capture code as a comment | Plan 3 | The rationale comment is reviewed, not tested | Not yet written — Plan 3 |
 | R5 | The `QuietNoise` filter's Rust-crate-specific target names — replaced by equivalent TS filter names | Plan 2 (the TS filter) + Plan 3 (the retirement) | Not yet written — Plan 2 | Not yet written |
 | R6 | `build-agent.yml` and the agent GitHub Release — desktop-only | Plan 3 | The TypeScript equivalent of the workflow's boundary gate is `packages/api-client/test/agent-api-access-gate.test.ts` | Partially covered (the gate half, Plan 1 Task 5) |
@@ -289,7 +298,50 @@ The same caveat applies to `packages/crypto`'s suites (B49–B51) if `ci-node.ym
 `continue-on-error` set covers them; Plan 2 must check before marking those rows
 covered.
 
-## 6. How to extend this matrix
+## 6. Two defects in the spec that this matrix cannot fix
+
+Both were flagged in the earlier BA audit and are still open on the spec. They are
+recorded here so they are not lost when Plan 2 is written.
+
+### 6.1 R3's rationale cites a document that does not exist
+
+Spec `:655` reads:
+
+> | R3 | `apps/agent/src/api.rs`'s HTTP error-mapping layer | Dead code — the agent
+> has no HTTP client (wire report §5.4). `packages/api-client` owns this concern in TS. |
+
+Spec `:313` carries the same parenthetical. **There is no wire report in this
+repository.** `git log --all` finds no file matching `*wire*` that was ever committed,
+and the only file by that description is `/tmp/agent-wire-contract-brief.md` — a
+session scratch file from 2026-10-21 10:14 that was never added to the tree. A reader
+following the citation finds nothing, and a citation that resolves to nothing is
+indistinguishable from a claim with no support.
+
+The claim itself is **true**, and can be cited to source instead:
+
+- No caller outside `api.rs` references `ApiError`, `from_response`, `network` or
+  `is_auth_fatal` (verified by `grep -rn` across `apps/agent/src`).
+- The agent's only outbound HTTP-ish paths are the WS upgrade
+  (`signal.rs:353`, via `with_bearer`) and the signalling URL rewrite
+  (`lib.rs:730`, via `to_ws_url`) — both live, neither an HTTP API client.
+- So `ApiError` is dead code and `packages/api-client` is the right home.
+
+Proposed replacement for both sites: *"Dead code — `ApiError` has no caller outside
+`api.rs`; the agent's only outbound paths are the WS upgrade (`signal.rs:353`) and the
+signalling URL rewrite (`lib.rs:730`). `packages/api-client` owns this concern in TS."*
+
+This is a spec edit, not a matrix edit. It is listed here because the matrix is what
+sent a reader to that row.
+
+### 6.2 R3's retry count was wrong, and my own first draft repeated it
+
+The spec does not state a test count for R3; the matrix's first draft claimed 20,
+which is `api.rs`'s total test count. It is 7. §2's R3 row now carries the correct
+number and the reason. The accounting consequence matters more than the number: **13
+tests in `api.rs` cover live code and must be re-homed, not retired** — they are not
+part of R3's budget, and Plan 3 must not delete them along with the file.
+
+## 7. How to extend this matrix
 
 1. When a plan lands a row, change its `Status` to `Covered` and its `Test file` to
    the real path. Never change a `Status` without a test to point at.
