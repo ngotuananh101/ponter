@@ -528,12 +528,16 @@ Under-tested is not by itself a divergence. One of the three is:
 
 So a browser that sends `{ type: 'files-delete', path: 'docs', recursive: true }` gets `DIR_NOT_EMPTY` from the port and a deleted tree from the Rust. **Four artefacts agree and only the fence disagrees**, which is exactly B-11's disposition: a repair to an owned contract, not an owner question.
 
+**And the browser does not merely *carry* `recursive` — it is the only value it ever sends for a directory.** `DeleteConfirmDialog.vue` emits `props.isDirectory` as the `recursive` argument (`emit('confirm', props.isDirectory)`), `FilesView.vue:142-145` forwards it to `store.filesDelete`, and `stores/terminal.ts:1890` hands it to `client.delete(path, recursive)`. Its own copy says *"This is a directory. Deleting it removes its contents."* and the button reads **"Delete folder"**. `apps/web/src/__tests__/FilesView.test.ts:434` pins it: `expect(del).toHaveBeenCalledWith('tab-f1', 'docs', true)`.
+
+So the divergence is not hypothetical for an unusual caller. **Clicking "Delete folder" in the shipped UI sends `recursive: true`, and the port would refuse it with `DIR_NOT_EMPTY` on a non-empty directory** — a user-visible regression in the single most common destructive action the file manager offers. That is what makes this a wire-contract repair rather than a preference, and it also constrains item 2 below: the flag cannot simply be dropped, because retiring it means changing what the browser's delete dialog promises.
+
 The fence's comment reads as a considered security decision, and it is a *good* argument — a sandbox peer that can recursively delete a tree with one message is a real hazard. But it is an **undiscussed change to a wire contract**, presented as an implementation note, and it is invisible to the §9.4 gate for B-11's reason: **B43 is a count** (12 inbound / 11 outbound), and `recursive` is a field inside a message the count already counts. If PM wants the restriction, it is a spec change with an ADR and a browser-side consequence, not a comment inside a fence. Either way it must be **declared**, and the declaration must say which of the two it chose.
 
 **What the repair has to do** (PM's lane, not mine):
 
 1. Restate the 41's criterion so it is a real partition — or, better, **name all 65** in the declaration. At 65 names this is one screen and it ends the class permanently.
-2. Decide `recursive`: honour it as the Rust and `packages/shared` do, or retire it in a declared divergence. Do not leave the comment.
+2. Decide `recursive`: honour it as the Rust and `packages/shared` do, or retire it in a declared divergence **and change `DeleteConfirmDialog.vue` in the same commit** — because the dialog currently promises deletion of a directory's contents and derives the flag from `isDirectory`. Dropping the flag in the agent alone leaves a UI whose button says "Delete folder" and an agent that answers `DIR_NOT_EMPTY`.
 3. Add test sites for the three untested dispatch arms and for `teardown()`, which is what makes items 1–2 checkable rather than asserted.
 4. Re-derive the count, including the 26-versus-24 question above.
 
@@ -795,6 +799,10 @@ grep -n 'recursive' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan
 grep -n 'recursive' packages/shared/src/types/files.ts                                            # :163 — the field exists
 grep -n 'recursive' packages/file-core/src/client.ts                                              # :189,195 — the browser sends it
 sed -n '546,550p;901,941p' apps/agent/src/files.rs                                                # the Rust honours it
+# and the browser is the flag's only producer for directories:
+grep -n 'isDirectory' apps/web/src/components/files/DeleteConfirmDialog.vue                       # :26 -> recursive arg
+grep -n 'filesDelete' apps/web/src/components/files/FilesView.vue apps/web/src/stores/terminal.ts  # :145 -> :1890 -> client.delete
+grep -n "docs', true" apps/web/src/__tests__/FilesView.test.ts                                    # :434 pins recursive=true
 
 # N-6 (corrected): the rewrite is Plan 1 Task 5, landed in 7d723e6
 git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                        # 4  (before)
