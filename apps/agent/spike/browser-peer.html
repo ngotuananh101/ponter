@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>P0 spike — browser peer</title>
+    <style>
+      body {
+        margin: 0;
+        background: #111;
+        color: #eee;
+        font: 13px/1.4 monospace;
+      }
+      video {
+        width: 640px;
+        image-rendering: pixelated;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>P0 spike — browser peer (recvonly)</h1>
+    <video id="remote" autoplay playsinline muted></video>
+    <canvas id="sampler" hidden></canvas>
+    <pre id="log"></pre>
+    <script>
+      /**
+       * The browser is the OFFERER.
+       *
+       * Chromium generates its own certificate, ICE credentials and
+       * candidates, so the answerer's DTLS handshake is against a real
+       * certificate. That is the whole reason the transport half is a
+       * separate exchange from the synthetic-offer negotiation half: a
+       * synthetic offer carries a made-up fingerprint that no browser can
+       * complete DTLS against.
+       *
+       * The page keeps its state on `window.__spike` and exposes the small
+       * set of calls the Node side drives it with. Nothing here decides what
+       * is sent — that is werift's side of the exchange.
+       */
+      const state = {
+        pc: null,
+        offerSdp: '',
+        candidates: [],
+        remoteCandidatesAdded: 0,
+        decodedFrames: 0,
+        presentedFrames: 0,
+        firstPresentedAt: null,
+        connectionState: 'new',
+        errors: [],
+        lastGrid: null,
+      };
+      window.__spike = state;
+
+      const logEl = document.getElementById('log');
+      const video = document.getElementById('remote');
+      const canvas = document.getElementById('sampler');
+      const GRID_SIZE = 4;
+
+      /**
+       * Sample what the compositor PRESENTED into a small luma grid.
+       *
+       * `framesDecoded > 0` only says the decoder produced *a* picture — a
+       * stream of valid all-black frames satisfies it. This reads the actual
+       * presented pixels, so "pixels arrived" is distinguishable from "the
+       * decoder produced a picture of nothing", which is the failure A3
+       * exists to catch.
+       *
+       * One pixel per cell, drawn with smoothing enabled so the sample is the
+       * cell's average rather than its top-left corner. Rec. 601 luma weights
+       * match what `ffmpeg -pix_fmt gray` produced for the fixture, so the
+       * grid is directly comparable to the fixture's own.
+       */
+      function sampleGrid() {
+        if (!video.videoWidth || !video.videoHeight) return null;
+        canvas.width = GRID_SIZE;
+        canvas.height = GRID_SIZE;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(video, 0, 0, GRID_SIZE, GRID_SIZE);
+        const { data } = ctx.getImageData(0, 0, GRID_SIZE, GRID_SIZE);
+        const grid = [];
+        for (let y = 0; y < GRID_SIZE; y++) {
+          const row = [];
+          for (let x = 0; x < GRID_SIZE; x++) {
+            const i = (y * GRID_SIZE + x) * 4;
+            row.push(
+              Math.round(
+                0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2],
+              ),
+            );
+          }
+          grid.push(row);
+        }
+        return grid;
+      }
+
+      function log(message) {
+        logEl.textContent += message + '\n';
+      }
+
+      window.__createOffer = async () => {
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        state.pc = pc;
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            state.candidates.push(event.candidate.toJSON());
+          }
+        };
+        pc.onconnectionstatechange = () => {
+          state.connectionState = pc.connectionState;
+          log('connectionState=' + pc.connectionState);
+        };
+
+        // The browser only receives. An explicit transceiver (rather than
+        // addTransceiver-less offer) guarantees the m-line exists before the
+        // offer is created.
+        pc.addTransceiver('video', { direction: 'recvonly' });
+
+        pc.ontrack = (event) => {
+          log('ontrack kind=' + event.track.kind);
+          video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+          video
+            .play()
+            .catch((err) => state.errors.push('play: ' + err.message));
+
+          // Count what the *compositor* presents, not what the receiver
+          // accepted. A packet that arrives but never yields a picture would
+          // otherwise be counted as success.
+          const onFrame = (_now, metadata) => {
+            state.presentedFrames += 1;
+            if (state.firstPresentedAt === null) {
+              state.firstPresentedAt = metadata.mediaTime;
+            }
+            try {
+              state.lastGrid = sampleGrid();
+            } catch (err) {
+              state.errors.push('sample: ' + err.message);
+            }
+            video.requestVideoFrameCallback(onFrame);
+          };
+          video.requestVideoFrameCallback(onFrame);
+
+          event.track.onunmute = () => log('track unmuted');
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        state.offerSdp = pc.localDescription.sdp;
+        return state.offerSdp;
+      };
+
+      window.__setAnswer = async (sdp) => {
+        await state.pc.setRemoteDescription({ type: 'answer', sdp });
+        return state.pc.connectionState;
+      };
+
+      window.__addIce = async (candidate) => {
+        if (!candidate) {
+          // The end-of-candidates signal.
+          await state.pc.addIceCandidate(null);
+          return state.remoteCandidatesAdded;
+        }
+        await state.pc.addIceCandidate(candidate);
+        state.remoteCandidatesAdded += 1;
+        return state.remoteCandidatesAdded;
+      };
+
+      /**
+       * What the receiver actually took off the wire.
+       *
+       * `inbound-rtp` does not carry a payload type of its own; it carries a
+       * `codecId` that points at a `codec` stats entry, and that entry has
+       * the `payloadType` the receiver bound the stream to. Reading through
+       * that indirection is the point of A2 — the sender's own config is
+       * what a naive check would read, and it is exactly what can disagree
+       * with the wire.
+       */
+      window.__getStats = async () => {
+        const report = await state.pc.getStats();
+        const result = {
+          decodedFrames: 0,
+          framesReceived: 0,
+          packetsReceived: 0,
+          bytesReceived: 0,
+          payloadType: null,
+          codecMimeType: null,
+          codecClockRate: null,
+          presentedFrames: state.presentedFrames,
+          lumaGrid: state.lastGrid ?? sampleGrid(),
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight,
+          connectionState: state.connectionState,
+          errors: state.errors.slice(),
+        };
+        report.forEach((entry) => {
+          if (entry.type === 'inbound-rtp' && entry.kind === 'video') {
+            result.decodedFrames = entry.framesDecoded ?? 0;
+            result.framesReceived = entry.framesReceived ?? 0;
+            result.packetsReceived = entry.packetsReceived ?? 0;
+            result.bytesReceived = entry.bytesReceived ?? 0;
+            if (entry.codecId) {
+              const codec = report.get(entry.codecId);
+              if (codec) {
+                result.payloadType = codec.payloadType ?? null;
+                result.codecMimeType = codec.mimeType ?? null;
+                result.codecClockRate = codec.clockRate ?? null;
+              }
+            }
+          }
+        });
+        return result;
+      };
+
+      window.__getCandidates = async () => state.candidates.slice();
+      window.__getOffer = async () => state.offerSdp;
+      window.__getErrors = async () => state.errors.slice();
+    </script>
+  </body>
+</html>

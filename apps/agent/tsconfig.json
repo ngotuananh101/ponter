@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
+    "types": ["node"],
+    // The spike is also run directly by Node's `--experimental-strip-types`
+    // (see `spike/write-report.ts`), which resolves relative imports only when
+    // they carry their real `.ts` extension. Nothing here is ever emitted.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["spike/**/*.ts", "test/**/*.ts"]
+}
