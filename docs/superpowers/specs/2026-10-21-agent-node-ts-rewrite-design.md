@@ -109,6 +109,11 @@ constraints that shaped the Rust design and opens the in-process question
 | D2 | werift's send path is `MediaStreamTrack.writeRtp(rtp: RtpPacket \| Buffer)` and `RTPSender.sendRtp(...)`; `sendRtp` rewrites `ssrc`, `payloadType`, `timestamp`, `sequenceNumber` before `dtlsTransport.sendRtp`. | `werift/lib/webrtc/src/media/track.d.ts:28`, `rtpSender.d.ts:100`, `rtpSender.js:538-549` | We can hand werift a raw `Buffer` of a complete RTP packet, or an `RtpPacket` with a header we fill. Both work. |
 | D3 | werift offers `pc.addTrack(track)` and `pc.getSenders()`. | `werift/lib/webrtc/src/peerConnection.d.ts:194,110` | The TS agent can be the WebRTC **sender** through werift directly. |
 | D4 | **The existing E2E suite proves werift-as-RECEIVER only.** `desktop.e2e.test.ts:114-137` has werift as the recvonly offerer and the Rust agent as the sender. | `packages/webrtc-core/test/e2e/desktop.e2e.test.ts:114-137` | The rewrite inverts the role: werift becomes the **sender**. **No test in the repository currently proves werift can send H.264 to a browser.** This is the highest-risk unknown in the port. |
+| **D4a** | **werift's default peer config has NO H.264.** `generateDefaultPeerConfig()` sets `video: [useVP8()]`. H.264 exists only as an opt-in codec helper (`useH264()` → `video/h264`, clock 90000, `packetization-mode=1`, `profile-level-id=42e01f`) and must be passed explicitly as `codecs: { video: [useH264()] }`. | `werift/lib/webrtc/src/peerConnection.js:1082`; `werift/lib/webrtc/src/media/codec.js:6-12` | The new agent **must** construct its `RTCPeerConnection` with an explicit H.264 codec list. Without it, the answerer negotiates no H.264 at all and the desktop offer is refused. The existing e2e harness already does this (`desktop.e2e.test.ts:123` passes `codecs: { video: [useH264()] }`) — the port must carry that forward. |
+| **D4b** | **werift picks the sender payload type as `codecs[0]`, and `codecs` is the OFFER's ordering — but only among the codecs the local list also offers.** `RTPSender.prepareSend` does `this.codec = params.codecs[0]`; `RTPSender.sendRtp` then **overwrites** `header.payloadType = this.codec.payloadType`; `MediaStreamTrack.writeRtp` does the same with `this.codec?.payloadType`. `transceiver.codecs` is assigned from the *remote* (offer) codec list, filtered against the local list — so it keeps the browser's ordering. | `werift/lib/webrtc/src/media/rtpSender.js:408`, `:545`; `werift/lib/webrtc/src/media/track.js:132-134`; `werift/lib/webrtc/src/transceiverManager.js:244` | **This is C4's bug reproduced inside werift — but only conditionally.** Measured against a real Chrome SDP offer (VP8 pt96, H.264 pt102, rtx pt103): with the local list `[useH264()]` the negotiated list is `H264/pt102` alone and `sender.codec` is **H.264 pt102** — correct. With the local list `[useVP8(), useH264()]` the negotiated list keeps the browser's order and `sender.codec` is **VP8 pt96** — the black-video bug. **R-S1's H.264-only local list is what closes D4b**; the port must not "helpfully" add VP8 to the agent's codec list. The residual risk after R-S1 is not the payload type but the codec *parameters* (D4d). |
+| **D4c** | **`RTPSender.sendRtp` silently no-ops when the codec is unset** (`if (this.dtlsTransport.state !== "connected" \|\| !this.codec) { return; }`). | `werift/lib/webrtc/src/media/rtpSender.js:539` | A misconfigured sender drops every frame with **no error** — the connection stays healthy and the browser shows black. The port needs an explicit assertion that the negotiated sender codec is H.264, and a loud failure otherwise, not a silent drop. |
+| **D4d** | **werift matches codecs by mime type ONLY — it never inspects `parameters`.** `findCodecByMimeType` compares `mimeType.toLowerCase()` and ignores `fmtp` entirely. The negotiated codec's `parameters` are the **browser's**, echoed verbatim into the answer; werift's local `useH264()` `parameters` string is never consulted. | `werift/lib/webrtc/src/peerConnection.js:1074` (`findCodecByMimeType`); `werift/lib/webrtc/src/transceiverManager.js:244-259`; `werift/lib/webrtc/src/media/codec.js:6-12` | **This is the residual, real failure mode after D4b is closed.** A Chrome offer carries two H.264 entries — pt102 `packetization-mode=1` and pt104 `packetization-mode=0` — and a browser whose *first* H.264 entry is mode 0 makes werift negotiate `packetization-mode=0`. The TS packetizer implements RFC 6184 **mode 1** (single-NAL / STAP-A / FU-A); a mode-0 PT carrying mode-1 packets is decoded by the browser's mode-0 depacketizer as one NAL per packet → broken frames. Symmetrically, the negotiated `profile-level-id` is the browser's, so the answer may promise a profile the encoder does not produce. **The agent must assert the negotiated `packetization-mode=1` and the profile it can encode, and fail loudly otherwise.** |
+| **D4e** | **The transceiver must exist BEFORE `setRemoteDescription`.** Adding it afterwards produces a *second* transceiver, an `a=inactive` m-line, and `sender.codec === undefined` — which D4c then turns into a silent no-op. | `werift/lib/webrtc/src/peerConnection.js:819-878` (`setRemoteDescription` → `setRemoteRTP` per m-line); measured | The Rust agent already carries this as ADR-15 (`rtc.rs:190-194`, behaviour B12). The port preserves it — but the **werift-specific symptom is new**: an inactive m-line plus an undefined codec, which is indistinguishable from a healthy-but-idle stream unless the agent asserts the negotiated codec. |
 | D5 | No pure-TypeScript H.264 encoder exists on npm. `openh264` and `node-openh264` are 404; `ffmpeg-static` is GPL-3.0; `@ffmpeg-installer/ffmpeg` is LGPL-2.1. | npm registry probes | The encoder must be a native addon. `openh264` 0.9.8 is Cisco **BSD-2-Clause** (91 `.cpp` files, vendored in the cargo registry) — permissive, and already vendored in this repo's dependency tree today. |
 | D6 | `node-pty` 1.1.0 is MIT and N-API-based (`node-addon-api ^7.1.0`), but has **no musl prebuilt** and installs `node scripts/prebuild.js \|\| node-gyp rebuild`. | npm registry | Moot under the desktop-only model (§6.2): the addon is compiled against Electron's Node, not a musl target. |
 | D7 | Electron 35.7.5 embeds **Node 22**, while the repo targets **Node 24** (`@types/node: 24.19.0`). N-API module ABI is tied to the Node major. | `node_modules/.pnpm/electron@35.7.5_…/package.json`; `apps/desktop/package.json:39` | A native addon must be built against **Electron's** headers (`electron-rebuild` / `node-gyp --target=<electron version>`), not stock Node headers. This is a build-matrix fact, not a design obstacle. |
@@ -145,16 +150,17 @@ constraints that shaped the Rust design and opens the in-process question
 │  │ AgentSupervisor  │   │  @ponter/agent-node (TypeScript core)                │     │
 │  │ (existing)       │──▶│  signalling · rtc · e2ee · identity · pty · files   │     │
 │  │ spawn / backoff  │   │  · input decode · desktop session orchestration      │     │
-│  │ SIGTERM→SIGKILL  │   └───────────────┬──────────────────────────────────────┘     │
-│  └──────────────────┘                   │ napi                                          │
+│  │ SIGTERM→SIGKILL  │   │  · RFC 6184 packetization (in TS — §3.3)            │     │
+│  └──────────────────┘   └───────────────┬──────────────────────────────────────┘     │
+│                                          │ napi                                          │
 │                                          ▼                                              │
 │                            ┌──────────────────────────────────────┐                   │
 │                            │  @ponter/agent-native (N-API addon)  │                   │
 │                            │  · screen capture (Win / Linux)      │                   │
 │                            │  · H.264 encode (openh264)          │                   │
+│                            │    → Annex-B bytes out               │                   │
 │                            │  · input injection (SendInput /      │                   │
 │                            │    xdg-desktop-portal)               │                   │
-│                            │  · RFC 6184 RTP packetization       │                   │
 │                            └──────────────────────────────────────┘                   │
 │                                                                                    │
 │  renderer (Vue 3) ── unchanged, speaks the same wire protocol                      │
@@ -165,11 +171,11 @@ constraints that shaped the Rust design and opens the in-process question
 
 | Layer | Language | Responsibility | Why this split |
 |---|---|---|---|
-| **Core** | TypeScript | Signalling, WebRTC session orchestration, E2EE, identity, PTY lifecycle, file transfer, input decoding, profile/ladder policy | All of this is protocol logic the repo already implements in TypeScript elsewhere. Porting it to Rust duplicated `packages/shared` and `packages/crypto`. |
-| **Native** | C/C++ behind N-API | Screen capture, H.264 encode, OS input injection, RTP packetization | These need OS APIs and a SIMD/native codec. No pure-TS library provides them at acceptable latency. |
+| **Core** | TypeScript | Signalling, WebRTC session orchestration, E2EE, identity, PTY lifecycle, file transfer, input decoding, profile/ladder policy, **RFC 6184 packetization** | All of this is protocol logic the repo already implements in TypeScript elsewhere. Porting it to Rust duplicated `packages/shared` and `packages/crypto`. The packetizer is pure byte-array logic (§3.3). |
+| **Native** | C/C++ behind N-API | Screen capture, H.264 encode, OS input injection | These need OS APIs and a SIMD/native codec. No pure-TS library provides them at acceptable latency. The boundary is *frames in, Annex-B H.264 out* — the addon does not packetize. |
 | **Host** | Electron | Process supervision, IPC, packaging | Already exists (ADR-85/86). |
 
-### 3.3 Why the native layer owns RTP packetization
+### 3.3 Where the RFC 6184 packetization lives
 
 D1 establishes that werift has no payloader. There are two places the RFC 6184
 packetization could live:
@@ -195,13 +201,32 @@ The addon therefore exposes **Annex-B H.264 output**, matching the Rust
 agent's `DesktopEncoder::encode` return shape exactly (C3) — so the TS core's
 packetizer and the Rust-era `TrackLocalStaticSample` see identical input.
 
+**The packetizer emits `packetization-mode=1` framing** — single-NAL, STAP-A
+and FU-A — matching the Rust agent's advertised fmtp
+(`level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f`,
+`apps/agent/src/rtc.rs:208`). This is not a free choice: the negotiated
+`packetization-mode` is whatever the **browser** offered (D4d), and werift
+never checks it. Mode 0 is not "mode 1 without the aggregation" — it is a
+different framing contract, and a mode-1 packet stream sent under a mode-0
+payload type is depacketized as one NAL per packet. R-S3 turns this from an
+implicit assumption into an asserted precondition.
+
+**A note on the encoder's profile.** The `profile-level-id` the answer
+advertises is the browser's, and the browser's expectation is that the
+encoder produces that profile. openh264's default output profile is
+**Constrained Baseline** (`42e01f`) — which is what the Rust agent advertised.
+The port must configure the addon to emit the same profile it advertises, and
+P0 must verify the two agree. A `profile-level-id` of `42e01f` means
+"Constrained Baseline, level 3.1", so the `e0` byte is not a typo in the
+Rust source and must not be "corrected" to `42e01f` in the TS port.
+
 ### 3.4 Reuse map
 
 | Existing package | What the agent takes | Change required |
 |---|---|---|
 | `@ponter/shared` | `SignalMessage`, `IceServerEntry`, `DataChannelMessage`, `TerminalDataMessage`, `FilesErrorCode`, `canonicalProofMessage`, `normalizeFingerprint`, `parseSdpFingerprint`, `AgentErrorCode`, `BrowserErrorCode` | None — the Rust agent's types are hand-copies of these. The port deletes the copies. |
 | `@ponter/crypto` | `EncryptionManager`, `deriveSharedSecret`, `hkdfSha256`, `importAesGcmKey`, `aesGcmEncrypt/Decrypt` | None for the E2EE session key. The IndexedDB-backed `savePrivateKey`/`loadPrivateKey` are **not** used; the agent keeps its own Ed25519 PKCS#8 file (C7). |
-| `@ponter/webrtc-core` | `PeerConnection`, `RTCPeerConnectionLike`, `DataChannelManager`, `toWsUrl`, `stripTrailingSlashes`, `ReconnectBackoff` | `WeriftAdapter` must gain **sender** support (`addTrack` + `writeRtp`). Today it is receive-only in practice (D3, D4). |
+| `@ponter/webrtc-core` | `PeerConnection`, `RTCPeerConnectionLike`, `DataChannelManager`, `toWsUrl`, `stripTrailingSlashes`, `ReconnectBackoff` | `WeriftAdapter` must **gain** sender support. Today it has **no `addTrack` at all** — only `addTransceiver` and `onTrack`, both receive-only (`packages/webrtc-core/src/adapters/werift.ts:201`, `:208`; `packages/webrtc-core/src/types.ts:20-53`). The port adds `addTrack` to **both** `RTCPeerConnectionLike` and `WeriftAdapter`, plus a way to reach werift's `MediaStreamTrack.writeRtp` (D3, D4). |
 | `@ponter/api-client` | `createApiClient` | The agent has no HTTP surface today (its `api.rs` HTTP layer is dead code — the wire report §5.4). Not used at first; available if a future agent API is needed. |
 | `@ponter/shared` (crypto side) | `e2ee-vectors.json` (`packages/crypto/test/vectors/`) | The agent's E2EE tests consume these vectors — the Rust agent already does (`apps/agent/src/e2ee.rs:269-301`). The port keeps that. |
 
@@ -211,23 +236,153 @@ The Rust agent is the WebRTC **answerer** and the **sender**. The TS agent
 must be both, and `packages/webrtc-core`'s `PeerConnection` already handles
 the `case 'offer'` → `createAnswer` path (`packages/webrtc-core/src/connection.ts:312-331`).
 
-The gap is that `WeriftAdapter` currently exposes no way to **send** media.
-The port adds:
+The gap is that `WeriftAdapter` currently exposes **no way at all to send
+media**. It has no `addTrack`; werift's own `RTCPeerConnection` does
+(`peerConnection.d.ts:193`), but the adapter never forwards it. The port
+adds a sender surface to **both** the interface and the adapter:
 
 ```ts
-// packages/webrtc-core/src/adapters/werift.ts — new surface
-export class WeriftAdapter implements RTCPeerConnectionLike {
-  addTrack(track: MediaStreamTrackLike, stream?: MediaStreamLike): RTCRtpSenderLike;
-  // …existing receive-only surface unchanged
+// packages/webrtc-core/src/types.ts — the interface gains an optional sender seam,
+// mirroring how `addTransceiver` / `onTrack` / `getVideoReceiver` are optional today.
+export interface RTCRtpSenderLike {
+  /** The negotiated codec, read back after `setRemoteDescription` + `createAnswer`. */
+  readonly codec?: { mimeType: string; payloadType: number; parameters?: string };
+  /** Push one outbound RTP packet. The adapter stamps SSRC / PT / seq / timestamp. */
+  writeRtp(packet: Uint8Array): void;
+}
+
+export interface RTCPeerConnectionLike {
+  // …existing members unchanged…
+  addTrack?(track: MediaStreamTrackLike, stream?: MediaStreamLike): RTCRtpSenderLike;
 }
 ```
 
-and `RTCPeerConnectionLike` gains the same method, so the browser adapter
-implements it with `pc.addTrack`.
+and `WeriftAdapter` implements it by holding the werift `MediaStreamTrack`
+it created and forwarding `writeRtp` to it. The browser adapter implements
+the same method with the browser's `RTCRtpSender`.
+
+**`RTCRtpSenderLike` does not exist today.** It is introduced by this spec
+and must be defined — a grep across `packages/webrtc-core/src/` returns zero
+matches today. `MediaStreamTrackLike` (`types.ts:12`) currently carries only
+`kind`, so it must also grow the fields the sender path needs
+(`id`, `ssrc`, and a way to reach the codec).
+
+**Why the interface method is optional.** Every existing adapter and mock
+implements `RTCPeerConnectionLike`; making `addTrack` required would break
+them all. The existing optional-media-seam pattern (`addTransceiver?`,
+`onTrack?`, `getVideoReceiver?`) is the precedent — a caller that requests
+`media.video` and finds no `addTrack` gets a descriptive error, exactly as
+`addTransceiver` does today.
 
 **This is D4's mitigation, and it is the first thing the plan must prove.**
 The port cannot be considered viable until a test demonstrates werift sending
-H.264 to a browser peer. §9.1 makes that a gate, not a task.
+H.264 to a browser peer. §9.3 makes that a gate, not a task.
+
+#### 3.5.1 Four sender requirements werift does not satisfy for free
+
+D4a–D4e together mean the werift sender path needs four explicit measures.
+Each one is a place where the port can silently produce a black video stream
+with a healthy connection — the failure mode the Rust agent already had to
+fight.
+
+| # | Requirement | Why | Where it lives |
+|---|---|---|---|
+| **R-S1** | **Explicit H.264-only codec list.** The agent's `RTCPeerConnection` is constructed with `codecs: { video: [useH264()] }` (plus the audio codecs it will not use) — and **nothing else**. | D4a — the default list is VP8-only, so without this the agent negotiates no H.264 and refuses the desktop offer. **D4b — the H.264-only list is also what prevents werift from selecting the browser's first codec.** Measured: with `[useH264()]` the negotiated sender is H.264 pt102; with `[useVP8(), useH264()]` it is VP8 pt96 — the black-video bug. | The agent's peer factory. The e2e harness already does this at `desktop.e2e.test.ts:123`; the port carries it forward **and must not add VP8 back for "browser compatibility"**. |
+| **R-S2** | **The negotiated codec is read back, never assumed, and asserted.** After `setRemoteDescription` + `createAnswer`, the agent reads the transceiver's negotiated codec list and **fails loudly** unless the sender's codec is H.264. | D4b — werift picks `codecs[0]` of the *negotiated* list, so the local list is the only lever. D4c — a codec-less sender drops frames silently. D4e — a transceiver added too late leaves `sender.codec` undefined. | The agent's session setup, mirroring the Rust `select_h264_payload_type` (`apps/agent/src/rtc.rs:293-303`) but reading the **negotiated** list, not the offer list, and **failing** rather than returning `None`. |
+| **R-S3** | **The negotiated `packetization-mode` is asserted to be 1, and the profile-level-id is checked against what the encoder produces.** | **D4d** — werift matches codecs by mime type only and never inspects `fmtp`, so the negotiated `parameters` are the **browser's**, echoed verbatim. A Chrome offer's *first* H.264 entry can be `packetization-mode=0`; werift would then negotiate mode 0, and mode-1 packets (single-NAL / STAP-A / FU-A) sent under a mode-0 PT are depacketized as one NAL per packet → broken frames. | The agent's session setup, next to the R-S2 assertion. The Rust agent pinned `packetization-mode=1` in its `sdp_fmtp_line` (`rtc.rs:208`) for the same reason. |
+| **R-S4** | **The transceiver is created before `setRemoteDescription`.** | **D4e** — a transceiver added afterwards yields a second, `a=inactive` m-line with `sender.codec === undefined`; D4c then converts that into a silent no-op. | The agent's offer handler, preserving ADR-15 / B12. |
+
+**R-S2 and R-S3 are the two most dangerous items in the port.** Both are
+invisible in a unit test that only checks "a packet was sent" — the packet is
+sent, it just carries the wrong payload type or the wrong packetization
+contract. Both are invisible in a connection-health check. They are only
+visible when a browser **decodes pixels**. P0 must assert decoded pixels, not
+packet arrival.
+
+**What R-S1 + R-S2 + R-S3 do *not* cover.** They fix the *negotiation*. They
+do not fix the *encoder*: whatever openh264 is configured to emit (its
+profile, its level, its Annex-B framing) must match the
+`profile-level-id` the answer advertised, and the agent's packetizer must
+emit mode-1 framing. That cross-check is the P0 gate's third assertion (A3),
+and it is the one that catches a mismatch between the addon and the
+negotiation.
+
+#### 3.5.2 The P0 spike, precisely
+
+P0 answers one question: **can werift, configured as the answerer and sender,
+deliver H.264 that a browser decodes into visible frames?**
+
+The spike's steps, in order — each step has an observable that fails loudly:
+
+1. Construct a werift peer with `codecs: { video: [useH264()] }` and a local
+   H.264 fixture (a pre-encoded Annex-B IDR frame).
+2. Answer a synthetic offer whose video m-line lists **VP8 first, then
+   H.264** — the Chrome ordering. Add the transceiver **before**
+   `setRemoteDescription` (D4e). This is the case that reproduces C4/D4b.
+3. After the answer is set, read back the negotiated sender codec **and its
+   `parameters`**. **Observe which payload type werift selected and which
+   `packetization-mode` it negotiated.** With the R-S1 list this is
+   `H264/pt102` + `packetization-mode=1`; anything else is a finding that
+   changes the design.
+4. Packetize the fixture with the new TS packetizer, push it through the
+   sender, and capture what the remote peer receives. **Assert the payload
+   type on the wire is the negotiated H.264 PT** — not "a packet arrived".
+5. In a browser, assert the frame **decodes** — via `HTMLVideoElement` +
+   `requestVideoFrameCallback`, or by decoding the received RTP with the
+   browser's own H.264 decoder and comparing against the fixture.
+
+Step 5 is the gate. Steps 1–4 passing is not sufficient: they can all pass
+while every packet carries the wrong payload type, or while the negotiated
+`packetization-mode` disagrees with the packetizer's output.
+
+**The spike must also run the negative case.** Step 3 is run twice: once
+with the R-S1 list (`[useH264()]`) and once with a deliberately VP8-first
+local list (`[useVP8(), useH264()]`). The second run is expected to select
+VP8 pt96 and is the **regression test for D4b** — it proves the failure mode
+is real and that R-S1 is what prevents it. A spike that only exercises the
+happy path cannot tell "R-S1 fixed it" from "the bug never existed".
+
+If step 3 or step 5 shows no acceptable configuration, P0 fails and the
+architecture is revisited **before** any other work. The documented
+fallbacks, in preference order:
+
+| Fallback | Cost |
+|---|---|
+| **(a)** Configure the peer so the negotiated sender codec is H.264 | Low — a config change. **Measured to work** with the H.264-only local list; the residual problem after this is the `fmtp` (D4d), not the payload type. |
+| **(b)** Set `sender.codec` explicitly after negotiation | Medium — reaches into werift's internals; a version bump could break it. Also does not fix D4d: `parameters` still comes from the browser. |
+| **(c)** Write RTP directly to the DTLS transport, bypassing `sendRtp` | High — reimplements the sender's SSRC/PT/sequence/timestamp rewriting and RTCP feedback handling |
+| **(d)** A different WebRTC stack | Highest — the whole `@ponter/webrtc-core` adapter layer is rewritten |
+
+**RK1's "decided at P0" is a real decision point, not a deferral**: the table
+above is the concrete list of options, each with its cost, and P0 produces the
+evidence that selects among them.
+
+### 3.5.3 What is already settled, and what P0 must still prove
+
+The negotiation half of the werift-as-sender risk has been **measured**
+against werift 0.24.4, not assumed. The measurements:
+
+| Question | Measured answer | How it was measured |
+|---|---|---|
+| Does a Chrome-style VP8-first offer make werift pick VP8? | **Only if the local list also offers VP8.** With `[useH264()]` → `sender.codec = H264/pt102`; with `[useVP8(), useH264()]` → `sender.codec = VP8/pt96`. | A werift answerer fed a real Chrome SDP offer, then `getTransceivers()[0].sender.codec` read back. |
+| Which of Chrome's **two** H.264 entries does werift pick? | **The first one, whatever its mode.** Chrome offers pt102 `packetization-mode=1` and pt104 `packetization-mode=0`. Offer pt102 first → `sender.codec = pt102` (mode 1). Offer pt104 first → `sender.codec = pt104` (**mode 0**). The local list cannot reorder the remote list. | Two offers with the same two H.264 entries in opposite orders; `sender.codec` read back each time. |
+| Where does the negotiated codec's `fmtp` come from? | **The browser's, verbatim.** werift's local `useH264().parameters` is never consulted. | Four offers with different `fmtp` strings; each was echoed unchanged into the answer. |
+| Does the transceiver order matter? | **Yes.** Added after `setRemoteDescription` → a second transceiver, `a=inactive` m-line, `sender.codec === undefined`. Added before → `a=sendonly`, `sender.codec = H264/pt102`. | Both orders, same offer. |
+| Does `MediaStreamTrack.writeRtp` overwrite the payload type? | **Yes** — `packet.header.payloadType = this.codec?.payloadType ?? …`. And `RTPSender.sendRtp` overwrites SSRC, PT, timestamp and sequence number. | Source read at `track.js:132-134`, `rtpSender.js:539-552`. |
+
+**What P0 must still prove** (none of it is settled by the measurements
+above):
+
+1. That a browser **decodes** the resulting stream (A3) — the measurements
+   are about SDP and payload types, not pixels.
+2. That the **addon's** openh264 output matches the negotiated
+   `profile-level-id` and mode-1 framing (D4d). The negotiation half is
+   understood; the encoder half is not.
+3. That the **DTLS/SRTP transport** carries the packets — the measurements
+   never opened a connection.
+4. That **RTCP feedback** (PLI, REMB) reaches the addon, so a keyframe
+   request produces a keyframe. A sender that cannot be asked for a
+   keyframe is a stream that never recovers from a dropped IDR.
 
 ---
 
@@ -259,15 +414,15 @@ citation and its port target. **No row may be silently dropped.**
 | # | Behaviour | Rust source | Port target |
 |---|---|---|---|
 | B14 | Capture → downscale → encode → RTP pipeline | `desktop.rs` | Core orchestration + native capture/encode |
-| B15 | Even-dimension crop before encode | `desktop.rs` (`debug_assert` in `encode`) | The core's resize step |
+| B15 | Even-dimension crop before encode | `desktop.rs:312` (`crop_to_even`) | The core's resize step |
 | B16 | SIMD box-filter downscale | `desktop.rs:216-266` | The native addon's resize (it is where the pixels are) |
 | B17 | H.264 encoder config: `ScreenContentRealTime`, `Bitrate` rate control, `Complexity::Low`, `adaptive_quantization(false)`, `background_detection(false)`, `VuiConfig::bt709()` | `desktop.rs:1827-1852` | The native addon's encoder config (same constants) |
 | B18 | Dynamic GOP = `(fps × 2).round().max(1)` frames | `desktop.rs:1821-1825` | The core's profile module (shared with the desktop) |
 | B19 | Bitrate retarget: raise sets `ENCODER_OPTION_MAX_BITRATE` on `SPATIAL_LAYER_0` first, then `ENCODER_OPTION_BITRATE` on `SPATIAL_LAYER_ALL`; lower needs only the latter | `desktop.rs:1893-1922` | The native addon's `applyBitrate` |
 | B20 | Bitrate clamp `[250 kbps, 20 Mbps]` (`ABR_MIN_BPS` / `ABR_MAX_BPS`) | `rtc.rs:90,92` | The core's clamp |
 | B21 | Stream profiles `1080p30` (1920×1080 @ 30, 6 Mbps) / `720p30` (1280×720 @ 30, 4 Mbps) / `1080p60` (1920×1080 @ 60, 8 Mbps) / `720p60` (1280×720 @ 60, 5 Mbps) | `lib.rs:445-491` (`StreamProfile` constants); names parsed at `lib.rs:494-507` | A **shared** module in `@ponter/shared` (fixes D12) |
-| B22 | Static-frame skip: 4-lane FNV-1a hash, 1 s keepalive cap, reset on bitrate/source/profile change | `desktop.rs` (ADR-92) | The core |
-| B23 | Sustain ladder: monotonic degradation by pixels/sec, `QualityDowngraded` status | `desktop.rs` (ADR-92) | The core |
+| B22 | Static-frame skip: 4-lane FNV-1a hash, 1 s keepalive cap, reset on bitrate/source/profile change | `desktop.rs:1287-1300` (`frame_signature`), `:1316-1350` (`StaticFrameSkip`, `should_skip`) | The core |
+| B23 | Sustain ladder: monotonic degradation by pixels/sec, `QualityDowngraded` status | `desktop.rs:1284` (`SUSTAIN_FRAMES_BEFORE_FALLBACK`), `:1379-1390` (`downgrade_for`), `:1395-1460` (`SustainMonitor`) | The core |
 | B24 | Frame timing ring: median capture latency + median encode ms | `desktop.rs:58-180` | The core |
 | B25 | Annex-B output with SPS/PPS/IDR first | `desktop.rs:1852-1871,2469-2473` | The native addon's encoder |
 | B26 | RFC 6184 packetization (single-NAL / STAP-A / FU-A) | `webrtc-0.21` `static_sample.rs:164` | **New** TS packetizer (§3.3) |
@@ -313,10 +468,33 @@ citation and its port target. **No row may be silently dropped.**
 | B51 | E2EE test vectors shared with the browser | `e2ee.rs:246-301` | `packages/crypto/test/vectors/e2ee-vectors.json` |
 | B52 | E2EE hello/ack handshake, each side signs its key binding | `e2ee.rs:204-229` | The core |
 | B53 | API error envelope `{status?, code, message, details?}`; auth-fatal iff 401 or `UNAUTHORIZED` | `api.rs:53-64,112-114` | `@ponter/api-client` (the Rust `api.rs` HTTP layer is dead code and is retired) |
-| B54 | `RUST_LOG` env var, default `info`, noise filters for known-benign subsystems | `logging.rs:167-185` (the `RUST_LOG` policy), `:26-98` (the noise filters) | A TS logger with the same env var name and the same filters |
+| B54 | `RUST_LOG` env var, default `info`, noise filters for known-benign subsystems | `logging.rs:167-185` (the `RUST_LOG` policy — `init()`), `:26-98` (the `NOISE` array of `(target, message-substring)` pairs), `:102-134` (the `QuietNoise` struct, `is_noise`, and the `Filter` impl) | A TS logger with the same env var name and the same filters |
 | B55 | The `e2ee` capability is advertised iff the offer proposed it | `rtc.rs:266-275` | The core |
 
-### 4.6 Explicit retirements (each with a rationale)
+### 4.6 Desktop enumeration, cursor, DPI, telemetry, and the capture fallback
+
+These behaviours exist in the Rust tree and are **not** covered by §4.1–§4.5.
+They are inventoried here so the behavioural-parity gate (§9.4) can cover them.
+Every row is a behaviour the Rust agent performs today, so every row is a
+behaviour the port must perform tomorrow.
+
+| # | Behaviour | Rust source | Port target |
+|---|---|---|---|
+| B56 | **Cursor polling** — sample the pointer position and shape on a timer, emit a `desktop-cursor` control frame **only when the position or the shape changed**; the shape is a base64 PNG capped in size | `cursor.rs:1-735` (the whole module); `desktop.rs:2093-2104` (`frame_desktop_cursor`) | The core (ADR-45). The X11 XFixes sampling is a native concern on Linux; the change-detection and the wire frame are the core's. |
+| B57 | **DPI awareness** (Windows) — `SetProcessDpiAwarenessContext(-4)`, falling back to `SetProcessDpiAwareness(2)` then `SetProcessDPIAware()`. Without it the capture returns wrong scale factors and input coordinates are wrong. | `lib.rs:39-75`; `main.rs:269` | The native addon (Windows only) — it must run **before** any capture or input call. |
+| B58 | **Desktop source enumeration** — `SourceKind::Monitor` vs `SourceKind::Window`, `DesktopSourceInfo` with the `inputEnabled` / `cursorInFrame` flags, and the `desktop-sources` control frame | `desktop.rs:843-911` (`SourceKind`, `DesktopSourceInfo`, `enumerate_sources`); `desktop.rs:2062-2086` (`frame_desktop_sources`) | The native addon enumerates; the core frames and sends. |
+| B59 | **Source selection** — `AGENT_DESKTOP_DEFAULT_SOURCE` picks the default source; `source_for` resolves a requested id against the enumerated list | `desktop.rs:1004-1020`, `:1188-1225` | The core |
+| B60 | **`capture_image` polling fallback** — when no hardware video recorder is available, fall back to a ~33 ms (≈30 Hz) polling loop that grabs single frames | `desktop.rs:553-650` (`ImageCapturer` trait, `run_capture_image_poll_loop`, the poll-interval constants) | The native addon's capture path |
+| B61 | **`desktop-stats` telemetry** — periodic control frames carrying the encoded-frame count, dimensions, the current profile, and the quality-downgraded status | `desktop.rs:1356`, `:1525`, `:1535`, `:2092`; `DesktopStats` at `:2106`; `frame_desktop_stats` at `:2147` | The core |
+| B62 | **The desktop control state machine** — `DesktopSelect`, `SetBitrate`, `QualityDowngraded`, and the `StreamControl` enum that carries them | `desktop.rs:1893-1922`, `:2092-2143` | The core |
+
+**B56, B61 and B62 are easy to lose** because they are *side channels*:
+the cursor frame, the stats frame, and the control frames travel beside the
+video, not inside it, so a port that only wires up the video path drops
+them silently. The behavioural-parity gate must assert each of them
+explicitly.
+
+### 4.7 Explicit retirements (each with a rationale)
 
 | # | Retired | Rationale |
 |---|---|---|
@@ -357,11 +535,34 @@ something that is now the same codebase.
    be serialised at every hop.
 2. **The process boundary bought less than it cost.** ADR-86's stated rationale
    was that the sidecar "keeps a process boundary that isolates a capture/PTY
-   crash from the UI." A **native addon crash still takes down the Electron
-   main process** — a segfault in the capture or encoder code is not
-   catchable from JS. So the isolation the sidecar provided was isolation from
-   *Rust panics and logic errors*, not from native faults. Moving the crashy
-   part into a native addon removes the very benefit the sidecar was built for.
+   crash from the UI." Concretely, the benefit was: the Rust binary was a
+   **separate process**, so when it died the `AgentSupervisor` saw an `exit`
+   event and respawned it — the Electron app and the UI survived untouched.
+   **In-process that path is gone.** A native-addon segfault is not catchable
+   from JS (N-API runs at the V8 native boundary; Electron does not sandbox
+   its main process), so there is no process to respawn and the whole app
+   must restart.
+
+   The two failure modes are also categorically different, which the "ADR-86's
+   benefit disappears" framing understates:
+
+   | | Rust sidecar | N-API addon, in-process |
+   |---|---|---|
+   | A logic error | A Rust `panic` unwinds, is catchable in Rust, and — with `panic = "abort"` in the release profile — aborts the process | A C++ exception must not cross the FFI boundary at all; a violation is undefined behaviour |
+   | A memory-safety error | Rust's type system makes it structurally hard; a bug is a panic, not a corruption | A buffer overrun is a **segfault** — unrecoverable, and it takes the app with it |
+   | A crash's blast radius | The agent's process; the app and UI survive and the supervisor respawns | The Electron main process; **the app dies** |
+
+   So the sidecar was isolating the agent from the *app*, and an in-process
+   addon gives that isolation up. The mitigation is not "defensive C++ is
+   sufficient" — it is that the addon must be written so that a fault is
+   **impossible to originate**, not merely unlikely: no unchecked buffer
+   writes, no C++ exceptions across the boundary, every OS return checked
+   (§9.2 makes that a test, not a promise). The honest statement of the
+   trade is: **the port gives up crash isolation, and buys back the ability
+   to write the crashy part in a language with no memory-safety guarantees
+   at all.** Whether that trade is right depends on the addon being small
+   and mechanical — which is exactly why §6.3 keeps the addon's surface to
+   *frames in, Annex-B out* and pushes everything else into TypeScript.
 3. **One installer.** The addon is compiled into the Electron app's resources
    (or into a per-platform `@ponter/agent-native` prebuild), not shipped as a
    separate downloadable binary. The user installs one thing.
@@ -391,7 +592,7 @@ something that is now the same codebase.
 | Cost | Mitigation |
 |---|---|
 | A native-addon segfault kills the app | The addon must be written defensively: every OS call checked, every buffer bounds-checked, no unwinding across the FFI boundary. A capture/encode fault is caught in C++ and returned as an error code, not propagated as a crash. §9.2 makes addon fault-containment a test. |
-| The main process now runs a 60 FPS encode loop | The encode is in the native addon (its own threads, not the Node event loop). The TS core's per-frame work is small (hash, packetize, send). The capture/encode loop is scheduled on a `worker_threads` thread with the addon's own encoder thread. |
+| The main process now runs a 60 FPS encode loop | The encode is in the native addon (its own threads, not the Node event loop). The TS core's per-frame work is small (hash, packetize, send). The capture/encode loop is scheduled on a `worker_threads` thread with the addon's own encoder thread. **But the main process is already load-bearing** — it runs the agent supervisor, the agent control service, the IPC handlers, the renderer process management, the auto-updater, the tray icon, the system-preferences bridge, and the crash reporter. A 60 FPS feed loop is *additional* CPU on top of all of that. The `worker_threads` isolation is necessary but not sufficient: the worker must hand frames back with a `MessageChannel` (or `SharedArrayBuffer` + `Atomics`), never by polling the event loop, or the 60 Hz wakeups themselves become the contention. The ADR-47 frame-timing ring is extended to record main-process event-loop delay alongside encode latency, so a regression is visible before it is felt. |
 | Signal handling | The Rust agent installed process-level `SIGINT`/`SIGTERM` handlers. In-process, the agent must **not** install them — Electron owns the process lifecycle. The agent gets a `stop()` method instead. |
 | The main process's stdout is shared | The agent's logs go through the TS logger to the same sink, tagged with a component name, and the `AgentSupervisor`'s stderr tail becomes an in-memory log ring the UI reads. |
 
@@ -517,7 +718,7 @@ and 100% green CI.
 
 | Phase | Deliverable | Gate |
 |---|---|---|
-| **P0 — Spike** | Prove werift can **send** H.264 to a browser peer. A minimal script: encode a synthetic frame with the native addon (or, initially, a pre-encoded Annex-B fixture), packetize it, push it through werift to a browser, and confirm the browser decodes it. | **Viability gate.** If werift-as-sender cannot carry H.264 to a browser, the whole architecture is revisited before any further work. |
+| **P0 — Spike** | Prove werift can **send** H.264 to a browser peer. A minimal script: encode a synthetic frame with the native addon (or, initially, a pre-encoded Annex-B fixture), packetize it, push it through werift to a browser, and confirm the browser decodes it. The spike runs the five ordered steps of §3.5.2 against a **VP8-first** synthetic offer **and its negative case**, and the spike script carries the four measures of §3.5.1 (R-S1/R-S2/R-S3/R-S4) as working code — not as future work. | **Viability gate.** Assertions A1 + A2 + A3 of §9.3 must all hold simultaneously, **and the negative case must fail as predicted**. If werift-as-sender cannot carry H.264 to a browser, the whole architecture is revisited before any further work. |
 | **P1 — Shared foundations** | Move the stream-profile table to `@ponter/shared`; replace the cross-language parity test with a same-language import (D12); add the TS API-access gate. | D12 closed; the parity guarantee survives |
 | **P2 — Native addon** | The N-API addon: capture, encode (openh264), input injection. Unit-tested at the C++ level and through a TS smoke test. | Fault-containment test (§9.2) |
 | **P3 — Core: signalling + identity + E2EE** | The WS client, the identity store, the E2EE handshake. Consumes `@ponter/shared`, `@ponter/crypto`. | The wire contract (C1, C5, C6, C7, C13) proven by conformance tests |
@@ -531,7 +732,7 @@ and 100% green CI.
 The Rust agent carries **359 `#[test]`/`#[tokio::test]` functions**. The port
 must carry an equivalent suite, not a smaller one. Each Rust test that is
 retired must be accounted for by a TS test or by an explicit R-entry
-(§4.6) — **never by deletion or skip**. The plan must publish a
+(§4.7) — **never by deletion or skip**. The plan must publish a
 before→after count for `it()`/`expect()` per suite, with a rationale, per the
 standing TEST-INTEGRITY rule.
 
@@ -575,10 +776,44 @@ E2E that asserts the browser receives and decodes a moving H.264 stream from
 the werift peer — not merely that the connection is healthy, but that pixels
 arrive.
 
+The gate is the five-step spike of §3.5.2, and it has three assertions, each
+of which must hold **simultaneously**:
+
+| Assertion | Fails when |
+|---|---|
+| **A1 — the negotiated sender codec is H.264** | The agent negotiated VP8 (D4a/D4b). R-S1's H.264-only list prevents it; R-S2 turns the failure into a loud error instead of a black stream. |
+| **A2 — the payload type on the wire is the negotiated H.264 PT, and the negotiated `packetization-mode` is 1** | werift's `sender.codec` is not the H.264 entry, so `sendRtp` overwrites the stamped PT (D4b) — or the browser's `fmtp` negotiated mode 0 while the packetizer emits mode 1 (D4d). This is R-S2 + R-S3. |
+| **A3 — the browser decodes visible frames** | The bytes are not decodable H.264, the packetization mode is wrong, the `profile-level-id` does not match what the encoder produced, or a keyframe never arrived. This is the only assertion that catches A1 and A2's failures end-to-end. |
+
+**A3 alone is not sufficient and A1/A2 alone are not sufficient.** A1 + A2
+can both pass while the browser still shows nothing (the encoder's profile
+does not match the advertised `profile-level-id`; a missing IDR; a decoder
+that needs a keyframe request answered). A3 can pass by accident on a
+fixture that happens to decode. The gate requires all three.
+
+The spike's synthetic offer must list **VP8 first, then H.264** — the Chrome
+ordering. An offer that lists only H.264 would not exercise D4b at all, and
+a green run against such an offer would prove nothing about the real browser
+peer. The spike must also run the **negative case** (a VP8-first *local*
+codec list), which is expected to fail — see §3.5.2.
+
+**The gate also covers RTCP.** A sender that cannot answer a PLI is a
+stream that never recovers from a dropped IDR. The P0 harness must observe
+a PLI arriving at the sender and the encoder responding with a keyframe.
+
 ### 9.4 The behavioural-parity gate
 
-Every row of §4 must be covered by at least one test in the ported suite. The
-plan carries a coverage matrix mapping each B-number to its test.
+Every row of §4 — **all 62 of them, B1 through B62** — must be covered by at
+least one test in the ported suite. The plan carries a coverage matrix
+mapping each B-number to its test.
+
+Three rows carry extra weight because they are the ones a partial port
+silently drops: **B56** (the cursor frame), **B61** (the `desktop-stats`
+telemetry) and **B62** (the desktop control state machine) are *side
+channels* — they travel beside the video, not inside it, so a port that only
+wires up the video path loses them without a single failing test. The
+coverage matrix must mark them explicitly, and the gate must assert each
+one's presence on the wire.
 
 ---
 
@@ -586,7 +821,10 @@ plan carries a coverage matrix mapping each B-number to its test.
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| RK1 | werift cannot send H.264 to a browser (D4) | Medium | **Fatal** — the architecture collapses | P0 spike is a gate, before any other work. If it fails, fall back to writing the RTP/DTLS/SRTP path by hand or to a different WebRTC stack — decided at P0, not after P5 |
+| RK1 | werift cannot send H.264 to a browser (D4) | Medium | **Fatal** — the architecture collapses | P0 spike is a gate, before any other work. If it fails, fall back to writing the RTP/DTLS/SRTP path by hand or to a different WebRTC stack — decided at P0, not after P5. The four fallbacks and their costs are enumerated in §3.5.2; P0 produces the evidence that selects among them |
+| RK1a | werift stamps the wrong payload type on H.264 packets (D4b) | **Medium** — it is werift's behaviour *whenever the local codec list also offers VP8*. Measured: an H.264-only local list selects H.264 pt102 (§3.5.3) | **Fatal** — black video on a healthy connection; identical to the C4 bug the Rust agent already had | R-S1 (H.264-only local list) prevents it; R-S2 fails loudly at negotiation. The P0 gate asserts A1 + A2 + A3 together (§9.3) and runs the **negative case** (a VP8-first local list, expected to fail), so this cannot pass silently |
+| RK1b | The negotiated `fmtp` is the browser's, and werift never checks it (D4d) — a browser whose first H.264 entry is `packetization-mode=0` makes the agent negotiate mode 0 while the packetizer emits mode 1 | **Medium** — depends on the browser's codec ordering; Chrome's default puts mode 1 first, but this is not guaranteed | **Fatal** — broken frames; the connection is healthy and the PT is right, so no other check catches it | R-S3 asserts `packetization-mode=1` and the encoder's profile, and fails loudly otherwise. The agent may also **narrow the negotiated list** to the H.264 entry whose `parameters` it can actually satisfy, before `createAnswer` |
+| RK1c | A transceiver added after `setRemoteDescription` yields an inactive m-line and an undefined codec (D4e) | **Low** — the Rust agent already carries ADR-15 and the port copies the ordering | High — an inactive m-line looks like a healthy idle stream; D4c turns it into a silent no-op | R-S4 preserves the ordering, and R-S2's loud assertion catches a missing codec |
 | RK2 | The N-API addon's ABI mismatch with Electron's Node (D7) | Medium | High — the addon will not load | Build against Electron headers from day one; add a packaged-app boot smoke test that asserts the addon loads |
 | RK3 | A native fault takes down the desktop app (§5.4) | Medium | High | Fault-containment gate (§9.2); defensive C++ |
 | RK4 | 60 FPS in the Electron main process starves the UI | Low | High | Encode on the addon's own thread; the TS core's per-frame work is small; measure with the existing ADR-47 frame-timing ring |
@@ -610,6 +848,25 @@ can be overturned:
 | O4 | The environment-variable contract (`AGENT_ID`, `AGENT_SERVER`, …) is kept even though it is now an in-process config (§7) | Renaming the variables |
 | O5 | The Rust tree is deleted in P7, not incrementally | Keeping a Rust build alongside during the port |
 | O6 | The addon is packaged as a per-platform dependency via `electron-builder install-app-deps` (§6.4) | `extraResources` with an absolute-path loader |
+
+### 11.1 Open technical questions the plan must answer
+
+These are **not** owner decisions — they are engineering questions a competent
+implementer would have to answer before writing code, and the spec does not
+pretend to answer them. Each is listed with what the plan must settle. They
+are the plan's work, not the spec's.
+
+| # | Question | What the plan must settle |
+|---|---|---|
+| Q1 | **The werift sender API surface.** What exactly does `WeriftAdapter.addTrack` return, and how does the core reach `MediaStreamTrack.writeRtp`? | The concrete method set on `RTCRtpSenderLike` (§3.5) and the adapter's internal wiring. |
+| Q2 | **The DTLS/SRTP boundary.** Does werift handle DTLS and SRTP internally for a sender, so the addon only produces RTP packets? | Whether the fallback in §3.5.2(c) — writing directly to the DTLS transport — is even reachable, and what API exposes it. |
+| Q3 | **The openh264 linkage and output format.** How is openh264 linked into the addon (vendored source, `cc`, a system package)? Does the raw C API emit **Annex-B** (with start codes) or AVCC? | The `binding.gyp` linkage, and the confirmation that the bytes reaching the TS packetizer are Annex-B — the Rust agent's `bitstream.to_vec()` is Annex-B, and the packetizer is specified against Annex-B. |
+| Q4 | **The capture source selection on the addon side.** How does the addon enumerate monitors and windows, and how does `AGENT_DESKTOP_DEFAULT_SOURCE` map onto them? | The native API for `SourceKind` / `DesktopSourceInfo` (B58) and the resolution of the default source (B59). |
+| Q5 | **The `capture_image` fallback detection.** When is the polling fallback used instead of the hardware recorder, and what happens on a headless Linux container with neither PipeWire nor X11? | The detection rule and the failure mode, for B60. |
+| Q6 | **The `desktop-stats` wire shape.** What are the exact fields of `DesktopStats`, and which channel carries the frame? | The full field list, for B61. |
+| Q7 | **The cursor frame's rate and encoding.** How often is the cursor polled, and what encodes the shape PNG and caps its size? | The poll cadence, the PNG encoder dependency, and the cap, for B56. |
+| Q8 | **The Electron packaging mechanics.** Is the `.node` binary built at install time (`postinstall` / `install-app-deps`) or copied into `resources/` at build time? Does `electron-builder` need `extraFiles`? | The exact build and packaging steps, and where the `.node` file lives in the packaged app, for §6.4. |
+| Q9 | **What the Rust removal actually deletes.** Does `apps/agent/vendor/` contain anything besides `xcap`? Are the shared E2EE vectors (`packages/crypto/test/vectors/e2ee-vectors.json`) extracted before the tree is removed? | The P7 deletion list, so nothing needed by the TS suite is deleted with it. |
 
 ---
 
