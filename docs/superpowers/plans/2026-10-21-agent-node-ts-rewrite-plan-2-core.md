@@ -734,7 +734,7 @@ The logger's three port `known_noise_is_matched_by_target_and_message`, `the_sam
 **Interfaces:**
 - Consumes: nothing new.
 - Produces:
-  - `function rewriteWsScheme(url: string): string` — 1:1 port of `api.rs:20-48`. Throws `Error('unsupported URL scheme in <url>')` on any other scheme and on `''`.
+  - `function rewriteWsScheme(url: string): string` — 1:1 port of `api.rs:16-42`. Throws `Error('unsupported URL scheme in <url>')` on any other scheme and on `''`.
   - `function buildUpgradeHeaders(credential: string): Record<string, string>` — returns `{ Authorization: 'Bearer <cred>' }`; throws `Error('credential is not a valid header value')` if the credential contains any character outside `[\x21-\x7E]` (i.e. a control character or a space would corrupt the header).
 
 - [ ] **Step 1: Write the failing `rewriteWsScheme` tests**
@@ -1166,6 +1166,8 @@ git commit -m "feat(agent): add the reconnect ladder, close classification and k
 ```
 
 **TEST-INTEGRITY declaration:** three new files, **14 new `it()` / 20 new `expect()`**. The Rust counterparts are `signal.rs`'s `backoff_sequence`, `keepalive_window_is_three_missed_pings`, `classify_close_treats_replaced_and_unauthorized_as_terminal` and `classify_close_treats_everything_else_as_transient` — 4 Rust tests become 15 TS tests, an expansion, never a reduction.
+
+> **Do not take `signal.rs:100-103`'s line numbers for `transport.ts`.** That comment, copied into the Rust from the Week 5 spec, points at `transport.ts:45-46` for the two interval declarations and `:140-143` / `:165-168` / `:171-174` for the three `* 1.5` sites. All four ranges have since drifted: the declarations are at **50-51** with their defaults at **79-80**, and the three `Math.min(this.currentIntervalMs * 1.5, …)` sites are at **209-210**, **234-235** and **240-241**. The numbers below are the only ones this plan asserts, and they come from the Rust test, not from the comment. (This is why the plan cites `signal.rs` by *test name* throughout and never by line.)
 
 ---
 
