@@ -194,14 +194,16 @@ a deletion needs no correction on the way out.
       - **The extmap appears only when both halves are present, and it is the
         offer's id that wins.** Measured by BE and re-run independently at
         `.superpowers/probes/be-twcc-sdp/` (git-ignored, one command to
-        reproduce): `useTransportWideCC()` configured **and** the offer
-        carrying the extension ⇒ `a=extmap:4 …` for an offer id of 4,
-        `a=extmap:7 …` for 7. Either half alone ⇒ **NONE**. So the rule is a
-        conjunction, not a config flag — and an implementer who sets
-        `useTransportWideCC()` and assumes the extension is now on the wire is
-        wrong until the browser offers it. The mechanism is the
-        `transceiverManager.js:265-266` filter: remote extensions are kept only
-        if local config names the same URI, and werift's default is
+        reproduce; pinned there by sha256 —
+        `probe.mjs` `9f155272…7649b46`, `output.txt` `f2fe9e5f…e5239d6b` — so a
+        reader can tell whether the artifact moved): `useTransportWideCC()`
+        configured **and** the offer carrying the extension ⇒ `a=extmap:4 …`
+        for an offer id of 4, `a=extmap:7 …` for 7. Either half alone ⇒
+        **NONE**. So the rule is a conjunction, not a config flag — and an
+        implementer who sets `useTransportWideCC()` and assumes the extension
+        is now on the wire is wrong until the browser offers it. The mechanism
+        is the `transceiverManager.js:265-266` filter: remote extensions are
+        kept only if local config names the same URI, and werift's default is
         `headerExtensions: { audio: [], video: [] }` (`peerConnection.js:1084-1087`).
       - A port must therefore configure `useTransportWideCC()`; that is a task
         detail, not an owner question. The old sentence "the `extmap` id needs
