@@ -14,7 +14,7 @@ Reproduce any row with the recipe in §10.
 
 | Class | Count |
 |---|---|
-| BLOCKING | 9 (B-1…B-9) closed; **B-10** open (owner question, carrier landed `c81ae4b`); **B-11 closed 2026-10-21 by `d471109`** |
+| BLOCKING | 9 (B-1…B-9) closed; **B-10** open (owner question, carrier landed `c81ae4b`); **B-11 closed 2026-10-21 by `d471109`**; **B-12 open** (raised by QA, measured 2026-10-22) |
 | Non-blocking | 10 (N-6 partly mine and corrected; N-3a/N-3b closed by `d471109`; N-4 amended twice — the open part is PM-side and is recorded in §N-4/§N-4a) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
@@ -26,9 +26,9 @@ The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong*
 
 **B-11 — raised 2026-10-21, CLOSED 2026-10-21 by `d471109`.** Plan 2's `FilesSession.list()` emitted a **different wire shape** from the Rust's `RemoteFile` — **seven divergences**: four field-shape (no `path`; `kind` where the Rust sends `isDirectory`; `size: null` where the Rust sends the directory's real `metadata.len()`; `modifiedEpochMs` where the wire type declares an RFC 3339 `Z` string) and three behavioural (dirs-first byte-wise sort replaced by `localeCompare`; a per-entry `statSync` failure silently substituted with `0` where the Rust fails the whole listing; `ENOTDIR` on `list()` of a file becoming `IO_ERROR` where the Rust sends `NOT_A_DIRECTORY`). Task 11 had **no test of `list()` at all**, and its declaration passed anyway because B43 is a **count** (12 inbound / 11 outbound) and a count cannot see a shape. **PM's repair `d471109` fixed all seven and added the three missing `list_*` tests**; I re-verified every one against the crate source and the fence now matches on all seven, with the declaration re-derived to **29 `it()` / 60 `expect()`** and both counts exact. See §3's B-11 for the evidence that stands as the record of what was wrong.
 
----
+**B-12 — raised 2026-10-22 by QA, measured here, and the measured defect is not the one QA described.** Task 11's declaration says its partition is *derived* from the fences rather than estimated, but the criterion it gives for the 41 non-ports — *Rust-internal helpers, Task 10's seven, pure arithmetic, or per-platform filesystem races* — covers only **17 of the 41**. **Twenty-four fall in none of those four categories**, and every one is a wire-surface or state-machine behaviour, several of them the *positive* half of a behaviour whose negative half the task does port. QA's quoted phrase — "named individually" — **does not appear anywhere in Task 11**; the plan describes the 26 by category, so QA's paraphrase overstates what the plan claims. But QA pointed at the right task and the right class, and the underlying defect is real. **B-12a is why it is BLOCKING:** of the three dispatch arms with **zero test sites** in the task (`files-mkdir`, `files-delete`, `files-rename`), `files-delete` **drops the `recursive` flag** that the Rust, `packages/shared` and the browser all carry — a fence deciding unilaterally that `rm -r` is not offered, recorded as a code comment rather than a declared divergence. Four artefacts agree and only the fence disagrees, which is B-11's disposition: a repair to an owned contract, not an owner question. See §3's B-12 for the enumeration and the four-part repair.
 
-## 2. BLOCKING findings
+---
 
 ### B-1. All 19 TEST-INTEGRITY declarations mismatch the code fences in the same task
 
@@ -475,6 +475,67 @@ The gap is visible in the tests, not just in the type. **Task 11 contains no tes
 **Why the repair is not free, and why PM is right to hold it.** Adding those three tests changes Task 11's declared `25 it() / 42 expect()`, and a count change is itself a TEST-INTEGRITY declaration — it must be declared, reviewed, and shown to match its own fence. So the fence correction and the declaration correction have to land together, and they cannot land before **N-3** (Task 11's unauditable "24 of 41" partition) is resolved, or the plan would be right about `list()` and still wrong about what it ports. PM's ruling — fence repair is theirs, held until N-3 is settled, both derived from this section — is the correct sequencing.
 
 **The disposition distinction, stated once.** B-11 is **a docs defect, not an owner question**, and that is what puts it in §3 and not §4. The wire contract has four owners that already agree — the Rust, `packages/shared`, the browser, and the existing E2E — and only the plan disagrees. B-10 and N-4 are different: there, no artefact states the answer, so someone has to *decide*. A plan being wrong about an owned contract is repaired; a behaviour nobody has decided needs a ruling.
+
+### B-12. Task 11's partition criterion is not exhaustive — 24 of the 41 "non-ports" fall in neither stated category, and one of them is a wire-contract divergence
+
+> **Raised by QA 2026-10-21 ("its 26 ports are 'named individually', and 46 of 65 are not"), routed by PM. QA's count is in the right neighbourhood and its quoted claim is not in the plan. The measured defect is worse and sits one level down: the declaration's *criterion* for the 41, not its naming of the 26.** Severity: **BLOCKING** — the same class as B-1…B-9, and the same class as B-11.
+
+**What QA got right, and what the plan actually says.** QA reports the declaration as claiming the 26 ports are "named individually". That phrase — and `by name`, `named one by one`, `each named` — **occurs nowhere in Task 11** (`grep` over the whole 3,865–5,125 range returns 0 for all four). The declaration describes the 26 by **category**: *"those covering the wire surface, the window, ack batching, resume alignment, cancel, idle, and the three `list_*` tests"*. So the paraphrase overstates what the plan says, and I decline QA's framing on that point.
+
+But the declaration's surviving sentence — **"The counts are per-test-name, derived from the two fences, not from a split estimated by subtraction"** — is doing real work, and that work is where the defect is. It claims the partition is *derived*, not *estimated*. Derivation requires the 41's criterion to be exhaustive over its own members. It is not.
+
+**Measured, against `apps/agent/src/files.rs` (65 anchored test fns):**
+
+| | count |
+|---|---|
+| The declaration's "39 remaining", stated criterion: Rust-internal helpers / Task 10's seven / pure arithmetic / per-platform filesystem races | |
+| → non-ports actually covered by one of those four stated reasons | **17** |
+| → non-ports in **none** of them | **24** |
+
+The 24 in neither category:
+
+```
+decode_round_trips_every_browser_to_agent_type   error_frames_carry_the_code_and_attribution
+download_assembles_byte_equal_content            download_of_a_directory_is_not_a_file
+oversize_size_is_rejected_by_the_pure_guard      empty_upload_finalizes_an_empty_file
+upload_into_a_missing_directory_is_not_found     chunk_for_an_unknown_id_is_transfer_unknown
+chunk_length_mismatch_is_bad_frame               upload_totals_changed_mid_flight_is_bad_frame
+busy_is_checked_after_the_path_checks            a_completed_download_frees_the_slot
+cancel_stops_the_download_and_removes_the_state  idle_timeout_removes_a_stalled_uploads_part
+teardown_clears_both_directions                  test_mkdir_delete_rename_sandbox
+test_rename_root_rejected                        test_rename_destination_existing_rejected
+test_error_code_str_mapping                      test_pause_and_resume_alignment_check
+resume_approved_after_upload_pause               download_pause_ack_reports_acked_chunk_index
+download_resume_seeks_and_pumps_from_resume_point  paused_download_absorbs_acks_without_repumping
+```
+
+Every one is a **wire-surface or state-machine behaviour**, not a helper and not a race. Several are the *positive* halves of behaviours whose negative halves Task 11 does port — `resume_rejected_on_part_size_mismatch` is ported, `resume_approved_after_upload_pause` is not; `upload_of_an_existing_name_is_already_exists` is ported, `upload_into_a_missing_directory_is_not_found` is not; `cancel_*` is ported, `teardown_clears_both_directions` is not. A criterion that classifies one half as "port" and drops its other half as "helper" is not a criterion; it is a label placed after the fact.
+
+**The count is separately uncertain, and I state my own uncertainty.** Mapping all 29 `it()` titles in the two fences to their Rust sources by hand — every one of the 24 Rust tests I bound to a title exists, and no title cites a phantom — leaves **5 titles with no single Rust source** (`appends the resume suffix as a sibling`, `drops a download whose ack claims more chunks than were sent`, `ignores a duplicate or regressive ack without erroring`, `pins the idle timeout to the wire value`, `answers an unapproved resume with a resume-ack, never an error frame`; the first four do assert behaviour the Rust has, inline in another test, and the fifth is the new pin). That gives **24 distinct Rust ports + 5 new = 29**, against a declaration that says **26 ported**. Either two further Rust tests are ported and I could not identify them, or the 26 is wrong by two. I cannot settle which from the fences alone, and I am not asserting the count is off — only that my mapping does not reproduce it, which the repair must.
+
+#### B-12a. Inside those 24: `files-delete` silently drops `recursive`, on a contract four artefacts already agree on
+
+This is the reason B-12 is BLOCKING rather than a bookkeeping note. Task 11 implements twelve `dispatch` arms (`…plan-2-core.md:4527-4557`) and tests nine. **`files-mkdir`, `files-delete` and `files-rename` have zero test sites in the entire task** (`grep "type: 'files-mkdir'"` and its two siblings over 3,865–5,125 → 0), and `teardown()` — the documented "both slots cleared, any `.part` removed" entry point — is **never called by any test** either.
+
+Under-tested is not by itself a divergence. One of the three is:
+
+- **Rust** — `FilesDeleteRequest { request_id, path, recursive: Option<bool> }` (`files.rs:546-550`); `delete(path, recursive)` runs `remove_dir_all` when `recursive` is true, and returns `DIR_NOT_EMPTY` only when it is false (`files.rs:901-941`).
+- **`packages/shared`** — `FilesDeleteRequest.recursive?: boolean` (`packages/shared/src/types/files.ts:160-164`).
+- **Browser** — `delete(path, recursive = false)` puts `recursive` on the wire (`packages/file-core/src/client.ts:189-196`).
+- **Plan 2's fence** — `remove()` never reads `message.recursive`; it always `rmdirSync` and maps `ENOTEMPTY` to `DIR_NOT_EMPTY` (`…plan-2-core.md:4965-5001`, with the deliberate-change comment at `:4972-4978`: *"`rm -r` is **not** offered"*).
+
+So a browser that sends `{ type: 'files-delete', path: 'docs', recursive: true }` gets `DIR_NOT_EMPTY` from the port and a deleted tree from the Rust. **Four artefacts agree and only the fence disagrees**, which is exactly B-11's disposition: a repair to an owned contract, not an owner question.
+
+The fence's comment reads as a considered security decision, and it is a *good* argument — a sandbox peer that can recursively delete a tree with one message is a real hazard. But it is an **undiscussed change to a wire contract**, presented as an implementation note, and it is invisible to the §9.4 gate for B-11's reason: **B43 is a count** (12 inbound / 11 outbound), and `recursive` is a field inside a message the count already counts. If PM wants the restriction, it is a spec change with an ADR and a browser-side consequence, not a comment inside a fence. Either way it must be **declared**, and the declaration must say which of the two it chose.
+
+**What the repair has to do** (PM's lane, not mine):
+
+1. Restate the 41's criterion so it is a real partition — or, better, **name all 65** in the declaration. At 65 names this is one screen and it ends the class permanently.
+2. Decide `recursive`: honour it as the Rust and `packages/shared` do, or retire it in a declared divergence. Do not leave the comment.
+3. Add test sites for the three untested dispatch arms and for `teardown()`, which is what makes items 1–2 checkable rather than asserted.
+4. Re-derive the count, including the 26-versus-24 question above.
+
+**QA's number, reconciled.** QA's "46 of 65 are not named" is close to the measured 45 under one scope (whole Task 11: 10 names appear, 55 absent) and the 45 under the other (declaration tail: 7 exact + 13 by wildcard, 45 unnamed) — the two scopes differ by 10 and QA picked neither explicitly. The *claim* QA attributes to the plan is not in it. But QA identified the right file, the right task and the right class, and the defect it pointed at is real once the criterion is read instead of the paraphrase. That is worth more than the wording it arrived in.
 
 ### N-6. The `desktop-profile-parity` baseline was wrong; Plan 2's correction of it is right
 

@@ -90,14 +90,25 @@ with Files / Interfaces / steps before this plan is executable.
     has **no** `try`, so it throws on a missing directory, which is the property
     actually doing the work.
   - *What T2 must therefore assert.* A control that fails when the walker sees
-    the wrong roots — not one that restates the walker's own filter. Concretely:
-    the governed set must differ from the walked set by at least one file once
-    the sanctioned `api/` module exists (`governed()` currently equals
-    `walk()` because `api/` does not exist yet, so the three scans are
-    boundary-less today and become boundary-bearing the moment it lands), and
-    the walked set must be pinned to a **count taken at the SHA** rather than
-    "greater than zero", since R6's `.rs` deletions and the port's TS additions
-    move that count without moving the guarantee.
+    the wrong roots — not one that restates the walker's own filter, and not a
+    pinned file count. A pinned count is a control that reds on every legitimate
+    addition to `apps/agent/src`, which is exactly what this plan spends its
+    time doing there; the fix at that moment is to bump the number, and that is
+    how a control becomes a changelog. Assert the **structural** property
+    instead: every returned path is under `AGENT_SRC`, and at least one is not
+    under `api/`. That fails when the root is wrong, survives renames and
+    additions, and states the boundary the three scans depend on.
+  - *The sequencing constraint that follows, and it is a TEST-INTEGRITY trap.*
+    "At least one governed file is not under `api/`" is **false today** —
+    `governed() === walk()` because `apps/agent/src/api` does not exist — so it
+    cannot be committed today without shipping a red test, and an implementer
+    told to write it now will reach for `it.skip`, which is the exact failure
+    mode the plan's Global Constraints forbid. It lands in the same commit as
+    the sanctioned `api/` module, replacing `:59`'s `every('.ts')` in that
+    commit rather than after it, so the file never exists in a state where a
+    reader can take the dead assertion for a live one. Before `api/` lands, the
+    honest control is the existing `:58` — backed by a `walk` that throws on a
+    missing directory.
   - *The precondition, stated so the executor does not have to guess it.* The
     count is only meaningful after the agent's TypeScript source has landed;
     before that it is 1, and a `> 0` control passes on a tree that is 20 `.rs`
