@@ -129,6 +129,18 @@ and its log shows `@ponter/agent-node` absent from `tasks[].package` in the
 results and carry their own evidence. Delete the probe branch afterwards; the
 run list keeps the record.
 
+**The probe must be pushed to a ref the workflow actually triggers on, or the
+demonstration proves nothing.** `ci-node.yml` fires on `push` to `branches: [main, develop]` (`:25-26`) and on
+`pull_request` **into** `branches: [main, develop]` (`:41-42`). A probe pushed
+to an arbitrary feature branch with no PR produces no run — and "no run
+appeared" is byte-for-byte the observation that is supposed to prove the
+`paths:` half, so the executor would read a wrong answer as the right one. The
+probe therefore goes out as a **PR opened against `main`** (the `pull_request`
+filter is on the base branch, so the probe branch's own name does not matter),
+or on a branch literally named `main`/`develop` — the former is the only option
+that does not touch a shared branch. T3's commit must say which, and the same
+requirement applies to the `--dry=json` half.
+
 The `ci-node.yml` comment as it stands at `0030391` says the filter "is what
 keeps the not-yet-gating package out of a job that runs on unrelated pushes"
 **when** Plan 3 adds the path. Per spec §6.2 the filter is **deleted in the same
