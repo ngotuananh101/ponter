@@ -5141,7 +5141,7 @@ modifiedAt}` rather than `{name, kind, size|null, modifiedEpochMs}` — the Rust
 Run, from the repo root:
 
 ```bash
-pnpm --filter @ponter/agent-node add node-pty@1.2.0-beta.12
+pnpm --filter @ponter/agent-node add node-pty@1.2.0-beta.15
 ```
 
 Then add **both** entries to `pnpm-workspace.yaml`'s `allowBuilds:` block, next to `better-sqlite3`:
@@ -5156,7 +5156,7 @@ Then add **both** entries to `pnpm-workspace.yaml`'s `allowBuilds:` block, next 
 Two things this step exists to prevent, both of which present as "the module is missing at runtime" rather than as an install error:
 
 - **`allowBuilds` is not optional.** pnpm 12 blocks postinstall scripts by default. Without the entry the dependency resolves and `import('node-pty')` succeeds far enough to typecheck, but the native binding is never built — which fails only in the packaged app.
-- **The version is not a caret.** The measurement below was taken against `1.2.0-beta.12` — the only version present on this machine — and records what that version does with `encoding`. Pin it, and re-measure before moving it.
+- **The version is not a caret, and it is `beta.15` rather than `1.1.0` stable for a build reason.** `npm view node-pty dist-tags` gives `latest: 1.1.0`, `beta: 1.2.0-beta.15`; every `1.2.0-*` publish is a prerelease. **1.1.0 ships prebuilds for darwin-arm64/x64 and win32-arm64/x64 only — no Linux** — so on Linux it falls through to `node-gyp rebuild` and needs a full C++ toolchain on every path (CI, Docker, user installs). ADR-78 makes Linux a first-class target, so the beta line is the right one: `beta.12` and `beta.15` both ship `linux-x64` and `linux-arm64` prebuilts. The `encoding` behaviour this task depends on was measured identical on 1.1.0, `beta.12` and `beta.15` (`CustomWriteStream.write` is byte-identical source across all three), and `typings/node-pty.d.ts` is byte-identical between the two betas, so `beta.12 → beta.15` is a drop-in. Take `beta.15` for the two Windows pty fixes it carries over `beta.12`: a `std::mutex` around `ptyHandles` plus `ptyCounter` as `std::atomic<int>` in `src/win/conpty.cc`, and a `windowsTerminal.js` `_agent.onError` handler without which a failed ConPTY connect leaves the terminal object alive forever and the supervisor never learns the session died. Re-measure before moving off `beta.15`.
 
 Verify the binding actually loaded before writing any code:
 
@@ -5164,7 +5164,7 @@ Verify the binding actually loaded before writing any code:
 node -e "const p=require('node-pty'); console.log(require('node-pty/package.json').version, typeof p.spawn)"
 ```
 
-Expected: `1.2.0-beta.12 function`. If this throws, stop — the rest of the task cannot run.
+Expected: `1.2.0-beta.15 function`. If this throws, stop — the rest of the task cannot run.
 
 - [ ] **Step 1: Write the failing test**
 
