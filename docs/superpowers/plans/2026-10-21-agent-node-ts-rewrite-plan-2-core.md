@@ -3579,17 +3579,17 @@ function code(fn: () => unknown): string {
 describe('FilesRoot.resolveExisting', () => {
   it('resolves an empty path to the root itself', () => {
     const dir = root();
-    expect(new FilesRoot(dir).resolveExisting('')).toBe(dir);
+    expect(FilesRoot.open(dir).resolveExisting('')).toBe(dir);
   });
 
   it('resolves a nested relative path', () => {
     const dir = root();
-    expect(new FilesRoot(dir).resolveExisting('docs/a.txt')).toBe(join(dir, 'docs', 'a.txt'));
+    expect(FilesRoot.open(dir).resolveExisting('docs/a.txt')).toBe(join(dir, 'docs', 'a.txt'));
   });
 
   it('rejects a NUL byte', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('docs\0/a.txt'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs\0/a.txt'))).toBe('INVALID_PATH');
   });
 
   it('rejects a backslash on every platform, not only Windows', () => {
@@ -3597,23 +3597,23 @@ describe('FilesRoot.resolveExisting', () => {
     // sends `docs\a.txt` and a POSIX host would otherwise treat it as one
     // filename containing a backslash.
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('docs\\a.txt'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs\\a.txt'))).toBe('INVALID_PATH');
   });
 
   it('rejects an absolute path', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('/etc/passwd'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('/etc/passwd'))).toBe('INVALID_PATH');
   });
 
   it('rejects an empty component', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('docs//a.txt'))).toBe('INVALID_PATH');
-    expect(code(() => new FilesRoot(dir).resolveExisting('docs/'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs//a.txt'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs/'))).toBe('INVALID_PATH');
   });
 
   it('rejects a "." component', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('./docs/a.txt'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('./docs/a.txt'))).toBe('INVALID_PATH');
   });
 
   it('lets ".." through and then rejects the escape by containment', () => {
@@ -3621,7 +3621,7 @@ describe('FilesRoot.resolveExisting', () => {
     // first. The rejection comes from the containment check, which is why the
     // two errors are different and both must exist.
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('docs/../..'))).toBe('PATH_OUTSIDE_ROOT');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs/../..'))).toBe('PATH_OUTSIDE_ROOT');
   });
 
   it('rejects a symlink that resolves outside the root', () => {
@@ -3629,7 +3629,7 @@ describe('FilesRoot.resolveExisting', () => {
     const outside = mkdtempSync(join(tmpdir(), 'ponter-outside-'));
     writeFileSync(join(outside, 'secret'), 'x');
     symlinkSync(outside, join(dir, 'escape'));
-    expect(code(() => new FilesRoot(dir).resolveExisting('escape/secret'))).toBe(
+    expect(code(() => FilesRoot.open(dir).resolveExisting('escape/secret'))).toBe(
       'PATH_OUTSIDE_ROOT',
     );
   });
@@ -3637,7 +3637,7 @@ describe('FilesRoot.resolveExisting', () => {
   it('accepts a symlink that stays inside the root', () => {
     const dir = root();
     symlinkSync(join(dir, 'docs'), join(dir, 'alias'));
-    expect(new FilesRoot(dir).resolveExisting('alias/a.txt')).toBe(join(dir, 'docs', 'a.txt'));
+    expect(FilesRoot.open(dir).resolveExisting('alias/a.txt')).toBe(join(dir, 'docs', 'a.txt'));
   });
 
   it('uses component-wise containment, not string prefix', () => {
@@ -3646,32 +3646,32 @@ describe('FilesRoot.resolveExisting', () => {
     mkdirSync(sibling);
     writeFileSync(join(sibling, 'x'), 'x');
     symlinkSync(sibling, join(dir, 'sibling'));
-    expect(code(() => new FilesRoot(dir).resolveExisting('sibling/x'))).toBe('PATH_OUTSIDE_ROOT');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('sibling/x'))).toBe('PATH_OUTSIDE_ROOT');
   });
 
   it('reports NOT_FOUND for a missing path', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveExisting('nope'))).toBe('NOT_FOUND');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('nope'))).toBe('NOT_FOUND');
   });
 });
 
 describe('FilesRoot.resolveParentForCreate', () => {
   it('resolves a valid parent and name', () => {
     const dir = root();
-    expect(new FilesRoot(dir).resolveParentForCreate('docs', 'b.txt')).toBe(
+    expect(FilesRoot.open(dir).resolveParentForCreate('docs', 'b.txt')).toBe(
       join(dir, 'docs', 'b.txt'),
     );
   });
 
   it('treats an empty directory as the root', () => {
     const dir = root();
-    expect(new FilesRoot(dir).resolveParentForCreate('', 'b.txt')).toBe(join(dir, 'b.txt'));
+    expect(FilesRoot.open(dir).resolveParentForCreate('', 'b.txt')).toBe(join(dir, 'b.txt'));
   });
 
   it('rejects a name containing a slash, a backslash, a NUL, or a dot', () => {
     const dir = root();
     for (const name of ['a/b', 'a\\b', 'a\0b', '.', '..', '']) {
-      expect(code(() => new FilesRoot(dir).resolveParentForCreate('docs', name))).toBe(
+      expect(code(() => FilesRoot.open(dir).resolveParentForCreate('docs', name))).toBe(
         'INVALID_PATH',
       );
     }
@@ -3679,7 +3679,7 @@ describe('FilesRoot.resolveParentForCreate', () => {
 
   it('rejects a parent that is a file', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(dir).resolveParentForCreate('docs/a.txt', 'b'))).toBe(
+    expect(code(() => FilesRoot.open(dir).resolveParentForCreate('docs/a.txt', 'b'))).toBe(
       'NOT_A_DIRECTORY',
     );
   });
@@ -3687,12 +3687,12 @@ describe('FilesRoot.resolveParentForCreate', () => {
 
 describe('FilesRoot.open', () => {
   it('rejects a root that does not exist', () => {
-    expect(code(() => new FilesRoot(join(tmpdir(), 'definitely-not-here')))).toBe('NOT_FOUND');
+    expect(code(() => FilesRoot.open(join(tmpdir(), 'definitely-not-here')))).toBe('NOT_FOUND');
   });
 
   it('rejects a root that is a file', () => {
     const dir = root();
-    expect(code(() => new FilesRoot(join(dir, 'docs', 'a.txt')))).toBe('NOT_A_DIRECTORY');
+    expect(code(() => FilesRoot.open(join(dir, 'docs', 'a.txt')))).toBe('NOT_A_DIRECTORY');
   });
 });
 ```
@@ -3735,7 +3735,7 @@ export class SandboxError extends Error {
   }
 }
 
-function errnoToCode(error: unknown): FilesErrorCode {
+export function errnoToCode(error: unknown): FilesErrorCode {
   const code = (error as NodeJS.ErrnoException).code;
   if (code === 'ENOENT') return 'NOT_FOUND';
   if (code === 'EEXIST') return 'FILE_EXISTS';
@@ -3768,7 +3768,6 @@ function errnoToCode(error: unknown): FilesErrorCode {
  */
 export class FilesRoot {
   private constructor(readonly root: string) {}
-
   static open(root: string): FilesRoot {
     let canonical: string;
     try {
@@ -3786,7 +3785,7 @@ export class FilesRoot {
     } catch (error) {
       throw new SandboxError(errnoToCode(error), `files root ${root} is not readable`);
     }
-    return new FilesRoot(canonical);
+    return FilesRoot.open(canonical);
   }
 
   resolveExisting(wirePath: string): string {
@@ -4047,18 +4046,38 @@ export function decodeUploadChunk(frame: Uint8Array): {
 export function partName(name: string): string {
   return `${name}${PART_SUFFIX}`;
 }
+
+/**
+ * `RemoteFile.modifiedAt` is an RFC 3339 UTC string (`files.rs:141-161`), not an
+ * epoch number, and the value is always normalized to end in `Z` — the wire
+ * type in `packages/shared/src/types/files.ts:6-13` declares `modifiedAt:
+ * string`, and `apps/web`'s `formatModified` parses it as one.
+ *
+ * Seconds, not milliseconds: `mtimeMs` truncated. A directory's `mtimeMs` can
+ * carry a fractional part that would otherwise leak into the string.
+ */
+export function rfc3339Utc(epochMs: number): string {
+  const d = new Date(Math.floor(epochMs / 1000) * 1000);
+  return `${d.toISOString().replace(/\.\d{3}Z$/, 'Z')}`;
+}
 ```
 
 - [ ] **Step 3: Write the failing session test**
 
 ```ts
 // apps/agent/test/files/session.test.ts
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FilesRoot } from '../../src/files/sandbox.js';
-import { FilesSession, resumeOffsetMatches } from '../../src/files/session.js';
+import { FILES_IDLE_TIMEOUT_MS } from '../../src/files/protocol.js';
+import type { FilesFrame } from '../../src/files/session.js';
+import {
+  FilesSession,
+  resumeOffsetMatches,
+  type RemoteFileWire,
+} from '../../src/files/session.js';
 
 const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const ID2 = '11111111-2222-3333-4444-555555555555';
@@ -4069,11 +4088,89 @@ function session() {
   return { dir, s: new FilesSession(FilesRoot.open(dir), () => 0) };
 }
 
+/**
+ * The `type` of a JSON frame, or a marker for the two non-JSON kinds. A
+ * `FilesFrame` is `string | Uint8Array | {type, …}`, so neither
+ * `typeof f !== 'string'` nor `typeof f === 'string' ? f : f.type` narrows
+ * enough for `tsc` under `strict`.
+ */
+function frameType(f: FilesFrame): string {
+  if (typeof f === 'string') return '<<text>>';
+  if (f instanceof Uint8Array) return '<<binary>>';
+  return f.type;
+}
+
+describe('list', () => {
+  /** The one frame `files-list` returns, narrowed to its wire shape. */
+  function listResult(out: FilesFrame[]) {
+    return out[0] as unknown as {
+      type: string;
+      requestId: string;
+      truncated: boolean;
+      entries: RemoteFileWire[];
+    };
+  }
+
+  // Ports `list_returns_entries_sorted_dirs_first` (files.rs:2703). The sort
+  // assertions are the point: `localeCompare` on this fixture would also put
+  // the dir first, so the name-order half is what discriminates — byte-wise
+  // puts `a.txt` before `b.txt`, and would put `B.txt` before `a.txt`.
+  it('lists entries sorted directories-first, then name byte-wise', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    mkdirSync(join(dir, 'zz-dir'));
+    writeFileSync(join(dir, 'b.txt'), 'bb');
+    writeFileSync(join(dir, 'a.txt'), 'a');
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+
+    const out = s.handle({ type: 'files-list', requestId: 'r-1', path: '' });
+    expect(out).toHaveLength(1);
+    const result = listResult(out);
+    expect(result.type).toBe('files-list-result');
+    expect(result.requestId).toBe('r-1');
+    expect(result.truncated).toBe(false);
+    expect(result.entries.map((e) => e.name)).toEqual(['zz-dir', 'a.txt', 'b.txt']);
+    expect(result.entries[0].isDirectory).toBe(true);
+    expect(result.entries[0].path).toBe('zz-dir');
+    expect(result.entries[1].size).toBe(1);
+    expect(result.entries[1].isDirectory).toBe(false);
+    expect(result.entries[1].path).toBe('a.txt');
+    // The wire type declares `modifiedAt: string` and always ends in `Z`.
+    expect(result.entries[1].modifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  // Ports `list_on_a_file_is_not_a_directory` (files.rs:2730). This is the test
+  // that catches `readdirSync` bypassing `errnoToCode`: without the mapping in
+  // `list()` itself, Node's `ENOTDIR` reaches `handle()`'s generic catch and
+  // the wire code becomes `IO_ERROR`.
+  it('reports NOT_A_DIRECTORY when listing a file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    writeFileSync(join(dir, 'f.txt'), 'x');
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+
+    const out = s.handle({ type: 'files-list', requestId: 'r-1', path: 'f.txt' });
+    expect(JSON.stringify(out)).toContain('NOT_A_DIRECTORY');
+  });
+
+  // Ports `list_cap_truncates_at_4096_with_the_flag` (files.rs:2740).
+  it('truncates at the cap and sets the flag', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    for (let i = 0; i < 4097; i++) writeFileSync(join(dir, `f${String(i).padStart(4, '0')}`), '');
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+
+    const out = s.handle({ type: 'files-list', requestId: 'r-1', path: '' });
+    const result = listResult(out);
+    expect(result.entries).toHaveLength(4096);
+    expect(result.truncated).toBe(true);
+    expect(result.entries[0].name).toBe('f0000');
+    expect(result.entries[4095].name).toBe('f4095');
+  });
+});
+
 describe('download', () => {
   it('emits begin, then exactly the 64-chunk window, then waits for acks', () => {
     const { s } = session();
     const out = s.handle({ type: 'files-download', transferId: ID, path: 'a.bin' });
-    expect(out[0].type).toBe('files-download-begin');
+    expect(frameType(out[0]!)).toBe('files-download-begin');
     expect(out.filter((f) => typeof f !== 'string')).toHaveLength(64);
   });
 
@@ -4081,7 +4178,7 @@ describe('download', () => {
     const { dir, s } = session();
     writeFileSync(join(dir, 'empty'), '');
     const out = s.handle({ type: 'files-download', transferId: ID, path: 'empty' });
-    expect(out.map((f) => (typeof f === 'string' ? f : f.type))).toContain('files-download-end');
+    expect(out.map(frameType)).toContain('files-download-end');
   });
 
   it('refuses a second download in the same direction', () => {
@@ -4148,7 +4245,7 @@ describe('upload', () => {
         totalChunks: 20,
         data: Buffer.alloc(32_768).toString('base64'),
       });
-      acks += out.filter((f) => typeof f !== 'string' && f.type === 'files-upload-ack').length;
+      acks += out.filter((f) => frameType(f) === 'files-upload-ack').length;
     }
     expect(acks).toBe(1);
   });
@@ -4195,6 +4292,21 @@ describe('upload', () => {
 });
 
 describe('resume', () => {
+  // The wire value is pinned here because Rust never pinned it: `files.rs:40-45`
+  // says the constant is "pinned by [`FILES_IDLE_TIMEOUT_MS`] and its own
+  // assertion", and no such assertion exists (`awk 'NR>=2287' files.rs | grep
+  // FILES_IDLE_TIMEOUT` is empty; the test module starts at :2287).
+  //
+  // Only the literal `30_000` is asserted. "The prod timeout equals the
+  // constant" is NOT asserted, because in TS both sides are the same symbol —
+  // `expect(FILES_IDLE_TIMEOUT_MS).toBe(FILES_IDLE_TIMEOUT_MS)` cannot fail.
+  // Rust could assert the equivalent because it has two symbols that diverge
+  // under `cfg(test)` (`FILES_IDLE_TIMEOUT` shrinks to 50 ms so tests need not
+  // sleep 30 s); TS has one and reaches the same end by injecting `now()`.
+  it('pins the idle timeout to the wire value', () => {
+    expect(FILES_IDLE_TIMEOUT_MS).toBe(30_000);
+  });
+
   it('requires the .part length to equal the resume offset exactly', () => {
     expect(resumeOffsetMatches(65_536, 2)).toBe(true);
     expect(resumeOffsetMatches(65_535, 2)).toBe(false);
@@ -4213,11 +4325,15 @@ describe('resume', () => {
       direction: 'upload',
       fromChunkIndex: 5,
     });
-    const ack = out.find((f) => typeof f !== 'string' && f.type === 'files-resume-ack');
+    const ack = out.find((f) => frameType(f) === 'files-resume-ack');
     expect(ack).toBeDefined();
     expect(JSON.stringify(ack)).toContain('"approved":false');
   });
 
+  // Ports `paused_state_survives_idle_timeout` (files.rs:3834): pause, push the
+  // clock past the deadline, and assert `checkIdle()` emits nothing and the
+  // slot survives. Rust forces the deadline into the past directly; TS advances
+  // the injected clock, which reaches the same state without touching internals.
   it('paused transfers do not time out', () => {
     let now = 0;
     const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
@@ -4275,8 +4391,9 @@ import {
   unlinkSync,
   writeSync,
 } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
-import { SandboxError } from './sandbox.js';
+import { SandboxError, errnoToCode } from './sandbox.js';
 import type { FilesRoot } from './sandbox.js';
 import {
   ACK_FLUSH_INTERVAL_MS,
@@ -4284,17 +4401,36 @@ import {
   FILE_MAX_BYTES,
   FILE_WINDOW_CHUNKS,
   FILES_IDLE_TIMEOUT_MS,
+  MAX_LIST_ENTRIES,
   PART_SUFFIX,
   decodeUploadChunk,
   encodeDownloadChunk,
   expectedChunkLen,
   partName,
+  rfc3339Utc,
   totalChunks,
 } from './protocol.js';
 
 export { FILES_IDLE_TIMEOUT_MS };
 
-export type FilesFrame = string | { type: string; [key: string]: unknown };
+/**
+ * The wire shape of one entry, exactly `RemoteFile` from
+ * `packages/shared/src/types/files.ts:6-13`. Declared here rather than
+ * imported so `apps/agent` does not depend on the browser's package; the two
+ * must stay identical and `files.e2e.test.ts` is what catches a drift.
+ */
+export interface RemoteFileWire {
+  name: string;
+  path: string;
+  size: number;
+  isDirectory: boolean;
+  modifiedAt: string;
+}
+
+export type FilesFrame =
+  | string
+  | Uint8Array
+  | { type: string; [key: string]: unknown };
 
 /**
  * Resume requires the `.part` length to equal the resume offset **exactly**.
@@ -4435,28 +4571,54 @@ export class FilesSession {
    * A directory with 4 096 entries is normal; refusing to list it would make the
    * browser's file manager unusable on exactly the machines people use for file
    * transfer. The flag is what stops the UI claiming it showed everything.
+   *
+   * The wire shape is `RemoteFile` (`packages/shared/src/types/files.ts:6-13`,
+   * unchanged since Week 10): `{name, path, size, isDirectory, modifiedAt}`.
+   * Every field is carried through, not renamed — `apps/web`'s FilesView reads
+   * `isDirectory`, `path` and `modifiedAt` directly, and
+   * `packages/webrtc-core/test/e2e/files.e2e.test.ts:123,127` asserts
+   * `isDirectory`.
    */
   private list(message: { [key: string]: unknown }): FilesFrame[] {
-    const path = this.root.resolveExisting(String(message.path ?? ''));
-    const names = readdirSync(path, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
-    const truncated = names.length > MAX_LIST_ENTRIES;
-    const entries = names.slice(0, MAX_LIST_ENTRIES).map((entry) => {
-      const stat = statSync(join(path, entry.name), { throwIfNoEntry: false });
+    const rel = String(message.path ?? '');
+    const path = this.root.resolveExisting(rel);
+    // A file where a directory was expected is NOT_A_DIRECTORY; other failures
+    // are IO_ERROR. `readdirSync` is the call that raises it, so the mapping
+    // happens here rather than in `handle()`'s generic catch.
+    let names: Dirent[];
+    try {
+      names = readdirSync(path, { withFileTypes: true });
+    } catch (error) {
+      throw new SandboxError(errnoToCode(error), `listing \`${rel}\``);
+    }
+    const entries: RemoteFileWire[] = names.map((entry) => {
+      // A per-entry stat failure fails the whole list (spec §6.1): a
+      // half-listed directory is worse than an error.
+      const stat = statSync(join(path, entry.name));
+      // `metadata.len()` is a real number for a directory too — the wire type
+      // declares `size: number`, not `number | null`.
       return {
         name: entry.name,
-        kind: entry.isDirectory() ? 'directory' : 'file',
-        size: entry.isDirectory() ? null : (stat?.size ?? 0),
-        modifiedEpochMs: stat ? Math.floor(stat.mtimeMs) : 0,
+        path: rel === '' ? entry.name : `${rel}/${entry.name}`,
+        size: stat.size,
+        isDirectory: stat.isDirectory(),
+        modifiedAt: rfc3339Utc(stat.mtimeMs),
       };
     });
+    // Deterministic order (spec §2.5): directories first, then name
+    // byte-wise. Sort BEFORE truncating — `read_dir` order is arbitrary.
+    entries.sort(
+      (a, b) =>
+        Number(b.isDirectory) - Number(a.isDirectory) ||
+        Buffer.compare(Buffer.from(a.name, 'utf8'), Buffer.from(b.name, 'utf8')),
+    );
+    const truncated = entries.length > MAX_LIST_ENTRIES;
     return [
       {
         type: 'files-list-result',
         requestId: message.requestId,
-        path: String(message.path ?? ''),
-        entries,
+        path: rel,
+        entries: entries.slice(0, MAX_LIST_ENTRIES),
         truncated,
       },
     ];
@@ -4816,7 +4978,10 @@ export class FilesSession {
    */
   private remove(message: { [key: string]: unknown }): FilesFrame[] {
     const target = this.root.resolveExisting(String(message.path ?? ''));
-    if (target === this.root) {
+    // `resolveExisting('')` returns the canonical root, so this compares two
+    // canonical strings. Comparing against `this.root` (the object) would be
+    // always-false and would let a peer delete the root itself.
+    if (target === this.root.root) {
       throw new SandboxError('PERMISSION_DENIED', 'the files root itself cannot be deleted');
     }
     const stat = statSync(target);
@@ -4852,12 +5017,16 @@ export class FilesSession {
   }
 
   private actionResult(message: { [key: string]: unknown }, path: string): FilesFrame {
+    // `path` is a canonical absolute path; the wire carries it relative to the
+    // root. `this.root` is the `FilesRoot`, so the comparison and the slice
+    // both go through `.root` (the canonical string).
+    const prefix = this.root.root;
     return {
       type: 'files-action-result',
       requestId: message.requestId,
       action: String(message.type).replace('files-', ''),
       success: true,
-      path: path === this.root ? '' : path.slice(this.root.length + 1),
+      path: path === prefix ? '' : path.slice(prefix.length + 1),
     };
   }
 
@@ -4885,7 +5054,67 @@ git add apps/agent/src/files apps/agent/test/files
 git commit -m "feat(agent): port the files protocol and transfer state machine"
 ```
 
-**TEST-INTEGRITY declaration:** two new test files, **25 new `it()` / 42 new `expect()`**. Ports 24 of `files.rs`'s 65 tests (the ones covering the wire surface, the window, ack batching, resume alignment, cancel and idle); the remaining 41 cover Rust-internal helpers (`rfc3339_formats_epoch_seconds_utc`, `decode_guard_*`, `test_transfer_id_codec_*`) or per-platform filesystem races that are not ported. Declared **retirements** for Plan 3's R-entry: `files-download-chunk` as a JSON outbound type (dead in Rust, never emitted — no browser can depend on it); `QUEUE_FULL` (never produced); and the four `decode_*` guard tests (the guards' Python-`#[allow(dead_code)]` TS counterparts do not exist, so there is nothing to test). Two are **new**: `paused transfers do not time out` and `drained .part before resume` as separate assertions, and `FILES_IDLE_TIMEOUT_MS` gets the pin the Rust comment claimed but never had — the constant is defined at `files.rs:31` as `30_000` and its comment says "pinned by its own assertion", but grep finds no such assertion. The TS test asserts the constant is `30_000` **and** that the prod timeout equals it. Ruling: **the code wins, and the missing pin is an addition, not a repair** — declared as new rather than counted as a port.
+**TEST-INTEGRITY declaration:** two new test files, **29 new `it()` / 60 new
+`expect()`** (was 25/42 before the repair below). Ports 26 of `files.rs`'s 65
+tests — those covering the wire surface, the window, ack batching, resume
+alignment, cancel, idle, and the three `list_*` tests. The remaining **39** are
+either Rust-internal helpers (`rfc3339_formats_epoch_seconds_utc`,
+`decode_guard_*`, `test_transfer_id_codec_*`, `error_code_spellings_are_pinned`,
+`frame_files_wraps_the_envelope`, the seven `path_policy_*` /
+`upload_create_path_*` tests Task 10 already owns, and the pure `total_chunks` /
+`expected_chunk_len` / frame-cap arithmetic) or per-platform filesystem races
+(`finalize_race_losing_path_is_file_exists`, `stale_part_is_removed_and_retried_once`,
+`test_janitor_cleans_stale_part_files`). **The counts are per-test-name, derived
+from the two fences, not from a split estimated by subtraction.** The previous
+"24 of 65 / 41 remaining" partition was unauditable — it named one of the 24 and
+described the rest — and the repair is a *partition* repair, not a relabel: the
+41's stated criterion ("Rust-internal helpers … or per-platform filesystem
+races") does not cover `paused_state_survives_idle_timeout` (`files.rs:3834`),
+which exercises a wire-surface idle behaviour and therefore belonged to neither
+list. It is now counted among the 26 ports.
+
+Declared **retirements** for Plan 3's R-entry: `files-download-chunk` as a JSON
+outbound type (dead in Rust, never emitted — no browser can depend on it);
+`QUEUE_FULL` (never produced); and the four `decode_*` guard tests (the guards'
+`#[allow(dead_code)]` TS counterparts do not exist, so there is nothing to test).
+
+**Three additions, each declared as new rather than counted as a port:**
+
+1. **`pins the idle timeout to the wire value`** — `expect(FILES_IDLE_TIMEOUT_MS).toBe(30_000)`.
+   The Rust comment at `files.rs:40-45` claims the constant is "pinned by its own
+   assertion" and no such assertion exists (the test module starts at `:2287`;
+   nothing past it references `FILES_IDLE_TIMEOUT`). **Only the literal is
+   asserted.** The earlier declaration promised "the prod timeout equals it" as
+   well; that assertion is *vacuous* in TS and has been dropped, because TS has
+   one constant used identically by production and tests, so
+   `expect(X).toBe(X)` cannot fail. Rust could assert the equivalent because it
+   has **two** symbols diverging under `cfg(test)` — `FILES_IDLE_TIMEOUT` shrinks
+   to 50 ms so tests need not sleep 30 s. **TS needs no such divergence: it
+   injects `now()`, which is the design difference the declaration now names
+   instead of implying.**
+2. **`lists entries sorted directories-first, then name byte-wise`** — the sort
+   is `Buffer.compare` on UTF-8 bytes, matching `files.rs:1336-1340`. `localeCompare`
+   is ICU-dependent and would also put the fixture's dir first, so the *name*
+   half is what discriminates.
+3. **`reports NOT_A_DIRECTORY when listing a file`** — this is the test that
+   catches `readdirSync` bypassing `errnoToCode`. Without the mapping inside
+   `list()`, Node's `ENOTDIR` reaches `handle()`'s generic catch and the wire code
+   becomes `IO_ERROR` while the Rust emits `NOT_A_DIRECTORY`.
+
+**One test renamed, not removed:** `paused transfers do not time out` exists in
+the fence and is correctly named, but the previous declaration called it *new*.
+It is a **port** of `paused_state_survives_idle_timeout` (`files.rs:3834`), which
+pauses, forces `deadline` into the past, and asserts `checkIdle()` returns empty
+with the slot still `Some`. The TS fence does the same through the injected
+clock. Counted among the 26 ports.
+
+**Two fence repairs the tests depend on** (no count change on their own):
+`FilesRoot.list()` now builds the wire shape `{name, path, size, isDirectory,
+modifiedAt}` rather than `{name, kind, size|null, modifiedEpochMs}` — the Rust
+`RemoteFile` (`files.rs:286-292`), `packages/shared/src/types/files.ts:6-13`, and
+`apps/web`'s FilesView all agree on the former, and only the plan disagreed.
+`rfc3339Utc` is added to `protocol.ts` and `errnoToCode` is exported from
+`sandbox.ts` so `list()` can use them.
 
 ---
 
