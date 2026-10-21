@@ -2497,7 +2497,8 @@ These are carried forward to Plan 2 and Plan 3, and are listed here so their abs
 
 ### A known accounting hole in the spec's B-row inventory
 
-The behaviour inventory is 62 rows (B1–B62), and the Rust agent carries **359** `#[test]`/`#[tokio::test]` functions (spec §8.1). Those two numbers cannot be reconciled, because **29 of the 359 sit in modules the inventory never gives a row to**:
+The behaviour inventory is 62 rows (B1–B62), and the Rust agent carries **362**
+anchored `#[test]`/`#[tokio::test]` attributes (spec §8.1). Those two numbers cannot be reconciled, because **29 of the 362 sit in modules the inventory never gives a row to**:
 
 | Module | Tests | Spec §12's port destination |
 |---|---|---|

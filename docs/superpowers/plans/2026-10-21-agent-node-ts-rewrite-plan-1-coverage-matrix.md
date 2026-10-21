@@ -25,16 +25,29 @@ a row for which no plan is identified at all — those are called out in §4 bel
 
 **Job 2 — TEST-INTEGRITY accounting.** Spec §8.1 fixes the baseline:
 
-> The Rust agent carries **359 `#[test]`/`#[tokio::test]` functions**. The port
-> must carry an equivalent suite, not a smaller one. Each Rust test that is
-> retired must be accounted for by a TS test or by an explicit R-entry
-> (§4.7) — **never by deletion or skip**.
+> The Rust agent carries **362 anchored `#[test]`/`#[tokio::test]` attributes**
+> across 19 files. The port must carry an equivalent suite, not a smaller one.
+> Each Rust test that is retired must be accounted for by a TS test or by an
+> explicit R-entry (§4.7) — **never by deletion or skip**.
 
-The 359 figure is verified against the tree at `798e9df`. Per-file counts:
+**This table's counts were re-derived from the tree, and they correct an earlier
+draft of this file.** That draft totalled 359. 359 was a grep artifact: an
+un-anchored `#\[(tokio::)?test\]` pattern counted one prose line as a test
+(`apps/agent/src/pty.rs:578`, `// … and a #[tokio::test] body is one.`) and
+missed all four `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
+(`apps/agent/src/desktop.rs:3253,3278,3303,3332`). 358 + 4 = **362**. The table
+below uses the anchored pattern
+`^\s*#\[(test|tokio::test)(\([^)]*\))?\]\s*$`, and the two per-file counts that
+move are `desktop.rs` (81 → **85**) and `pty.rs` (12 → **11**).
+
+The baseline has three numbers (§8.1): **362** anchored attributes — the
+accounting baseline — **361** compilable on Linux (355 lib + 6 bin), **357**
+runnable on Linux (351 lib after 4 `#[ignore]` + 6 bin). Deltas are measured
+against **362**.
 
 | Rust file | `#[test]`/`#[tokio::test]` | Owning plan |
 |---|---|---|
-| `apps/agent/src/desktop.rs` | 81 | Plan 1 (encode/addon half) + Plan 2 (core half) |
+| `apps/agent/src/desktop.rs` | 85 | Plan 1 (encode/addon half) + Plan 2 (core half) |
 | `apps/agent/src/files.rs` | 65 | Plan 2 |
 | `apps/agent/src/lib.rs` | 28 | Plan 1 (profile table, `:445-507`) + Plan 2 |
 | `apps/agent/src/cursor.rs` | 22 | Plan 2 (change detection, wire frame) + Plan 3 (X11 sampling) |
@@ -52,7 +65,7 @@ The 359 figure is verified against the tree at `798e9df`. Per-file counts:
 | `apps/agent/src/desktop/warm_capture.rs` | 18 | Plan 2 |
 | `apps/agent/src/rtc.rs` | 16 | Plan 2 |
 | `apps/agent/src/signal.rs` | 15 | Plan 2 |
-| `apps/agent/src/pty.rs` | 12 | Plan 2 |
+| `apps/agent/src/pty.rs` | 11 | Plan 2 |
 | `apps/agent/src/shell_policy.rs` | 10 | Plan 2 |
 | `apps/agent/src/portal/evdev_map.rs` | 10 | Plan 1 (addon, Linux key map) |
 | `apps/agent/src/logging.rs` | 8 | Plan 2 |
@@ -62,7 +75,14 @@ The 359 figure is verified against the tree at `798e9df`. Per-file counts:
 | `apps/agent/src/portal/injector.rs` | 5 | Plan 1 (addon, Linux input) |
 | `apps/agent/src/identity.rs` | 5 | Plan 2 |
 | `apps/agent/src/portal/token_store.rs` | 4 | Plan 2 |
-| **Total** | **359** | |
+| **Total** | **362** | |
+
+**A per-file count can still vary by target**, because many tests are
+`cfg`-gated: `#[cfg(unix)]` ×4 in `shell_policy.rs`,
+`#[cfg(not(target_env = "musl"))]` ×5 across `rtc.rs` (4) and `lib.rs` (1), and
+`#[cfg(all(target_os = "linux", not(target_env = "musl")))]` ×2 in
+`portal/remote_desktop.rs`. The table above is the attribute count, which is
+target-independent; do not substitute a runnable count for it.
 
 The per-plan retirement target this implies: **Plan 1 must land a TS suite covering
 the rows it owns before Plan 3 deletes anything.** No Rust test may be deleted while
@@ -346,8 +366,9 @@ part of R3's budget, and Plan 3 must not delete them along with the file.
 1. When a plan lands a row, change its `Status` to `Covered` and its `Test file` to
    the real path. Never change a `Status` without a test to point at.
 2. When a plan lands rows whose Rust tests are being retired, add the before→after
-   `it()`/`expect()` counts to that plan's report, per spec §8.1. The 359 baseline in
-   this file's preamble is the number that accounting is measured against.
+   `it()`/`expect()` counts to that plan's report, per spec §8.1. The 362
+   anchored-attribute baseline in this file's preamble is the number that
+   accounting is measured against.
 3. When a row moves between plans, say why in the row. A plan boundary that shifts
    silently is how a behaviour ends up in nobody's plan — which is exactly how B19
    got here.

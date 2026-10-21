@@ -1007,9 +1007,34 @@ Eight **living** documents must change:
 
 ### 8.1 Test-strategy requirements (TEST-INTEGRITY)
 
-The Rust agent carries **359 `#[test]`/`#[tokio::test]` functions**. The port
-must carry an equivalent suite, not a smaller one. Each Rust test that is
-retired must be accounted for by a TS test or by an explicit R-entry
+The Rust agent carries **362 anchored `#[test]`/`#[tokio::test]` attributes**
+across 19 files. (An earlier draft of this section said 359. That number was a
+grep artifact, not a measurement: an un-anchored `#\[(tokio::)?test\]` pattern
+counted one prose line as a test — `pty.rs:578`, `// … and a #[tokio::test]
+body is one.` — and missed all four
+`#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` in
+`desktop.rs:3253,3278,3303,3332`. 358 + 4 = 362. Both halves were re-derived
+from the tree and confirmed against `cargo`.)
+
+**The baseline has three numbers, and a delta must name which one it means:**
+
+| Number | Value | What it counts |
+|---|---|---|
+| Anchored attributes | **362** | Every `#[test]`/`#[tokio::test]` in `apps/agent/src`. **This is the baseline TEST-INTEGRITY is measured against**, because it does not vary by target. |
+| Compilable on Linux | **361** | `cargo test --lib -- --list` = 355, `cargo test --bin ponter-agent -- --list` = 6. The one attribute that does not compile on Linux is `main.rs:384` `windows_prefers_powershell_7_over_legacy_powershell`. |
+| Runnable on Linux | **357** | 351 lib after the four `#[ignore]`d tests, plus 6 bin. |
+
+**A delta comparison is only meaningful on the same target.** Many tests are
+`cfg`-gated, so a runnable count depends on what was built — `#[cfg(unix)]` ×4
+in `shell_policy.rs`, `#[cfg(not(target_env = "musl"))]` ×5 across `rtc.rs` (4)
+and `lib.rs` (1), and `#[cfg(all(target_os = "linux", not(target_env =
+"musl")))]` ×2 in `portal/remote_desktop.rs`. Comparing a Linux GNU runnable
+count against a Windows one produces a phantom "lost test". Use the anchored
+attribute count (362) for accounting, and a like-for-like target for any
+behavioural claim.
+
+The port must carry an equivalent suite, not a smaller one. Each Rust test that
+is retired must be accounted for by a TS test or by an explicit R-entry
 (§4.7) — **never by deletion or skip**. The plan must publish a
 before→after count for `it()`/`expect()` per suite, with a rationale, per the
 standing TEST-INTEGRITY rule.
@@ -1174,7 +1199,8 @@ are the plan's work, not the spec's.
 
 `apps/agent/src/` — 20,858 lines across 20 files, plus `apps/agent/vendor/xcap`
 (7,528 lines across 45 `.rs` files — 50 files including `Cargo.toml` and
-`PATCH.md`) and 359 test functions.
+`PATCH.md`) and 362 anchored test attributes (355 lib + 6 bin compilable on
+Linux; see §8.1 for the three-number baseline).
 
 | File | Lines | Primary port target |
 |---|---|---|
