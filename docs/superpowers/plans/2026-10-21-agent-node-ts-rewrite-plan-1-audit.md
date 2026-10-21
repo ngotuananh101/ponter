@@ -68,6 +68,9 @@ Severity is my own ranking: **S1** = a step cannot execute as written / an imple
 **Fix:** either (a) `createOutboundTrack` mints its own id and hands it back — `const id = crypto.randomUUID(); const track = new MediaStreamTrack({ kind, id }); return { kind, id, ssrc: 0 };` — or (b) Step 5 keys the accessor on the track object rather than on an id. I recommend (b): `getOutboundTrackCodec(track: MediaStreamTrackLike)`. Rewrite L855 as `expect(adapter.getOutboundTrackCodec(track)?.payloadType).toBe(PT_H264_MODE1);` and L861 accordingly.
 
 **C4. Five undefined symbols in Task 2's implementation.** L721 (`this.createWeriftTrack`), L722 (`this.createWeriftStream`), L796 (`this.senders`), L549/7 call sites (`getSenders`), L855/861 (`getOutboundTrackCodec`). Task 2 Step 3 says "add the sender surface" and then shows only the two methods — the helper methods, the `senders` field, the `getSenders` implementation and the `getOutboundTrackCodec` accessor are all implied but never written. An implementer following the plan literally gets a file that does not compile.
+
+> **Superseded for `getSenders` (added 2026-10-21).** This finding stands as a record of the plan at audit time. Plan 2's Task 2 now writes the `RTCRtpSenderLike` seam and the sender surface itself, so the `getSenders` half of C4 is answered there rather than by an edit to Plan 1. The other four symbols remain Plan 1's.
+
 **Fix:** add a short block to Step 3 before the shown code:
 
 ```ts
