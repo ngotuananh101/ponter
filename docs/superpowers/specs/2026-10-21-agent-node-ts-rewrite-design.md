@@ -88,7 +88,7 @@ constraints that shaped the Rust design and opens the in-process question
 | ID | Constraint | Evidence |
 |---|---|---|
 | C1 | The agent must speak the existing signalling envelope: outer `{"type","data"}` transport frame wrapping an inner serde-tagged signal message | `apps/agent/src/signal.rs:22-29`, `:233-237` |
-| C2 | The agent must answer WebRTC offers with H.264 at PT negotiated by SDP, `packetization-mode=1`, `profile-level-id=42001f` | `apps/agent/src/rtc.rs:202-209` |
+| C2 | The agent must answer WebRTC offers with H.264 at the PT negotiated by SDP, `packetization-mode=1`. The `profile-level-id` is **the browser's** (the agent cannot choose it — §3.3), and it must be **compatible** with what the encoder emits, not equal to it. The Rust agent's `profile-level-id=42001f` is **wrong on both bytes** and must not be copied (§3.3). | `apps/agent/src/rtc.rs:202-209`; `docs/spikes/2026-10-11-hardware-encode-h265.md:167` (real SPS `42 c0 1f`) |
 | C3 | The agent's video payload is **Annex-B** H.264 NAL units; the RTP packetization (single-NAL / STAP-A / FU-A) happens above it | `apps/agent/src/desktop.rs:1852-1871`; `webrtc-0.21.0/src/media_stream/track_local/static_sample.rs:164` |
 | C4 | The PT must be the **H.264** one, never `codecs.first()` — Chrome offers VP8 (PT 96) before H.264 (PT 102) and the wrong PT renders a black frame | `apps/agent/src/rtc.rs:277-303` (the bug is documented in-place) |
 | C5 | The WS2 identity proof is signed over the exact bytes of `canonicalProofMessage` | `apps/agent/src/identity.rs:78-90` ≡ `packages/shared/src/types/identity-proof.ts:22-29` |
@@ -112,7 +112,7 @@ constraints that shaped the Rust design and opens the in-process question
 | **D4a** | **werift's default peer config has NO H.264.** `generateDefaultPeerConfig()` sets `video: [useVP8()]`. H.264 exists only as an opt-in codec helper (`useH264()` → `video/h264`, clock 90000, `packetization-mode=1`, `profile-level-id=42e01f`) and must be passed explicitly as `codecs: { video: [useH264()] }`. | `werift/lib/webrtc/src/peerConnection.js:1082`; `werift/lib/webrtc/src/media/codec.js:6-12` | The new agent **must** construct its `RTCPeerConnection` with an explicit H.264 codec list. Without it, the answerer negotiates no H.264 at all and the desktop offer is refused. The existing e2e harness already does this (`desktop.e2e.test.ts:123` passes `codecs: { video: [useH264()] }`) — the port must carry that forward. |
 | **D4b** | **werift picks the sender payload type as `codecs[0]`, and `codecs` is the OFFER's ordering — but only among the codecs the local list also offers.** `RTPSender.prepareSend` does `this.codec = params.codecs[0]`; `RTPSender.sendRtp` then **overwrites** `header.payloadType = this.codec.payloadType`; `MediaStreamTrack.writeRtp` does the same with `this.codec?.payloadType`. `transceiver.codecs` is assigned from the *remote* (offer) codec list, filtered against the local list — so it keeps the browser's ordering. | `werift/lib/webrtc/src/media/rtpSender.js:408`, `:545`; `werift/lib/webrtc/src/media/track.js:132-134`; `werift/lib/webrtc/src/transceiverManager.js:244` | **This is C4's bug reproduced inside werift — but only conditionally.** Measured against a real Chrome SDP offer (VP8 pt96, H.264 pt102, rtx pt103): with the local list `[useH264()]` the negotiated list is `H264/pt102` alone and `sender.codec` is **H.264 pt102** — correct. With the local list `[useVP8(), useH264()]` the negotiated list keeps the browser's order and `sender.codec` is **VP8 pt96** — the black-video bug. **R-S1's H.264-only local list is what closes D4b**; the port must not "helpfully" add VP8 to the agent's codec list. The residual risk after R-S1 is not the payload type but the codec *parameters* (D4d). |
 | **D4c** | **`RTPSender.sendRtp` silently no-ops when the codec is unset** (`if (this.dtlsTransport.state !== "connected" \|\| !this.codec) { return; }`). | `werift/lib/webrtc/src/media/rtpSender.js:539` | A misconfigured sender drops every frame with **no error** — the connection stays healthy and the browser shows black. The port needs an explicit assertion that the negotiated sender codec is H.264, and a loud failure otherwise, not a silent drop. |
-| **D4d** | **werift matches codecs by mime type ONLY — it never inspects `parameters`.** `findCodecByMimeType` compares `mimeType.toLowerCase()` and ignores `fmtp` entirely. The negotiated codec's `parameters` are the **browser's**, echoed verbatim into the answer; werift's local `useH264()` `parameters` string is never consulted. | `werift/lib/webrtc/src/peerConnection.js:1074` (`findCodecByMimeType`); `werift/lib/webrtc/src/transceiverManager.js:244-259`; `werift/lib/webrtc/src/media/codec.js:6-12` | **This is the residual, real failure mode after D4b is closed.** A Chrome offer carries two H.264 entries — pt102 `packetization-mode=1` and pt104 `packetization-mode=0` — and a browser whose *first* H.264 entry is mode 0 makes werift negotiate `packetization-mode=0`. The TS packetizer implements RFC 6184 **mode 1** (single-NAL / STAP-A / FU-A); a mode-0 PT carrying mode-1 packets is decoded by the browser's mode-0 depacketizer as one NAL per packet → broken frames. Symmetrically, the negotiated `profile-level-id` is the browser's, so the answer may promise a profile the encoder does not produce. **The agent must assert the negotiated `packetization-mode=1` and the profile it can encode, and fail loudly otherwise.** |
+| **D4d** | **werift matches codecs by mime type ONLY — it never inspects `parameters`.** `findCodecByMimeType` compares `mimeType.toLowerCase()` and ignores `fmtp` entirely. The negotiated codec's `parameters` are the **browser's**, echoed verbatim into the answer; werift's local `useH264()` `parameters` string is never consulted. **The Rust agent's stack did the opposite**: `webrtc-rs` matches H.264 by `packetization-mode` **and** `profile-level-id` (RFC 6184 §8.2.2), so the port is *losing* a guarantee the Rust agent had. | `werift/lib/webrtc/src/peerConnection.js:1074` (`findCodecByMimeType`); `werift/lib/webrtc/src/transceiverManager.js:244-259`; `werift/lib/webrtc/src/media/codec.js:6-12`; `werift/lib/webrtc/src/sdpManager.js:90-97` (the answer's codec list *is* the negotiated list); `rtc-0.21.0/src/rtp_transceiver/fmtp/h264/mod.rs:52-81` (`match_fmtp`) | **This is the residual, real failure mode after D4b is closed.** A Chrome offer carries two H.264 entries — pt102 `packetization-mode=1` and pt104 `packetization-mode=0` — and a browser whose *first* H.264 entry is mode 0 makes werift negotiate `packetization-mode=0`. The TS packetizer implements RFC 6184 **mode 1** (single-NAL / STAP-A / FU-A); a mode-0 PT carrying mode-1 packets is decoded by the browser's mode-0 depacketizer as one NAL per packet → broken frames. Symmetrically, the negotiated `profile-level-id` is the browser's, so the answer may promise a profile the encoder does not produce. **The agent must assert the negotiated `packetization-mode=1` and the profile it can encode, and fail loudly otherwise.** The agent cannot *edit* the negotiated `fmtp` through a supported API — but it does not have to: **choosing the payload type the browser offered with `packetization-mode=1` is the whole fix** (§3.5.3, R-S3), and it leaves the `fmtp` byte-identical to the offer, which is what RFC 3264 asks for. **R-S3 restores what webrtc-rs gave the Rust agent for free** — see §3.5.4. |
 | **D4e** | **The transceiver must exist BEFORE `setRemoteDescription`.** Adding it afterwards produces a *second* transceiver, an `a=inactive` m-line, and `sender.codec === undefined` — which D4c then turns into a silent no-op. | `werift/lib/webrtc/src/peerConnection.js:819-878` (`setRemoteDescription` → `setRemoteRTP` per m-line); measured | The Rust agent already carries this as ADR-15 (`rtc.rs:190-194`, behaviour B12). The port preserves it — but the **werift-specific symptom is new**: an inactive m-line plus an undefined codec, which is indistinguishable from a healthy-but-idle stream unless the agent asserts the negotiated codec. |
 | D5 | No pure-TypeScript H.264 encoder exists on npm. `openh264` and `node-openh264` are 404; `ffmpeg-static` is GPL-3.0; `@ffmpeg-installer/ffmpeg` is LGPL-2.1. | npm registry probes | The encoder must be a native addon. `openh264` 0.9.8 is Cisco **BSD-2-Clause** (91 `.cpp` files, vendored in the cargo registry) — permissive, and already vendored in this repo's dependency tree today. |
 | D6 | `node-pty` 1.1.0 is MIT and N-API-based (`node-addon-api ^7.1.0`), but has **no musl prebuilt** and installs `node scripts/prebuild.js \|\| node-gyp rebuild`. | npm registry | Moot under the desktop-only model (§6.2): the addon is compiled against Electron's Node, not a musl target. |
@@ -202,23 +202,90 @@ agent's `DesktopEncoder::encode` return shape exactly (C3) — so the TS core's
 packetizer and the Rust-era `TrackLocalStaticSample` see identical input.
 
 **The packetizer emits `packetization-mode=1` framing** — single-NAL, STAP-A
-and FU-A — matching the Rust agent's advertised fmtp
+and FU-A — matching the Rust agent's intent
 (`level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f`,
-`apps/agent/src/rtc.rs:208`). This is not a free choice: the negotiated
+`apps/agent/src/rtc.rs:208`; the `profile-level-id` half of that string is
+wrong — see below — but the `packetization-mode=1` half is the contract the
+Rust agent meant to express). This is not a free choice: the negotiated
 `packetization-mode` is whatever the **browser** offered (D4d), and werift
 never checks it. Mode 0 is not "mode 1 without the aggregation" — it is a
 different framing contract, and a mode-1 packet stream sent under a mode-0
 payload type is depacketized as one NAL per packet. R-S3 turns this from an
 implicit assumption into an asserted precondition.
 
-**A note on the encoder's profile.** The `profile-level-id` the answer
-advertises is the browser's, and the browser's expectation is that the
-encoder produces that profile. openh264's default output profile is
-**Constrained Baseline** (`42e01f`) — which is what the Rust agent advertised.
-The port must configure the addon to emit the same profile it advertises, and
-P0 must verify the two agree. A `profile-level-id` of `42e01f` means
-"Constrained Baseline, level 3.1", so the `e0` byte is not a typo in the
-Rust source and must not be "corrected" to `42e01f` in the TS port.
+**A note on the encoder's profile.** The `profile-level-id` in the answer is
+the **browser's** (D4d) — werift never inspects `fmtp` — so the browser's
+expectation is that the encoder produces that profile. What openh264
+actually produces was read out of the vendored source, and it is **not** the
+string the Rust agent advertised:
+
+- **Profile**: the Rust agent never sets a profile, so `uiProfileIdc` stays
+  `PRO_UNKNOWN` and openh264 resolves it from the entropy-coding mode
+  (`encoder_ext.cpp:660-666`): `FillDefault` sets
+  `iEntropyCodingModeFlag = 0`, so the resolution lands on `PRO_BASELINE`
+  (66). The SPS is then written with `profile_idc = 66`,
+  `constraint_set0_flag = 1` (because the profile *is* baseline) and
+  `constraint_set1_flag = 1` (because 66 ≤ 77 = `PRO_MAIN`)
+  (`au_set.cpp:515-520`).
+
+- **The constraint byte is `0xC0`, not `0x00` and not `0xE0`.** The four
+  constraint flags are written as four consecutive bits followed by four
+  reserved zero bits (`au_set.cpp:269-275`), so
+  `constraint_set0=1, constraint_set1=1, constraint_set2=0, constraint_set3=0`
+  gives `1100 0000` = **`0xC0`**. The real bitstream confirms it: the
+  vendor's own hexdump of the agent's Annex-B output starts
+  `00 00 00 01 67 42 c0 1f …` — SPS NAL type `0x67`, then
+  `42` (profile 66), **`c0`** (constraint byte), `1f` (level 31 = 3.1)
+  (`docs/spikes/2026-10-11-hardware-encode-h265.md:167`).
+
+- **The level is computed, not pinned.** openh264 derives the level from
+  the frame size, the frame rate and the target bitrate
+  (`WelsGetLevelIdc`, `au_set.cpp:187-193`, against the `g_ksLevelLimits`
+  table at `common_tables.cpp:345+`) and writes it into the SPS
+  (`au_set.cpp:526-537`). Recomputing that table for the four shipped
+  `StreamProfile` presets (`apps/agent/src/lib.rs:445-490`) gives:
+
+  | Preset | Computed level | SPS `profile-level-id` |
+  |---|---|---|
+  | 1080p30 @ 6 Mbps | 4.0 | `42c028` |
+  | 720p30 @ 4 Mbps | 3.1 | `42c01f` |
+  | 1080p60 @ 8 Mbps | 4.2 | `42c02a` |
+  | 720p60 @ 5 Mbps | 3.2 | `42c020` |
+
+  So the Rust agent's hard-coded `profile-level-id=42001f`
+  (`apps/agent/src/rtc.rs:208`) is wrong in **two** ways: its constraint byte
+  is `0x00` where the encoder writes `0xC0`, and its level byte claims 3.1
+  where the encoder writes 4.0 / 3.2 / 4.2 for three of the four presets.
+  It went unnoticed because the mismatch never broke a test — and that is
+  worth stating precisely: **the existing E2E suite does not decode pixels.**
+  `desktop.e2e.test.ts:260-308` asserts that a real H.264 track arrives, that
+  every packet carries the negotiated PT, and that at least one packet
+  contains an IDR NAL. It never hands the stream to a decoder. So the
+  mismatch's real-world tolerance is **unproven by the repository** — the
+  only evidence that Chrome accepts it is that the product shipped.
+
+  The port must **not** copy that string, and must **not** pin a constant
+  either. The addon has to expose the `profile_idc` and `level_idc` the
+  encoder actually chose, and the TS core has to assert that the encoder's
+  output is decodable under the negotiated `profile-level-id`.
+
+**What the port can and cannot control here.** The `fmtp` in the answer is
+the browser's, and werift offers no API to replace it — the answer's codec
+list is built straight from the negotiated list
+(`sdpManager.js:90-97`), whose `parameters` came from the offer
+(`transceiverManager.js:244-259`). The only lever the agent has is **which
+payload type the sender uses**, not what that payload type's `fmtp` says.
+§3.5.3's mitigation therefore keeps the browser's `fmtp` verbatim and picks
+the entry the browser offered with `packetization-mode=1`, which is also
+the RFC 3264-correct answer: the answer's `fmtp` for a payload type is
+echoed from the offer unchanged.
+
+**Why this matters beyond correctness.** This is the concrete instance of
+D4d: the negotiation is not under the agent's control, but the *encoder* is,
+and the two have to agree. A spec that pins a constant `profile-level-id`
+reproduces the Rust agent's bug in a new place. P0's A3 assertion (the
+browser decodes) is what catches it — a `profile-level-id`/level mismatch
+produces a connection that negotiates fine and displays nothing.
 
 ### 3.4 Reuse map
 
@@ -287,9 +354,9 @@ fight.
 
 | # | Requirement | Why | Where it lives |
 |---|---|---|---|
-| **R-S1** | **Explicit H.264-only codec list.** The agent's `RTCPeerConnection` is constructed with `codecs: { video: [useH264()] }` (plus the audio codecs it will not use) — and **nothing else**. | D4a — the default list is VP8-only, so without this the agent negotiates no H.264 and refuses the desktop offer. **D4b — the H.264-only list is also what prevents werift from selecting the browser's first codec.** Measured: with `[useH264()]` the negotiated sender is H.264 pt102; with `[useVP8(), useH264()]` it is VP8 pt96 — the black-video bug. | The agent's peer factory. The e2e harness already does this at `desktop.e2e.test.ts:123`; the port carries it forward **and must not add VP8 back for "browser compatibility"**. |
-| **R-S2** | **The negotiated codec is read back, never assumed, and asserted.** After `setRemoteDescription` + `createAnswer`, the agent reads the transceiver's negotiated codec list and **fails loudly** unless the sender's codec is H.264. | D4b — werift picks `codecs[0]` of the *negotiated* list, so the local list is the only lever. D4c — a codec-less sender drops frames silently. D4e — a transceiver added too late leaves `sender.codec` undefined. | The agent's session setup, mirroring the Rust `select_h264_payload_type` (`apps/agent/src/rtc.rs:293-303`) but reading the **negotiated** list, not the offer list, and **failing** rather than returning `None`. |
-| **R-S3** | **The negotiated `packetization-mode` is asserted to be 1, and the profile-level-id is checked against what the encoder produces.** | **D4d** — werift matches codecs by mime type only and never inspects `fmtp`, so the negotiated `parameters` are the **browser's**, echoed verbatim. A Chrome offer's *first* H.264 entry can be `packetization-mode=0`; werift would then negotiate mode 0, and mode-1 packets (single-NAL / STAP-A / FU-A) sent under a mode-0 PT are depacketized as one NAL per packet → broken frames. | The agent's session setup, next to the R-S2 assertion. The Rust agent pinned `packetization-mode=1` in its `sdp_fmtp_line` (`rtc.rs:208`) for the same reason. |
+| **R-S1** | **Explicit H.264-only codec list.** The agent's `RTCPeerConnection` is constructed with `codecs: { video: [useH264()] }` (plus the audio codecs it will not use) — and **nothing else**. | D4a — the default list is VP8-only, so without this the agent negotiates no H.264 and refuses the desktop offer. **D4b — the H.264-only list is what keeps VP8 out of the negotiated list**, because werift filters the offer's codecs against the local list by mime type. Measured: with `[useH264()]` the negotiated sender is H.264 pt102; with `[useVP8(), useH264()]` it is VP8 pt96 — the black-video bug. **What R-S1 does *not* do is pick between two H.264 entries** — both survive the filter, in the browser's order. That is R-S3's job. | The agent's peer factory. The e2e harness already does this at `desktop.e2e.test.ts:123`; the port carries it forward **and must not add VP8 back for "browser compatibility"**. |
+| **R-S2** | **The negotiated codec is read back, never assumed, and asserted.** After `setRemoteDescription` + `createAnswer`, the agent reads the transceiver's negotiated codec list and **fails loudly** unless the sender's codec is H.264. | D4b — werift picks `codecs[0]` of the *negotiated* list, so the local list is the only lever on *whether* H.264 is there. D4c — a codec-less sender drops frames silently. D4e — a transceiver added too late leaves `sender.codec` undefined. | The agent's session setup, mirroring the Rust `select_h264_payload_type` (`apps/agent/src/rtc.rs:293-303`) but reading the **negotiated** list, not the offer list, and **failing** rather than returning `None`. |
+| **R-S3** | **The sender is pointed at the payload type the browser offered with `packetization-mode=1` — not at whatever `codecs[0]` happens to be — and the choice is asserted.** After negotiation the agent picks the H.264 entry whose `parameters` contain `packetization-mode=1`, re-points `sender.codec` at it, and **fails loudly** if no such entry exists. | **D4d** — werift matches codecs by mime type only and never inspects `fmtp`, so the negotiated `parameters` are the **browser's**, echoed verbatim. A Chrome offer's *first* H.264 entry can be `packetization-mode=0`; werift would then negotiate mode 0, and mode-1 packets (single-NAL / STAP-A / FU-A) sent under a mode-0 PT are depacketized as one NAL per packet → broken frames. | The agent's session setup, next to the R-S2 assertion. `transceiver.codecs` and `sender.codec` are both public, writable werift API (`rtpTransceiver.d.ts:23-25`; `rtpSender.d.ts:77`), so no internals are touched. The Rust agent pinned `packetization-mode=1` in its `sdp_fmtp_line` (`rtc.rs:208`) for the same reason — but by *declaring* it, not by *selecting* it, which is why the browser could still override it. |
 | **R-S4** | **The transceiver is created before `setRemoteDescription`.** | **D4e** — a transceiver added afterwards yields a second, `a=inactive` m-line with `sender.codec === undefined`; D4c then converts that into a silent no-op. | The agent's offer handler, preserving ADR-15 / B12. |
 
 **R-S2 and R-S3 are the two most dangerous items in the port.** Both are
@@ -323,7 +390,9 @@ The spike's steps, in order — each step has an observable that fails loudly:
    `parameters`**. **Observe which payload type werift selected and which
    `packetization-mode` it negotiated.** With the R-S1 list this is
    `H264/pt102` + `packetization-mode=1`; anything else is a finding that
-   changes the design.
+   changes the design. Then apply R-S3: re-point the sender at the
+   `packetization-mode=1` entry and assert the answer's `fmtp` for that PT
+   is **byte-identical to the offer's**.
 4. Packetize the fixture with the new TS packetizer, push it through the
    sender, and capture what the remote peer receives. **Assert the payload
    type on the wire is the negotiated H.264 PT** — not "a packet arrived".
@@ -335,12 +404,20 @@ Step 5 is the gate. Steps 1–4 passing is not sufficient: they can all pass
 while every packet carries the wrong payload type, or while the negotiated
 `packetization-mode` disagrees with the packetizer's output.
 
-**The spike must also run the negative case.** Step 3 is run twice: once
-with the R-S1 list (`[useH264()]`) and once with a deliberately VP8-first
-local list (`[useVP8(), useH264()]`). The second run is expected to select
-VP8 pt96 and is the **regression test for D4b** — it proves the failure mode
-is real and that R-S1 is what prevents it. A spike that only exercises the
-happy path cannot tell "R-S1 fixed it" from "the bug never existed".
+**The spike must also run the negative cases.** Step 3 is run three times:
+once with the R-S1 list (`[useH264()]`), once with a deliberately VP8-first
+local list (`[useVP8(), useH264()]`), and once with a **mode-0-first offer**
+(pt104 `packetization-mode=0` before pt102 `packetization-mode=1`).
+
+- The VP8-first run is expected to select VP8 pt96 and is the **regression
+  test for D4b** — it proves the failure mode is real and that R-S1 is what
+  prevents it.
+- The mode-0-first run is the **regression test for D4d**: without R-S3
+  werift picks the mode-0 entry and the browser depacketizes mode-1 packets
+  wrongly; with R-S3 the sender lands on the mode-1 entry.
+
+A spike that only exercises the happy path cannot tell "R-S1 fixed it" from
+"the bug never existed".
 
 If step 3 or step 5 shows no acceptable configuration, P0 fails and the
 architecture is revisited **before** any other work. The documented
@@ -349,7 +426,7 @@ fallbacks, in preference order:
 | Fallback | Cost |
 |---|---|
 | **(a)** Configure the peer so the negotiated sender codec is H.264 | Low — a config change. **Measured to work** with the H.264-only local list; the residual problem after this is the `fmtp` (D4d), not the payload type. |
-| **(b)** Set `sender.codec` explicitly after negotiation | Medium — reaches into werift's internals; a version bump could break it. Also does not fix D4d: `parameters` still comes from the browser. |
+| **(b)** Re-point `sender.codec` at the browser's `packetization-mode=1` entry after negotiation | Low — `transceiver.codecs` and `sender.codec` are **public, writable** werift API (`rtpTransceiver.d.ts:23-25`; `rtpSender.d.ts:77`), so this touches no internals. **Measured to work**, and it leaves the answer's `fmtp` byte-identical to the offer. This is R-S3's mechanism. |
 | **(c)** Write RTP directly to the DTLS transport, bypassing `sendRtp` | High — reimplements the sender's SSRC/PT/sequence/timestamp rewriting and RTCP feedback handling |
 | **(d)** A different WebRTC stack | Highest — the whole `@ponter/webrtc-core` adapter layer is rewritten |
 
@@ -367,6 +444,8 @@ against werift 0.24.4, not assumed. The measurements:
 | Does a Chrome-style VP8-first offer make werift pick VP8? | **Only if the local list also offers VP8.** With `[useH264()]` → `sender.codec = H264/pt102`; with `[useVP8(), useH264()]` → `sender.codec = VP8/pt96`. | A werift answerer fed a real Chrome SDP offer, then `getTransceivers()[0].sender.codec` read back. |
 | Which of Chrome's **two** H.264 entries does werift pick? | **The first one, whatever its mode.** Chrome offers pt102 `packetization-mode=1` and pt104 `packetization-mode=0`. Offer pt102 first → `sender.codec = pt102` (mode 1). Offer pt104 first → `sender.codec = pt104` (**mode 0**). The local list cannot reorder the remote list. | Two offers with the same two H.264 entries in opposite orders; `sender.codec` read back each time. |
 | Where does the negotiated codec's `fmtp` come from? | **The browser's, verbatim.** werift's local `useH264().parameters` is never consulted. | Four offers with different `fmtp` strings; each was echoed unchanged into the answer. |
+| Can the agent **edit** the negotiated `fmtp`? | **Yes, by mutating the codec object in place** — `transceiver.codecs[0].parameters = …` changes both the answer's `a=fmtp:` line and `sender.codec.parameters`, because `sender.codec` and the answer's codec list are the *same object*. **But replacing the object instead of mutating it breaks werift**: `{...codec}` drops the `name` getter (a prototype accessor, `parameters.js:54-56`), and `sdpManager.js:107` then throws `TypeError: Cannot read properties of undefined (reading 'toLowerCase')`. | Mutation applied to a live werift answerer; the generated answer's `a=fmtp:` lines and `sender.codec` read back. The object-replacement variant was tried too and crashed. |
+| Can the agent choose a **different payload type** to fix a mode-0 negotiation? | **Yes — and this is the better fix.** `transceiver.codecs` (public getter/setter) and `sender.codec` (public, writable) let the agent re-point the sender at the browser's `packetization-mode=1` entry. The answer's `fmtp` for that PT then stays **byte-identical to the offer's**, which is what RFC 3264 asks for; the re-pointed PT also leads the answer's m-line. | Two offers (mode-0-first and mode-1-first). In both, re-pointing `sender.codec` at the mode-1 entry produced an answer whose `fmtp` matched the offer exactly. With a mode-0-only offer the agent has no valid choice and must fail loudly. |
 | Does the transceiver order matter? | **Yes.** Added after `setRemoteDescription` → a second transceiver, `a=inactive` m-line, `sender.codec === undefined`. Added before → `a=sendonly`, `sender.codec = H264/pt102`. | Both orders, same offer. |
 | Does `MediaStreamTrack.writeRtp` overwrite the payload type? | **Yes** — `packet.header.payloadType = this.codec?.payloadType ?? …`. And `RTPSender.sendRtp` overwrites SSRC, PT, timestamp and sequence number. | Source read at `track.js:132-134`, `rtpSender.js:539-552`. |
 
@@ -375,14 +454,71 @@ above):
 
 1. That a browser **decodes** the resulting stream (A3) — the measurements
    are about SDP and payload types, not pixels.
-2. That the **addon's** openh264 output matches the negotiated
-   `profile-level-id` and mode-1 framing (D4d). The negotiation half is
-   understood; the encoder half is not.
+2. That the **addon's** openh264 output is **compatible with** the
+   negotiated `profile-level-id` (D4d) — the negotiation half is understood;
+   the encoder half is not. The concrete bar: the addon's SPS must carry the
+   profile the browser's `profile-level-id` names, and a level the browser
+   can decode. The Rust agent advertised `42001f` while emitting `42c0XX`
+   (§3.3); the product shipped, but no test decodes the pixels, so the
+   tolerance is unproven. P0 must show whether it still holds, or whether the
+   answer has to echo a `profile-level-id` the encoder actually matches.
 3. That the **DTLS/SRTP transport** carries the packets — the measurements
    never opened a connection.
 4. That **RTCP feedback** (PLI, REMB) reaches the addon, so a keyframe
    request produces a keyframe. A sender that cannot be asked for a
    keyframe is a stream that never recovers from a dropped IDR.
+
+#### 3.5.4 The guarantee the port would otherwise lose
+
+This is the single most important thing to carry across the port, and it is
+easy to miss because the failure is silent.
+
+`webrtc-rs` — the Rust agent's stack — **matches H.264 codecs by their
+`fmtp`**, not just by mime type. `H264Fmtp::match_fmtp`
+(`rtc-0.21.0/src/rtp_transceiver/fmtp/h264/mod.rs:52-81`) requires:
+
+1. both sides to carry a `packetization-mode`, and
+2. both `packetization-mode` values to be **equal**, and
+3. `profile_level_id_matches(hplid, cplid)` to hold — which compares the
+   **first two bytes only** (`profile_idc` and the constraint byte) and
+   deliberately **ignores the level byte**, because RFC 6184 §8.2.2 says the
+   level "does not apply" to the symmetric-use requirement.
+
+So the Rust agent's negotiation was: *the browser's H.264 entry must agree
+with the local one on packetization-mode, and on the profile + constraint
+bytes.* A browser offering mode 0 was **never** silently accepted, because
+`match_fmtp` would return false and the codec would be dropped from the
+answer.
+
+**werift has no such check.** `findCodecByMimeType` compares mime types and
+ignores `fmtp` entirely (D4d), so on werift a mode-0 entry is negotiated
+happily. The port would therefore **lose** a guarantee the Rust agent had —
+and would lose it silently, because the connection stays healthy and only the
+pixels are wrong.
+
+**R-S3 is how the port restores it.** The agent's own check — *find the H.264
+entry the browser offered with `packetization-mode=1`, point the sender at
+it, and fail loudly if there is none* — reproduces the guarantee webrtc-rs
+gave for free, using only public werift API. §3.5.2's mode-0-first offer
+is the regression test.
+
+**One more thing the port must copy: the `profile-level-id` values
+themselves.** `webrtc-rs`'s default `MediaEngine` registers H.264 at five
+payload types with **five different** `fmtp` strings
+(`rtc-0.21.0/src/peer_connection/configuration/media_engine.rs:466-540`):
+pt102 `packetization-mode=1;profile-level-id=42001f`, pt127 mode 0
+`42001f`, pt125 mode 1 `42e01f`, pt108 mode 0 `42e01f`, pt123 mode 1
+`640032`. werift's `useH264()` ships **one** — `42e01f`
+(`werift/lib/webrtc/src/media/codec.js:6-12`) — and the port inherits that
+narrowness.
+
+The `profile-level-id` in the *answer* is the browser's (D4d), so the local
+value mostly does not reach the wire; but it does decide **which** of the
+browser's entries the agent can accept, and therefore whether the agent
+negotiates at all. The port's local list should carry **the same spread** the
+Rust agent had — at minimum one mode-1 entry per distinct
+`profile-level-id` the browser is likely to offer — so that a browser
+offering `42001f` is matched, not filtered out.
 
 ---
 
@@ -718,7 +854,7 @@ and 100% green CI.
 
 | Phase | Deliverable | Gate |
 |---|---|---|
-| **P0 — Spike** | Prove werift can **send** H.264 to a browser peer. A minimal script: encode a synthetic frame with the native addon (or, initially, a pre-encoded Annex-B fixture), packetize it, push it through werift to a browser, and confirm the browser decodes it. The spike runs the five ordered steps of §3.5.2 against a **VP8-first** synthetic offer **and its negative case**, and the spike script carries the four measures of §3.5.1 (R-S1/R-S2/R-S3/R-S4) as working code — not as future work. | **Viability gate.** Assertions A1 + A2 + A3 of §9.3 must all hold simultaneously, **and the negative case must fail as predicted**. If werift-as-sender cannot carry H.264 to a browser, the whole architecture is revisited before any further work. |
+| **P0 — Spike** | Prove werift can **send** H.264 to a browser peer. A minimal script: encode a synthetic frame with the native addon (or, initially, a pre-encoded Annex-B fixture), packetize it, push it through werift to a browser, and confirm the browser decodes it. The spike runs the five ordered steps of §3.5.2 against a **VP8-first** synthetic offer **and its two negative cases** (a VP8-first *local* list, a mode-0-first *offer*), and the spike script carries the four measures of §3.5.1 (R-S1/R-S2/R-S3/R-S4) as working code — not as future work. | **Viability gate.** Assertions A1 + A2 + A3 of §9.3 must all hold simultaneously, A4 must be *detected and reported*, **and the negative cases must fail as predicted**. If werift-as-sender cannot carry H.264 to a browser, the whole architecture is revisited before any further work. |
 | **P1 — Shared foundations** | Move the stream-profile table to `@ponter/shared`; replace the cross-language parity test with a same-language import (D12); add the TS API-access gate. | D12 closed; the parity guarantee survives |
 | **P2 — Native addon** | The N-API addon: capture, encode (openh264), input injection. Unit-tested at the C++ level and through a TS smoke test. | Fault-containment test (§9.2) |
 | **P3 — Core: signalling + identity + E2EE** | The WS client, the identity store, the E2EE handshake. Consumes `@ponter/shared`, `@ponter/crypto`. | The wire contract (C1, C5, C6, C7, C13) proven by conformance tests |
@@ -784,6 +920,7 @@ of which must hold **simultaneously**:
 | **A1 — the negotiated sender codec is H.264** | The agent negotiated VP8 (D4a/D4b). R-S1's H.264-only list prevents it; R-S2 turns the failure into a loud error instead of a black stream. |
 | **A2 — the payload type on the wire is the negotiated H.264 PT, and the negotiated `packetization-mode` is 1** | werift's `sender.codec` is not the H.264 entry, so `sendRtp` overwrites the stamped PT (D4b) — or the browser's `fmtp` negotiated mode 0 while the packetizer emits mode 1 (D4d). This is R-S2 + R-S3. |
 | **A3 — the browser decodes visible frames** | The bytes are not decodable H.264, the packetization mode is wrong, the `profile-level-id` does not match what the encoder produced, or a keyframe never arrived. This is the only assertion that catches A1 and A2's failures end-to-end. |
+| **A4 — the encoder's `profile_idc`/`level_idc` are compatible with the negotiated `profile-level-id`** | The addon's SPS says `42c0XX` while the answer's `profile-level-id` is the browser's (`42e01f` from werift's helper, `42001f` from Chrome — measured). A mismatch is not necessarily fatal, but it must be **detected and logged**, not assumed away — the repository has never decoded the pixels, so its harmlessness is unproven (§3.3). | RK1d. The addon exposes the encoder's real `profile_idc` and `level_idc`; the agent compares them against the negotiated `fmtp` and logs loudly on mismatch. This is a **detection** assertion, not a pass/fail one — failing the whole gate on a mismatch would reject a stream the product ships today. |
 
 **A3 alone is not sufficient and A1/A2 alone are not sufficient.** A1 + A2
 can both pass while the browser still shows nothing (the encoder's profile
@@ -795,7 +932,8 @@ The spike's synthetic offer must list **VP8 first, then H.264** — the Chrome
 ordering. An offer that lists only H.264 would not exercise D4b at all, and
 a green run against such an offer would prove nothing about the real browser
 peer. The spike must also run the **negative case** (a VP8-first *local*
-codec list), which is expected to fail — see §3.5.2.
+codec list) and the **mode-0-first offer**, both expected to fail without
+R-S1/R-S3 — see §3.5.2.
 
 **The gate also covers RTCP.** A sender that cannot answer a PLI is a
 stream that never recovers from a dropped IDR. The P0 harness must observe
@@ -823,8 +961,9 @@ one's presence on the wire.
 |---|---|---|---|---|
 | RK1 | werift cannot send H.264 to a browser (D4) | Medium | **Fatal** — the architecture collapses | P0 spike is a gate, before any other work. If it fails, fall back to writing the RTP/DTLS/SRTP path by hand or to a different WebRTC stack — decided at P0, not after P5. The four fallbacks and their costs are enumerated in §3.5.2; P0 produces the evidence that selects among them |
 | RK1a | werift stamps the wrong payload type on H.264 packets (D4b) | **Medium** — it is werift's behaviour *whenever the local codec list also offers VP8*. Measured: an H.264-only local list selects H.264 pt102 (§3.5.3) | **Fatal** — black video on a healthy connection; identical to the C4 bug the Rust agent already had | R-S1 (H.264-only local list) prevents it; R-S2 fails loudly at negotiation. The P0 gate asserts A1 + A2 + A3 together (§9.3) and runs the **negative case** (a VP8-first local list, expected to fail), so this cannot pass silently |
-| RK1b | The negotiated `fmtp` is the browser's, and werift never checks it (D4d) — a browser whose first H.264 entry is `packetization-mode=0` makes the agent negotiate mode 0 while the packetizer emits mode 1 | **Medium** — depends on the browser's codec ordering; Chrome's default puts mode 1 first, but this is not guaranteed | **Fatal** — broken frames; the connection is healthy and the PT is right, so no other check catches it | R-S3 asserts `packetization-mode=1` and the encoder's profile, and fails loudly otherwise. The agent may also **narrow the negotiated list** to the H.264 entry whose `parameters` it can actually satisfy, before `createAnswer` |
+| RK1b | The negotiated `fmtp` is the browser's, and werift never checks it (D4d) — a browser whose first H.264 entry is `packetization-mode=0` makes the agent negotiate mode 0 while the packetizer emits mode 1 | **Medium** — depends on the browser's codec ordering; Chrome's default puts mode 1 first, but this is not guaranteed | **Fatal** — broken frames; the connection is healthy and the PT is right, so no other check catches it | R-S3 re-points `sender.codec` at the browser's `packetization-mode=1` entry (measured to work, §3.5.3) and fails loudly when no such entry exists. The answer's `fmtp` for the chosen PT stays byte-identical to the offer's. The residual risk is the **profile-level-id** half, which the agent cannot edit — see RK1d |
 | RK1c | A transceiver added after `setRemoteDescription` yields an inactive m-line and an undefined codec (D4e) | **Low** — the Rust agent already carries ADR-15 and the port copies the ordering | High — an inactive m-line looks like a healthy idle stream; D4c turns it into a silent no-op | R-S4 preserves the ordering, and R-S2's loud assertion catches a missing codec |
+| RK1d | The answer's `profile-level-id` is the **browser's**, and the agent cannot edit it through a supported API (D4d, §3.3) — so the answer may promise a profile or level the encoder does not produce | **Medium** — Chrome's `profile-level-id` is `42001f` (measured, `docs/spikes/2026-10-11-hardware-encode-h265.md:279`), while the agent's own SPS is `42c0XX` with a level that varies by profile (4.0 / 3.1 / 4.2 / 3.2 — §3.3) | High — the mismatch is **unproven to be harmless**: the Rust agent shipped with it, but no test in the repository decodes the pixels, so the tolerance was never verified (§3.3). A stricter peer would refuse the stream | P0's A3 assertion (the browser decodes pixels) is the only thing that catches this. The addon must expose the encoder's real `profile_idc`/`level_idc`, and the agent must **log the mismatch loudly** rather than assume tolerance. If a strict peer refuses, the mitigation is to mutate the negotiated codec's `parameters` in place (measured to work, §3.5.3) — a documented fallback, not the default |
 | RK2 | The N-API addon's ABI mismatch with Electron's Node (D7) | Medium | High — the addon will not load | Build against Electron headers from day one; add a packaged-app boot smoke test that asserts the addon loads |
 | RK3 | A native fault takes down the desktop app (§5.4) | Medium | High | Fault-containment gate (§9.2); defensive C++ |
 | RK4 | 60 FPS in the Electron main process starves the UI | Low | High | Encode on the addon's own thread; the TS core's per-frame work is small; measure with the existing ADR-47 frame-timing ring |
@@ -848,6 +987,7 @@ can be overturned:
 | O4 | The environment-variable contract (`AGENT_ID`, `AGENT_SERVER`, …) is kept even though it is now an in-process config (§7) | Renaming the variables |
 | O5 | The Rust tree is deleted in P7, not incrementally | Keeping a Rust build alongside during the port |
 | O6 | The addon is packaged as a per-platform dependency via `electron-builder install-app-deps` (§6.4) | `extraResources` with an absolute-path loader |
+| O7 | **A `profile-level-id` that does not match the encoder is tolerated and logged, not fatal** (§3.3, Q10). The Rust agent shipped the same mismatch — advertising `42001f` while emitting `42c0XX` — and the product worked, so changing it to a hard failure would be a behaviour regression on a path that works today. (The repository never proved the tolerance: no test decodes the pixels — §3.3.) | Refuse the session on a mismatch (strict, but breaks today's working agent) / mutate the negotiated `fmtp` in place to match the encoder (measured to work, but edits a value the browser sent) |
 
 ### 11.1 Open technical questions the plan must answer
 
@@ -867,6 +1007,8 @@ are the plan's work, not the spec's.
 | Q7 | **The cursor frame's rate and encoding.** How often is the cursor polled, and what encodes the shape PNG and caps its size? | The poll cadence, the PNG encoder dependency, and the cap, for B56. |
 | Q8 | **The Electron packaging mechanics.** Is the `.node` binary built at install time (`postinstall` / `install-app-deps`) or copied into `resources/` at build time? Does `electron-builder` need `extraFiles`? | The exact build and packaging steps, and where the `.node` file lives in the packaged app, for §6.4. |
 | Q9 | **What the Rust removal actually deletes.** Does `apps/agent/vendor/` contain anything besides `xcap`? Are the shared E2EE vectors (`packages/crypto/test/vectors/e2ee-vectors.json`) extracted before the tree is removed? | The P7 deletion list, so nothing needed by the TS suite is deleted with it. |
+| Q10 | **The `profile-level-id` mismatch policy.** The answer's `profile-level-id` is the browser's and the agent cannot edit it through a supported API. Does the agent **tolerate** the mismatch (log it, ship anyway — what the Rust agent effectively did), **mutate** the negotiated codec's `parameters` in place to match the encoder, or **refuse** the session? | The runtime policy, and where it is implemented. The three options are all measured to be implementable (§3.5.3); which one is correct is a product decision the owner should confirm, because "refuse" is a behaviour change from today's agent. |
+| Q11 | **The addon's profile/level reporting surface.** How does the addon expose the encoder's chosen `profile_idc` and `level_idc` — per-frame, per-encoder, or at construction? Does openh264's C API expose them without parsing the SPS? | The N-API shape for A4's detection, so the agent can compare the encoder's output against the negotiated `fmtp` without re-parsing Annex-B in TypeScript. |
 
 ---
 
