@@ -5131,6 +5131,36 @@ modifiedAt}` rather than `{name, kind, size|null, modifiedEpochMs}` — the Rust
   - `interface PtyHost { spawn(file, args, opts): PtyProcess }` — the `node-pty` seam
   - `class PtyManager { create(opts): Promise<void>; resize(id, cols, rows): void; write(id, bytes): void; close(id): Promise<void>; onData(cb): void; onExit(cb): void }`
 
+- [ ] **Step 0: Install `node-pty` — including the build allowlist**
+
+Run, from the repo root:
+
+```bash
+pnpm --filter @ponter/agent-node add node-pty@1.2.0-beta.12
+```
+
+Then add **both** entries to `pnpm-workspace.yaml`'s `allowBuilds:` block, next to `better-sqlite3`:
+
+```yaml
+  # node-pty runs `node scripts/prebuild.js || node-gyp rebuild` on install.
+  # Allow the build: on Windows the prebuilt binary is the only way to get a
+  # working ConPTY, and there is no prebuild at all for some targets.
+  node-pty: true
+```
+
+Two things this step exists to prevent, both of which present as "the module is missing at runtime" rather than as an install error:
+
+- **`allowBuilds` is not optional.** pnpm 12 blocks postinstall scripts by default. Without the entry the dependency resolves and `import('node-pty')` succeeds far enough to typecheck, but the native binding is never built — which fails only in the packaged app.
+- **The version is not a caret.** The measurement below was taken against `1.2.0-beta.12` — the only version present on this machine — and records what that version does with `encoding`. Pin it, and re-measure before moving it.
+
+Verify the binding actually loaded before writing any code:
+
+```bash
+node -e "const p=require('node-pty'); console.log(require('node-pty/package.json').version, typeof p.spawn)"
+```
+
+Expected: `1.2.0-beta.12 function`. If this throws, stop — the rest of the task cannot run.
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -5168,6 +5198,8 @@ describe('PtyManager.create', () => {
       cols: 80,
       rows: 24,
       env: expect.objectContaining({ TERM: 'xterm-256color', LANG: 'C.UTF-8' }),
+      // Bytes, not text: a utf8-decoding host loses 0xff before base64 runs.
+      encoding: null,
     });
   });
 
@@ -5251,6 +5283,20 @@ describe('PtyManager output', () => {
 });
 
 describe('PtyManager.write', () => {
+  it('hands the host the same bytes it was given', async () => {
+    // `bytes.toString('utf8')` would look right here and pass a naive test,
+    // because 'echo' is valid UTF-8. The input below is not: 0xff and 0xfe are
+    // invalid UTF-8 leads, and the utf8 round trip turns each into U+FFFD
+    // (`ef bf bd`). ADR-10 says the payload is bytes.
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    manager.write('t1', Buffer.from([0x41, 0xff, 0xfe, 0x42]));
+    const passed = procs[0].write.mock.calls[0][0] as Buffer;
+    expect(Buffer.isBuffer(passed)).toBe(true);
+    expect(passed.equals(Buffer.from([0x41, 0xff, 0xfe, 0x42]))).toBe(true);
+  });
+
   it('drops input for an unknown terminal instead of throwing', () => {
     const { host } = fakeHost();
     const manager = new PtyManager(host);
@@ -5282,10 +5328,15 @@ export const MAX_SESSIONS = 10;
 export const MAX_FRAME_BYTES = 64 * 1024;
 
 export interface PtyProcess {
-  write(data: string): void;
+  write(data: Buffer): void;
   resize(cols: number, rows: number): void;
   kill(): void;
-  on(event: 'data' | 'exit', cb: (arg: never) => void): void;
+  // Two overloads, not `(arg: never) => void`. `never` as a *parameter* type
+  // means "no argument can be passed", which no real host — and not even
+  // `EventEmitter` — is assignable to, so the fake in the test below would not
+  // typecheck against the seam it stands in for.
+  on(event: 'data', cb: (chunk: string | Buffer) => void): void;
+  on(event: 'exit', cb: (event: { exitCode?: number }) => void): void;
 }
 
 /** The `node-pty` seam. Tests supply a fake so no shell is ever spawned. */
@@ -5298,6 +5349,16 @@ export interface PtyHost {
       cols: number;
       rows: number;
       env: Record<string, string>;
+      /**
+       * **Must be `null`.** `node-pty`'s default is `'utf8'`, which puts the
+       * master fd into text mode (`_socket.setEncoding(encoding)`): a byte
+       * that is not valid UTF-8 arrives at `onData` already replaced by
+       * U+FFFD, and the original byte is unrecoverable. ADR-10 makes the
+       * terminal payload bytes, not text, and B40 ports it — so the host
+       * adapter that supplies the real `node-pty` must pass `encoding: null`
+       * and the manager must never convert before base64.
+       */
+      encoding: null;
     },
   ): PtyProcess;
 }
@@ -5328,12 +5389,16 @@ interface Session {
 /**
  * PTY sessions (B39–B41).
  *
- * Three details that are not obvious:
+ * Four details that are not obvious:
  *
  * - **Output is base64 of raw bytes, never a UTF-8 decode.** A chunk boundary can
  *   land mid-codepoint; decoding to a string and re-encoding would corrupt it,
  *   and a terminal sending `0xff` would throw outright. The browser's `atob`
  *   handles it because the split happens at base64 length, not code unit.
+ * - **The bytes are only raw if the host says so.** `node-pty` defaults to
+ *   `encoding: 'utf8'`, which decodes the master fd to a string *before* this
+ *   class ever sees it — the corruption then happened upstream and base64
+ *   cannot recover it. That is why `PtyHost.spawn` takes `encoding: null`.
  * - **Chunking is 16 KiB of raw bytes per frame.** Above that, `writeSync`-style
  *   framing exceeds the SCTP message size the browser accepts.
  * - **The exit code is reaped from the process's own `exit` event, not inferred
@@ -5372,21 +5437,29 @@ export class PtyManager {
         cols: options.cols,
         rows: options.rows,
         env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8' } as Record<string, string>,
+        // Bytes, not text. See the `encoding` note on `PtyHost.spawn`.
+        encoding: null,
       });
     } catch (error) {
       throw new PtyError('pty-spawn-failed', (error as Error).message);
     }
     this.sessions.set(options.terminalId, { process: process_ });
-    process_.on('data', ((chunk: Buffer | string) => {
+    // With `encoding: null` a real `node-pty` emits Buffers. The `string` half
+    // is tolerated only so a fake host cannot smuggle in a lossy decode
+    // silently: `Buffer.from(string)` is the utf8 round trip this code exists
+    // to avoid, so the string branch is a bug in the host adapter, not a
+    // supported input — which is why the real host must pass `encoding: null`.
+    // No `as never` casts: the seam's overloads are what make this typecheck.
+    process_.on('data', (chunk: string | Buffer) => {
       this.emitChunks(options.terminalId, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }) as never);
-    process_.on('exit', ((event: { exitCode?: number }) => {
+    });
+    process_.on('exit', (event: { exitCode?: number }) => {
       this.sessions.delete(options.terminalId);
       this.exitHandler?.({
         terminalId: options.terminalId,
         exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
       });
-    }) as never);
+    });
   }
 
   resize(terminalId: string, cols: number, rows: number): void {
@@ -5394,7 +5467,12 @@ export class PtyManager {
   }
 
   write(terminalId: string, bytes: Uint8Array): void {
-    this.sessions.get(terminalId)?.process.write(Buffer.from(bytes).toString('utf8'));
+    // Pass the Buffer through. `Buffer.from(bytes).toString('utf8')` — the
+    // obvious spelling — is a lossy round trip for any byte input that is not
+    // valid UTF-8, and it is the *inbound* half of the same defect as the
+    // `encoding` note on `PtyHost.spawn`. Measured: writing `41 ff fe 42` that
+    // way reaches the child as `41 ef bf bd ef bf bd 42`.
+    this.sessions.get(terminalId)?.process.write(Buffer.from(bytes));
   }
 
   async close(terminalId: string): Promise<void> {
@@ -5446,11 +5524,13 @@ describe('a real shell', () => {
 ```bash
 ./apps/agent/node_modules/.bin/vitest run test/terminal/pty.test.ts test/terminal/pty-real.test.ts
 ./node_modules/.bin/prettier --write apps/agent/src/terminal/pty.ts apps/agent/test/terminal/pty*.test.ts
-git add apps/agent/src/terminal apps/agent/test/terminal
+git add apps/agent/src/terminal apps/agent/test/terminal apps/agent/package.json pnpm-lock.yaml pnpm-workspace.yaml
 git commit -m "feat(agent): add the node-pty manager with 16 KiB base64 chunking"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **11 new `it()` / 15 new `expect()`**. Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported**: the Rust test's name promised chunking it never exercised — its body synthesized a single frame and asserted `decoded.len() == len`, which is not the property the name claims. The TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes, each ≤ 16 KiB. Ruling: **code wins, the phantom is not ported**, and this is not a weakening — the Rust test asserted less than its name promised, so the TS asserts strictly more. Two are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`) and the slot freeing on exit. The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
+**TEST-INTEGRITY declaration:** two new files, **12 new `it()` / 18 new `expect()`**. Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported**: the Rust test's name promised chunking it never exercised — its body synthesized a single frame and asserted `decoded.len() == len`, which is not the property the name claims. The TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes, each ≤ 16 KiB. Ruling: **code wins, the phantom is not ported**, and this is not a weakening — the Rust test asserted less than its name promised, so the TS asserts strictly more. Three are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`), the slot freeing on exit, and `hands the host the same bytes it was given`, which pins that `write()` does not utf8-round-trip the inbound bytes (`41 ff fe 42` must reach the child intact, not as `41 ef bf bd ef bf bd 42`). The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
+
+**Ruling on the two control characters, and why they are here rather than in the audit.** The `encoding: null` requirement and the `write(Buffer)` shape are **not** test-count changes dressed as fixes — they are the two halves of one defect in this task's own fences, found by running the real `node-pty` (1.2.0-beta.12) rather than reading it: with the default `encoding: 'utf8'`, `onData` delivers a **string** and `0xff` arrives already replaced by U+FFFD, so `emitChunks`'s base64 is faithfully encoding corrupted bytes; and `write(Buffer.from(bytes).toString('utf8'))` turns an inbound `41 ff fe 42` into `41 ef bf bd ef bf bd 42` at the child. ADR-10 and B40 both say the payload is bytes. Deviating either way would be silent data loss on a channel the product already ships.
 
 ---
 
