@@ -217,14 +217,36 @@ a deletion needs no correction on the way out.
         implementer reasoning from the fixture would be wrong about production.
   Do not close this item by observing that the Rust is deleted. That is the
   failure T6 exists to name.
-- **N-4 — the 16 KiB terminal splitter.** Plan 2's Task 12 adds an
-  `emitChunks` splitter that the Rust does not have (`MAX_PTY_CHUNK` at
-  `pty.rs:22` is only the read buffer; `frame_pty_output` at `pty.rs:141-143`
-  never splits). This was deliberately **not** adjudicated by the docs audit: it
-  is a spec/protocol question for the owner, not a docs call. Two facts to put
-  in front of them — a 16 KiB PTY read bound is a transport fact and terminal
-  output can exceed it; and the Rust not splitting is not evidence that not
-  splitting is correct.
+- **N-4 — the 16 KiB terminal splitter — RESOLVED: it ships.** The docs audit
+  left this unadjudicated as "a spec/protocol question for the owner". It is
+  not one: the contract is already written down, and only the Rust failed to
+  meet it. The evidence, in order:
+  - **The spec states the chunk size as the wire contract.** C12 (`spec:104`)
+    and B40 (`spec:604`) both say "16 KiB chunks", and both cite
+    `pty.rs:22,123-143` as their evidence. So the Rust citation is wrong about
+    its own source, not the contract being silent.
+  - **The Rust never enforced it.** `MAX_PTY_CHUNK` (`pty.rs:22`) is the
+    **read buffer size** (`pty.rs:392`); `frame_pty_output` (`pty.rs:141-143`)
+    frames whatever one `read()` returned. A chunk smaller than the buffer
+    passes through whole, so the wire carried whatever the OS happened to
+    deliver — usually one frame per read, at whatever size `read()` chose.
+  - **`node-pty` does not deliver 16 KiB either, and can exceed it.** Measured
+    against `node-pty` 1.2.0-beta.12 on Linux with a real `/bin/sh`: 8 MiB of
+    output arrived in 2 555 `data` events, **three of which were larger than
+    16 KiB — the largest 18 433 bytes**. A manager that framed one event per
+    frame would therefore exceed the size B40 states, on an ordinary workload.
+    So Plan 2's `emitChunks` splitter is what *implements* B40; it is not new
+    behaviour invented on top of the port.
+  - **The margin is the point.** 18 433 raw bytes is 24 580 base64 characters
+    under an unsplit frame, still under werift's `DEFAULT_MAX_MESSAGE_SIZE` of
+    65 536 (`sctp.js:10`) and under Chromium's 64 KiB data-channel limit — so
+    this is not a crash today. It is a stated contract that the port would
+    silently stop honouring, and that is the reason to keep the splitter
+    rather than the reason to drop it.
+  - **Consequence for the ledger:** N-4 moves out of the owner-question list
+    and into T6 as an R-entry of the *opposite* kind — not "a behaviour
+    dropped" but "a behaviour the Rust only appeared to have, now made real".
+    It needs no §4 B-row change: B40 already says this.
 
 ### T9. Docs: ARCHITECTURE, ADRs, guides
 
