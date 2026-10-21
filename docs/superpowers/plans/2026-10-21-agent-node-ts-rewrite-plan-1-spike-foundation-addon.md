@@ -260,16 +260,30 @@ that branch runs no Node CI at all — the defect is invisible exactly where the
 work is happening.) The branch is currently red for every unrelated PR.
 
 Change three strings, `@ponter/agent` → `@ponter/agent-node`, at lines 73, 76 and
-98, and update the surrounding comments: they explain that the exclusion exists
-because the agent's `test` script shells out to `cargo`, which stops being true
-once the package is TypeScript.
+98, and update the surrounding comments. **The comments' justification has to
+change, and the obvious replacement is wrong.** The old comments said the
+exclusion exists because the agent's `test` script shells out to `cargo`, which
+this job's toolchain lacks. That was true of the *Rust-era manifest*, which the
+rename replaced. But `apps/agent/` still holds the Rust crate — `Cargo.toml`,
+`Cargo.lock`, `rust-toolchain.toml` and 86 tracked `.rs` files — and
+`build-agent.yml` still fmt/clippy/tests/cross-compiles it. So the honest
+statement is two-part: (a) `paths:` omits `apps/agent/**`, so an agent-only
+branch never reaches this job, and (b) the directory holds *both* the Rust
+crate (gated by `build-agent.yml`) and the new `@ponter/agent-node` package
+(not gated by anything yet). Writing "because cargo" would be false; writing
+"because the agent is a Node package now" would also be false, because the
+crate is still there.
 
 **Do NOT simply delete the filters.** Until Plan 3 adds `apps/agent/**` to the
 `paths:` list, the agent is not gating, and the rename above is what makes it
-gating once Plan 3 lands. Deleting the filters now means the Rust-era `cargo`
-scripts — still in the manifest at this point in the plan — would be invoked by
-a job with no Rust toolchain, which is the failure the exclusions were added to
-prevent.
+gating once Plan 3 lands. Deleting the filters now means `@ponter/agent-node`
+enters a job it is not ready for, on pushes that have nothing to do with it.
+
+**`CONTRIBUTING.md` carries the same three commands** (lines 16, 17 and 19) as
+the documented pre-PR workflow. A contributor following the setup guide on a
+clean clone gets the same fatal filter error, so the fix is not complete until
+those three strings are changed too. This is the occurrence the plan missed:
+`grep`ing `.github/workflows/` alone does not find it.
 
 Verify with the exact CI command, from the repo root:
 
@@ -280,6 +294,28 @@ pnpm exec turbo run typecheck --filter='!@ponter/agent-node' --dry=json >/dev/nu
 
 Expected: `lint exit=0`, `typecheck exit=0`. Before the change, the same two
 commands with `!@ponter/agent` exit `1`.
+
+**Measure turbo directly, not through `pnpm exec`, when the exit code is the
+evidence.** `pnpm exec` runs the workspace lifecycle scripts first, and
+`apps/desktop`'s `postinstall` (`electron-builder install-app-deps`) dies with
+`ENOENT … @cloudflare/workerd-darwin-64` on some machines — the pre-existing
+environment issue noted above. That failure exits `1` *regardless of the
+filter*, so a `pnpm exec` measurement cannot distinguish "the filter is fixed"
+from "postinstall broke". Invoke the resolved binary instead:
+
+```bash
+./node_modules/.bin/turbo run lint --filter='!@ponter/agent-node' --dry=json >/dev/null; echo "lint exit=$?"
+```
+
+Resolve the binary from the package that depends on `turbo` rather than assuming
+the path — `node -p "require.resolve('turbo/package.json')"` — because a
+monorepo's root may not see it.
+
+**The CI job itself runs `pnpm install --frozen-lockfile` once and then
+`pnpm exec turbo run …`.** If that `postinstall` is broken on the runner, the
+job fails earlier for an unrelated reason and this fix is not sufficient on its
+own. Confirm on an actual CI run rather than assuming the local failure is
+environmental.
 
 Commit this with the rename, not separately — a tree where the package is
 renamed but the filters still name the old package is a tree whose Node CI
