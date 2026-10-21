@@ -45,11 +45,18 @@ function governed(): string[] {
 }
 
 describe('the agent API-access boundary gate (spec D13 / ADR-89)', () => {
-  it('the agent source tree exists — this gate must never pass vacuously', () => {
-    // A gate that finds nothing to guard is not a green gate. If this fails,
-    // the agent has not been ported to TypeScript yet and the rest of this
-    // file proves nothing.
-    expect(() => statSync(AGENT_SRC)).not.toThrow();
+  it('the agent source tree exists AND holds TypeScript — this gate must never pass vacuously', () => {
+    // A gate that finds nothing to guard is not a green gate, and
+    // `expect(() => statSync(AGENT_SRC)).not.toThrow()` alone is exactly that
+    // mistake: `apps/agent/src/` held 20 `.rs` files and zero `.ts` files
+    // before Task 3 landed, so `statSync` passed, `walk()` returned `[]`, and
+    // all three scans below reported zero offenders on a tree containing no
+    // TypeScript at all. Counting the walked files is what turns the
+    // directory's existence into evidence that there is something to guard
+    // (Plan 1 audit C8).
+    const files = walk(AGENT_SRC);
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.every((f) => f.endsWith('.ts'))).toBe(true);
   });
 
   it('no hand-rolled HTTP client outside the sanctioned module', () => {
