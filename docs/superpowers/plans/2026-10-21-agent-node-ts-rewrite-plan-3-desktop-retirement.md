@@ -94,21 +94,38 @@ with Files / Interfaces / steps before this plan is executable.
     pinned file count. A pinned count is a control that reds on every legitimate
     addition to `apps/agent/src`, which is exactly what this plan spends its
     time doing there; the fix at that moment is to bump the number, and that is
-    how a control becomes a changelog. Assert the **structural** property
-    instead: every returned path is under `AGENT_SRC`, and at least one is not
-    under `api/`. That fails when the root is wrong, survives renames and
-    additions, and states the boundary the three scans depend on.
-  - *The sequencing constraint that follows, and it is a TEST-INTEGRITY trap.*
-    "At least one governed file is not under `api/`" is **false today** —
-    `governed() === walk()` because `apps/agent/src/api` does not exist — so it
-    cannot be committed today without shipping a red test, and an implementer
-    told to write it now will reach for `it.skip`, which is the exact failure
-    mode the plan's Global Constraints forbid. It lands in the same commit as
-    the sanctioned `api/` module, replacing `:59`'s `every('.ts')` in that
-    commit rather than after it, so the file never exists in a state where a
-    reader can take the dead assertion for a live one. Before `api/` lands, the
-    honest control is the existing `:58` — backed by a `walk` that throws on a
-    missing directory.
+    how a control becomes a changelog.
+  - *Containment assertions do not work either, and this was measured rather
+    than argued.* The tempting pair — "every returned path is under `AGENT_SRC`"
+    plus "at least one is not under `api/`" — is **true at both the correct root
+    and a deliberately wrong one**. `walk` returns absolute paths and the
+    containment is computed with `relative(root, f)` against whatever root was
+    passed in, so "under the root" is true by construction, exactly as
+    `every('.ts')` was true against the `else if` that produced it; and any root
+    without an `api/` child satisfies the second half. Measured with
+    `agent-api-access-gate.test.ts:30`'s walker: `apps/agent/src` → **1** file,
+    **0** under `node_modules/`; `apps/agent` (a wrong root one level up) →
+    **1589** files, **1582** of them under `node_modules/`, because that walker
+    has no `SKIP_DIRS` and descends into vendored trees, while the model gate's
+    (`api-access-gate.test.ts:25-31`) does have one.
+  - *The control that can fail, and the one T2 should carry:*
+    `expect(files.some((f) => f.includes('/node_modules/'))).toBe(false)`.
+    It is true at the correct root and false at the wrong one, it has no magic
+    constant to bump, it survives every addition Plan 3 makes to the source
+    tree, and it names the property that actually differs between the two roots.
+    The ceiling form (`files.length < 50`) also discriminates 1 from 1589 but
+    needs a number chosen partly by coincidence, and the plan should prefer the
+    one that states a property over the one that states a threshold.
+  - *The sequencing constraint, and it is a TEST-INTEGRITY trap.* The
+    `api/`-boundary half — "the filter removes at least one file" — is **false
+    today** because `apps/agent/src/api` does not exist, so it cannot be
+    committed today without shipping a red test; an implementer told to write it
+    now will reach for `it.skip`, which is the exact failure mode the Global
+    Constraints forbid. It lands in the same commit as the sanctioned `api/`
+    module, replacing `:59`'s `every('.ts')` in that commit rather than after
+    it, so the file never exists in a state where a reader can take the dead
+    assertion for a live one. The `node_modules` control has no such constraint
+    and can land immediately.
   - *The precondition, stated so the executor does not have to guess it.* The
     count is only meaningful after the agent's TypeScript source has landed;
     before that it is 1, and a `> 0` control passes on a tree that is 20 `.rs`
