@@ -64,6 +64,21 @@ with Files / Interfaces / steps before this plan is executable.
 - The retirement is only honest if the replacement gate exists **in the same
   commit** that deletes the workflow. Two commits, and there is a window where
   neither gate runs.
+- **The model gate's own guard has a precondition this task must satisfy, and
+  the model is not the whole guard.** `api-access-gate.test.ts:95` asserts
+  `collect().length > 0` — a positive control against a walker that silently
+  returns nothing. That control counts over `apps/*/src` and `packages/*/src`
+  (`:28-29`), so today it is satisfied by the other thirteen source-bearing
+  packages and would stay green even if the agent contributed nothing.
+  `apps/agent/src` currently holds exactly **one** `.ts` file
+  (`session/packetizer.ts`). An agent-side gate therefore needs two things the
+  model gate does not: a control scoped to the agent's own roots, and that
+  control stated together with the precondition under which it is meaningful —
+  the count must be taken *after* the agent's TypeScript source has landed, and
+  R6's deletions (`vendor/`, `target/`, the `.rs` tree) change what the walker
+  sees. A control that cannot fail is the vacuous green this plan exists to
+  avoid, and a control whose precondition the executor has to guess is a
+  green-or-setup-question, not a gate.
 
 ### T3. `ci-node.yml`: add `apps/agent/**` to `paths:` AND remove the three filters — one change, both halves
 
@@ -77,6 +92,19 @@ alone is a silent no-op that looks like success**:
   failed loudly (`turbo` treats an unmatched filter as fatal).
 - Remove the filters and leave `paths:`, and nothing ever triggers the job for
   an agent-only branch, so the removal has no effect.
+
+**Neither half may be verified by reading the workflow and noting what is
+absent.** "The job runs, is green, and the agent was never gated" is a claim
+about what a workflow did *not* cover, and a negative read off a file is the
+weakest evidence there is: it is true of the file at that SHA, unfalsifiable
+from its own output, and it rots the moment someone edits `paths:` back. The
+control for both halves is a **demonstration, not a count**: push a probe
+commit that touches only `apps/agent/**`, and show from the run list that
+either no Node job was created (proves the `paths:` half) or that the job ran
+and its log shows `@ponter/agent-node` absent from `tasks[].package` in the
+`--dry=json` output (proves the filter half). Both readings are positive
+results and carry their own evidence. Delete the probe branch afterwards; the
+run list keeps the record.
 
 The `ci-node.yml` comment as it stands at `0030391` says the filter "is what
 keeps the not-yet-gating package out of a job that runs on unrelated pushes"
