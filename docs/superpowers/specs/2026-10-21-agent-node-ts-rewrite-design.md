@@ -224,16 +224,16 @@ string the Rust agent advertised:
 
 - **Profile**: the Rust agent never sets a profile, so `uiProfileIdc` stays
   `PRO_UNKNOWN` and openh264 resolves it from the entropy-coding mode
-  (`encoder_ext.cpp:660-666`): `FillDefault` sets
+  (`codec/encoder/core/src/encoder_ext.cpp:660-666`): `FillDefault` sets
   `iEntropyCodingModeFlag = 0`, so the resolution lands on `PRO_BASELINE`
   (66). The SPS is then written with `profile_idc = 66`,
   `constraint_set0_flag = 1` (because the profile *is* baseline) and
   `constraint_set1_flag = 1` (because 66 ≤ 77 = `PRO_MAIN`)
-  (`au_set.cpp:515-520`).
+  (`codec/encoder/core/src/au_set.cpp:515-520`).
 
 - **The constraint byte is `0xC0`, not `0x00` and not `0xE0`.** The four
   constraint flags are written as four consecutive bits followed by four
-  reserved zero bits (`au_set.cpp:269-275`), so
+  reserved zero bits (`codec/encoder/core/src/au_set.cpp:269-275`), so
   `constraint_set0=1, constraint_set1=1, constraint_set2=0, constraint_set3=0`
   gives `1100 0000` = **`0xC0`**. The real bitstream confirms it: the
   vendor's own hexdump of the agent's Annex-B output starts
@@ -243,10 +243,12 @@ string the Rust agent advertised:
 
 - **The level is computed, not pinned.** openh264 derives the level from
   the frame size, the frame rate and the target bitrate
-  (`WelsGetLevelIdc`, `au_set.cpp:187-193`, against the `g_ksLevelLimits`
-  table at `common_tables.cpp:345+`) and writes it into the SPS
-  (`au_set.cpp:526-537`). Recomputing that table for the four shipped
-  `StreamProfile` presets (`apps/agent/src/lib.rs:445-490`) gives:
+  (`WelsGetLevelIdc`, `codec/encoder/core/src/au_set.cpp:187-193`, against
+  the `g_ksLevelLimits` table at `codec/common/src/common_tables.cpp:345+` —
+  all **17** levels, 1.0 through 5.2) and writes it into the SPS
+  (`codec/encoder/core/src/au_set.cpp:526-537`). Recomputing that table for
+  the four shipped `StreamProfile` presets
+  (`apps/agent/src/lib.rs:445-490`) gives:
 
   | Preset | Computed level | SPS `profile-level-id` |
   |---|---|---|
@@ -254,6 +256,17 @@ string the Rust agent advertised:
   | 720p30 @ 4 Mbps | 3.1 | `42c01f` |
   | 1080p60 @ 8 Mbps | 4.2 | `42c02a` |
   | 720p60 @ 5 Mbps | 3.2 | `42c020` |
+
+  The result is **insensitive to the reference-frame count**: the DPB check
+  (`codec/encoder/core/src/au_set.cpp:66`,
+  `uiMaxDPBMbs < uiNumRefFrames * uiPicInMBs`) never binds
+  for these presets at any `iNumRefFrames` from 1 to 4, so the levels above
+  hold regardless of how the encoder is configured for reference frames.
+  The 720p30 value `42c01f` is independently corroborated by the vendor's
+  own hexdump of the agent's Annex-B output
+  (`docs/spikes/2026-10-11-hardware-encode-h265.md:167`), which reads
+  `00 00 00 01 67 42 c0 1f …` — SPS NAL type `0x67`, profile `0x42`,
+  constraint `0xc0`, level `0x1f`.
 
   So the Rust agent's hard-coded `profile-level-id=42001f`
   (`apps/agent/src/rtc.rs:208`) is wrong in **two** ways: its constraint byte
