@@ -713,8 +713,15 @@ export interface RTCRtpSenderLike {
    * *first* H.264 entry is `packetization-mode=0` would otherwise be
    * negotiated onto a mode-0 payload type while the packetizer emits mode-1
    * framing. The caller re-points the sender at the browser's
-   * `packetization-mode=1` entry; the answer's `a=fmtp:` line for that
-   * payload type then stays byte-identical to the offer's.
+   * `packetization-mode=1` entry, which puts the mode-1 payload type first in
+   * the answer's m-line.
+   *
+   * The answer's `a=fmtp:` line for that payload type stays byte-identical to
+   * the offer's, but **that is not this method's doing and is not R-S3's
+   * assertion.** werift never rewrites `fmtp` parameters, whichever entry the
+   * sender points at — `werift-sender.test.ts` pins that fact in a test that
+   * passes with and without this method. R-S3's own coverage is the payload
+   * type and its position in the answer, not the fmtp text.
    *
    * Throws when the codec is not one of the negotiated ones.
    */
