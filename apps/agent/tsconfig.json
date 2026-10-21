@@ -8,5 +8,5 @@
     // they carry their real `.ts` extension. Nothing here is ever emitted.
     "allowImportingTsExtensions": true
   },
-  "include": ["spike/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "spike/**/*.ts"]
 }
