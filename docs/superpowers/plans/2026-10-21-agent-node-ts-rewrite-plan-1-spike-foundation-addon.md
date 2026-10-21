@@ -265,7 +265,8 @@ change, and the obvious replacement is wrong.** The old comments said the
 exclusion exists because the agent's `test` script shells out to `cargo`, which
 this job's toolchain lacks. That was true of the *Rust-era manifest*, which the
 rename replaced. But `apps/agent/` still holds the Rust crate — `Cargo.toml`,
-`Cargo.lock`, `rust-toolchain.toml` and 86 tracked `.rs` files — and
+`Cargo.lock`, `rust-toolchain.toml` and 65 tracked `.rs` files (86 tracked
+files in the directory in total) — and
 `build-agent.yml` still fmt/clippy/tests/cross-compiles it. So the honest
 statement is two-part: (a) `paths:` omits `apps/agent/**`, so an agent-only
 branch never reaches this job, and (b) the directory holds *both* the Rust
