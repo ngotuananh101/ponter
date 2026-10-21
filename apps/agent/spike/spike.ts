@@ -1,4 +1,5 @@
 // apps/agent/spike/spike.ts
+import { randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -318,8 +319,10 @@ async function runSpikeOnce(): Promise<SpikeRunResult> {
       });
     });
 
-    let sequenceNumber = Math.floor(Math.random() * 0xffff);
-    let timestamp = Math.floor(Math.random() * 0xffffffff);
+    // `randomInt`'s upper bound is exclusive, so `0xffff` and `0xffffffff`
+    // reproduce the `0 .. n-1` range `Math.floor(Math.random() * n)` had.
+    let sequenceNumber = randomInt(0, 0xffff);
+    let timestamp = randomInt(0, 0xffffffff);
 
     const send = (bytes: Buffer, step = 3000) => {
       const result = packetizeAnnexB(bytes, {
