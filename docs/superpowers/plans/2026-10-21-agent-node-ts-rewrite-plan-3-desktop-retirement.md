@@ -191,14 +191,23 @@ a deletion needs no correction on the way out.
       - **The rtcp-fb half needs no local config either.** werift echoes the
         offer's `a=rtcp-fb … transport-cc` on every payload that carried it,
         with or without local configuration.
-      - **The one real difference is the extmap's presence, and it turns on a
-        single config line, not a design choice**: werift stamps
-        `a=extmap … transport-wide-cc` only when local config names
-        `useTransportWideCC()`. Its default config drops it even when the offer
-        carries it. So the sentence "the `extmap` id needs no decision" is true
-        **only of the configured case**; unconfigured, werift omits the
-        extension entirely. A port must configure it; that is a task detail,
-        not an owner question.
+      - **The extmap appears only when both halves are present, and it is the
+        offer's id that wins.** Measured by BE and re-run independently at
+        `.superpowers/probes/be-twcc-sdp/` (git-ignored, one command to
+        reproduce): `useTransportWideCC()` configured **and** the offer
+        carrying the extension ⇒ `a=extmap:4 …` for an offer id of 4,
+        `a=extmap:7 …` for 7. Either half alone ⇒ **NONE**. So the rule is a
+        conjunction, not a config flag — and an implementer who sets
+        `useTransportWideCC()` and assumes the extension is now on the wire is
+        wrong until the browser offers it. The mechanism is the
+        `transceiverManager.js:265-266` filter: remote extensions are kept only
+        if local config names the same URI, and werift's default is
+        `headerExtensions: { audio: [], video: [] }` (`peerConnection.js:1084-1087`).
+      - A port must therefore configure `useTransportWideCC()`; that is a task
+        detail, not an owner question. The old sentence "the `extmap` id needs
+        no decision" is true **only of the id** — the id is always the offer's
+        — and was misleading about the extension's presence, which does depend
+        on local config.
       - Note the task fences understate the real offer: the captured Chrome
         offer (`apps/agent/spike/report.json:30`) carries `a=extmap:4 …` and
         `a=rtcp-fb:96 transport-cc`, while
