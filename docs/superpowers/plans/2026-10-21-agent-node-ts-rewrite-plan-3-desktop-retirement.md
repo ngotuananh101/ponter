@@ -263,9 +263,9 @@ a deletion needs no correction on the way out.
   - **The margin is the point.** 18 433 raw bytes is 24 580 base64 characters
     under an unsplit frame, still under werift's `DEFAULT_MAX_MESSAGE_SIZE` of
     65 536 (`sctp.js:10`) and under Chromium's 64 KiB data-channel limit — so
-    this is not a crash today. It is a stated contract that the port would
-    silently stop honouring, and that is the reason to keep the splitter
-    rather than the reason to drop it.
+    this is not a crash today. It is a stated contract that a port without an
+    explicit splitter would silently stop honouring, and that is the reason to
+    keep the splitter rather than the reason to drop it.
   - **Consequence for the ledger:** N-4 moves out of the owner-question list
     and into T6 as a *carried* behaviour — the Rust's read-buffer bound is
     reproduced by an explicit framer-side split, so the ledger records a
