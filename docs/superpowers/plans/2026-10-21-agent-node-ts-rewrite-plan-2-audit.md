@@ -298,7 +298,7 @@ A cheap, mechanical fix exists: for each task, count `it(` and `expect(` **insid
 
 **Do not execute Plan 2 as it stands.** B-1/B-2 mean no task's gate is trustworthy; B-3/B-5 mean two R-entries would record fabricated parity; B-7/B-8 mean two surfaces leave the Rust tree with no owner.
 
-> **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. One residual — the "six retired noise rules" R-entry line — is recorded there; it is a one-line fix. N-4 remains open for the owner by design: whether the Node agent should split terminal output at 16 KiB is a protocol question, not a docs one.
+> **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. The one residual found during that verification (the "six retired noise rules" R-entry line) was closed in `72e8594`. N-4 remains open for the owner by design: whether the Node agent should split terminal output at 16 KiB is a protocol question, not a docs one.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -349,11 +349,11 @@ Spot-checks of the non-count amendments, all confirmed in `cebe659`:
 - **B-8** — the three env vars are now in `loadConfig` and its tests (7 / 6 / 8 hits); `AGENT_COLS`/`AGENT_ROWS` appear exactly once each, in the line that explains they **must not** exist (the Rust binds them as bare clap flags with no `env =`).
 - **B-9** — 38 → 49 in both places, with the rationale recorded.
 
-**One residual inconsistency, found in `cebe659` and not yet fixed** (it is not one of the nine findings — it is the same *class* as B-5, and it sits three lines below the table that contradicts it):
+**One residual inconsistency found in `cebe659`** (it is not one of the nine findings — it is the same *class* as B-5, and it sat three lines below the table that contradicts it):
 
 > Line 7872: `- **New R-entry: six retired noise rules** (above).`
 
-The retirement note it points at (`cebe659` lines 7806-7859) now accounts for **all ten** rules and concludes that Task 1's `NOISE` table **ships empty** — *"every one names a Rust crate's target … and the TypeScript stack is werift"*. Under that reckoning no rule "retires" in the port sense; the ten rationales are recorded so the knowledge survives, and the R-entry should say **ten rules, none ported** (or name the R-entry after the mechanism rather than a count). The "six" is a leftover of the pre-amendment note.
+The retirement note it points at (`cebe659` lines 7806-7859) accounts for **all ten** rules and concludes that Task 1's `NOISE` table **ships empty** — *"every one names a Rust crate's target … and the TypeScript stack is werift"*. Under that reckoning no rule "retires" in the port sense; the ten rationales are recorded so the knowledge survives. **Closed by PM in `72e8594`**, which rewrites the line to *"ten noise rules recorded, none ported"* and adds the why, plus the two live concerns the R-entry keeps findable (the loopback STUN write, #8; coturn's 403 SSRF guard, #9). `grep -n 'six retired\|retired noise'` over the plan now returns nothing.
 
 ---
 
