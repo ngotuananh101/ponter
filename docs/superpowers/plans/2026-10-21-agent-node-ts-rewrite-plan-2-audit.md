@@ -14,15 +14,17 @@ Reproduce any row with the recipe in §10.
 
 | Class | Count |
 |---|---|
-| BLOCKING | 9 (B-1…B-9), plus **B-10** raised 2026-10-21 and still open |
-| Non-blocking | 6 (one corrected after the fact — see N-6) |
+| BLOCKING | 9 (B-1…B-9) closed, plus **B-10** and **B-11** raised 2026-10-21 and still open |
+| Non-blocking | 8 (one corrected after the fact — see N-6; two added 2026-10-21 — see N-3a/N-3b) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
 The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong**, and **21 Rust test names cited as porting sources do not exist anywhere in `apps/agent/src`**. Both are the same class of defect — a number or a name written into a declaration that does not describe the tree — and both are BLOCKING because the declaration is the gate the plan itself defines (Plan 2 line 29: an undeclared change is BLOCKING; a declared change that is false is worse, because it passes the gate while misdescribing it).
 
 **Status: B-1…B-9 are closed** by PM's amendment `cebe659` (2026-10-21), verified independently — see §9.1. One non-blocking finding (N-6) was **partly mine and wrong**; it is corrected in place.
 
-**B-10 is open and is the largest item in the rewrite:** the **auto-ABR loop** — the 500 ms ticker that reads a congestion estimator and retargets the encoder, latched off by a manual `desktop-bitrate` frame — has **no B-row, no R-entry, no task, and no plan**. The manual bitrate path is covered (B19 + B62 + B20); the automatic one is outside the §9.4 gate's vocabulary entirely, so a "62 of 62" pass cannot fail on it. It needs an owner ruling, not a porter's guess. See §3's B-10 for the evidence, the four questions, and the landing-spot recommendation.
+**B-10 is open and is the largest item in the rewrite:** the **auto-ABR loop** — the 500 ms ticker that reads a congestion estimator and retargets the encoder, latched off by a manual `desktop-bitrate` frame — has **no B-row, no R-entry, no task, and no plan**. The manual bitrate path is covered (B19 + B62 + B20); the automatic one is outside the §9.4 gate's vocabulary entirely, so a "62 of 62" pass cannot fail on it. It needs an owner ruling, not a porter's guess. See §3's B-10 for the evidence, the three surviving questions (the fourth was withdrawn — its premise was wrong), and the landing-spot recommendation.
+
+**B-11 is open and is the same class, one level down:** Plan 2's `FilesSession.list()` emits a **different wire shape** from the Rust's `RemoteFile` — **seven divergences**: four field-shape (no `path`; `kind` where the Rust sends `isDirectory`; `size: null` where the Rust sends the directory's real `metadata.len()`; `modifiedEpochMs: number` where the wire type declares an RFC 3339 `Z` string) and three behavioural (dirs-first byte-wise sort replaced by `localeCompare`; a per-entry `statSync` failure silently substituted with `0` where the Rust fails the whole listing; `ENOTDIR` on `list()` of a file becomes `IO_ERROR` where the Rust sends `NOT_A_DIRECTORY`). Every field is read by the browser and asserted by an existing E2E; Task 11 has **no test of `list()` at all**. Task 11's declaration passes anyway, because B43 is a **count** (12 inbound / 11 outbound) and a count cannot see a shape. See §3's B-11.
 
 ---
 
@@ -200,11 +202,38 @@ The function body is **23-42**; the doc comment starts at **16**; `NETWORK_ERROR
 
 Not a Plan 2 defect — but Plan 2 cites `signal.rs` as the parity authority (line 904), so the plan inherits stale line numbers into its own provenance. Worth a one-line correction in Task 3's preamble.
 
-### N-3. Task 11's "24 of `files.rs`'s 65 tests" partition is unverifiable as stated
+### N-3. Task 11's "24 of `files.rs`'s 65 tests" partition is unverifiable as stated — and its own declaration sentence is wrong twice over
+
+> **Extended 2026-10-21 with N-3a and N-3b below**, both raised by PM and both verified here. The partition problem is the original N-3; the two subsections are defects *in the same declaration sentence* that N-3's own text did not reach.
 
 Line 4619 states a 24/41 split. The **65** is right (`grep -c '#\[(tokio::)?test\]' apps/agent/src/files.rs` → 65). The split's *named* examples are right too (`rfc3339_formats_epoch_seconds_utc`, `decode_guard_*`, `test_transfer_id_codec_*` all exist and are Rust-internal). But the partition is not auditable: the declaration names **one** of the 24 ported tests (`path_policy_rejects_dotdot_escape` appears; the other 23 are described, not named), while Task 10 separately claims seven `path_policy_*`/`upload_create_path_*` tests — several of which are among Task 11's 24. Two tasks claiming overlapping members of one 65-test file without a per-test list is how a retirement silently drops a test.
 
 The declaration's retirements are separately checkable and mostly hold: `files-download-chunk` is **not** emitted by the pump (files.rs:1449 emits `DownloadChunkBinary`; `Outbound::DownloadChunk` survives only for the ADR-34 frame-cap test at 2345 and the test-side `chunk_bytes` helper at 2681, so "dead in Rust, never emitted" is correct for production paths); `QUEUE_FULL` is constructed nowhere (only `as_str()` and its spelling test at 3508), so "never produced" is correct; the four `decode_*` guard tests are real (`decode_guard_never_errors_on_foreign_frames` 2388, `decode_guard_extracts_ids_for_attribution` 2415, `decode_round_trips_every_browser_to_agent_type` 2433, plus `error_code_spellings_are_pinned` 2357 as the fourth).
+
+#### N-3a. Task 11's declaration names a test that exists in no fence — and mislabels the other as new
+
+> **Raised by PM 2026-10-21; verified here, with one correction to PM's framing.**
+
+`plan-2-core.md:4888` says *"Two are **new**: `paused transfers do not time out` and `drained .part before resume` as separate assertions."* Neither half survives.
+
+- **`drained .part before resume` does not exist anywhere.** `grep -rn "drained"` over the whole 7,940-line plan returns exactly one line — `:4888`, the sentence making the claim. `grep -rn "drain"` likewise returns only that line. There is no `it()` by that name and no assertion matching the description. This is the same defect class as B-1…B-9: a declaration that does not describe the thing it points at.
+- **`paused transfers do not time out` exists (`:4221`) but is not new — it is a port.** The Rust has `paused_state_survives_idle_timeout` (`files.rs:3834`): it downloads, pauses, forces `deadline` into the past, and asserts `check_idle()` returns **empty** with the slot still `Some`. The plan's `:4221` fence does the same thing through the injected clock (`now = 60_000`, `expect(...).not.toContain('TRANSFER_TIMEOUT')`). **PM verified presence; presence is not the claim.** The claim is *"new"*, and the Rust test it ports is real. (Whether it sits among the declaration's 24 ported or its 41 unported does not rescue the wording: if it is one of the 24, it is a port; if it is one of the 41, then the 41's stated criterion — *"Rust-internal helpers … or per-platform filesystem races"* — does not cover a wire-surface idle behaviour either.)
+
+So the sentence is wrong **twice, in two different ways**: one phantom name, one real test misclassified as new. The count around it is arithmetically fine — I re-walked the Task 11 range (`3888-4887`) and got **25 `it()` / 42 `expect()`**, exactly as declared. **The count is right and the prose is wrong**, which is precisely why re-deriving counts alone was never going to catch it, and why the fence-walker that closed B-1…B-9 is necessary but not sufficient.
+
+#### N-3b. The `FILES_IDLE_TIMEOUT_MS` claim is half right, and its *reason* is inverted
+
+> **Raised by PM 2026-10-21; PM's premise verified, PM's explanation corrected.**
+
+`plan-2-core.md:4888` claims the TS test *"asserts the constant is `30_000` **and** that the prod timeout equals it."* Three checks:
+
+1. **The Rust premise is right.** `files.rs:31` is `pub const FILES_IDLE_TIMEOUT_MS: u64 = 30_000;`; `:40-45` is the comment *"the wire value stays pinned by [`FILES_IDLE_TIMEOUT_MS`] and its own assertion"*, with `FILES_IDLE_TIMEOUT` shrinking to **50 ms** under `cfg(test)`. And **no Rust test pins it** — `awk 'NR>=2287' files.rs | grep FILES_IDLE_TIMEOUT` returns **nothing** (the test module starts at `:2287`). The gap the declaration claims to repair is real.
+2. **The promised TS assertion is absent.** `grep -n "FILES_IDLE_TIMEOUT_MS"` over the whole plan gives nine hits, and **none is an assertion**: `:3964` the source definition, `:4286`/`:4295` the test-file import and re-export, and six production uses of `this.now() + FILES_IDLE_TIMEOUT_MS` (`:4495`, `:4515`, `:4531`, `:4572`, `:4609`, `:4772`). The only `30_000` inside the test fences is `now = 30_000` (`:4237`) — a fake-clock value in `kills a stalled transfer at the idle timeout`, not an assertion on the constant. There is no `expect(FILES_IDLE_TIMEOUT_MS).toBe(30_000)` and no prod-equals-constant check.
+3. **The reason PM gives for why this matters is backwards.** PM writes that in Rust "the wire constant and the test constant were the same symbol; in TS they are not." **It is the reverse.** Rust has **two** symbols that diverge under `cfg(test)` (`30_000` vs `50`) — which is exactly why an equality assertion had something to compare and why its absence was a gap. TS has **one** constant, `FILES_IDLE_TIMEOUT_MS = 30_000`, used identically by production and by tests (the tests vary `now()`, not the constant). So *"the prod timeout equals it"* is not a missing assertion in TS — it is a **vacuous** one: both sides are the same symbol, and `expect(X).toBe(X)` cannot fail. The only non-vacuous pin available is on the **wire value** (`30_000`), which is what the Rust comment actually promised and never got.
+
+**What this means for the repair.** The declaration must (a) drop `drained .part before resume` or add the assertion it describes, (b) stop calling `paused transfers do not time out` new, (c) either add `expect(FILES_IDLE_TIMEOUT_MS).toBe(30_000)` or drop the promise, and (d) **name the `cfg(test)` difference** rather than imply it. Item (d) is the part the current text never states: the Rust shrinks its timeout so tests do not sleep 30 s, and Plan 2 reaches the same end by injecting `now()` — a design difference, correctly chosen, that the declaration describes as if it were a repair of Rust's gap.
+
+**Sequencing, agreed with PM.** Both go into the same single repair as B-11 and N-3: fence shape + the three `files.rs` list tests + this declaration rewrite, landing as one declared before→after. Neither blocks PR #174 (nothing in it executes Plan 2); both block **starting Task 11**. Neither is an owner question — they are declarations about a plan the owner never sees, which puts them in §3 and not §4.
 
 ### N-4. Task 12's "`chunk_boundaries` is replaced, not ported" rationale is sound, but the replacement does not exist in Rust
 
@@ -272,27 +301,139 @@ lib/webrtc/src/media/sender/senderBWE.d.ts
 
 and `rtpSender.js:619`/`:657` wire it (`this.senderBWE.rtpPacketSent(sentInfo)` on send, `this.senderBWE.receiveTWCC(feedback)` on `RtcpTransportLayerFeedback` of type `TransportWideCC`). **werift's estimator is TWCC-based, and the Rust's was `rtc`'s GCC.** So a port is a re-implementation against a different estimator: the Rust's three tests cannot be ported, the numbers will differ, and the dead-band thresholds carry over as *policy* but not as *measured behaviour*.
 
-**There is a second, sharper dependency the ledger does not record either.** The Rust's GCC is installed via `configure_congestion_control(…, CongestionFeedback::Twcc, …)` (`rtc.rs:424-430`), which **changes the SDP** — it registers `transport-cc` feedback and a header extension on the media engine. The Rust comment at `rtc.rs:417-420` says so and gates it on `has_control` so the terminal path stays byte-identical. **That SDP delta is itself a wire-visible behaviour with no B-row.** `grep -n 'transport-cc\|twcc\|transportCC'` over the spec and both plans returns **0** — the rewrite documents never mention TWCC at all, while the Rust agent's desktop offer carries it. If the Node agent negotiates without it, the browser's SDP answer differs from today's; if it negotiates with it, the terminal path may acquire a header extension it does not have today. Both branches are unowned. (werift's own `transport-cc` support is confined to `media/extension/rtcpFeedback.js` — the *parser*; the negotiation side is not obviously there, which is a further reason this needs an owner's ruling rather than a porter's guess.)
+**There is a second, sharper dependency the ledger does not record either.** The Rust's GCC is installed via `configure_congestion_control(…, CongestionFeedback::Twcc, …)` (`rtc.rs:424-430`), which **changes the SDP** — it registers `transport-cc` feedback and a header extension on the media engine. The Rust comment at `rtc.rs:417-420` says so and gates it on `has_control` so the terminal path stays byte-identical. **That SDP delta is itself a wire-visible behaviour with no B-row.** `grep -n 'transport-cc\|twcc\|transportCC'` over the spec and both plans returns **0** — the rewrite documents never mention TWCC at all, while the Rust agent's desktop offer carries it. If the Node agent negotiates without it, the browser's SDP answer differs from today's; if it negotiates with it, the terminal path may acquire a header extension it does not have today. Both branches are unowned.
+
+> **Correction 2026-10-21 #1 (this paragraph originally claimed something false).** The first version ended with *"werift's own `transport-cc` support is confined to `media/extension/rtcpFeedback.js` — the parser; the negotiation side is not obviously there."* **That is wrong**, and I should have checked the installed package before writing it. werift ships a negotiation-side helper — `useTransportWideCC()` in `media/extension/rtpExtension.js:28-32`, returning `RTCRtpHeaderExtensionParameters{uri: RTP_EXTENSION_URI.transportWideCC}` — and `lib/rtp/src/rtp/headerExtension.js:21` carries the **byte-identical** URI string to `rtc`'s (`http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01`, `sdp-0.8.0/src/extmap/mod.rs:19-20`). The negotiation side is there; it is simply **never on by default**.
+>
+> **Correction 2026-10-21 #2 — the more important one, and it refutes the Rust comment's premise.** `register_default_interceptors` **already calls `configure_twcc_receiver_only`** (`interceptor_registry.rs:196-211`, at `:206`), and that function registers the `transport-cc` `rtcp-fb` **and** the `TRANSPORT_CC_URI` header extension for **both** Video **and** Audio (`:568-604`). And `rtc.rs:440-441` calls `register_default_interceptors` **unconditionally**, on the same `media` the gated call mutated. So:
+>
+> - **The video half of the "SDP delta gated on `has_control`" does not exist.** The terminal path already gets video `transport-cc` feedback and the TWCC extmap from the **default** interceptors, whether or not `has_control` is set. `rtc.rs:417-420`'s comment — *"it registers `transport-cc` feedback and a header extension on the media engine, which changes the SDP. The terminal path must stay byte-identical"* — is **wrong about its own mechanism**. The gating does not preserve byte-identity for the video m-line, because the default chain already changed it.
+> - **The audio half is also not a delta.** `configure_twcc_receiver_only` registers Audio too, so `configure_congestion_control`'s audio registration is a **duplicate**, and `MediaEngine::register_feedback` de-duplicates on `(typ, parameter)` (media_engine.rs:719-725) while `register_header_extension` finds-and-mutates by URI (`:676-695`). Net SDP effect of the gated call on audio: **none**, beyond what the default already did.
+> - **So the real, unrecorded SDP delta is smaller than I claimed and differently shaped.** What `configure_congestion_control` actually adds that the default does not is **`Slot::CongestionControl` and `Slot::Pacer`** — the *send-side* loop and the pacing. The *wire* delta is essentially nil. This **strengthens** the finding in one direction and **narrows** it in another, and both matter:
+>   - Narrower: "the Node port must decide what to advertise in SDP" is **wrong** as a framing — the default werift/rtc behaviour on that point is what the Rust already has, and the browser echoes `rtcp-fb` regardless. Q4 as I first wrote it was answering a question that did not exist.
+>   - Stronger: what the port loses is **pacing and the send-side estimator**, which is exactly the pacer bullet below. The behaviour with no werift analogue is the *only* real delta, not one of three.
+>
+> The rewrite documents' silence on `transport-cc` is still true and still worth a line, but it is **not** a wire-contract risk. Recording my own correction rather than quietly deleting it, because the wrong version is the one a reader would most likely re-derive.
+
+**The two-m-line half, verified against the crate source.** `configure_congestion_control` registers the feedback *and* the header extension **per codec kind**, in a `for kind in [RtpCodecKind::Video, RtpCodecKind::Audio]` loop (`rtc-0.21.0/src/peer_connection/configuration/interceptor_registry.rs:676-694`) — so the delta is not one m-line, it is **both**. Two things follow that the ledger does not record:
+
+- The Rust agent registers audio codecs (`register_default_codecs` → Opus/G722/PCMU/PCMA, `rtc.rs:412-415`), so the Audio half of that loop has codecs to attach to. The browser, however, is **video-only** (`packages/webrtc-core/src/media-channel.ts:20-28` adds exactly one `video` transceiver and returns early when `media.video` is unset), so today the audio m-line never materialises in the answer — **and, per correction #2, the audio registration is a duplicate of the default's anyway.** It is latent in the weaker sense: nothing observable changes if it were removed.
+- `configure_congestion_control` also builds **`Slot::Pacer`** (`registry.with(Slot::Pacer, PacerBuilder::new().build())`, `:713-717`). **This is the one behaviour that is genuinely new.** The Rust **paces its own departures** on the desktop path, and rtc's own docs say why this is not a default: *"Congestion control implies pacing, pacing implies queueing delay, and that is not something an application should acquire without asking. `register_default_interceptors` does not call this."* (`:641-642`; restated as decision **D6** at `:889-890`, asserted by a test at `:900-906` that `Slot::Pacer` is absent from the default chain). werift has **no send-side pacer to port to**: `grep -ri 'pacer\|pacing'` over `werift@0.24.4/lib` returns one hit, inside an SCTP retransmission comment. So the honest count of "what a port must replace" is **two**: the estimator (TWCC instead of GCC) and the pacer (absent entirely). The TWCC negotiation is **not** a third — correction #2 removes it.
+>
+> **Amended conclusion: "port auto-ABR" is two behaviours, not three** — the estimator and the pacer. The SDP question I raised under Q4 is **withdrawn**: the default interceptors already register what the Rust's gated call registers on the wire, so there is nothing for an owner to decide there.
 
 **Severity and disposition.** This is a **spec-level decision**, and the questions are:
 
 1. **Does auto-ABR ship in the Node agent at all?** The Week 8 spec (`…2026-10-03-phase3-week8-stream-quality-design.md:26,562`) says auto-ABR "ships" but is *"a **goal**, not an acceptance criterion (ADR-23, §10.2)"*, and `ARCHITECTURE.md:970` records it as *"GCC auto-ABR — target, verified via spike §3.7 (not an acceptance criterion)"*. **The rewrite spec never mentions it.** So the rewrite is not silently dropping a shipped feature; it is **silently inheriting a feature the governing spec never claimed**. That distinction matters: it makes "do not port it" a *legitimate* answer that still needs writing down, and it makes "port it" a *scope addition* that needs the spec amended.
-2. **Against which estimator?** werift's TWCC `SenderBandwidthEstimator` is the only surface available, and it is not GCC.
-3. **What is the declared divergence?** The Rust's dead-band and 15%-move policy are portable as policy; the measured values are not.
-4. **What happens to the `transport-cc` SDP delta?**
+2. **Against which estimator — and seeded how?** werift's TWCC `SenderBandwidthEstimator` is the only surface available, and it is not GCC. It also **seeds at `0`**, not 4 Mbps, so `abr_next_target`'s `estimate <= 0.0 → None` guard would swallow the initial value into "no change" — arguably right (wait for real feedback), but reached **by coincidence**. Owner sub-question: seed at 4 Mbps as the Rust did, or start at 0 and let the first real TWCC report set the target?
+3. **What is the declared divergence?** The Rust's dead-band and 15%-move policy are portable as policy; the measured values are not. And the divergence is **two behaviours, not one** — the estimator *and* the absent pacer (correction #2). A divergence note that names only the estimator will read as parity and behave as a downgrade.
+4. ~~What happens to the `transport-cc` SDP delta?~~ **WITHDRAWN 2026-10-21 — the premise was wrong.** `register_default_interceptors` already registers the TWCC `rtcp-fb` and extmap for both kinds (`interceptor_registry.rs:196-211`, `:568-604`), so the gated call's wire effect is nil and the terminal path was never byte-identical on that m-line anyway. The Rust comment at `rtc.rs:417-420` states its own mechanism incorrectly. **This is now a docs defect in the Rust, not an owner question** — worth a line in Plan 3's T9 alongside the `desktop/devices.rs` drift, because the comment is the thing a porter reads.
 
-**Why this is not Plan 2's to absorb silently, and not Plan 3's to absorb at all.** Plan 2 is the TS core; the auto-ABR loop is a *session-loop* behaviour, so if it ships it belongs in **Plan 2's Task 19** (`runtime.ts` + `desktop/session.ts`) — the task that owns the desktop session loop and already owns `resolveDefaultSource` and the `DesktopSession` class, and whose declaration (plan:7794) already claims `reporting_estimator_publishes_its_initial_target` as its one port from Task 8. That is the natural home, and it is the only place in any plan where a periodic task that retargets the encoder during a session can exist. **But it cannot be landed there by an implementer**, because the estimator choice, the divergence, and the SDP question are all owner calls, and a plan cannot invent them.
+**Why this is not Plan 2's to absorb silently, and not Plan 3's to absorb at all.** Plan 2 is the TS core; the auto-ABR loop is a *session-loop* behaviour, so if it ships it belongs in **Plan 2's Task 19** (`runtime.ts` + `desktop/session.ts`) — the task that owns the desktop session loop and already owns `resolveDefaultSource` and the `DesktopSession` class, and whose declaration (plan:7794) already claims `reporting_estimator_publishes_its_initial_target` as its one port from Task 8. That is the natural home, and it is the only place in any plan where a periodic task that retargets the encoder during a session can exist. **But it cannot be landed there by an implementer**, because the estimator choice, the seeding, and the pacer are all owner calls, and a plan cannot invent them.
 
 **Recommendation to PM (the landing spot is PM's to rule; this is the evidence, not the decision):**
 
 - **Record B-10 in the audit as an open spec-level item** — done, this section.
 - **Do not let it be absorbed by B20, B19 or B62.** Each of those is a manual-path row; the auto path is a different producer with its own lifecycle (a ticker, a latch, a shared target).
 - **Add it to Plan 3's T6 retirement ledger** as an *unresolved* item, so Plan 3's "close the retirement ledger before deleting the Rust tree" step cannot pass while this is open. Plan 3's T8 is the right list for carried-forward Plan 2 items; B-10 belongs there with the same standing as N-4 (which T8 already carries).
-- **Escalate to the owner with the four questions above**, alongside N-4, which is already on the same list for the same reason: both are *behaviour decisions*, not *docs decisions*.
+- **Escalate to the owner with the three surviving questions above** — Q4 is withdrawn because its premise was false — alongside N-4, which is already on the same list for the same reason: both are *behaviour decisions*, not *docs decisions*. **One piece is *not* an owner question and can be filed straight away:** the Rust comment at `rtc.rs:417-420` is simply wrong about what `configure_congestion_control` changes, and the fix is a comment correction for Plan 3's T9 — the same class as the `desktop/devices.rs` drift T9 already names.
 - **If the answer is "auto-ABR does not ship in the Node agent"**, then the rewrite spec needs an **R7** retirement row with the reason, and `ARCHITECTURE.md`'s Week 8 line needs amending — otherwise the docs will describe a feature the agent no longer has, and this repo has already paid that price once (the `desktop/devices.rs` drift Plan 3's T9 names).
 - **If the answer is "auto-ABR ships"**, it needs a new B-row (B63) in the spec, a Task 19 fence, a declared divergence against the werift TWCC estimator, and a stated answer on the `transport-cc` SDP delta. The Rust's three `abr_next_target` tests are the *policy* to port; the estimator's own behaviour is new.
 
 **What I could not verify, and am not claiming:** whether the werift TWCC estimator can be made to produce a *usable* number for a 500 ms-tick encoder retarget in this stack, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`. Those are P0-spike questions (spec §9.3 is the werift-as-sender gate) and belong to the spike, not to this audit.
+
+> **Closed 2026-10-21 — both questions now have measured answers, and two of them change the ruling's shape.** BE measured these against the installed `werift@0.24.4`; I re-verified each in the package source and, where possible, against this repo's own captured SDP.
+>
+> | Claim | Verified how | Holds? |
+> |---|---|---|
+> | `SenderBandwidthEstimator` is not a root export; the deep specifier fails | `package.json` `exports` permits only `"."` and `"./nonstandard"`; neither `index.d.ts` mentions it | **Yes** |
+> | Reachable as `pc.getSenders()[0].senderBWE` | `media/rtpSender.d.ts:41` — `readonly senderBWE: SenderBandwidthEstimator`, imported at `:27` | **Yes** — a port has a path and needs no vendoring |
+> | The seed is **0**, not 4 Mbps | `media/sender/senderBWE.js:76-81` — `_availableBitrate` initialises to `0` | **Yes** |
+> | werift **echoes** the offer's `rtcp-fb … transport-cc` even with local TWCC off | `peerConnection.js:1074-1076` — `findCodecByMimeType` returns **`target`** (the *remote* codec), not the local one, so the answer's `rtcp-fb` list is the browser's. **Independently confirmed by this repo's own spike capture**: `apps/agent/spike/report.json` run 0 answers a Chrome offer with `a=rtcp-fb:102 transport-cc` while the local config was `useH264()` (`spike.ts:176`), whose `rtcpFeedback` is only `nack`/`nack pli`/`goog-remb` (`media/codec.js:6-12`) | **Yes** — and the repo already had the evidence |
+> | `extmap` appears only if local config names `useTransportWideCC()` | `transceiverManager.js:265-267` filters the offer's extensions through `config.headerExtensions[kind]`, which defaults to `[]` (`peerConnection.js:1084-1087`). Same capture: the offer carries `a=extmap:4 …transport-wide-cc…`, the answer carries **no extmap at all** | **Yes** |
+> | `senderBWE` leaks unbounded on the exact path a port must take | `senderBWE.js:133-140`: `Object.keys(sentInfo)` reads the *one packet just sent* (`["wideSeq","size","sendingAtMs","sentAtMs"]`), so `Number()` yields four `NaN` and the `delete` loop never runs. Intended: `Object.keys(this.sentInfos)` | **Yes — an upstream werift defect.** BE measured 200 sends → 200 retained entries |
+>
+> **What this does to the questions.** Two of the four now sharpen rather than soften:
+>
+> - **Q2 ("against which estimator") gains a sub-question that is an owner call, not an implementer's pick: seed at 4 Mbps as the Rust did, or start at 0 and let the first real TWCC report set the target?** `abr_next_target` rejects `estimate <= 0.0` (`desktop.rs:1962`), so the port would swallow werift's initial `0` into "no change" — arguably the right behaviour (the loop waits for real feedback), but it arrives there **by coincidence**, not by design. The Rust's `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1177-1187`) asserts `published == ABR_INITIAL_BPS`; the TS equivalent cannot assert the same number, so it is **not portable as written** — it either asserts `0` or does not exist.
+> - **Q3/Q4 gain a third behaviour.** The pacer (above) has no werift counterpart, so "declare the divergence" is not one sentence about the estimator: it is the estimator, the un-persisted TWCC negotiation, and the absence of pacing. A port that names only the first will read as parity and behave as a downgrade.
+>
+> **One thing this does *not* change.** The leak is an upstream defect in the *only* estimator surface a port can reach, so it is material to the ruling — but it is not the rewrite's to fix, and it does not by itself decide ship/do-not-ship. Recording it here so the owner's decision is made with it in view, not discovering it after the port lands.
+
+### B-11. `FilesSession.list()` emits a different wire shape from the Rust, and the gate cannot see it
+
+> **Raised by PM 2026-10-21 from BE's reading; independently verified by BA and extended.** Severity: **BLOCKING**, same class as B-10.
+
+**What the two shapes are.** Plan 2's `list()` (`…plan-2-core.md:4439-4454`, the fence itself at `4445-4451`) builds each entry as:
+
+```ts
+{ name: entry.name,
+  kind: entry.isDirectory() ? 'directory' : 'file',
+  size: entry.isDirectory() ? null : (stat?.size ?? 0),
+  modifiedEpochMs: stat ? Math.floor(stat.mtimeMs) : 0 }
+```
+
+The Rust (`files.rs:286-292`, `RemoteFile`, `#[serde(rename_all = "camelCase")]`) builds:
+
+```rust
+pub struct RemoteFile { pub name: String, pub path: String, pub size: u64,
+                        pub is_directory: bool, pub modified_at: String }
+```
+
+| field | Rust / `packages/shared` / browser | Plan 2's `list()` | Effect |
+|---|---|---|---|
+| `name` | `String` | `name` | same |
+| `path` | `join_rel(rel, name)` — **full relative path** (`files.rs:1327`) | **absent** | navigation and `:key` both break |
+| `size` | `u64`, `metadata.len()` — **a real number for directories too** (`:1329`) | `size \| null`, **`null` for a directory** | `formatSize(null)` on a row the UI did not expect to have one |
+| `isDirectory` | `bool` | **`kind: 'directory' \| 'file'`** | every `v-if="entry.isDirectory"` is `undefined` |
+| `modifiedAt` | RFC 3339 UTC **string**, always ending `Z` (`rfc3339_utc`, `files.rs:141`, `:1324`) | **`modifiedEpochMs`: a number** | `formatModified(undefined)` |
+
+**Four of the five fields differ**, not three. Two consequences matter for the repair:
+
+- **The directory `size` is not merely renamed, it changes type *and* meaning.** The Rust sends `metadata.len()` for a directory (`files.rs:1329` — a real number); Plan 2 sends `null`. A faithful port keeps the number.
+- **`modifiedAt` loses three things at once**: the field name, the type, *and* the UTC-`Z` normalisation that `rfc3339_utc` performs (`files.rs:141-161`). `Math.floor(stat.mtimeMs)` is stringless, so a repair that only renames the key to `modifiedAt` still ships a `number` where `RemoteFile.modifiedAt: string` is declared.
+
+**The full enumeration is seven divergences, not four** — the four field-shape changes above, plus three *behavioural* ones in the same fence that a shape fix alone would leave wrong. Kept separate on purpose: the first four are wire-shape, the last three are behaviour.
+
+| # | Kind | Plan 2 (`:4440-4453`) | Rust (`files.rs`) | Consequence |
+|---|---|---|---|---|
+| 1 | shape | no `path` field | `path: join_rel(rel, &name)` (`:1327`) | navigation dies; `files-download` also takes a path |
+| 2 | shape | `kind: 'directory' \| 'file'` | `is_directory: bool` (`:1330`) | every `entry.isDirectory` is `undefined` |
+| 3 | shape | `size: null` for dirs | `metadata.len()` (`:1329`) | type break on a declared `size: number` |
+| 4 | shape | `modifiedEpochMs: number` | `modified_at: String`, RFC 3339 UTC (`:1331`, `:141-161`) | type break; no `Z` normalisation |
+| 5 | behaviour | sorts by `localeCompare` alone | dirs first, **then name byte-wise** (`:1336-1340`) | order diverges on case/accents/punctuation; `localeCompare` is ICU-dependent, so not even deterministic across hosts |
+| 6 | behaviour | `statSync(…, {throwIfNoEntry:false})` then `?? 0` | a per-entry `metadata()` failure **fails the whole list** with `IO_ERROR` (`:1316-1319`, comment: *"a half-listed directory is worse"*) | silently substitutes `0`/`0` and lists anyway |
+| 7 | behaviour | `handle()` maps only `SandboxError`, everything else → `IO_ERROR` (`:4362-4367`) | `read_dir` maps `ErrorKind::NotADirectory` → `NOT_A_DIRECTORY` (`:1303-1306`) | **wire-code change on an error path** |
+
+**On #7, the mechanism, because it is subtler than "the plan forgot a mapping".** The plan *does* have an `errnoToCode` helper that maps `ENOTDIR → NOT_A_DIRECTORY` and `EISDIR → NOT_A_DIRECTORY` (`:3738-3746`), but it is only called inside `FilesRoot` (`:3798`, `:3774`). `list()` does not go through it — it calls `readdirSync(path, …)` **outside** any `try`, so Node's `ENOTDIR` propagates to `handle()`'s generic catch and becomes `IO_ERROR`. I confirmed Node raises `code='ENOTDIR', errno=-20` for `readdirSync` on a regular file. So the Rust's `list_on_a_file_is_not_a_directory` (`files.rs:2730`) ported against the plan's fence would assert the wrong code, and nothing in the plan would notice.
+
+**Who consumes it.** `packages/shared/src/types/files.ts:6-13` declares the Rust shape (`RemoteFile { name; path; size: number; isDirectory: boolean; modifiedAt: string; mode? }`). `packages/file-core/src/client.ts:548-553` passes `files-list-result` through **untyped and unvalidated** — it destructures `requestId` and resolves the rest as `FilesListResult`, so no layer between the agent and the browser would catch a shape change. And `apps/web/src/components/files/FilesView.vue` reads four of the five fields:
+
+| line | code | under Plan 2's shape |
+|---|---|---|
+| `:77` | `if (entry.isDirectory) navigate(entry.path)` | `undefined` → **falls to the download branch, on a directory** |
+| `:304` | `:key="entry.path"` | `undefined` → duplicate keys for every row |
+| `:314` | `v-if="entry.isDirectory"` (folder icon) | `undefined` → **every row renders the file icon** |
+| `:325` | `entry.isDirectory ? '—' : formatSize(entry.size)` | `undefined` → `formatSize(size)` on directories, where `size` is `null` |
+| `:328` | `formatModified(entry.modifiedAt)` | `undefined` → **empty cell on every row** |
+
+**And an existing E2E goes red.** `packages/webrtc-core/test/e2e/files.e2e.test.ts:123,127` asserts `expect(notes?.isDirectory).toBe(false)` and `expect(docs?.isDirectory).toBe(true)`. Under Plan 2's shape both are `undefined`, so both fail — **the moment Task 11 lands**. `/mnt/Data/Ponta/remote-platform` has no other producer of `files-list-result` to update, which is what makes it a straight contradiction rather than a coordinated change.
+
+**Why the gate cannot see it — the same structural reason as B-10.** **B43** ("Files JSON message set (12 inbound, 11 outbound)") has a row, Plan 2 owns it, and Task 11's declaration (**25 `it()` / 42 `expect()`**) passes. Both counts are satisfied. **What no row and no test states is the *shape* of the message inside the row.** A count-based gate is blind to a field-level change, exactly as it was blind to a behaviour that had no row at all. This is the same lesson as B-10 from the other direction: B-10 is a behaviour with no row; **B-11 is a row whose contents changed while the row still passes.**
+
+The gap is visible in the tests, not just in the type. **Task 11 contains no test of `list()` at all.** Its 25 `it()`s are chunk arithmetic, the binary frame, `partName`, download, upload, resume, and cancel — `grep` for a `list`/`sort`/`truncat`/`director` test in the task's range returns only `rejects a truncated header` (a binary-frame test, unrelated). So the declaration's 25/42 is *true* and *silent* on the one function whose output crosses the wire unchanged. The Rust, by contrast, has three (`files.rs:2703` ordering + directory-`size` + `path` + `Z`-suffix, `:2730` not-a-directory, `:2740` cap), and **none of them are in Task 11's port list**.
+
+**Deliberate, or a fence error? The evidence says fence error, and the three possibilities are distinguishable:**
+
+1. **"The plan intends to change the browser too."** Refuted: `grep apps/web` over all of Plan 2 returns no web file, and Task 11's Files block lists no `packages/shared` or `apps/web` edit. A coordinated change would have to appear there.
+2. **"The fence is wrong; the Rust shape is the contract."** **Supported.** The wire type already has an owner (`files.ts:6-13`, unchanged since Week 10, spec §2.3 `…week10-file-transfer-design.md:102` — *"`RemoteFile.path` is the entry's full relative path"*), the browser already consumes it, and the existing E2E already asserts it.
+3. **"`kind`/`modifiedEpochMs` is internal and mapped to the wire elsewhere in the plan."** Refuted: `modifiedEpochMs` occurs **exactly once** in the plan (`:4451`) and nowhere else in the repo outside it (`grep -rn modifiedEpochMs` over `apps/`, `packages/` → nothing). There is no mapping site.
+
+**Recommendation.** Treat it as **a plan repair, not an owner question** — the contract is already owned, and unlike B-10/N-4 there is no behaviour decision to make. Concretely, `list()` should build `{ name, path: joinRel(rel, entry.name), size: stat?.size ?? 0, isDirectory: entry.isDirectory(), modifiedAt: rfc3339Utc(...) }`, sort **dirs-first then byte-wise**, let a per-entry `stat` failure fail the list, and route `readdirSync` through `errnoToCode`. Task 11 should then gain the three `files.rs` list tests it currently omits (`list_returns_entries_sorted_dirs_first` `:2703`, `list_on_a_file_is_not_a_directory` `:2730`, `list_cap_truncates_at_4096_with_the_flag` `:2740`) — `grep` for each of those names in Plan 2 returns **0**, so the whole list surface is unported, which is *why* nothing caught divergences 1–7. **I have not edited Plan 2**; this is the evidence and the recommendation, and the landing edit is PM's.
+
+**Why the repair is not free, and why PM is right to hold it.** Adding those three tests changes Task 11's declared `25 it() / 42 expect()`, and a count change is itself a TEST-INTEGRITY declaration — it must be declared, reviewed, and shown to match its own fence. So the fence correction and the declaration correction have to land together, and they cannot land before **N-3** (Task 11's unauditable "24 of 41" partition) is resolved, or the plan would be right about `list()` and still wrong about what it ports. PM's ruling — fence repair is theirs, held until N-3 is settled, both derived from this section — is the correct sequencing.
+
+**The disposition distinction, stated once.** B-11 is **a docs defect, not an owner question**, and that is what puts it in §3 and not §4. The wire contract has four owners that already agree — the Rust, `packages/shared`, the browser, and the existing E2E — and only the plan disagrees. B-10 and N-4 are different: there, no artefact states the answer, so someone has to *decide*. A plan being wrong about an owned contract is repaired; a behaviour nobody has decided needs a ruling.
 
 ### N-6. The `desktop-profile-parity` baseline was wrong; Plan 2's correction of it is right
 
@@ -351,6 +492,8 @@ The Rust test `preserves_a_ws_query_value_ending_in_slash` (api.rs:182) pins exa
 | 5 | Logging "6 of 10 rules retire" | **Refuted as stated** — the direction is right (most rules retire) but the count is wrong (10 rules, stated as both "none" and "six"), 4 of the 6 named rules do not exist, and one retirement reverses a documented safety decision. → **B-5** |
 | 6 | Every citation | **21 non-existent test names (B-3), 1 wrong line range (N-1), 1 stale line range (N-2), 1 fabricated retirement table (B-5), 1 unciteable source (B-6).** |
 
+> **N-1/N-2/N-3 amendment (PM, 2026-10-21).** N-1 and N-2 are fixed at `14964c8`. One premise of N-2 needed correcting: Plan 2 has **never** contained a `signal.rs:NNN` citation — the stale numbers live in the Rust **comment** at `signal.rs:100-103`, so the inheritance risk was real but not an instance. PM added a blockquote to Task 3 stating the correct locations. N-3 stands. The source-side consequence is **B-11**, which PM found underneath N-3: Task 11's files list fence diverges from the Rust on seven counts.
+
 > **N-6 amended.** N-6 was originally listed among the non-blocking findings as "both corrections are wrong in both directions". PM's re-measurement showed the "4→2" half was a **prediction of the after-state** that the implementation matched exactly, not a claim about the tree as it stood; my finding measured the tree before the rewrite landed and mistook "not changed yet" for "will not change". N-6 is corrected in place; its surviving half — the regex-over-`lib.rs` mechanism cannot outlive the Rust — is unaffected.
 
 ---
@@ -361,7 +504,9 @@ The Rust test `preserves_a_ws_query_value_ending_in_slash` (api.rs:182) pins exa
 - **`apps/agent/test/session/packetizer.test.ts`.** Plan 1 Task 3 creates it; it is **not in the tree** (`apps/agent/src/session/` does not exist). Task 19 imports `packetizeAnnexB` from it. That is a Plan 1 execution gap, not a Plan 2 defect — but **Task 19 cannot run until Plan 1 Task 3 lands**, and the plan says so at line 69 ("Already written in Plan 1 Task 3. Do not recreate"), which is currently false. Flagging for PM as a Plan-1 status item.
 - **Whether the fences would actually compile.** I counted and read; I did not typecheck a single fence.
 - **Task 12's `emitChunks` behaviour change** is recorded (N-4) but not adjudicated — whether an agent-side 16 KiB splitter is wanted is an owner/spec question, not a docs question.
-- **Whether the werift TWCC estimator is usable for a 500 ms-tick encoder retarget**, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`. Both are P0-spike questions (spec §9.3 is the werift-as-sender gate); I verified the *surface exists* and the *ledger is silent*, not that the feature is implementable as the Rust had it.
+- ~~**Whether the werift TWCC estimator is usable for a 500 ms-tick encoder retarget**, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`.~~ **CLOSED 2026-10-21** — both answered with measured values and verified in package source; see the table under §3 B-10. The headline: reachable via `senderBWE`, seed is `0` not 4 Mbps, the offer's `rtcp-fb` is echoed while `extmap` is not, and the estimator leaks entries unbounded on the port's own path.
+- **Beyond `list()`, I did not audit the other files-protocol message shapes.** B-11 found the `list()` divergence; I did not check `files-download-begin`, `files-upload-ack`, `files-action-result` or the error frame against their Rust counterparts field by field. Given that B-11's shape survived a passing count-based gate, **the same failure is plausible in those** — that is the highest-value next sweep, and it is not done.
+- **I did not audit every sentence of every declaration, only their counts and their named tests.** N-3a and N-3b are both defects in *prose* inside a declaration whose *counts* are exactly right (25 `it()` / 42 `expect()`, re-walked). Task 11 is the largest and most prose-heavy declaration in the plan; it is plausible that the other 18 have sentences of the same kind. The fence-walker cannot find them — it counts `it(`/`expect(` and would report 25/42 as a pass.
 
 ---
 
@@ -381,7 +526,11 @@ A cheap, mechanical fix exists: for each task, count `it(` and `expect(` **insid
 
 > **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. The one residual found during that verification (the "six retired noise rules" R-entry line) was closed in `72e8594`. N-4 remains open for the owner by design: whether the Node agent should split terminal output at 16 KiB is a protocol question, not a docs one.
 >
-> **Still open, and larger than any of the above: B-10, the auto-ABR loop** (§3). It is not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. It needs an owner ruling on four questions (does auto-ABR ship; against which estimator; what divergence is declared; what happens to the `transport-cc` SDP delta) and it needs to be carried in Plan 3's T8 alongside N-4, so that Plan 3's T6 "close the retirement ledger" step cannot pass while it is unresolved.
+> **Still open, and larger than any of the above: B-10, the auto-ABR loop** (§3). It is not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. It needs an owner ruling on three questions (does auto-ABR ship; against which estimator and seeded how; what divergence is declared, given that it is **two** behaviours — the estimator and an absent pacer — not one). The original fourth question about the `transport-cc` SDP delta is **withdrawn**: `register_default_interceptors` already registers it, so there is nothing to decide there — but the Rust comment saying otherwise is wrong and should be corrected in T9. B-10 needs carrying in Plan 3's T8 alongside N-4, so that Plan 3's T6 "close the retirement ledger" step cannot pass while it is unresolved.
+>
+> **Also open, and a plan repair rather than an owner question: B-11, the `list()` wire shape** (§3). Seven divergences — four field-shape, three behavioural — inside a message whose owning row (B43) is a *count* and therefore passes regardless. Unlike B-10, no decision is needed: the Rust, `packages/shared`, the browser and the existing E2E already agree, and only the plan disagrees. It cannot be repaired alone, though — the fix requires porting the three `files.rs` list tests, which changes Task 11's declared counts, which makes it a TEST-INTEGRITY declaration that has to land with N-3's partition repair.
+>
+> **And now two more defects in that same Task 11 declaration: N-3a and N-3b** (§3). N-3a: the sentence naming the two "new" tests names one that exists in **no fence** (`drained .part before resume` — the only occurrence of the string in the whole plan is the sentence claiming it) and mislabels the other, which is a **port** of the Rust's `paused_state_survives_idle_timeout` (`files.rs:3834`), not a new test. N-3b: the `FILES_IDLE_TIMEOUT_MS` pin is promised in prose and **absent from every fence**; the Rust gap it describes is real (the `cfg(test)`-shrunk constant is genuinely unpinned), but the TS repair the declaration describes is *vacuous*, because TS has one constant where Rust had two. Both are plan repairs, not owner questions, and both land in the **same single repair** as B-11 and N-3 — fence shape, the three list tests, and the declaration rewrite, as one declared before→after. They do not block PR #174; they block **starting Task 11**.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -505,4 +654,77 @@ grep -n "SenderBandwidthEstimator\|receiveTWCC\|onAvailableBitrate" \
 grep -rn "transport-cc\|twcc\|transportCC" \
   docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md \
   docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-*.md            # 0 hits
+
+# B-10 addendum: the two-m-line + pacer half, and the four closed questions
+#   the crate source (rtc 0.21.0, pinned by apps/agent/Cargo.lock:2619-2620)
+sed -n '676,694p' ~/.cargo/registry/src/*/rtc-0.21.0/src/peer_connection/configuration/interceptor_registry.rs
+#     -> `for kind in [RtpCodecKind::Video, RtpCodecKind::Audio]` : the delta is BOTH m-lines
+sed -n '713,717p' ~/.cargo/registry/src/*/rtc-0.21.0/src/peer_connection/configuration/interceptor_registry.rs
+#     -> `.with(Slot::Pacer, PacerBuilder::new().build())` : the Rust paces too
+sed -n '641,642p' ~/.cargo/registry/src/*/rtc-0.21.0/src/peer_connection/configuration/interceptor_registry.rs
+#     -> "Congestion control implies pacing ... not something an application should acquire without asking."
+sed -n '900,906p' ~/.cargo/registry/src/*/rtc-0.21.0/src/peer_connection/configuration/interceptor_registry.rs
+#     -> a test asserting Slot::Pacer is ABSENT from the default chain
+grep -n "configure_twcc_receiver_only" ~/.cargo/registry/src/*/rtc-0.21.0/src/peer_connection/configuration/interceptor_registry.rs | head -3
+#     -> :206, called by register_default_interceptors :196-211. So the VIDEO half of the
+#        transport-cc delta is NOT congestion control's: it is already in the default path,
+#        which is why `rtc.rs`'s "changes the SDP, gated on has_control" comment is only
+#        true of the AUDIO half and of the Pacer. The comment overstates by half.
+
+#   engine has no send-side pacer to port to
+grep -ri "pacer\|pacing" <werift>/lib --include=*.js | grep -v ".map"   # 1 hit, SCTP comment only
+
+#   the rtcp-fb echo, confirmed against THIS repo's captured SDP
+python3 -I -c "import json;d=json.load(open('apps/agent/spike/report.json'));r=d['runs'][0];
+print('answer transport-cc:', r['answerSdp'].count('transport-cc'));
+print('answer extmap:', [l for l in r['answerSdp'].split(chr(13)+chr(10)) if 'extmap' in l]);
+print('offer twcc extmap:', [l for l in r['offerSdp'].split(chr(13)+chr(10)) if 'draft-holmer' in l])"
+#     -> answer advertises `a=rtcp-fb:102 transport-cc` (8x) with local TWCC off, and carries
+#        NO extmap at all, while the Chrome offer carries `a=extmap:4 ...transport-wide-cc...`
+#        That is the whole "echoes rtcp-fb, not extmap" finding, from evidence already in-tree.
+
+#   werift surface reachability + the leak
+grep -n "senderBWE" <werift>/lib/webrtc/src/media/rtpSender.d.ts        # :27 import, :41 readonly field
+sed -n '76,82p' <werift>/lib/webrtc/src/media/sender/senderBWE.js       # _availableBitrate = 0
+sed -n '133,140p' <werift>/lib/webrtc/src/media/sender/senderBWE.js     # Object.keys(sentInfo) -> never deletes
+python3 -I -c "import json;print(json.load(open('<werift>/package.json'))['exports'])"
+#     -> only "." and "./nonstandard"; SenderBandwidthEstimator is not a root export
+
+# B-11: the list() wire shape diverges on seven counts
+sed -n '4439,4454p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md   # the fence
+sed -n '286,292p;1326,1341p' apps/agent/src/files.rs                                        # the contract + build
+sed -n '6,13p' packages/shared/src/types/files.ts                                           # the wire type
+grep -n "entry.isDirectory\|entry.size\|entry.modifiedAt\|entry.path" \
+  apps/web/src/components/files/FilesView.vue                                               # :77 :304 :314 :325 :328
+grep -n "isDirectory" packages/webrtc-core/test/e2e/files.e2e.test.ts                       # :123, :127 (goes red)
+grep -c modifiedEpochMs docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md  # 1 (:4451)
+grep -rn modifiedEpochMs apps packages --include=*.ts --include=*.vue                          # 0 — no mapping site
+#   the three Rust list tests, none present in Plan 2
+for t in list_returns_entries_sorted_dirs_first list_on_a_file_is_not_a_directory \
+         list_cap_truncates_at_4096_with_the_flag; do
+  printf '%-45s rust=%s plan=%s\n' "$t" \
+    "$(grep -c "$t" apps/agent/src/files.rs)" \
+    "$(grep -c "$t" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md)"
+done                                                                                        # rust=1 plan=0 (x3)
+#   divergence 7: Node raises ENOTDIR, and list() does not route it through errnoToCode
+node -e "try{require('fs').readdirSync('/etc/hostname',{withFileTypes:true})}catch(e){console.log(e.code,e.errno)}"
+#     -> ENOTDIR -20 ; the plan's errnoToCode maps it (:3738-3746) but list() (:4440)
+#        calls readdirSync outside any try, so handle()'s generic catch (:4362-4367) makes it IO_ERROR
+
+# N-3a: one phantom name, one test mislabelled as new
+grep -rn "drained" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md
+#     -> exactly ONE line, :4888 — the declaration sentence itself. No it(), no assertion.
+grep -n "paused transfers do not time out" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md  # :4221
+grep -n "async fn paused_state_survives_idle_timeout" apps/agent/src/files.rs                                       # :3834 — it is a port
+#     -> the Rust version downloads, pauses, forces `deadline` into the past, asserts check_idle() is EMPTY
+
+# N-3b: the promised FILES_IDLE_TIMEOUT_MS assertion is in no fence
+grep -n "FILES_IDLE_TIMEOUT_MS" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md
+#     -> :3964 def | :4286 :4295 test-file import + re-export | :4495 :4515 :4531 :4572 :4609 :4772 production uses.
+#        NO `expect(FILES_IDLE_TIMEOUT_MS)` anywhere. The only 30_000 in a test fence is `now = 30_000` (:4237),
+#        a fake-clock value inside 'kills a stalled transfer', not an assertion on the constant.
+sed -n '40,46p' apps/agent/src/files.rs    # comment says "pinned by ... its own assertion"; cfg(test) shrinks 30_000 -> 50
+awk 'NR>=2287' apps/agent/src/files.rs | grep -c FILES_IDLE_TIMEOUT
+#     -> 0 : the test module (starts :2287) really does contain no pin. The Rust gap is real;
+#        the TS "prod timeout equals it" assertion would be `expect(X).toBe(X)` — vacuous. TS has ONE constant.
 ```
