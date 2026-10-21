@@ -67,8 +67,10 @@ with Files / Interfaces / steps before this plan is executable.
 - **The model gate's own guard has a precondition this task must satisfy, and
   the model is not the whole guard.** `api-access-gate.test.ts:95` asserts
   `collect().length > 0` — a positive control against a walker that silently
-  returns nothing. That control counts over `apps/*/src` and `packages/*/src`
-  (`:28-29`), so today it is satisfied by the other eleven source-bearing
+  returns nothing. `collect()` walks `<root>/<pkg>/src/**` (`:47` its
+  docstring, `:48` the function, `:50` the loop) over
+  `SCAN_ROOTS = ['apps', 'packages']` (`:24`),
+  so today it is satisfied by the other eleven source-bearing
   packages and would stay green even if the agent contributed nothing.
   `apps/agent/src` currently holds exactly **one** `.ts` file
   (`session/packetizer.ts`). An agent-side gate therefore needs two things the
