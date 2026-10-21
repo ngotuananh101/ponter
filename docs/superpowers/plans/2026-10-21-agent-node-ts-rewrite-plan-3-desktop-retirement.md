@@ -154,27 +154,30 @@ a deletion needs no correction on the way out.
     nothing — so the audio half is dormant registration, not a wire behaviour.
     The `extmap` id needs no decision: werift echoes whatever id the browser
     offered.
-  - **The pacer is the part that makes this bigger than an estimator choice.**
-    `configure_congestion_control` also installs `Slot::Pacer`
-    (`interceptor_registry.rs:717`), which is what turns a retargeted encoder
-    into a measured departure pattern; a congestion loop without it samples the
-    frame boundaries instead. **werift has no RTP pacer** — `grep -riE
-    'pacer|pacing'` over its whole `lib/` hits one comment in the SCTP stack
-    and nothing in the RTP path. So "port the loop" means porting the estimator
-    *and* building the pacing, or accepting a control loop that measures
-    something the Rust did not. REMB is not an alternative: werift parses it
-    into `receiverEstimatedMaxBitrate` (`rtpSender.js:693`) and nothing reads
-    the field.
-  - **The one estimator werift exposes leaks.** `senderBWE.js:133-141` iterates
-    `Object.keys(sentInfo)` — the field names of the single packet just sent —
-    so the eviction loop runs over four `NaN`s and deletes nothing. Unbounded
-    growth per sender for the session lifetime, on exactly the negotiated path
-    a port must use (without the `extmap` the sequence never increments and
-    nothing accumulates, which is why it is easy to miss). Upstream werift
-    defect, not introduced here, but the owner should see it before saying yes.
   - **It does not ship.** Then it needs an R-row in the retirement ledger and
     an `ARCHITECTURE.md:970` amendment, because that document describes the
     loop as current behaviour.
+  - **Two facts the owner needs before choosing, whichever landing wins.**
+    Neither decides ship-or-not by itself; both change what "ship" costs.
+    - **The pacer.** `configure_congestion_control` installs `Slot::Pacer`
+      (`interceptor_registry.rs:717`), which is what turns a retargeted encoder
+      into a measured departure pattern; a congestion loop without it samples
+      the frame boundaries instead. **werift has no RTP pacer** — `grep -riE
+      'pacer|pacing'` over its whole `lib/` hits one comment in the SCTP stack
+      and nothing in the RTP path. So "port the loop" means porting the
+      estimator *and* building the pacing, or accepting a control loop that
+      measures something the Rust did not. REMB is not an alternative: werift
+      parses it into `receiverEstimatedMaxBitrate` (`rtpSender.js:693`) and
+      nothing reads the field.
+    - **The estimator's leak.** `senderBWE.js:133-142` (function), `:134-140`
+      (the defect) iterates `Object.keys(sentInfo)` — the field names of the
+      single packet just sent — so the eviction loop runs over four `NaN`s and
+      deletes nothing. Unbounded growth per sender for the session lifetime, on
+      exactly the negotiated path a port must use (without the `extmap` the
+      sequence never increments and nothing accumulates, which is why it is
+      easy to miss). An upstream defect in the estimator itself, present
+      whether or not anything uses it — not an argument against exposing it,
+      but material to building on it.
   Do not close this item by observing that the Rust is deleted. That is the
   failure T6 exists to name.
 - **N-4 — the 16 KiB terminal splitter.** Plan 2's Task 12 adds an
