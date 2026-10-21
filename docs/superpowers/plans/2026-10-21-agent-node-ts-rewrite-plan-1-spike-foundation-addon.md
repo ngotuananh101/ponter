@@ -6,7 +6,7 @@
 
 **Architecture:** Three deliverables, each independently testable. (1) A **spike** that drives a real werift answerer against a synthetic Chrome-shaped offer and a real Chromium peer, asserting decoded pixels — the viability gate that decides whether the whole rewrite proceeds. (2) **Foundations** — the shared stream-profile table moved into `@ponter/shared`, the cross-language parity test replaced by a same-language import, and the TypeScript API-access boundary gate. (3) The **native addon** — a small N-API surface (`frames in, Annex-B out`) over openh264 and the platform capture/input APIs, built against Electron's headers.
 
-**Tech Stack:** Node.js 24, TypeScript, werift 0.24.4, `node-addon-api` ^7.1.0, node-gyp + binding.gyp, openh264 0.9.8 (BSD-2-Clause, Cisco), Vitest, Playwright (Chromium), Electron 35.7.5 headers.
+**Tech Stack:** Node.js 24, TypeScript, werift 0.24.4, `node-addon-api` ^8.9.2, node-gyp ^9.4.1 + binding.gyp, openh264 0.9.8 (BSD-2-Clause, Cisco), Vitest, Playwright (Chromium), Electron 35.7.5 headers.
 
 **Spec:** `docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md` — §3.3 (packetizer placement), §3.4 (reuse map), §3.5 and §3.5.1–§3.5.4 (the `PeerConnection` inversion and the four sender requirements), §6.1 (package layout), §6.3 (addon build), §6.4 (packaging), §8 (phases P0–P2), §9.2 (fault-containment gate), §9.3 (werift-as-sender gate), §11.1 (Q1–Q5, Q8, Q11).
 
@@ -39,9 +39,9 @@ The five input classes or failure modes the spec implies but no task's tests exe
 
 1. **A browser offer whose first H.264 entry is `packetization-mode=0`.** werift filters the remote list by mime type only (`transceiverManager.js:244-260`) and never inspects `fmtp`, so the sender lands on the *first* H.264 entry — the mode-0 PT — while the packetizer emits mode-1 framing. The browser depacketizes it wrongly and the picture breaks with a healthy connection. Pinned in Task 1 (the mode-0-first negative case) and again in Task 2 (R-S3 re-pointing).
 2. **A negotiated `fmtp` whose `profile-level-id` does not match the encoder's actual SPS.** The Rust agent shipped `42001f` while emitting `42c0XX` and nobody noticed because no test decodes pixels. Pinned in Task 1 (A4 detection) and Task 4 (the addon reports the encoder's real `profile_idc`/`level_idc`).
-3. **A captured frame whose size does not match the encoder's configured size** (a display mode change between capture and encode). A naive encoder configuration produces garbage or a crash. Pinned in Task 4 (the addon's reconfiguration path).
-4. **An OS or codec call that fails** (a capture device disappears, the encoder rejects a resolution). The addon must surface a typed JS error, not die. Pinned in Task 4 (the fault-containment gate).
-5. **A `null` / zero-length / wrong-stride buffer handed to the addon.** Pinned in Task 4 (the deliberate-corruption test).
+3. **A captured frame whose size does not match the encoder's configured size** (a display mode change between capture and encode). Two responses are required and they are different: a **larger** source must be downscaled to the profile, an **odd** source must be cropped to even dimensions, and a **smaller** source must be rejected rather than upscaled. All three are pinned in Task 4 Step 10, each asserting the size the encoder records in its own SPS rather than the size of the input buffer — a test that only checks "it did not throw" cannot tell a real resize from a silent no-op. The *reconfiguration* path (changing the profile on a live handle) is **not** in this plan; it belongs to Plan 3's desktop integration and is listed as a Gap there, not claimed here.
+4. **An OS or codec call that fails** (a capture device disappears, the encoder rejects a resolution). The contract is that a native failure becomes a typed JS error and the process survives. Task 4 pins the *codec-rejection* half directly: every fault-containment case fails inside the addon and is asserted as a promise rejection carrying a stable `code` (Step 10), followed by an explicit "the process is still alive" assertion. The *capture-device-disappearance* half has no test in this plan — capture backends land in Step 6 and their failure path is exercised only through `Guard`'s exception handling, which the C++ unit tests in Step 12 cover at the boundary but not end-to-end. Recorded here as a real gap so it is not read as covered.
+5. **A `null` / zero-length / wrong-stride buffer handed to the addon.** Pinned in Task 4 Step 10: a zero-length buffer, a stride that does not match the width, and an unknown encoder handle — each asserted as a typed rejection with its specific `code`, not a bare `toThrow()`.
 
 ---
 
@@ -80,13 +80,14 @@ Locked here so the task implementers cannot disagree about what creates what.
 | `apps/agent/native/test/` | **New.** The C++-level unit tests (node-addon-api's test runner or a plain assert harness). |
 | `apps/agent/test/native/smoke.test.ts` | **New.** The TS-side smoke test that loads the built `.node` and exercises the surface. |
 | `apps/agent/test/native/fault-containment.test.ts` | **New.** The §9.2 gate. |
-| `apps/agent/package.json` | **New.** `@ponter/agent-node`, `workspace:*`, `type: module`. |
-| `apps/agent/tsconfig.json` | **New.** Extends the repo's base config and **must include `src/**/*.ts` and `test/**/*.ts` and `spike/**/*.ts` from the start**, exactly as `packages/webrtc-core/tsconfig.json` does (`"include": ["src/**/*.ts", "test/**/*.ts"]`). See the note beneath this table: Task 3 creates the first file under `src/`, and a `tsconfig` that omits `src/` makes `pnpm typecheck` pass while never checking it. |
-| `pnpm-workspace.yaml` | **Modify.** `allowBuilds` gains `@ponter/agent-native` so pnpm runs its install script (spec D9). |
+| `apps/agent/package.json` | **Modify.** At HEAD this is the Rust crate's manifest (`@ponter/agent`, `cargo` scripts, no vitest). Task 1 Step 0 renames it to `@ponter/agent-node`, sets `type: module`, and adds `vitest`/`werift`/`@playwright/test`. Every `pnpm --filter @ponter/agent-node` command in this plan depends on that rename landing first. |
+| `apps/agent/vitest.config.ts` | **New.** The repo has no root vitest workspace file; a package without its own config is not picked up. Task 1 Step 0 creates it. |
+| `apps/agent/tsconfig.json` | **New, then modified by Task 3.** Extends the repo's base config. Task 1 creates it with `include: ["spike/**/*.ts", "test/**/*.ts"]` — correct while `src/` is empty and **landed that way in `acf6d05`**. Task 3 adds `src/**/*.ts` in the same commit that creates the first file under `src/`, and Task 3 Step 7 proves the include is live by making typecheck fail on a deliberate error. A `tsconfig` whose `include` omits `src/**` makes `pnpm typecheck` exit 0 while never checking the ported core. |
+| `pnpm-workspace.yaml` | **Modify.** `allowBuilds` gains `@ponter/agent-native` so pnpm runs its install script (spec D9). **This is an edit to an existing YAML map, not a replacement** — see Task 6 Step 1. |
 
 **Not created in this plan** (they belong to Plan 2): `apps/agent/src/**` (the TS core), `apps/agent/src/session/packetizer.ts` — *except* for the minimal packetizer Task 1 needs to prove the spike, which Task 3 then promotes into the real module with the full table-driven test suite. `apps/agent/src/desktop/profiles.ts` in spec §6.1 is superseded: the table lives in `@ponter/shared` (Task 5), and the agent imports it.
 
-**`apps/agent/tsconfig.json`'s `include` is a cross-task dependency, not a Task 1 detail.** Task 1 writes this file before any `src/` file exists, so it is tempting to list only `spike/**` and `test/**`. Task 3 then creates `apps/agent/src/session/packetizer.ts` — the first file under `src/` — and Plan 2 puts the entire ported core there. A `tsconfig` whose `include` omits `src/**` means `pnpm typecheck` exits 0 having checked nothing in `src/`, and every type error in the ported core ships green. The file must therefore list `src/**/*.ts`, `test/**/*.ts` and `spike/**/*.ts` at creation time. Task 3's verification step must confirm `pnpm --filter @ponter/agent-node typecheck` **fails** on a deliberately wrong type under `src/` before it passes on the real code — a typecheck that cannot fail is not a gate.
+**`apps/agent/tsconfig.json`'s `include` is a cross-task dependency, not a Task 1 detail.** Task 1 writes this file before any `src/` file exists, so its `include` is only `spike/**` and `test/**` — and that is what landed in `acf6d05`. Task 3 then creates `apps/agent/src/session/packetizer.ts` — the first file under `src/` — and **Task 3 must add `src/**/*.ts` in that same commit**. A `tsconfig` whose `include` omits `src/**` means `pnpm typecheck` exits 0 having checked nothing in `src/`, and every type error in the ported core ships green. Task 3's Step 7 is the verification: typecheck must **fail** on a deliberately wrong type under `src/` before it passes on the real code — a typecheck that cannot fail is not a gate.
 
 **One cross-package placement to be explicit about:** the Chrome-shaped offer builder lives in **`packages/webrtc-core/test/synthetic-offer.ts`** from the start, created in **Task 1** and consumed by both Task 1's spike and Task 2's adapter tests. It cannot live under `apps/agent/spike/` and be imported from `packages/webrtc-core` — `@ponter/webrtc-core` declares only `@ponter/shared` as a dependency. The package already exports a test helper this way (`"./test/fake-websocket": "./test/fake-websocket.ts"` in `packages/webrtc-core/package.json`), so Task 1 adds one more `exports` entry in the same form rather than inventing a mechanism. Task 1's spike imports it as `@ponter/webrtc-core/test/synthetic-offer`.
 
@@ -97,18 +98,24 @@ Locked here so the task implementers cannot disagree about what creates what.
 **This is the gate that decides whether the rewrite proceeds at all.** If the browser does not decode visible frames, stop and revisit the architecture before any other task.
 
 **Files:**
+- Modify: `apps/agent/package.json` — rename `@ponter/agent` → `@ponter/agent-node`, `type: module`, vitest/werift/@playwright/test devDependencies. **Step 0 must land before any `vitest` command runs.**
+- Create: `apps/agent/vitest.config.ts`
+- Create: `apps/agent/tsconfig.json`
 - Create: `apps/agent/spike/` — a committed spike directory (it is the evidence, and Plan 3 deletes it with the rest)
 - Create: `apps/agent/spike/fixtures/idr-1280x720.annexb` — a pre-encoded Annex-B H.264 IDR access unit
+- Create: `apps/agent/spike/fixtures/expected-grid.json` — the fixture's own 4x4 mean-luma grid, the ground truth Step 5a compares against. **This is fixture data, not a test**: it is never asserted for its own value, only used as the reference.
 - Create: `packages/webrtc-core/test/synthetic-offer.ts` — the offer builders (VP8-first, mode-0-first). It lives in `@ponter/webrtc-core` because Task 2's adapter tests need it too; see the placement note above.
 - Modify: `packages/webrtc-core/package.json` — add `"./test/synthetic-offer": "./test/synthetic-offer.ts"` to `exports`, beside the existing `"./test/fake-websocket"` entry.
 - Create: `apps/agent/spike/negotiation.ts` — the SDP-only negotiation probe (no DTLS)
 - Create: `apps/agent/spike/spike.ts` — the live browser spike
+- Create: `apps/agent/spike/packetizer-copy.ts` — a local packetizer, because Task 3's real module does not exist yet. Task 3 Step 8 deletes it.
 - Create: `apps/agent/spike/browser-peer.html` — the Playwright page that receives and decodes
+- Create: `apps/agent/spike/write-report.ts` — a standalone runner that drives the three runs and writes `report.json`. **Added during implementation, not in the original plan's file list.** It exists because Step 6's `report.json` has to come from real runs rather than be hand-written. It ends in an explicit `process.exit(0)`: werift's peer connections are never closed, so a standalone run otherwise hangs on live timers *after the report is already written*. That exit is deliberate; a reader who removes it will see the runner "fail" on a complete report.
 - Test: `apps/agent/spike/spike.test.ts` — the A1–A4 assertions and the three runs
 
 **Interfaces:**
 - Consumes: werift 0.24.4 (`useH264`, `useVP8`, `RTCPeerConnection`, `MediaStreamTrack`), `@ponter/webrtc-core/test/synthetic-offer` (the offer builders this task creates), and Playwright's Chromium. The spike deliberately does not use the **adapter layer** (`WeriftAdapter`) — Task 2 builds that, and the spike is standalone so that its failure cannot be blamed on a seam that does not exist yet.
-- Produces: `apps/agent/spike/report.json` — the machine-readable record of the three runs, consumed by Task 2 and by the plan's gate. The shape is fixed here so Task 2 can read it:
+- Produces: `apps/agent/spike/report.json` — the machine-readable record of the three runs. Its consumers are this plan's own closing gate (which reads `decodedFrameCount`, `negotiatedCodec.mimeType` and `wirePayloadType` out of run 1) and the §8 trail, which cites it as the evidence the architecture was validated. **No other task in this plan reads it** — Task 2 does not — so do not go looking for a Task 2 step that consumes it. The shape is fixed here:
 
 ```ts
 export interface SpikeRunResult {
@@ -121,6 +128,18 @@ export interface SpikeRunResult {
   negotiatedPacketizationMode: number | null;
   /** A3 — the browser decoded visible frames. */
   decodedFrameCount: number;
+  /**
+   * A3's *real* assertion — a 4x4 mean-luma grid sampled from the presented
+   * video element. `decodedFrameCount > 0` is satisfied by a black stream, so
+   * the frame counter alone cannot distinguish "the browser showed the
+   * picture" from "the browser showed nothing 44 times". The fixture's own
+   * ground truth is `spike/fixtures/expected-grid.json`.
+   */
+  lumaGrid: number[][] | null;
+  /** max(lumaGrid) - min(lumaGrid); ~0 for a black or flat stream, >100 for the fixture. */
+  lumaSpread: number | null;
+  /** The largest absolute difference between `lumaGrid` and `expected-grid.json`, per cell. */
+  maxGridDeviation: number | null;
   /** A4 — detection only, never a pass/fail. */
   encoderProfileLevelId: string | null;
   negotiatedProfileLevelId: string | null;
@@ -140,6 +159,77 @@ export interface SpikeRunResult {
 > - **The transport half** (`spike.ts`) uses a **real browser as the offerer**. Chromium generates its own certificate and a real ICE/DTLS/SRTP session, and the spike answers it. This is where A3 (decoded pixels) and the PLI round-trip live.
 >
 > Both halves are needed. The negotiation half alone cannot prove the pixels decode; the transport half alone cannot force the browser into the mode-0-first ordering, because Chromium's own offer always lists `packetization-mode=1` first. The negative cases are therefore **negotiation-only** assertions, and the plan says so explicitly — a reviewer must not read "the mode-0-first run" as "the mode-0-first run carried pixels".
+
+- [ ] **Step 0: Make `apps/agent` a TypeScript package before any `vitest` command runs**
+
+**This step exists because every command in Steps 2–8 depends on it.** At HEAD
+before the rewrite, `apps/agent/package.json` was the Rust crate's manifest:
+`@ponter/agent` with `cargo build` / `cargo test` scripts and **no vitest
+devDependency**. Running `pnpm --filter @ponter/agent-node exec vitest …`
+against that state fails with "no such filter", so without this step the plan's
+first command fails and every task after it is unreachable.
+
+**Status: landed in `acf6d05`.** The committed files are:
+
+`apps/agent/package.json` — **modified**, not created:
+
+```json
+{
+  "name": "@ponter/agent-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:spike": "vitest run spike/spike.test.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@ponter/webrtc-core": "workspace:*",
+    "@types/node": "24.19.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3",
+    "werift": "0.24.4"
+  }
+}
+```
+
+`apps/agent/vitest.config.ts` — **created**:
+
+```ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    // The P0 spike drives a real Chromium peer over loopback: DTLS + ICE
+    // plus a decode window. The default 5 s ceiling is far below the time
+    // that exchange legitimately takes.
+    testTimeout: 120_000,
+    hookTimeout: 120_000,
+  },
+});
+```
+
+**Two divergences from the plan's original text.** Recorded rather than silently accepted:
+
+1. **`apps/agent/tsconfig.json` omits `src/**/*.ts`.** It landed as `"include": ["spike/**/*.ts", "test/**/*.ts"]`. **This is correct for Task 1** — `src/` holds no `.ts` file yet — and becomes wrong the moment Task 3 creates `apps/agent/src/session/packetizer.ts`. Task 3's Files block therefore carries `tsconfig.json` as a **Modify**, and **Task 3 Step 7 is the gate that proves the fix landed**: it introduces a type error under `src/` and requires typecheck to fail. Do not "fix" Step 7 by weakening the probe, and do not add `src/**` here — an `include` that names a directory which does not exist yet is the kind of thing a later reader deletes as dead.
+2. **The dependency versions are the repo's resolved ones, not the plan's drafts.** `vitest` 5.0.3 / `typescript` 6.0.3 / `@types/node` 24.19.0 / `@playwright/test` 1.63.0 are what the workspace actually installs. Do not pin them back to the plan's illustrative `^2.1.3` / `^5.6.3` — that would add new resolutions for no reason.
+
+`node-pty` and `ws` are **not** in this manifest yet. They arrive with Plan 2's `terminal/pty.ts` and `signalling/client.ts`, which is the right place for them: nothing in Plan 1 imports either.
+
+- [ ] **Step 0a: Confirm the package links, from the repo root**
+
+```bash
+pnpm --filter @ponter/agent-node exec vitest --version
+```
+
+Expected: a version string. If it prints "none", the package was not linked — run `pnpm install` (no `--lockfile-only`) before continuing.
+
+> **Known environment issue, not a defect in this plan.** On some machines `pnpm install` fails at `apps/desktop`'s `postinstall` with `ENOENT … @cloudflare/workerd-darwin-64`. That is pre-existing and unrelated to the agent. If the filter command above trips the same postinstall, invoke the binary directly — `./node_modules/.bin/vitest run` — and note it in the report rather than treating it as a Task 1 failure.
 
 - [ ] **Step 1: Write the failing test — the synthetic offer builders**
 
@@ -337,7 +427,7 @@ import { buildOffer, PT_H264_MODE1 } from '@ponter/webrtc-core/test/synthetic-of
  * codec (rtpSender.js:408) — the sender lands on VP8. That is the
  * black-video bug, measured.
  */
-function localCodecs(run: 'r-s1-list' | 'vp8-first-local') {
+function localCodecs(run: 'r-s1-list' | 'vp8-first-local' | 'mode-0-first-offer') {
   return run === 'vp8-first-local'
     ? { audio: [], video: [useVP8(), useH264()] }
     : { audio: [], video: [useH264()] };
@@ -450,7 +540,7 @@ The Node side of `spike.ts` must:
 2. Answer the browser's offer with werift, using `codecs: { video: [useH264()] }` — R-S1.
 3. **Assert the transceiver was created before `setRemoteDescription`** (R-S4) — the spike adds it first.
 4. After the answer is set, read back the negotiated codec and **re-point the sender at the browser's `packetization-mode=1` entry** (R-S3), mutating in place.
-5. Packetize the fixture with the new TS packetizer (Task 3 — until Task 3 lands, the spike uses a local copy of the packetizer and Task 3 replaces it; if Task 3 has not landed yet, the spike **must** carry a `spike/packetizer-copy.ts` that Task 3 deletes).
+5. Packetize the fixture with the new TS packetizer (Task 3 — until Task 3 lands, the spike uses a local copy of the packetizer and Task 3 replaces it; if Task 3 has not landed yet, the spike **must** carry a `spike/packetizer-copy.ts`, which Task 3 Step 8 deletes).
 6. Push the packets through `track.writeRtp(...)` and watch what the browser receives.
 7. **Read the payload type off the wire** — from the received packet's RTP header, not from the sender's config. That is the whole point of A2. werift's `MediaStreamTrack.writeRtp` overwrites the payload type with `this.codec?.payloadType` (`track.js:132-134`), so the value the browser sees is the *sender's*, and the assertion must compare the two.
 8. Count the frames the browser decoded, and compare them against the fixture (a luma histogram or a per-region mean — the fixture is a synthetic pattern, so a coarse comparison is enough to prove "pixels, not black").
@@ -460,9 +550,29 @@ The Node side of `spike.ts` must:
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `pnpm --filter @ponter/agent-node exec vitest run spike/spike.test.ts`
-Expected: PASS — 8 tests green (2 offer-builder + 4 negotiation + 2 transport).
+Expected: PASS — **9** tests green (2 offer-builder + 4 negotiation + 2 transport + 1 pixel assertion). The ninth is Step 5a's, and it is not optional.
 
 If the negotiation run 1 selects VP8, the R-S1 codec list is wrong. If run 3 with R-S3 still lands on pt104, the re-pointing did not take effect — check that `transceiver.codecs` was reordered **and** that `sender.codec` points at the same object. If `decodedFrameCount === 0`, the gate fails and the architecture is revisited — **do not proceed to Task 2**.
+
+- [ ] **Step 5a: Assert pixels, not a frame counter**
+
+`decodedFrameCount > 0` is satisfied by a **black** stream. A frame counter proves the decoder ran; it does not prove a picture arrived, and "the browser decoded 44 frames of nothing" is exactly the failure that would make this whole spike a false green. Add one test that reads the *presented video element's* pixels and compares them against the fixture's own luma grid:
+
+```ts
+  it('A3 is pixels, not a black picture: the presented luma matches the fixture', async () => {
+    const run = await runSpike();
+    expect(run.lumaGrid).not.toBeNull();
+    // The fixture is a four-quadrant luma ramp (expected-grid.json). A black
+    // or single-colour stream collapses the spread to ~0 regardless of how
+    // many frames decoded; the fixture's own spread is >100.
+    expect(run.lumaSpread).toBeGreaterThan(40);
+    expect(run.maxGridDeviation).toBeLessThan(40);
+  });
+```
+
+`sampleGrid(videoEl)` draws the video element into a 4x4-canvas and averages each cell; `expected-grid.json` is the fixture's ground truth. **Prove the assertion can fail** before trusting it: temporarily make `sampleGrid` return a constant, re-run, and confirm the `lumaSpread` assertion goes red **while `decodedFrameCount` still passes**. A pixel gate that has never been observed failing is not a pixel gate.
+
+**TEST-INTEGRITY declaration:** `spike.test.ts` goes from **8 `it()` / 16 `expect()`** (the plan's original eight) to **9 `it()` / 19 `expect()`** — the three new `expect()` are the guard above. No existing assertion is weakened, removed or reordered. Step 5's expected count is 9, and a report saying 8 means this step was skipped.
 
 - [ ] **Step 6: Record the spike's result**
 
@@ -471,7 +581,7 @@ Write `apps/agent/spike/report.json` — the three `SpikeRunResult` objects, ver
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/agent/spike apps/agent/package.json apps/agent/tsconfig.json pnpm-workspace.yaml
+git add apps/agent/spike apps/agent/package.json apps/agent/vitest.config.ts apps/agent/tsconfig.json pnpm-lock.yaml
 git commit -m "feat(spike): prove werift can send H.264 that a browser decodes"
 ```
 
@@ -486,6 +596,7 @@ git commit -m "feat(spike): prove werift can send H.264 that a browser decodes"
 - Modify: `packages/webrtc-core/src/adapters/browser.ts`
 - Test: `packages/webrtc-core/test/adapters/werift-sender.test.ts`
 - Consumes: `packages/webrtc-core/test/synthetic-offer.ts` (created in Task 1)
+- **Read-only, but must be typechecked:** `packages/webrtc-core/test/media-channel.test.ts:19` and `packages/desktop-core/test/client.test.ts:20,187` hold the three `{ kind: 'video' }` literals that `MediaStreamTrackLike`'s optional-member change must not break. They are not edited; Step 4 typechecks both packages to prove it. (Verified by grep at `453a779`: those are the only three `MediaStreamTrackLike`-typed `{ kind: 'video' }` literals in the repo. The file is `client.test.ts` — there is a `packages/desktop-core/src/client.ts` as well, and it holds none.)
 
 **Interfaces:**
 - Consumes: werift's `RTCPeerConnection.addTrack` (`peerConnection.d.ts:194`), `MediaStreamTrack.writeRtp` (`track.d.ts:28`), `RTCRtpTransceiver.codecs` (`rtpTransceiver.d.ts:23-25`), `RTCRtpSender.codec` (`rtpSender.d.ts:77`), and `@ponter/webrtc-core/test/synthetic-offer`.
@@ -527,7 +638,35 @@ export interface RTCRtpSenderLike {
 }
 ```
 
-`MediaStreamTrackLike` (currently `kind` only, `types.ts:12`) must also grow `id` and `ssrc` — the sender path needs them to build a track.
+`MediaStreamTrackLike` (currently `kind` only, `types.ts:12`) must also grow `id`, `ssrc` and `codec`. **All three must be optional**, and that is not cosmetic:
+
+```ts
+export interface MediaStreamTrackLike {
+  readonly kind: string;
+  /**
+   * The track's identifier. Optional because the three existing
+   * `{ kind: 'video' }` literals in this repo
+   * (`packages/webrtc-core/test/media-channel.test.ts:19`,
+   * `packages/desktop-core/test/client.test.ts:20` and `:187`) satisfy this
+   * interface structurally. Making `id` required turns all three into
+   * TS2741 errors.
+   */
+  readonly id?: string;
+  /** The track's RTP SSRC. Optional for the same reason as `id`. */
+  readonly ssrc?: number;
+  /**
+   * The codec werift's `writeRtp` stamps onto every packet it is handed
+   * (`track.js:132-134`). Optional because only the werift adapter has one.
+   * R-S3's re-pointing has to move this field as well as the sender's — see
+   * the three-objects note in Task 2 Step 3.
+   */
+  readonly codec?: { mimeType: string; payloadType: number; parameters?: string };
+}
+```
+
+**Do not make them required, and do not widen the type by hand at the call sites.** The optional members cost nothing and keep the two test files and `packages/desktop` compiling untouched. Task 2's verification runs `tsc --noEmit` for **both** `@ponter/webrtc-core` and `@ponter/desktop-core` — a `vitest` run alone would not catch the three breakages, because vitest does not typecheck.
+
+**`createOutboundTrack` returns the werift track itself, not a projection of it.** `new MediaStreamTrack({ kind })` leaves `id` and `ssrc` both `undefined` — `rtpSender.js`'s `registerTrack` sets `track.id = this.trackId` later, inside `addTrack`, and **never assigns `ssrc` at all**. A `{ kind, id: track.id, ssrc: track.ssrc }` projection therefore returns `{ kind, id: undefined, ssrc: undefined }` and loses the object the packets must be written into. The adapter keeps the werift instance and resolves it by object identity.
 
 `RTCPeerConnectionLike` gains two optional members, mirroring the existing optional-media-seam pattern (`addTransceiver?`, `onTrack?`, `getVideoReceiver?`):
 
@@ -688,6 +827,37 @@ Expected: FAIL — `createOutboundTrack is not a function` (the adapter has no s
 
 In `packages/webrtc-core/src/adapters/werift.ts`, add the sender surface. The adapter holds the werift `MediaStreamTrack` it created and forwards `writeRtp` to it.
 
+**Two imports change at the top of the file.** `MediaStreamTrack` is a root export of `werift` (verified: `typeof require('werift').MediaStreamTrack === 'function'`). `WeriftMediaStreamTrack` **does not exist** — it is `undefined`, and a plan that names it produces a `TS2693: only refers to a type` at best and a runtime `TypeError` at worst:
+
+```ts
+import {
+  RTCPeerConnection as WeriftPC,
+  MediaStream as WeriftMediaStream,
+  MediaStreamTrack as WeriftMediaStreamTrack,
+} from 'werift';
+import type {
+  RTCPeerConnectionLike,
+  RTCDataChannelLike,
+  RTCRtpSenderLike,
+  MediaStreamLike,
+  MediaStreamTrackLike,
+} from '../types';
+```
+
+(`RTCRtpSenderLike` joins the existing type import — the file already imports the other four from `'../types'` at werift.ts:3-9.)
+
+Add three private fields beside `private readonly pc: WeriftPC;` (werift.ts:74 — the field is **`pc`**, not `peer`, and every reference below uses `this.pc`):
+
+```ts
+  private readonly senders: RTCRtpSenderLike[] = [];
+  /** Outbound tracks this adapter created, so `addTrack` can recover the werift instance. */
+  private readonly outboundTracks = new Map<MediaStreamTrackLike, WeriftMediaStreamTrack>();
+  /** Outbound tracks by track id, for `getOutboundTrackCodec`. */
+  private readonly tracksById = new Map<string, WeriftMediaStreamTrack>();
+```
+
+Then the members:
+
 ```ts
   /**
    * Create an outbound track of the given kind.
@@ -695,14 +865,56 @@ In `packages/webrtc-core/src/adapters/werift.ts`, add the sender surface. The ad
    * A werift `MediaStreamTrack` is the object the RTP packets are pushed
    * into; it is not a media source (there is no `srcObject` in Node), so it
    * is created empty and the agent writes RTP into it directly.
+   *
+   * Returns the werift track ITSELF, widened to `MediaStreamTrackLike`. It
+   * is deliberately not projected into `{ kind, id: track.id, ssrc: track.ssrc }`:
+   * at construction both `id` and `ssrc` are `undefined` (verified), and
+   * `RTCRtpSender.registerTrack` assigns `track.id` later
+   * (rtpSender.js:423-437) while never assigning `ssrc` at all. A projection
+   * would return a fresh object carrying two `undefined`s, and `addTrack`
+   * would then have no way back to the instance the packets must go into.
    */
   createOutboundTrack(kind: 'audio' | 'video'): MediaStreamTrackLike {
     const track = new WeriftMediaStreamTrack({ kind });
-    return {
-      kind,
-      id: track.id,
-      ssrc: track.ssrc,
-    };
+    const handle = track as unknown as MediaStreamTrackLike;
+    this.outboundTracks.set(handle, track);
+    return handle;
+  }
+
+  /** Recover the werift track behind a `MediaStreamTrackLike` this adapter produced. */
+  private createWeriftTrack(track: MediaStreamTrackLike): WeriftMediaStreamTrack {
+    const known = this.outboundTracks.get(track);
+    if (known) return known;
+    // A track this adapter did not create. werift can still take it, but it
+    // carries none of our sender bookkeeping — surface that as a clear error
+    // rather than a silent second m-line.
+    throw new Error(
+      'WeriftAdapter.addTrack received a track it did not create; call createOutboundTrack(kind) first.',
+    );
+  }
+
+  /** Build the werift stream wrapper for an outbound track. */
+  private createWeriftStream(track: MediaStreamTrackLike): WeriftMediaStream {
+    const stream = new WeriftMediaStream();
+    stream.addTrack(this.createWeriftTrack(track));
+    return stream;
+  }
+
+  /** The senders this peer holds, in attach order. */
+  getSenders(): RTCRtpSenderLike[] {
+    return [...this.senders];
+  }
+
+  /**
+   * The codec the given outbound track stamps onto packets.
+   *
+   * R-S3's re-pointing has to move `sender.codec` AND `track.codec`
+   * (rtpSender.js:544 vs track.js:132-134), and a sender-only move is silent:
+   * the sender says H.264:102 while the track keeps stamping 104. This
+   * accessor exists so the test can assert the second half.
+   */
+  getOutboundTrackCodec(trackId: string): RTCRtpSenderLike['codec'] {
+    return this.tracksById.get(trackId)?.codec as RTCRtpSenderLike['codec'];
   }
 
   /**
@@ -728,17 +940,25 @@ In `packages/webrtc-core/src/adapters/werift.ts`, add the sender surface. The ad
     // `getTransceivers()` is ordered and `RTCRtpSender` holds no back-pointer
     // to its transceiver (rtpTransceiver.js:15-30), so identity comparison on
     // the sender is the only correct key.
-    const weriftSender = this.peer.addTrack(
+    const weriftSender = this.pc.addTrack(
       weriftTrack,
       ...(weriftStream ? [weriftStream] : []),
     );
-    const transceiver = this.peer
+    const transceiver = this.pc
       .getTransceivers()
       .find((t) => t.sender === weriftSender);
     if (!transceiver) {
       throw new Error(
         'werift returned a sender that belongs to no transceiver; this adapter cannot manage its codecs.',
       );
+    }
+
+    // `registerTrack` has now assigned `track.id = sender.trackId`
+    // (rtpSender.js:429), so the id is readable for the first time here.
+    // `ssrc` is still `undefined` — werift never assigns it on the track; the
+    // sender stamps its own SSRC onto the wire.
+    if (weriftTrack.id) {
+      this.tracksById.set(weriftTrack.id, weriftTrack);
     }
 
     const handle: RTCRtpSenderLike = {
@@ -800,7 +1020,7 @@ In `packages/webrtc-core/src/adapters/werift.ts`, add the sender surface. The ad
 
 **Four werift facts this implementation depends on**, all read from the vendored source and all load-bearing:
 
-0. **`pc.addTrack` returns the sender, not the transceiver** (`peerConnection.js:971-982`: `return transceiver.sender`). The transceiver is recovered here by identity — `this.peer.getTransceivers().find((t) => t.sender === weriftSender)` — because `RTCRtpSender` holds no back-pointer to its transceiver (`rtpTransceiver.js:15-30`) and `getTransceivers()` is the only public enumerator (`peerConnection.d.ts:109`).
+0. **`pc.addTrack` returns the sender, not the transceiver** (`peerConnection.js:971-982`: `return transceiver.sender`). The transceiver is recovered here by identity — `this.pc.getTransceivers().find((t) => t.sender === weriftSender)` — because `RTCRtpSender` holds no back-pointer to its transceiver (`rtpTransceiver.js:15-30`) and `getTransceivers()` is the only public enumerator (`peerConnection.d.ts:109`).
 1. `RTCRtpSender.codec` is `writable: true` (`rtpSender.js:317-321`) and `MediaStreamTrack.codec` likewise (`track.js:67-71`), so re-pointing is public API, not an internals hack.
 2. `MediaStreamTrack.writeRtp` **overwrites the payload type** with `this.codec?.payloadType` (`track.js:132-134`), and `RTCRtpSender.sendRtp` then overwrites SSRC, payload type, timestamp and sequence number (`rtpSender.js:539-552`). The packetizer stamps its own PT for readability, but the **authoritative** PT is the one the sender carries — which is exactly why R-S3's re-pointing must happen before any packet is sent, and why all three objects must move together.
 3. `sender.codec` and `track.codec` are **separate fields**. `registerTrack` copies the sender's codec onto the track once (`rtpSender.js:425-445`, the `if (this.codec) track.codec = this.codec` at the end), and `prepareSend` does the same (`rtpSender.js:402-410`). But a later re-point of the sender does **not** update the track. This is the trap: a sender-only re-point leaves the track stamping the old payload type.
@@ -825,6 +1045,15 @@ Expected: PASS — 6 tests green.
 Then run the whole package to check for regressions:
 Run: `pnpm --filter @ponter/webrtc-core exec vitest run`
 Expected: PASS — no existing test changes status. If any existing test's `it()`/`expect()` count changes, declare the before→after counts in the report.
+
+**Then typecheck — `vitest` does not typecheck, and this task's change to `MediaStreamTrackLike` is exactly the kind of change `vitest` cannot catch:**
+
+```bash
+pnpm --filter @ponter/webrtc-core exec tsc --noEmit -p tsconfig.json
+pnpm --filter @ponter/desktop-core exec tsc --noEmit -p tsconfig.json
+```
+
+Expected: both exit 0. If `@ponter/desktop-core` reports `TS2741: Property 'id' is missing`, the optional members in `MediaStreamTrackLike` were written as required — fix them there, do not patch the three `{ kind: 'video' }` literals at the call sites.
 
 - [ ] **Step 5: Add the wire-level payload-type test**
 
@@ -874,6 +1103,8 @@ git commit -m "feat(webrtc-core): add the RTCRtpSenderLike seam and the werift a
 **Files:**
 - Create: `apps/agent/src/session/packetizer.ts`
 - Create: `apps/agent/test/session/packetizer.test.ts`
+- Modify: `apps/agent/tsconfig.json` — add `src/**/*.ts` to `include`. Task 1 wrote it as `["spike/**/*.ts", "test/**/*.ts"]`, which was right when `src/` was empty; this task creates the first file under `src/`, so from here on an `include` without `src/**` makes typecheck green over unchecked code. Step 7 proves the fix.
+- Delete: `apps/agent/spike/packetizer-copy.ts` (created by Task 1; Step 8 removes it once the real module exists)
 
 **Interfaces:**
 - Consumes: nothing beyond Node's `Buffer`.
@@ -978,7 +1209,7 @@ export function annexbNalTypes(annexB: Buffer): number[];
 | The RTP marker bit | The marker marks the **partition tail** — the last packet of the access unit. | `rtc-rtp-0.21.0/src/codec/h264/mod.rs:325-340` (`is_partition_tail` returns the marker), and the packetizer sets `marker: i == payloads_len - 1` (`rtc-rtp-0.21.0/src/packetizer/mod.rs:143-150`) |
 | The payload budget | The crate's MTU is 1200 bytes **including** the 12-byte RTP header, so the payload budget is **1188** bytes. | `webrtc-0.21.0/src/media_stream/track_local/static_sample.rs:89` (`RTP_OUTBOUND_MTU = 1200`), `rtc-rtp-0.21.0/src/packetizer/mod.rs:137` (`self.mtu - 12`) |
 
-**The one deliberate divergence, and why.** The Rust payloader drops a cached SPS/PPS pair when the access unit ends before another NAL arrives — an SPS/PPS-only access unit emits **nothing** at all. The TypeScript packetizer **flushes** the pending pair as a STAP-A at the end of the access unit instead. Rationale: a STAP-A carrying only the parameter sets is valid RFC 6184 and every browser accepts it; in the normal path (openh264 emits SPS, PPS and the IDR in one access unit) the flush never fires, so the divergence is invisible in production and only changes the pathological case from "silently lose the parameter sets" to "send them". This is the only intentional behaviour difference from the Rust agent in the whole packetizer, and Task 6's matrix records it.
+**The one deliberate divergence, and why.** The Rust payloader drops a cached SPS/PPS pair when the access unit ends before another NAL arrives — an SPS/PPS-only access unit emits **nothing** at all. The TypeScript packetizer **flushes** the pending pair as a STAP-A at the end of the access unit instead. Rationale: a STAP-A carrying only the parameter sets is valid RFC 6184 and every browser accepts it; in the normal path (openh264 emits SPS, PPS and the IDR in one access unit) the flush never fires, so the divergence is invisible in production and only changes the pathological case from "silently lose the parameter sets" to "send them". This is the only intentional behaviour difference from the Rust agent in the whole packetizer, and Step 5 of this task pins it with a test (the STAP-A-flush case). Task 6's coverage matrix grades *which Rust test each TS test replaces*; it does not carry per-behaviour divergence records, so the divergence is recorded here and in the test's own comment.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1244,9 +1475,15 @@ The literal fixtures are taken from the **crate's own test vectors** where one e
 Run: `pnpm --filter @ponter/agent-node exec vitest run test/session/packetizer.test.ts`
 Expected: PASS.
 
-- [ ] **Step 7: Prove the typecheck actually covers `src/`**
+- [ ] **Step 7: Add `src/**/*.ts` to the tsconfig, then prove the typecheck actually covers it**
 
-This task creates the first file under `apps/agent/src/`, and Task 1 wrote `apps/agent/tsconfig.json` before any such file existed. Run:
+This task creates the first file under `apps/agent/src/`, and Task 1 wrote `apps/agent/tsconfig.json` before any such file existed — its `include` is `["spike/**/*.ts", "test/**/*.ts"]`. Add `src/**/*.ts`:
+
+```jsonc
+  "include": ["src/**/*.ts", "test/**/*.ts", "spike/**/*.ts"]
+```
+
+Then run:
 
 ```bash
 cd apps/agent
@@ -1265,12 +1502,26 @@ pnpm --filter @ponter/agent-node typecheck
 
 Expected: step 1 exits 0; the probe run exits **non-zero** with an error naming `src/session/packetizer.ts`; the final run exits 0 again. **If the probe run exits 0, `tsconfig.json`'s `include` is wrong — stop and fix it before committing.** A typecheck that cannot fail on `src/` is not a gate, and Plan 2 puts the entire ported core in that directory.
 
-- [ ] **Step 8: Commit**
+Scope note: the committed `tsconfig.json` carries `lib: ["ES2024", "DOM"]` and `allowImportingTsExtensions: true` for the spike's direct `node --experimental-strip-types` run. Neither affects this module — leave them alone. `allowImportingTsExtensions` is only legal while `noEmit` is set, which the repo's `typecheck` script guarantees; if someone later adds an emit build, that flag becomes an error and the reason is recorded here.
+
+- [ ] **Step 8: Delete the spike's packetizer copy, then commit**
+
+Task 1's spike needed a packetizer before this task existed, so it carries `apps/agent/spike/packetizer-copy.ts`. **This step deletes it** — leaving it in the tree means two implementations of the same RFC 6184 framing, one of which no test in `apps/agent/src/` covers and both of which look authoritative. The spike's own test must stop importing it at the same time; if the spike still needs a packetizer after this task lands, it imports `src/session/packetizer.ts`.
 
 ```bash
-git add apps/agent/src/session apps/agent/test/session
+# The spike must not import the copy any more. If this returns a hit, fix the
+# import first — deleting the file under a live import turns Task 1's evidence
+# into a failing test, and Plan 3 cannot tell a deleted helper from a broken one.
+grep -rn "packetizer-copy" apps/agent/spike/ || echo "no references"
+
+rm apps/agent/spike/packetizer-copy.ts
+
+git add apps/agent/src/session apps/agent/test/session apps/agent/tsconfig.json
+git add -u apps/agent/spike
 git commit -m "feat(agent): add the RFC 6184 mode-1 packetizer with table-driven fixtures"
 ```
+
+**TEST-INTEGRITY note:** Task 1's spike test keeps the same `it()`/`expect()` counts across this step. The copy is deleted, not the assertions — the spike's packetizing assertions move onto the real module. If the spike test's counts *drop* when the copy goes, something was asserted through the copy that the real module does not satisfy, and that is a finding, not a cleanup.
 
 ---
 
@@ -1289,7 +1540,7 @@ git commit -m "feat(agent): add the RFC 6184 mode-1 packetizer with table-driven
 - Modify: `pnpm-workspace.yaml` (`allowBuilds`)
 
 **Interfaces:**
-- Consumes: `node-addon-api` ^8.9.2 and `node-gyp` ^9.4.1 (both already resolved in the lockfile via `better-sqlite3`, so neither is a new resolution), openh264 0.9.8, the platform capture and input APIs.
+- Consumes: `node-addon-api` ^8.9.2 and `node-gyp` ^9.4.1 (both already resolved in the lockfile, so neither is a new resolution — see Step 3 for exactly which package pulls each), openh264 0.9.8, the platform capture and input APIs.
 - Produces — the **entire** public surface of the addon. It is deliberately narrow (spec §6.3: "frames in, Annex-B out"):
 
 ```ts
@@ -1536,7 +1787,7 @@ codec/decoder/{core,plus}
 codec/console/
 ```
 
-Four facts about this tree that decide the whole gyp file, all verified against `build.rs:254-349` of `openh264-sys2-0.9.8`:
+Four facts about this tree that decide the whole gyp file, all verified against `build.rs:254-351` of `openh264-sys2-0.9.8` (`compile_and_add_openh264_static_lib` starts at `:254`; `pub fn compile()` is `:314-351` and the file is 352 lines):
 
 1. **The public headers are in `codec/api/wels/`, not `codec/api/svc/`.** `#include "codec_api.h"` must resolve there, and `WelsCreateSVCEncoder` is declared in `codec_api.h` at that path.
 2. **`codec/encoder/plus/src/DllEntry.cpp` must be excluded.** It is the Windows DLL entry point and defines `DllMain`; compiling it into a Node addon collides with the process's own entry handling.
@@ -1579,7 +1830,7 @@ Four facts about this tree that decide the whole gyp file, all verified against 
 ```python
 # apps/agent/native/binding.gyp
 #
-# The four openh264 sub-libraries mirror openh264-sys2 0.9.8's build.rs:315-355
+# The four openh264 sub-libraries mirror openh264-sys2 0.9.8's build.rs:314-351
 # exactly. Each is a static_library target because each needs its own include
 # set; merging them into one target changes which headers win and does not
 # build.
@@ -1822,7 +2073,7 @@ Then create the addon's package manifest. **It must exist as its own package** �
 }
 ```
 
-Both versions are already in the lockfile (resolved transitively via `better-sqlite3`), so adding them here costs no new resolution: `node-addon-api@8.9.2` and `node-gyp@9.4.1`. `node-addon-api` 8.x defines `NAPI_CPP_EXCEPTIONS`/`NODE_ADDON_API_CPP_EXCEPTIONS` on its own (`napi.h:46-77`) once `NAPI_VERSION >= 4`, which is why the `defines` above also carry it explicitly — belt and braces, since a define set in a different target's scope is easy to lose.
+Both versions are already in the lockfile, so adding them here costs no new resolution: `node-addon-api@8.9.2` and `node-gyp@9.4.1`. **Two different packages pull them, and the distinction matters when a later lockfile prune looks like it is safe:** `node-addon-api@8.9.2` comes from `better-sqlite3@13.0.3`; `node-gyp@9.4.1` comes from `@electron/rebuild@3.6.1`, **not** from `better-sqlite3`. Do not collapse the two into one provenance claim — a reader who trusts "both via better-sqlite3" and then removes the electron dependency will drop `node-gyp` out of the lockfile under this package's feet. `node-addon-api` 8.x defines `NAPI_CPP_EXCEPTIONS`/`NODE_ADDON_API_CPP_EXCEPTIONS` on its own (`napi.h:46-77`) once `NAPI_VERSION >= 4`, which is why the `defines` above also carry it explicitly — belt and braces, since a define set in a different target's scope is easy to lose.
 
 The `--dist-url=https://electronjs.org/headers` is not optional (spec D7). The addon's N-API symbols must resolve against **Electron's** V8/Node headers, not the system Node's; a build against the wrong headers loads in `node` and crashes in the Electron main process. `--target=35.7.5` tracks `apps/desktop/package.json`'s `electron: ^35.0.0`; when that floor moves, this pin moves with it, and the `uses` field in `apps/desktop` is what will notice.
 
@@ -1868,12 +2119,26 @@ inline void ThrowError(Napi::Env env, const char* code, const std::string& messa
  * This is the boundary guard: an exception that escapes here would
  * terminate the process, which is exactly the crash the addon must never
  * cause (spec §9.2).
+ *
+ * The `Napi::Error` arm must ATTACH `code` before rethrowing. A Napi::Error
+ * raised deeper in the call carries whatever code that call set — and the
+ * ones thrown by node-addon-api itself (an argument-type failure, for
+ * instance) carry none. Rethrowing it unchanged hands the TS side an error
+ * with `code === undefined`, which is the one thing the stable-code contract
+ * promises never to happen, and it forces the caller back to matching on
+ * message text — exactly the fragility issue #107 removed from the desktop
+ * auth path. Never overwrite a code that is already there: the deeper site
+ * knows more about the failure than this boundary does.
  */
 template <typename Fn>
 inline void Guard(Napi::Env env, const char* code, Fn&& fn) {
   try {
     fn();
   } catch (const Napi::Error& e) {
+    Napi::Object obj = e.Value().As<Napi::Object>();
+    if (!obj.Get("code").IsString()) {
+      obj.Set("code", Napi::String::New(env, code));
+    }
     e.ThrowAsJavaScriptException();
   } catch (const std::exception& e) {
     ThrowError(env, code, std::string("native failure: ") + e.what());
@@ -1882,12 +2147,106 @@ inline void Guard(Napi::Env env, const char* code, Fn&& fn) {
   }
 }
 
+/**
+ * Run `fn` off the JS thread and settle a Promise from the result.
+ *
+ * Every method on the addon's surface returns a Promise (see the Interfaces
+ * block: `listSources`, `createEncoder`, `encode`, `setBitrate`,
+ * `destroyEncoder`, `injectInput`). Capture can block for tens of
+ * milliseconds and `encode` is a full frame's work; doing either on the
+ * event-loop thread would stall the agent's signalling and every data channel
+ * with it. `Napi::AsyncWorker` is the minimal correct mechanism — no threads
+ * to own, no lifetime to reason about beyond the worker itself.
+ *
+ * Two rules:
+ *
+ *  1. `Execute()` runs on a libuv threadpool thread. It MUST NOT touch any
+ *     `Napi::` handle, any JS value, or any `Napi::Env` — V8 is not
+ *     thread-safe and doing so is a crash, not an exception. It computes into
+ *     plain C++ state stored on the worker.
+ *  2. `OnOK()`/`OnError()` run back on the JS thread and are where the
+ *     deferred is resolved or rejected. Failures go through the same
+ *     `ThrowError` codes as the synchronous path, so the TS side has ONE
+ *     error vocabulary regardless of which thread failed.
+ */
+class PromiseWorker : public Napi::AsyncWorker {
+ public:
+  PromiseWorker(Napi::Env env, const char* code)
+      : Napi::AsyncWorker(env), deferred_(Napi::Promise::Deferred::New(env)), code_(code) {}
+
+  Napi::Promise Promise() { return deferred_.Promise(); }
+
+ protected:
+  void OnOK() override {
+    // Runs on the JS thread. `EncodeResult()` is the subclass's plain-C++
+    // product; converting it to JS happens here and only here.
+    deferred_.Resolve(EncodeResult(Napi::Env(Env())));
+  }
+  void OnError(const Napi::Error& e) override {
+    // The worker's own failure. Give it the same stable-code shape as every
+    // other native failure.
+    Napi::Object obj = e.Value().As<Napi::Object>();
+    if (!obj.Get("code").IsString()) {
+      obj.Set("code", Napi::String::New(Env(), code_));
+    }
+    deferred_.Reject(obj);
+  }
+
+ protected:
+  virtual Napi::Value EncodeResult(Napi::Env env) = 0;
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  const char* code_;
+};
+
 }  // namespace ponter
 ```
 
 - [ ] **Step 5: Write `encoder.cc` — the openh264 wrapper**
 
-The encoder must:
+**Every entry point has the same three-part shape**, and all six must use it. `error.h` supplies the first two; the third is the work itself:
+
+```cpp
+Napi::Value Encode(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  // 1. Argument validation stays SYNCHRONOUS: a bad argument must throw at
+  //    the call expression, not reject a promise the caller may never await.
+  //    This is also where the bounds checks live (spec: bounds-check every
+  //    buffer, never trust `info[1]`).
+  TranscodeArgs args{};
+  Guard(env, kErrorInvalidArgument, [&] { args = ParseEncodeArgs(info); });
+
+  // 2. The blocking work goes to the worker — on the worker's thread, with no
+  //    Napi:: handle in sight.
+  auto* worker = new EncodeWorker(env, args);
+
+  // 3. Hand back the promise.
+  return worker->Promise();
+}
+```
+
+`createEncoder`, `listSources`, `injectInput`, `setBitrate` and `destroyEncoder` follow the same shape with their own argument parsers. `encode` is the one that most needs it: a 1080p RGBA frame is 8 MiB of resize + colour conversion + encode, and every millisecond of it spent on the event-loop thread is a millisecond the agent's signalling socket and data channels are stalled.
+
+Two consequences the tests pin:
+
+- **A rejection is a promise rejection, not a synchronous throw.** Step 10's tests already use `await expect(...).rejects`, which only passes for a real async surface. Add one explicit test that a bad argument *does* throw synchronously, so the split is pinned rather than incidental:
+  ```ts
+  it('throws synchronously on a malformed argument, and rejects asynchronously on a runtime failure', async () => {
+    // Fewer arguments than the signature requires: this is argument
+    // validation and must not be deferred into a promise.
+    expect(() => addon.encode(NaN)).toThrow();
+    // A well-formed call that fails at runtime: a promise rejection.
+    const handle = await addon.createEncoder({ width: 1280, height: 720, fps: 30, bitrate: 4_000_000 });
+    await expect(
+      addon.encode(handle, { pixels: Buffer.alloc(4), stride: 4, width: 1, height: 1, timestampUs: 0 }),
+    ).rejects.toMatchObject({ code: 'NATIVE_INVALID_ARGUMENT' });
+    await addon.destroyEncoder(handle);
+  });
+  ```
+- **No `Napi::` value is touched off the JS thread.** There is no test that can prove a negative like this at runtime; it is a review obligation, and it is why `PromiseWorker::Execute()` is pure C++ and every `Napi::` conversion happens in `OnOK()`.
+
+The encoder itself must:
 
 - Configure openh264 through the C API (`WelsCreateSVCEncoder` / `Initialize` / `EncodeFrame` / `Uninitialize` / `WelsDestroySVCEncoder`).
 - **Not** set a profile. Pin nothing, and let openh264 derive it — the derivation is what makes the assertion in Step 1 (`profileIdc === 66`) true for the right reason:
@@ -1905,7 +2264,7 @@ The encoder must:
 
   So `encoder.cc` **parses the SPS out of the Annex-B it just produced.** Scan for the NAL with `(byte0 & 0x1f) == 7`, strip the emulation-prevention `00 00 03` sequences, then read: `profile_idc` at SPS byte 1, the constraint byte at byte 2, `level_idc` at byte 3. That is four lines of bitstream walking and it is the only honest source. Assert on the *parsed* values.
 
-  `WelsGetLevelIdc` (`codec/encoder/core/src/au_set.cpp:187-193`) computes level from frame size, frame rate and bitrate against `g_ksLevelLimits` (`codec/common/src/common_tables.cpp:345-363`, **17** levels, 1.0 through 5.2 — a truncated table can only over-report). For the four shipped presets it yields 4.0 / 3.1 / 4.2 / 3.2 (spec §3.3). The level byte is `0x28`/`0x1f`/`0x2a`/`0x20` respectively; the smoke test only asserts `> 0`, and the preset-level table is Task 6's matrix.
+  `WelsGetLevelIdc` (`codec/encoder/core/src/au_set.cpp:187-193`) computes level from frame size, frame rate and bitrate against `g_ksLevelLimits` (`codec/common/src/common_tables.cpp:345-367` — the array opens at `:345`, its 17 entries run `:346-366`, and `};` is `:367`; **17** levels, 1.0 through 5.2 — a truncated table can only over-report, and a truncated *citation* is how the accumulation of that claim goes unchecked). For the four shipped presets it yields 4.0 / 3.1 / 4.2 / 3.2 (spec §3.3). The level byte is `0x28`/`0x1f`/`0x2a`/`0x20` respectively; the smoke test only asserts `> 0`, and the preset-level table is Step 1 of this task, not Task 6's matrix — Task 6's matrix grades the plan, it does not carry per-preset byte values.
 
 - **Crop to even dimensions** before encoding (spec B15). A capture width of, say, 1367 px is ordinary on Windows at 125 % scaling, and H.264 requires even width and height. The crop is one row/column off the right and bottom edges.
 
@@ -1925,7 +2284,7 @@ The encoder must:
   | `iTargetBitrate` | the profile's bitrate | yes, via `GetBaseParams()` and the SPS level |
   | `fMaxFrameRate` | the profile's fps | yes, via `GetBaseParams()` |
 
-  The four "no" rows are internal openh264 state with no getter, so **the TS smoke test cannot see them** and neither can an SPS parse. Do not write a TypeScript assertion that pretends otherwise. The honest check lives in Step 12: build the `SEncParamExt` through the same code path the create call uses, and assert the struct's fields **before** handing it to `Initialize`. That is a pure function over a struct — no encoder, no frame, no GPU.
+  **Five** of the table's nine fields are internal openh264 state with no getter (`usageType`, `iComplexityMode`, `bEnableAdaptiveQuant`, `bEnableBackgroundDetection`, `sVuiParam` — the other four are observable, and `iIntraPeriod` only indirectly through IDR cadence). The TS smoke test cannot see those five and neither can an SPS parse. Do not write a TypeScript assertion that pretends otherwise. The honest check lives in Step 12: build the `SEncParamExt` through the same code path the create call uses, and assert the struct's fields **before** handing it to `Initialize`. That is a pure function over a struct — no encoder, no frame, no GPU.
 
   This matters because three of those four change the bitstream a user would notice: `usageType` drives openh264's screen-content tuning (sharp text edges versus camera noise), `bt709` versus default BT.601 shifts every colour, and adaptive quantisation off is what keeps a static desktop from pulsing. A port that silently dropped them would still produce valid H.264 and would still decode — it would just look wrong, which is the hardest kind of regression to attribute later.
 
@@ -1961,16 +2320,34 @@ Every OS call's return value is checked; every failure becomes a `ThrowError` wi
 
 - [ ] **Step 7: Build the addon**
 
-First add `@ponter/agent-native` to `pnpm-workspace.yaml`'s `allowBuilds`, so pnpm does not skip its `install` script (spec D9). The entry is a **package name**, and it must be the name in `apps/agent/native/package.json` verbatim — pnpm matches on identity, not on path:
+First add `@ponter/agent-native` to `pnpm-workspace.yaml`'s `allowBuilds`, so pnpm does not skip its `install` script (spec D9). The entry is a **package name**, and it must be the name in `apps/agent/native/package.json` verbatim — pnpm matches on identity, not on path.
+
+**`allowBuilds` is a YAML MAP, not a list. Edit the existing block — add one line beside `electron: true`. Do not replace it.** Replacing it deletes a load-bearing denial:
 
 ```yaml
 allowBuilds:
-  - esbuild
-  - workerd
-  - vue-demi
-  - electron
-  - '@ponter/agent-native'
+  esbuild: true
+  workerd: true
+  # reka-ui -> @floating-ui/vue -> vue-demi has a postinstall script.
+  # Without this, `shadcn-vue init` fails with ERR_PNPM_IGNORED_BUILDS.
+  vue-demi: true
+  # better-sqlite3 13 ships prebuilt bindings for every platform we target,
+  # including linuxmusl-x64/arm64. Its implicit `node-gyp rebuild` is a no-op
+  # when a prebuild exists, but node-gyp still downloads Node headers first —
+  # which fails in network-restricted Docker builds. Deny the build so pnpm
+  # skips the script entirely; the shipped prebuilt is used at runtime.
+  better-sqlite3: false
+  electron: true
+  '@ponter/agent-native': true
 ```
+
+`better-sqlite3: false` is why the server's Docker image builds without network at that step. Writing this block as a YAML list — `- esbuild` — silently drops every key including that denial, and the failure shows up later as a Docker build that cannot fetch Node headers. Verify with:
+
+```bash
+git diff pnpm-workspace.yaml | grep -E '^[-+].*(better-sqlite3|esbuild|workerd|vue-demi|electron)'
+```
+
+Expected: **no `-` lines** among those five. Only the `+  '@ponter/agent-native': true` line is new.
 
 Then build:
 
@@ -2286,6 +2663,16 @@ export interface StreamProfile {
 /** The four shipped presets, in ascending order of cost. */
 export const STREAM_PROFILES: readonly StreamProfile[];
 
+/**
+ * The union of the table's own ids.
+ *
+ * Plan 2 references this type 26 times across `config.ts`, `desktop/session.ts`,
+ * `desktop/sustain.ts` and the runtime status object. It is defined HERE,
+ * derived from the table, so adding a preset cannot leave the type behind.
+ * Without it, every one of those 26 references is an undefined symbol.
+ */
+export type ProfileId = (typeof STREAM_PROFILES)[number]['id'];
+
 /** Look a preset up by its id. Throws when the id is unknown. */
 export function streamProfileById(id: string): StreamProfile;
 ```
@@ -2325,14 +2712,20 @@ Expected: FAIL — `Cannot find module '../src/types/stream-profile'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `packages/shared/src/types/stream-profile.ts` with the four presets, copied from `apps/agent/src/lib.rs:445-490`, and the `profileLevelId` values from spec §3.3.
+Create `packages/shared/src/types/stream-profile.ts` with the four presets, copied from `apps/agent/src/lib.rs:445-490`, and the `profileLevelId` values from spec §3.3. Export **`type ProfileId = (typeof STREAM_PROFILES)[number]['id']`** from the same file — Plan 2 imports it from `@ponter/shared` in 26 places, and a locally-redefined union would let the table and the type drift apart silently.
 
 Re-export from `packages/shared/src/types/index.ts` and `packages/shared/src/index.ts`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `pnpm --filter @ponter/shared exec vitest run test/stream-profile.test.ts`
-Expected: PASS.
+Expected: PASS. Then confirm `ProfileId` is reachable from the package root:
+
+```bash
+pnpm --filter @ponter/shared exec tsc --noEmit -p tsconfig.json
+```
+
+Expected: exit 0 — `ProfileId` must appear in `src/index.ts`'s re-export list or the `tsc` run stays green while Plan 2's first import fails.
 
 > **This pass does not gate CI.** `ci-node.yml` runs `@ponter/shared`'s tests under `continue-on-error: true` — the package is a type/library dependency, not a build producer, so its suite is informational. A green shared suite is therefore **not** evidence the table is right. The gating pin is Step 5, which lives in `@ponter/api-client` and reads the same table.
 
@@ -2405,11 +2798,17 @@ function walk(dir: string): string[] {
 }
 
 describe('the agent API-access boundary gate (spec D13 / ADR-89)', () => {
-  it('the agent source tree exists — this gate must never pass vacuously', () => {
-    // A gate that finds nothing to guard is not a green gate. If this fails,
-    // the agent has not been ported to TypeScript yet and the rest of this
-    // file proves nothing.
-    expect(() => statSync(AGENT_SRC)).not.toThrow();
+  it('the agent source tree exists AND holds TypeScript — this gate must never pass vacuously', () => {
+    // A gate that finds nothing to guard is not a green gate, and
+    // `expect(() => statSync(AGENT_SRC)).not.toThrow()` alone is exactly that
+    // mistake: at HEAD `apps/agent/src/` EXISTS and holds 20 `.rs` files and
+    // zero `.ts` files, so `statSync` passes, `walk()` returns `[]`, and all
+    // three scans below report zero offenders on a tree containing no
+    // TypeScript at all. Counting the walked files is what turns the
+    // directory's existence into evidence that there is something to guard.
+    const files = walk(AGENT_SRC);
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.every((f) => f.endsWith('.ts'))).toBe(true);
   });
 
   it('no hand-rolled HTTP client outside the sanctioned module', () => {
@@ -2439,7 +2838,17 @@ describe('the agent API-access boundary gate (spec D13 / ADR-89)', () => {
 
 Run: `pnpm --filter @ponter/api-client exec vitest run test/agent-api-access-gate.test.ts`
 
-Expected at this point in the plan: the **first** test FAILS (`apps/agent/src` does not exist yet — `apps/agent` is still the Rust crate, whose source is `.rs`). The other three would pass vacuously, and the first test exists precisely to make that impossible to report as green.
+Expected at this point in the plan: the **first** test FAILS — and the reason matters. `apps/agent/src` exists at HEAD but holds 20 `.rs` files and **zero** `.ts` files, so `walk()` returns `[]` and the assertion on `files.length` fails. The tree is present and the gate is still not exercised. The other three would pass vacuously, and the first test exists precisely to make that impossible to report as green.
+
+**Prove the gate can fail on the thing it guards, before trusting it.** After `apps/agent/src` holds TypeScript, run a deliberate violation and confirm the corresponding test goes red:
+
+```bash
+cd apps/agent && printf "const U = 'https://example.test';\nconst r = fetch(U);\nexport { r };\n" > src/__probe.ts
+cd - && pnpm --filter @ponter/api-client exec vitest run test/agent-api-access-gate.test.ts; echo "exit=$?"
+rm apps/agent/src/__probe.ts
+```
+
+Expected: exit non-zero, with **one** failure naming `src/__probe.ts` in the literal-URL scan. (The probe deliberately trips exactly one rule so the result is unambiguous.)
 
 The implementer must state in the report which of these two it observed:
 - **tree missing** — the gate is written but not exercised; record it as "gate written, not yet exercised" in the ledger, never as "gate green";
@@ -2498,7 +2907,7 @@ The plan is done when **all** of these hold:
 2. `@ponter/webrtc-core` exposes `RTCRtpSenderLike` and `addTrack`, with the werift adapter's D4b regression test green.
 3. The packetizer's table-driven fixtures pass, and the fixture bytes are literal (not recomputed).
 4. The addon builds against Electron's headers, the smoke test passes, and the fault-containment gate passes.
-   **The addon's surface includes `setBitrate(handle, bps)`** — spec B19 names it as the port destination, and without it a `desktop-bitrate` frame would parse into nothing. The C++ test asserting the raise's two-call order and the lower's one-call shape is part of this criterion, and so is the B17 encoder-config test, because four of those nine fields have no getter and nothing else can observe them.
+   **The addon's surface includes `setBitrate(handle, bps)`** — spec B19 names it as the port destination, and without it a `desktop-bitrate` frame would parse into nothing. The C++ test asserting the raise's two-call order and the lower's one-call shape is part of this criterion, and so is the B17 encoder-config test, because five of those nine fields have no getter and nothing else can observe them.
 5. The shared stream-profile table lives in `@ponter/shared` with the four computed `profile-level-id` values, and `desktop-profile-parity.test.ts` imports both sides as values (D12 replaced, guarantee intact).
 6. The agent API-access gate is written, and its status is stated as **exercised** or **written but not yet exercised** — never as "green" when the tree it guards does not exist.
 7. The coverage matrix has 62 B-rows and 6 R-rows.
