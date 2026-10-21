@@ -24,7 +24,7 @@ These apply to every task. Most are copied verbatim from the spec; the ones mark
 - **All code, identifiers, comments, commit messages and documentation are in English.** Zero Vietnamese characters in any diff.
 - **Commit attribution:** author is `Ngo Tuan Anh <ngotuananh2101@gmail.com>`. **Never** add a `Co-authored-by` trailer of any kind.
 - **No credentials in process lists (ADR-13).** Config is env-var-only. The credential travels in the `Authorization` upgrade header and **never** in a URL, a log line, or a frame. The env-var names (`AGENT_ID`, `AGENT_SERVER`, `AGENT_CREDENTIAL`, `STUN_SERVER`, `AGENT_ALLOW_INPUT`, `AGENT_FILES_ROOT`, `AGENT_IDENTITY_PATH`, `AGENT_DESKTOP_PROFILE`, `AGENT_DESKTOP_DEFAULT_SOURCE`, `AGENT_SHELL`, `RUST_LOG`) are the desktop↔agent contract and must not be renamed.
-- **The identity file is written with mode `0o600`.** Non-negotiable. Création uses `wx` so an existing key is never truncated.
+- **The identity file is written with mode `0o600`.** Non-negotiable. Creation uses `wx` so an existing key is never truncated.
 - **The addon must never let a C++ exception cross the FFI boundary, must bounds-check every buffer, and must return errors as JS exceptions with a stable code — never as a crash.** (Consumed here, built in Plan 1 Task 4.)
 - **TEST-INTEGRITY:** never delete, skip or weaken a test to make it green. Every test change declares the before→after `it()`/`expect()` counts and the rationale. An undeclared change is BLOCKING.
 - **`packages/ui-components/src/components/ui/**` is shadcn-vue generated.** Never edit it.
@@ -110,7 +110,51 @@ Locked so implementers cannot disagree about what creates what.
 **One arithmetic correction to the coverage matrix (R3), recorded here because Plan 2 executes it:**
 
 > Coverage-matrix R3 says `api.rs`'s 20 tests split into "7 retired, 13 live".
-> The real split is **8 retired, 12 live**. The 13th — `non_json_body_with_a_status_is_api_error_not_network_error` — asserts behaviour that lives in `packages/api-client/src/errors.ts` and has no agent-side successor once `ApiError` retires; its behaviour is already covered there by `fromResponse`. The 12 live are: 10 `to_ws_url` (8 named + `trims_trailing_slashes` + `the_cli_default_normalizes_to_itself`), 2 `with_bearer`, 2 auth-fatal classification — of which the auth-fatal pair is **live behaviour** and must be ported to Task 5, not retired.
+> The counts are right; the *two-way shape* is what is wrong.
+>
+> PM re-derived the split by classifying all 20 `#[test]` functions in
+> `apps/agent/src/api.rs` by the symbol each one exercises, at `453a779`:
+>
+> | target | count | tests |
+> |---|---|---|
+> | `to_ws_url` | **11** | `rewrites_http_to_ws`, `rewrites_https_to_wss`, `passes_ws_schemes_through`, `trims_trailing_slashes`, `does_not_append_a_path`, `preserves_a_ws_query_value_ending_in_slash`, `rewrites_https_with_a_query_value_ending_in_slash`, `trims_a_path_slash_before_the_query_without_altering_it`, `preserves_a_fragment_suffix_unchanged`, `rejects_an_unknown_scheme`, `the_cli_default_normalizes_to_itself` |
+> | `with_bearer` | **2** | `sets_the_authorization_header`, `rejects_a_credential_with_a_control_character` |
+> | `ApiError` | **7** | `parses_the_error_envelope`, `parses_an_object_details_field`, `falls_back_to_api_error_when_code_is_absent`, `non_json_body_with_a_status_is_api_error_not_network_error`, `network_has_no_status_and_the_network_sentinel`, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures` |
+> | | **20** | 11 + 2 + 7 |
+>
+> So the 7 that touch `ApiError` are exactly the 7 the matrix calls retired. The
+> matrix's own parenthetical — "`from_response` ×4, `network` ×1, `is_auth_fatal`
+> ×2" — also sums correctly to 7. But two of those seven
+> (`auth_fatal_*`) assert **live behaviour**: a 401 or `UNAUTHORIZED` code is
+> auth-fatal and a 403 is not, which is the classifier issue #107 / PR #110
+> established and which `apps/agent/src/signalling/auth.ts` (Task 5) must carry.
+> Their Rust test retires with `ApiError`; their assertion must not.
+>
+> **Ruling: the split is THREE-WAY — 13 re-homed / 2 ported-then-retired / 5 retired**
+> (13 + 2 + 5 = 20). The 13 re-homed are the 11 `to_ws_url` tests and the 2
+> `with_bearer` tests. The 2 ported-then-retired are `auth_fatal_on_401_or_unauthorized_code`
+> and `not_auth_fatal_on_other_failures` — ported to Task 5 *before* the Rust test
+> retires. The 5 plain-retired are the other `ApiError` tests.
+>
+> A two-way split cannot express this, and that is why the number kept moving: calling the
+> auth-fatal pair "retired" undercounts live coverage, and calling it "re-homed" overcounts
+> the re-homed side. Both descriptions are locally true and the pair is neither purely one
+> nor the other.
+>
+> **Why this matters and is not pedantry:** an earlier draft of this plan claimed
+> "8 retired, 12 live" on the strength of a hand-count that put `to_ws_url` at 10.
+> It is 11 — so 13 live tests exist before the auth-fatal pair is counted at all, and
+> no partition of 20 yields 12. The error was invisible because the arithmetic still
+> summed to 20: a miscount in one bucket offset by a miscount in another is the hardest
+> kind of error to catch by eye. BA re-derived the same 11/2/7 independently, from the
+> tree, after this plan's first correction was written — two independent derivations
+> agreeing is the only thing that settles a count like this.
+>
+> **`to_ws_url`'s 11 tests do NOT re-home onto `toWsUrl`** — see D1 in
+> `.superpowers/plan2/decisions.md`. They re-home onto the new
+> `rewriteWsScheme`, because `toWsUrl`'s whole-string trim has different
+> semantics (D1's table shows the two implementations disagreeing on a base
+> URL that carries a query or a fragment).
 
 ---
 
@@ -7032,8 +7076,10 @@ and it lives in the desktop `agent-supervisor` tree.
 Before this plan's work can be called done, the coverage matrix must record:
 
 - **38 B-rows closed** across Tasks 1–19, with the owning task's test file named.
-- **R3 corrected to 12 re-homed / 8 retired** — the matrix's 13/7 is wrong; the
-  enumeration is in this plan's corrections block.
+- **R3 recorded as a three-way split: 13 re-homed / 2 ported-then-retired / 5
+  retired.** The earlier "12 re-homed / 8 retired" in this plan was arithmetically
+  impossible (`to_ws_url` alone carries 11, `with_bearer` 2). The enumeration is
+  in this plan's corrections block; the matrix's §6.2 carries the same derivation.
 - **B19 has no home here** — `applyBitrate` lives in Plan 1 Task 4's addon. If it
   did not land there, it is a Plan 3 gap.
 - **New R-entry: six retired noise rules** (above).
