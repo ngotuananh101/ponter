@@ -15,10 +15,12 @@ Reproduce any row with the recipe in §10.
 | Class | Count |
 |---|---|
 | BLOCKING | 9 |
-| Non-blocking | 6 |
+| Non-blocking | 6 (one corrected after the fact — see N-6) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
 The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong**, and **21 Rust test names cited as porting sources do not exist anywhere in `apps/agent/src`**. Both are the same class of defect — a number or a name written into a declaration that does not describe the tree — and both are BLOCKING because the declaration is the gate the plan itself defines (Plan 2 line 29: an undeclared change is BLOCKING; a declared change that is false is worse, because it passes the gate while misdescribing it).
+
+**Status: all nine BLOCKING findings are closed** by PM's amendment `cebe659` (2026-10-21), verified independently — see §9.1. One non-blocking finding (N-6) was **partly mine and wrong**; it is corrected in place.
 
 ---
 
@@ -212,18 +214,24 @@ So Plan 2's claim that "the Rust test's name promised chunking it never exercise
 
 Task 8 (line 2979) moves it to "Task 19's runtime". Task 19's declaration (line 7512) says it re-homes there. Neither fence contains it: the T19 `runtime.test.ts` fence has six tests, all source resolution; the `session.test.ts` fence has eleven, none about an estimator. The Rust test exists (rtc.rs:1179). So the test leaves `rtc.rs` in a declaration and arrives nowhere.
 
-### N-6. The two `desktop-profile-parity` corrections are wrong in both directions, and the guards are still in the file
+### N-6. The `desktop-profile-parity` baseline was wrong; Plan 2's correction of it is right
+
+> **Corrected 2026-10-21, after PM's correction.** The original version of this finding said Plan 2's "4→2" was wrong. **That half was wrong** — see the retraction below. The other half stands.
 
 Plan 1 declared "1 `it()` → 2 `it()`". Plan 2 corrects it (lines 98-108) to "at `453a779` already 2 `it()` and 4 `expect()`; after the rewrite 2 `it()` and 2 `expect()`", and repeats the "4→2" in the closing checklist (line 7557).
 
-Verified independently three ways:
-- `git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts` → **2 `it()` / 4 `expect()`**.
-- `git show HEAD:…` → **2 `it()` / 4 `expect()`**.
-- `git diff 453a779 HEAD -- …` → **empty**. The file has not changed since `c6ba580` (which predates `453a779`).
+**What I got wrong.** Plan 2's "4→2" is a *prediction of the after-state*, not a claim about the tree as it stands — and the prediction is correct. The rewrite is Plan 1 Task 5, and it landed in `7d723e6`:
 
-And the two guard `expect()`s the rationale says were removed **are still there**, at lines 34 and 36 (`expect(start).toBeGreaterThan(-1)`, `expect(end).toBeGreaterThan(start)`).
+```
+git show 7d723e6:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -cE '(^|[^.[:alnum:]_$])it\('   # 2
+git show 7d723e6:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                       # 2
+```
 
-Correct declaration: **2→2 `it()`, 4→4 `expect()`** — unchanged, because this plan does not touch the file at all. The rationale ("the regex helper the two guards protected is gone") describes a change that has not happened and is not in Plan 2's file list.
+The rewritten file imports `STREAM_PROFILES` from `@ponter/shared` and `DESKTOP_PROFILES` from the desktop's `ipc-types`, compares the two sets as values, and the two `expect()`s that guarded the old regex helper (`start > -1`, `end > start` — `453a779` lines 34 and 36) are gone with the helper. So **4 → 2 `expect()` is exactly what happened**, and Plan 2's declaration describes the tree correctly. My original finding measured `git diff 453a779 HEAD` — empty at the time — and mistook "the file has not changed *yet*" for "the file will not change".
+
+**What still stands — the first half, which is the load-bearing half.** The Rust parity guarantee was implemented by **reading `apps/agent/src/lib.rs` as text** and regex-extracting the `StreamProfile` literals out of `impl std::str::FromStr for StreamProfile`. That mechanism cannot survive the Rust's deletion (Plan 3), so the guarantee had to be re-implemented as a **same-language import** of `@ponter/shared`'s table. Plan 1 Task 5's rewrite does exactly that, and the file's own doc comment now says so: *"They now live in one table, so both sides are imported as values — the same guarantee, with nothing left to parse."* The rewrite must land; Plan 2 must not carry the old regex-based file forward.
+
+**Retraction of the path.** An earlier draft of this section (and the message accompanying it) gave the path as `apps/web/…`. That was wrong: the file is `apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts`. The audit file never carried the `apps/web` path.
 
 ---
 
@@ -263,6 +271,8 @@ The Rust test `preserves_a_ws_query_value_ending_in_slash` (api.rs:182) pins exa
 | 5 | Logging "6 of 10 rules retire" | **Refuted as stated** — the direction is right (most rules retire) but the count is wrong (10 rules, stated as both "none" and "six"), 4 of the 6 named rules do not exist, and one retirement reverses a documented safety decision. → **B-5** |
 | 6 | Every citation | **21 non-existent test names (B-3), 1 wrong line range (N-1), 1 stale line range (N-2), 1 fabricated retirement table (B-5), 1 unciteable source (B-6).** |
 
+> **N-6 amended.** N-6 was originally listed among the non-blocking findings as "both corrections are wrong in both directions". PM's re-measurement showed the "4→2" half was a **prediction of the after-state** that the implementation matched exactly, not a claim about the tree as it stood; my finding measured the tree before the rewrite landed and mistook "not changed yet" for "will not change". N-6 is corrected in place; its surviving half — the regex-over-`lib.rs` mechanism cannot outlive the Rust — is unaffected.
+
 ---
 
 ## 6. What the audit did not cover
@@ -287,6 +297,8 @@ A cheap, mechanical fix exists: for each task, count `it(` and `expect(` **insid
 ## 8. Recommended disposition
 
 **Do not execute Plan 2 as it stands.** B-1/B-2 mean no task's gate is trustworthy; B-3/B-5 mean two R-entries would record fabricated parity; B-7/B-8 mean two surfaces leave the Rust tree with no owner.
+
+> **Applied.** PM closed all of these in `cebe659`; §9.1 records the independent re-verification. One residual — the "six retired noise rules" R-entry line — is recorded there; it is a one-line fix. N-4 remains open for the owner by design: whether the Node agent should split terminal output at 16 KiB is a protocol question, not a docs one.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -315,6 +327,33 @@ The plan moved six times while I was reading it. Recording so PM can confirm own
 | `a6d86e5`, `8a92601` | Step 0b rationale; `CONTRIBUTING.md` |
 
 Findings B-3's Task 19 rows and the T19 count were **re-checked against `8a92601`** after `5ff4182` landed. Everything else was stable from `406f968` onward.
+
+### 9.1 Post-audit verification — `cebe659` (PM's closing amendment)
+
+PM applied the eight recommended amendments in `cebe659` ("apply Plan 2's remaining audit amendments (B-3, B-6, B-7, B-8)"), on top of the earlier mechanical pass. I re-verified the result against `cebe659` rather than taking the report for it.
+
+**All 19 declarations re-measured with an independent fence-walker** (toggle on ``` lines; count `it(`/`expect(` with a negative lookbehind for `.`/`$`; restrict to fences whose first line is a `// …test…` banner — the same rule that produced B-1):
+
+| Task | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fence `it()` | 21 | 16 | 14 | 19 | 19 | 9 | 7 | 36 | 12 | 18 | 25 | 11 | 16 | 11 | 16 | 9 | 15 | 12 | 17 |
+| fence `expect()` | 40 | 21 | 20 | 28 | 29 | 11 | 11 | 48 | 13 | 19 | 42 | 15 | 22 | 11 | 25 | 16 | 27 | 17 | 33 |
+
+**0 mismatches against the declarations as written in `cebe659`.** Task 2's declaration was rewritten from a delta to a count (7 → 19 `it()`, 18 → 34 `expect()`) and records why. Every one of the other 18 states its after-state directly.
+
+Spot-checks of the non-count amendments, all confirmed in `cebe659`:
+
+- **B-3** — the phantom names are gone. Task 18's six are now declared **new** (the label gate at `rtc.rs:663-689` and the inbound router at `lib.rs:2739` have no Rust test); Task 19's eight likewise, and its declaration names the real untested functions (`default_source_id` at `desktop.rs:1004`, `run_desktop_session` at `lib.rs:2002`/`2698`). The `sustain_ladder_*` names were replaced with the real `sustain_monitor_*` (`desktop.rs:3363-3420`). I confirmed every function these declarations name exists in the tree.
+- **B-6** — `grep -c decisions.md` → **0** in the amended plan; the rulings travel inline.
+- **B-7** — B38 landed in **Task 1** (`resolveShell`, `firstAvailable`, `windowsShellRoots`, `main.rs:169-182`/`186-218`), with the reason recorded: it resolves the *operator's* shell at config time, while Task 9's `ShellPolicy` governs which shells a *peer* may request.
+- **B-8** — the three env vars are now in `loadConfig` and its tests (7 / 6 / 8 hits); `AGENT_COLS`/`AGENT_ROWS` appear exactly once each, in the line that explains they **must not** exist (the Rust binds them as bare clap flags with no `env =`).
+- **B-9** — 38 → 49 in both places, with the rationale recorded.
+
+**One residual inconsistency, found in `cebe659` and not yet fixed** (it is not one of the nine findings — it is the same *class* as B-5, and it sits three lines below the table that contradicts it):
+
+> Line 7872: `- **New R-entry: six retired noise rules** (above).`
+
+The retirement note it points at (`cebe659` lines 7806-7859) now accounts for **all ten** rules and concludes that Task 1's `NOISE` table **ships empty** — *"every one names a Rust crate's target … and the TypeScript stack is werift"*. Under that reckoning no rule "retires" in the port sense; the ten rationales are recorded so the knowledge survives, and the R-entry should say **ten rules, none ported** (or name the R-entry after the mechanism rather than a count). The "six" is a leftover of the pre-amendment note.
 
 ---
 
@@ -351,9 +390,14 @@ grep -c '^| B[0-9]' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan
 # enumerate B1-14,B18,B20,B22-24,B27-30,B34,B36-56,B58,B59,B61,B62 → 49
 # matrix rows naming Plan 2                                                   → 49 (same set)
 
-# N-6
-git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -cE '(^|[^.[:alnum:]_$])it\('   # 2
-git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                       # 4
-git show HEAD:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts   | grep -c 'expect('                       # 4
-git diff --stat 453a779 HEAD -- apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts                          # empty
+# N-6 (corrected): the rewrite is Plan 1 Task 5, landed in 7d723e6
+git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                        # 4  (before)
+git show 7d723e6:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -cE '(^|[^.[:alnum:]_$])it\('    # 2  (after)
+git show 7d723e6:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                        # 2  (after)
+git branch -a --contains 7d723e6                                                                    # worktree-feat-agent-node-ts-fe
+
+# 9.1: re-verify every declaration after PM's amendment
+git show cebe659:docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md > /tmp/p2audit/plan2_cebe659.md
+python3 -I /tmp/p2audit/verify_amend.py     # 0 mismatches across all 19 tasks
+grep -c decisions.md /tmp/p2audit/plan2_cebe659.md                                                 # 0
 ```
