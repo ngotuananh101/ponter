@@ -714,8 +714,15 @@ export interface RTCRtpSenderLike {
    * *first* H.264 entry is `packetization-mode=0` would otherwise be
    * negotiated onto a mode-0 payload type while the packetizer emits mode-1
    * framing. The caller re-points the sender at the browser's
-   * `packetization-mode=1` entry; the answer's `a=fmtp:` line for that
-   * payload type then stays byte-identical to the offer's.
+   * `packetization-mode=1` entry, which puts the mode-1 payload type first in
+   * the answer's m-line.
+   *
+   * The answer's `a=fmtp:` line for that payload type stays byte-identical to
+   * the offer's, but **that is not this method's doing and is not R-S3's
+   * assertion.** werift never rewrites `fmtp` parameters, whichever entry the
+   * sender points at — `werift-sender.test.ts` pins that fact in a test that
+   * passes with and without this method. R-S3's own coverage is the payload
+   * type and its position in the answer, not the fmtp text.
    *
    * Throws when the codec is not one of the negotiated ones.
    */
@@ -845,7 +852,7 @@ describe('WeriftAdapter.addTrack', () => {
     expect(sender.codec?.payloadType).toBe(PT_H264_MODE0);
   });
 
-  it('R-S3: re-pointing at the mode-1 entry leaves the answer fmtp byte-identical to the offer', async () => {
+  it('R-S3: re-pointing at the mode-1 entry moves the sender', async () => {
     const offer = buildOffer({ h264Order: 'mode-0-first' });
     const adapter = new WeriftAdapter({
       iceServers: [],
@@ -866,7 +873,7 @@ describe('WeriftAdapter.addTrack', () => {
     expect(sender.codec?.parameters).toBe(H264_MODE1);
   });
 
-  it('R-S3: the answer still echoes the browser fmtp verbatim, byte for byte', async () => {
+  it('werift does not rewrite the fmtp parameters it echoes into the answer', async () => {
     const offer = buildOffer({ h264Order: 'mode-0-first' });
     const adapter = new WeriftAdapter({
       iceServers: [],
@@ -1186,6 +1193,21 @@ The adapter therefore also needs a `getOutboundTrackCodec(trackId)` accessor —
 git add packages/webrtc-core/src packages/webrtc-core/test
 git commit -m "feat(webrtc-core): add the RTCRtpSenderLike seam and the werift adapter's sender surface"
 ```
+
+**TEST-INTEGRITY declaration for this task.** The fence above is
+**7 `it()` / 10 `expect()`**; the shipped
+`packages/webrtc-core/test/adapters/werift-sender.test.ts` is
+**8 `it()` / 12 `expect()`**. Two fence tests were renamed, one was added, and
+nothing was deleted or weakened:
+
+| Fence name | Shipped as | Why |
+|---|---|---|
+| `R-S3: re-pointing at the mode-1 entry leaves the answer fmtp byte-identical to the offer` | `R-S3: re-pointing at the mode-1 entry moves the sender` | The body never asserted on the answer's SDP — it asserts the sender's `payloadType` and `parameters`. The new name states what the body does. |
+| `R-S3: the answer still echoes the browser fmtp verbatim, byte for byte` | `werift does not rewrite the fmtp parameters it echoes into the answer` | Kept, because it pins a true property (werift never rewrites `fmtp`), but renamed to stop attributing that property to R-S3 — it passes with or without `selectNegotiatedCodec`. |
+| — (absent) | `R-S3: re-pointing moves the answer m-line order to 102 first; without it 104 leads` | **New, and it is what actually covers R-S3.** It has a negative half the fence never had: the same query returns `[104, 102]` when the re-point is skipped, so a sender-only implementation that never reorders `transceiver.codecs` fails it. |
+
+The substance went **up**, not down: the fence's two fmtp tests could both pass
+on an implementation that did nothing, and the replacement cannot.
 
 ---
 
@@ -1645,6 +1667,9 @@ git commit -m "feat(agent): add the RFC 6184 mode-1 packetizer with table-driven
 ```
 
 **TEST-INTEGRITY note:** Task 1's spike test keeps the same `it()`/`expect()` counts across this step. The copy is deleted, not the assertions — the spike's packetizing assertions move onto the real module. If the spike test's counts *drop* when the copy goes, something was asserted through the copy that the real module does not satisfy, and that is a finding, not a cleanup.
+
+**TEST-INTEGRITY declaration for Task 3's own file.** The `packetizer.test.ts` fence above is **12 `it()` / 39 `expect()`**; the shipped file is **19 `it()` / 53 `expect()`**. Every one of the seven additions is named and justified individually in
+[`2026-10-21-plan-1-task-3-test-declaration.md`](2026-10-21-plan-1-task-3-test-declaration.md): four cover `splitAnnexB` and `spsProfileLevelId`, which Step 8's import repoint requires, and three apply this task's own "transcribed from the crate" instruction to boundary cases the fence did not write out. Nothing was deleted, skipped, or weakened.
 
 **Two rulings this step produced when it ran, both worth carrying forward.**
 

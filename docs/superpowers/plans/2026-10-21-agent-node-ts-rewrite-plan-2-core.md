@@ -5054,8 +5054,13 @@ git add apps/agent/src/files apps/agent/test/files
 git commit -m "feat(agent): port the files protocol and transfer state machine"
 ```
 
-**TEST-INTEGRITY declaration:** two new test files, **29 new `it()` / 60 new
-`expect()`** (was 25/42 before the repair below). Ports 26 of `files.rs`'s 65
+**TEST-INTEGRITY declaration:** two new test files, **29 new `it()` / 59 new
+`expect()`** (was 25/42 before the repair below). 59 is the count with the
+fences' comments stripped; a naive token count returns 60 because
+`expect(FILES_IDLE_TIMEOUT_MS).toBe(FILES_IDLE_TIMEOUT_MS)` appears once — in a
+comment explaining why that assertion **cannot fail** in TypeScript and is
+therefore not written. Counting it would book an assertion the plan
+deliberately does not make. Ports 26 of `files.rs`'s 65
 tests — those covering the wire surface, the window, ack batching, resume
 alignment, cancel, idle, and the three `list_*` tests. The remaining **39** are
 either Rust-internal helpers (`rfc3339_formats_epoch_seconds_utc`,
