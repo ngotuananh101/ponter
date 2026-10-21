@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { STREAM_PROFILES, streamProfileById } from '../src/types/stream-profile';
+import {
+  STREAM_PROFILES,
+  streamProfileById,
+} from '../src/types/stream-profile';
 
 describe('the shared stream-profile table', () => {
   it('carries the four shipped presets', () => {
-    expect(STREAM_PROFILES.map((p) => p.id)).toEqual(['1080p30', '720p30', '1080p60', '720p60']);
+    expect(STREAM_PROFILES.map((p) => p.id)).toEqual([
+      '1080p30',
+      '720p30',
+      '1080p60',
+      '720p60',
+    ]);
   });
 
   it('gives each preset the profile-level-id openh264 actually emits for it', () => {
