@@ -21,7 +21,9 @@ the sender seam, the packetizer, the native addon, and the shared profile table.
 signalling core, the terminal, the files service, E2EE, and the desktop session
 orchestration belong to Plan 2; the native-only behaviours and the Rust retirement
 belong to Plan 3. Naming a row `Plan 2` is a correct assignment, not a gap. A gap is
-a row for which no plan is identified at all — those are called out in §4 below.
+a row for which no plan is identified at all — §4 below records the one that existed
+(B19, closed at `85b6974`) and the rows whose coverage is genuinely split or genuinely
+absent for an environmental reason.
 
 **Job 2 — TEST-INTEGRITY accounting.** Spec §8.1 fixes the baseline:
 
@@ -51,15 +53,19 @@ against **362**.
 | `apps/agent/src/files.rs` | 65 | Plan 2 |
 | `apps/agent/src/lib.rs` | 28 | Plan 1 (profile table, `:445-507`) + Plan 2 |
 | `apps/agent/src/cursor.rs` | 22 | Plan 2 (change detection, wire frame) + Plan 3 (X11 sampling) |
-| `apps/agent/src/api.rs` | 20 | Plan 2 — **but only 7 retire with R3**; see §2's R3 note |
+| `apps/agent/src/api.rs` | 20 | Plan 2 — **13 re-homed, 7 retire with R3**; see §2's R3 row and §6.2 |
 
-> **Correction to a number I first wrote here.** `api.rs` carries 20 tests, and it is
-> tempting to let R3 retire all 20. Seven of them exercise `ApiError`
-> (`from_response` ×11 call sites, `network` ×3, `is_auth_fatal` ×8), which has no
-> caller outside `api.rs` — that is the dead code R3 names. The other **13 test live
-> code**: eleven cover `to_ws_url` (called from `lib.rs:730`) and two cover
-> `with_bearer` (called from `signal.rs:353`). Those 13 must be re-homed to a TS test,
-> not retirable. R3's row in §2 says 7 for this reason.
+> **How this file splits.** `api.rs` carries 20 tests, and it is tempting to let R3
+> retire all 20. **Seven** of them exercise `ApiError` — `from_response` ×4,
+> `network` ×1, `is_auth_fatal` ×2 — which has no caller outside `api.rs`; that is the
+> dead code R3 names. The other **13 test live code**: eleven cover `to_ws_url` (called
+> from `lib.rs:730`) and two cover `with_bearer` (called from `signal.rs:353`). Those
+> 13 must be re-homed to a TS test, not retirable. 13 + 7 = 20.
+>
+> The `is_auth_fatal` pair is retired *after* being ported — its behaviour is live, and
+> Plan 2 Task 5 lands it before Plan 3 deletes the Rust. So "7 retire" and "the
+> auth-fatal pair must be ported first" are both true; see §6.2 for the full
+> derivation, and for why Plan 2's "12 re-homed / 8 retired" cannot be right.
 
 | `apps/agent/src/input.rs` | 19 | Plan 1 (`map_code`, addon) + Plan 2 (decoder, rate limiter) |
 | `apps/agent/src/desktop/warm_capture.rs` | 18 | Plan 2 |
@@ -140,9 +146,9 @@ yet, which is the expected state for every row that is not Plan 1's.
 | B14 | Capture → downscale → encode → RTP pipeline | Plan 2 (orchestration); Plan 1 lands the capture and encode halves | Not yet written — Plan 2 | Not yet written (halves covered) |
 | B15 | Even-dimension crop before encode | Plan 1, Task 4 | `apps/agent/test/native/fault-containment.test.ts` — the odd-source crop case | Covered |
 | B16 | SIMD box-filter downscale | Plan 1, Task 4 | `apps/agent/test/native/fault-containment.test.ts` — the downscale case reads the SPS frame size back | Covered |
-| B17 | H.264 encoder config (`ScreenContentRealTime`, `Bitrate` RC, `Complexity::Low`, AQ off, background detection off, bt709) | Plan 1, Task 4 | `apps/agent/test/native/smoke.test.ts` pins the profile, constraint byte and level the config resolves to | Partially covered (the SPS-visible half) |
+| B17 | H.264 encoder config (`ScreenContentRealTime`, `Bitrate` RC, `Complexity::Low`, AQ off, background detection off, bt709) | Plan 1, Task 4 | `apps/agent/test/native/smoke.test.ts` pins the three SPS-visible values; the **other five** are pinned by Task 4 Step 12's C++ `SEncParamExt` readback test | Covered across two layers (see §4.2) |
 | B18 | Dynamic GOP = `(fps × 2).round().max(1)` frames | Plan 2 | Not yet written — Plan 2 | Not yet written |
-| B19 | Bitrate retarget: raise sets `MAX_BITRATE` on `SPATIAL_LAYER_0` then `BITRATE` on `SPATIAL_LAYER_ALL`; lower needs only the latter | **None in Plan 1** — see §4 | None | **Gap — see §4.1** |
+| B19 | Bitrate retarget: raise sets `MAX_BITRATE` on `SPATIAL_LAYER_0` then `BITRATE` on `SPATIAL_LAYER_ALL`; lower needs only the latter | Plan 1, Task 4 | `apps/agent/test/native/smoke.test.ts` — `retargets the bitrate on a live handle` and `rejects setBitrate on an unknown handle`; the **call order** is pinned separately by the Step 12 C++ unit test | Covered (two layers — see §4.1) |
 | B20 | Bitrate clamp `[250 kbps, 20 Mbps]` | Plan 2 | Not yet written — Plan 2 | Not yet written |
 | B21 | Stream profiles 1080p30 / 720p30 / 1080p60 / 720p60 | Plan 1, Task 5 | `packages/shared/test/stream-profile.test.ts`; pinned from a gating package by `packages/api-client/test/agent-api-access-gate.test.ts`'s suite run | Covered (non-gating package — see §5) |
 | B22 | Static-frame skip: 4-lane FNV-1a hash, 1 s keepalive cap, reset on bitrate/source/profile change | Plan 2 | Not yet written — Plan 2 | Not yet written |
@@ -198,19 +204,21 @@ Plan 3, together with the deletion itself.
 |---|---|---|---|---|
 | R1 | The standalone CLI binary and its `clap` parser — desktop-only; the `AgentSupervisor` already passes configuration via environment variables | Plan 3 | The absence is asserted by the retirement sweep, not by a unit test | Not yet written — Plan 3 |
 | R2 | The musl / terminal-only build variant — no cross-compilation | Plan 3 | Asserted by the absence of the target in the build matrix | Not yet written — Plan 3 |
-| R3 | `apps/agent/src/api.rs`'s `ApiError` type — `from_response`, `network`, `is_auth_fatal` have **no caller outside `api.rs`**, and `packages/api-client` owns error classification in TS. **Retires 7 Rust tests, not 20** — the other 13 in that file cover `to_ws_url` and `with_bearer`, which are live | Plan 2 (the `ApiError` replacement at its call sites if one appears, and the re-homing of the 13 live tests) + Plan 3 (the deletion) | `packages/api-client/test/agent-api-access-gate.test.ts` asserts no hand-rolled envelope or HTTP client exists in the agent tree; the 13 live tests re-home to a Plan 2 `to_ws_url`/`with_bearer` suite | Partially covered (gate written in Plan 1 Task 5, exercised in Plan 2) |
+| R3 | `apps/agent/src/api.rs`'s `ApiError` type — `from_response`, `network`, `is_auth_fatal` have **no caller outside `api.rs`**, and `packages/api-client` owns error classification in TS. The file's **20** tests split three ways, not two: **13 re-homed** (`to_ws_url` ×11, `with_bearer` ×2 — both live), **2 ported then retired** (the `is_auth_fatal` pair, which Plan 2 Task 5 lands as `apps/agent/test/signalling/auth.test.ts`), **5 retired** (`from_response` ×4 and `network` ×1, whose behaviour `packages/api-client/src/errors.ts` already owns). See §6.2 | Plan 2 (the `is_auth_fatal` port and the re-homing of the 13 live tests) + Plan 3 (the deletion) | `packages/api-client/test/agent-api-access-gate.test.ts` asserts no hand-rolled envelope or HTTP client exists in the agent tree; the 13 live tests re-home to `packages/webrtc-core/test/url.test.ts` (`rewriteWsScheme`) and `apps/agent/test/signalling/upgrade.test.ts` | Partially covered (gate written in Plan 1 Task 5, exercised in Plan 2) |
 | R4 | `apps/agent/vendor/xcap` — superseded by the addon's capture; the `PATCH.md` rationale is carried into the addon's capture code as a comment | Plan 3 | The rationale comment is reviewed, not tested | Not yet written — Plan 3 |
 | R5 | The `QuietNoise` filter's Rust-crate-specific target names — replaced by equivalent TS filter names | Plan 2 (the TS filter) + Plan 3 (the retirement) | Not yet written — Plan 2 | Not yet written |
 | R6 | `build-agent.yml` and the agent GitHub Release — desktop-only | Plan 3 | The TypeScript equivalent of the workflow's boundary gate is `packages/api-client/test/agent-api-access-gate.test.ts` | Partially covered (the gate half, Plan 1 Task 5) |
 
 ## 3. Plan 1's rows, counted
 
-Plan 1 lands tests for **seven** B-rows outright and the mechanism for **four** more:
+Plan 1 lands tests for **nine** B-rows outright and the mechanism for **three** more:
 
 | Row | Plan 1 task | Test |
 |---|---|---|
 | `B15` | Task 4 | `fault-containment.test.ts` — odd-source crop |
 | `B16` | Task 4 | `fault-containment.test.ts` — downscale, SPS frame size read back |
+| `B17` | Task 4 | `smoke.test.ts` — profile, constraint byte, level; plus Step 12's C++ `SEncParamExt` readback for the five fields with no getter |
+| `B19` | Task 4 | `smoke.test.ts` — `retargets the bitrate on a live handle`; plus Step 12's C++ `SetOption` order test |
 | `B21` | Task 5 | `stream-profile.test.ts` |
 | `B25` | Task 4 | `smoke.test.ts` — Annex-B start code + SPS fields |
 | `B26` | Task 3 | `packetizer.test.ts` + literal conformance fixtures |
@@ -222,66 +230,94 @@ Partial (mechanism only, whole behaviour is Plan 2's):
 | Row | Plan 1 delivers | Plan 2 completes |
 |---|---|---|
 | `B12` | The `addTrack` seam that holds the pre-`setRemoteDescription` order | The agent's offer handler |
-| `B17` | The encoder config's SPS-visible half (profile, constraint, level) | The rate-control and complexity constants' behaviour under load |
 | `B27` | The R-S3 re-pointing mechanism | The agent's PT-selection function |
 | `B31` | The Linux input backend | The portal session lifetime |
 
 Plus three gate rows with no B-number: the spike's A1–A4 assertions (spec §9.3), the
 addon fault-containment gate (spec §9.2), and the two API-access gates (spec D13).
 
-## 4. Rows with no owning task — the honest gaps
+## 4. Rows that needed more than an assignment
 
-These are the rows where the assignment is not clean. They are listed here rather
-than buried in the table because a matrix that looks complete is worth less than one
-that names what it could not place.
+This section holds the rows where a bare "Plan N, task M" would have been misleading:
+the ones where the coverage is split across two layers, the one that had no owning
+task at all until the plan was amended, and the two divergences from the Rust agent
+that no row can express. They are listed here rather than buried in the table because
+a matrix that looks complete is worth less than one that names what it could not
+place.
 
-### 4.1 B19 — the bitrate-retarget path has no home anywhere
+### 4.1 B19 — closed in the plan at `85b6974`
 
-This is the one **real gap** in the whole matrix, and it is a Plan 1 defect rather
-than a Plan 2/Plan 3 boundary question.
+This was the one **real gap** in the matrix: the row named no owning task anywhere,
+and it was a Plan 1 defect rather than a Plan 2/Plan 3 boundary question. **It is
+now closed**, and this section records the closure rather than the gap, because a
+reader who finds a stale "there is no `applyBitrate`" here would conclude the
+opposite of what the plan says.
 
-Spec §4.2 B19 says the behaviour's port target is *"the native addon's
-`applyBitrate`"*. But Task 4's interface block — the addon's **entire** public
-surface, stated as such at the plan's line 1270 — is:
+Spec §4.2 B19 names the port target as *"the native addon's `applyBitrate`"*. Task 4's
+interface block — the addon's **entire** public surface, stated as such at the plan's
+line 1544 — is:
 
 ```
-platform, listSources, createEncoder, encode, destroyEncoder, injectInput, errorCodes
+platform, listSources, createEncoder, encode, setBitrate, destroyEncoder, injectInput, errorCodes
 ```
 
-There is **no `applyBitrate`**. So:
+`setBitrate` **is** there. Four things in the plan now carry it, and a reader should
+verify all four rather than trust this paragraph. **Every line number here is against
+the plan at `58e3312`, and they must be re-derived rather than reused:** applying the
+audit shifted the plan's interior by +41 lines at the `setBitrate` sites and by +251
+at the Task 4 interface block (the file went 2887 → 2950 lines), so a citation copied
+from any earlier revision of this matrix will point at the wrong place.
 
-- Plan 1 does not land it, because Task 4 never declares it;
-- Plan 2 cannot land it, because B19's two-step option order
-  (`ENCODER_OPTION_MAX_BITRATE` on `SPATIAL_LAYER_0` **first**, then
-  `ENCODER_OPTION_BITRATE` on `SPATIAL_LAYER_ALL`; lower needs only the latter) lives
-  inside the openh264 encoder handle, which is the addon's;
-- Plan 3 does not land it, because Plan 3 is native-only behaviours and retirement.
+| Site | What it says |
+|---|---|
+| Plan line 1544 | `setBitrate(handle: number, bps: number): Promise<void>` in `interface NativeAddon`, inside the block stated as the addon's entire public surface |
+| Plan lines 1743 / 1745 | the smoke test's raise then lower, on a live handle seeded with one `encode()` call |
+| Plan line 2297 | the worker-thread implementation note: `MAX_BITRATE` on `SPATIAL_LAYER_0` **first**, then `BITRATE` on `SPATIAL_LAYER_ALL`; lower issues only the second |
+| Plan lines 2613 / 2614 | the Step 12 C++ unit test asserting the raise's **two-call order** and the lower's **one-call shape** against a stubbed `SetOption` |
 
-**Consequence if unfixed:** the port ships without dynamic bitrate retargeting. That
-is B62's `StreamControl::SetBitrate` arriving with nowhere to go — the control frame
-is parsed and discarded. It is exactly the silent-drop class this matrix exists to
-catch, and no test anywhere in the three plans would fail.
+The split matters: the TS smoke test proves the export exists, works on a live handle,
+and leaves the encoder usable, but it **cannot** see the two-call order or the layer
+arguments — openh264 exposes no getter for them. The order is asserted only at the C++
+level. Plan text says this explicitly at line 1766, and both tests must be kept: they
+observe different things.
 
-**Proposed fix, before Plan 1's Task 4 is dispatched:** add
-`setBitrate(handle: number, bps: number): Promise<void>` to the addon's
-`index.d.ts` and to `NativeAddon`, add the corresponding entry point in `encoder.cc`
-implementing the two-step option order, and add a test to
-`apps/agent/native/test/` that asserts the option order against a fake encoder
-handle. The behaviour is `desktop.rs:1893-1922` and is a pure sequence of two API
-calls, so it is unit-testable without a live encoder.
+Why Plan 2 could never have absorbed it: the two-step option order lives inside the
+openh264 encoder handle, which is the addon's. Plan 3 is native-only behaviours and
+retirement, so it was never a candidate either.
+
+**Consequence had it stayed unfixed:** the port would ship without dynamic bitrate
+retargeting — B62's `StreamControl::SetBitrate` arriving with nowhere to go, the
+control frame parsed and discarded, and no test in any of the three plans failing. That
+is the silent-drop class this matrix exists to catch.
 
 ### 4.2 B17 — the config is only half visible from outside
 
-B17 lists seven configuration constants. Task 4's smoke test can only observe the
-three that reach the SPS (`profile_idc`, the constraint byte, `level_idc`); the other
-four (`ScreenContentRealTime` usage type, `Bitrate` rate control, `Complexity::Low`,
-adaptive quantization off, background detection off, bt709 VUI) are internal
-openh264 state with no getter — the same wall Task 4 hits for profile and level
-(plan line 1826: `GetBaseParams` returns no profile, no level; `GetOption` has no
-`ENCODER_OPTION_PROFILE`). The matrix marks B17 **partially covered** rather than
-covered for this reason. It is not a gap in ownership — it is a gap in observability,
-and the honest fix is a C++-level test in `apps/agent/native/test/` that reads the
-configured `SEncParamExt` back before `Initialize`, not a black-box assertion.
+B17 names **nine** configuration fields, and the plan's own table (line 2273) marks
+which are observable. **Five** of the nine are internal openh264 state with no getter:
+`usageType` (`SCREEN_CONTENT_REAL_TIME`), `iComplexityMode` (`LOW_COMPLEXITY`),
+`bEnableAdaptiveQuant` (`false`), `bEnableBackgroundDetection` (`false`) and
+`sVuiParam` (`bt709`). The other **four** are observable: `iRCMode` and
+`iTargetBitrate` and `fMaxFrameRate` through `GetBaseParams()`, and `uiIntraPeriod`
+only indirectly, through IDR cadence.
+
+The same wall is why profile and level must come from SPS parsing rather than the
+encoder API (plan line 2261: `GetBaseParams` returns `iUsageType`, `iPicWidth`,
+`iPicHeight`, `iTargetBitrate`, `iRCMode`, `fMaxFrameRate` — **no profile, no level**;
+line 2262: `GetOption` has no `ENCODER_OPTION_PROFILE` and no `ENCODER_OPTION_LEVEL`
+case, only `SetOption` has them).
+
+So the row is covered in **two layers**, and neither alone is coverage:
+
+- `apps/agent/test/native/smoke.test.ts` pins the three values that reach the SPS
+  (`profile_idc`, the constraint byte, `level_idc`);
+- Task 4 Step 12's C++ test builds the `SEncParamExt` through the create call's own
+  code path and asserts the struct's fields **before** `Initialize` — which is the
+  only way to see the five. It is a pure function over a struct: no encoder, no frame,
+  no GPU.
+
+This is not a gap in ownership — it was a gap in observability that the plan closed at
+`85b6974` by adding the Step 12 test. A TypeScript assertion that claimed to observe
+the five would be pretending.
 
 ### 4.3 B31 and B33 — native backends tested only at the pure-function layer
 
@@ -299,6 +335,69 @@ lands and tests the werift mechanism (`addTrack` before `setRemoteDescription`;
 `selectNegotiatedCodec` re-pointing), and Plan 2 owns the agent code that *uses* it.
 Recording the partial state is the point — a reader who saw "Covered" here would
 assume the agent's own handler is tested, and it is not.
+
+### 4.5 B26's one deliberate divergence — the STAP-A flush
+
+Plan 1 line 1212 calls the flush "the only intentional behaviour difference from the
+Rust agent in the whole packetizer" and says *"Task 6's coverage matrix grades which
+Rust test each TS test replaces; it does not carry per-behaviour divergence records."*
+That sentence is now false: this is the record.
+
+**The divergence.** When an access unit ends while an SPS/PPS pair is still cached and
+no third NAL arrived, the Rust payloader (`rtc-rtp-0.21.0/src/codec/h264/mod.rs:93-107`)
+emits **nothing** — the parameter sets are dropped. The TypeScript packetizer
+**flushes** the pair as a STAP-A at the end of the access unit.
+
+**Why it is safe.** A STAP-A carrying only parameter sets is valid RFC 6184 and every
+browser accepts it. In the normal path openh264 emits SPS, PPS and the IDR in one
+access unit, so the flush never fires and the divergence is invisible in production.
+It changes the pathological case from "silently lose the parameter sets" — after which
+the browser cannot decode anything until the next IDR — to "send them".
+
+**Where it is pinned.** `apps/agent/test/session/packetizer.test.ts`, the
+`flushes a pending SPS/PPS pair as a STAP-A when the access unit ends` case (plan line
+1293). B26's row above carries the generic claim; that test carries the divergence.
+
+**Why this is not a new B-row.** The plan's own Task 6 gate counts
+`grep -c '^| B[0-9]'` and expects exactly **62**. A row labelled `B26a` matches that
+pattern and would break the gate to 63 for a behaviour the spec's §4 does not have a
+number for. The divergence belongs to B26's behaviour, so it is recorded here and in
+the row's own prose, not as a new row.
+
+### 4.6 The preset → level table — what B17 and B25 pin, and what they do not
+
+Three separate places pin pieces of the SPS the encoder writes, and none of them
+should be read as covering the fourth. This table is the record the plan's line 2267
+points at ("the preset-level table is Step 1 of this task"):
+
+| Preset | Computed level | SPS `profile-level-id` | `level_idc` byte |
+|---|---|---|---|
+| 1080p30 @ 6 Mbps | 4.0 | `42c028` | `0x28` |
+| 720p30 @ 4 Mbps | 3.1 | `42c01f` | `0x1f` |
+| 1080p60 @ 8 Mbps | 4.2 | `42c02a` | `0x2a` |
+| 720p60 @ 5 Mbps | 3.2 | `42c020` | `0x20` |
+
+Sources: spec §3.3 (`:253-258`) for the values, openh264's `g_ksLevelLimits`
+(`codec/common/src/common_tables.cpp:345-367`, **17** levels, 1.0 through 5.2) for how
+`WelsGetLevelIdc` derives them at `codec/encoder/core/src/au_set.cpp:187-193`.
+
+Where each is asserted:
+
+| What | Test | Strength |
+|---|---|---|
+| The four preset ids and their resolutions | `packages/shared/test/stream-profile.test.ts` (Plan 1 Task 5) | covered, non-gating package — see §5 |
+| The four `profileLevelId` strings | the same file, `gives each preset the profile-level-id openh264 actually emits for it` (plan line 2693) | covered, non-gating |
+| `level_idc > 0` on a live encode | `apps/agent/test/native/smoke.test.ts` | weak by design — it proves the byte is written, not that it is the right level |
+| The exact `profile_idc` / constraint byte | the same test (plan lines 1724-1725: `profileIdc === 66`, `constraintByte === 0xc0`) | covered |
+
+**The gap this table exists to name:** nothing asserts a specific preset's *level byte*
+end-to-end through the addon. The `\*\*42c028\*\*`-class values are pinned in
+`@ponter/shared` and in the profile-parity test, but the addon's smoke test accepts any
+`levelIdc > 0`. A regression that computed 4.0 where 4.2 was required would pass the
+smoke test and fail only the shared table's own unit test — which is in a
+`continue-on-error` package and cannot fail the build. Plan 3's desktop integration is
+where an end-to-end assertion can live; until then, do not read B25's "covered" as
+covering the level byte's *value*.
 
 ## 5. A caveat about how rows are counted as covered
 
@@ -353,13 +452,42 @@ signalling URL rewrite (`lib.rs:730`). `packages/api-client` owns this concern i
 This is a spec edit, not a matrix edit. It is listed here because the matrix is what
 sent a reader to that row.
 
-### 6.2 R3's retry count was wrong, and my own first draft repeated it
+### 6.2 R3's retry count was wrong twice, and the second correction is still wrong
 
-The spec does not state a test count for R3; the matrix's first draft claimed 20,
-which is `api.rs`'s total test count. It is 7. §2's R3 row now carries the correct
-number and the reason. The accounting consequence matters more than the number: **13
-tests in `api.rs` cover live code and must be re-homed, not retired** — they are not
-part of R3's budget, and Plan 3 must not delete them along with the file.
+The spec does not state a test count for R3. This file's first draft claimed 20,
+which is `api.rs`'s total test count — obviously wrong, since R3 retires only the
+`ApiError` half.
+
+**The split, re-derived from the tree at `acf6d05`** (20 tests, `grep -c '#\[test\]'
+apps/agent/src/api.rs`):
+
+| Group | Tests | Live? | Where it goes |
+|---|---|---|---|
+| `to_ws_url` | **11** | yes — called from `lib.rs:730` | re-homed to `rewriteWsScheme` (Plan 2 Task 2) |
+| `with_bearer` | **2** | yes — called from `signal.rs:353` | re-homed to `buildUpgradeHeaders` (Plan 2 Task 2) |
+| `is_auth_fatal` | **2** | yes, the behaviour | ported to `apps/agent/test/signalling/auth.test.ts` (Plan 2 Task 5); the Rust tests then retire with the file |
+| `ApiError::from_response` | **4** | no — no caller outside `api.rs` | retired; `packages/api-client/src/errors.ts#fromResponse` owns the behaviour |
+| `ApiError::network` | **1** | no | retired; `client.ts:103-110` owns the transport-failure branch |
+
+That is **13 re-homed / 2 ported-then-retired / 5 retired**, and 13 + 2 + 5 = **20**.
+
+**Plan 2's corrections block states "12 re-homed / 8 retired" and its own enumeration
+does not produce either number.** It lists the 12 live as "10 `to_ws_url` (8 named +
+`trims_trailing_slashes` + `the_cli_default_normalizes_to_itself`), 2 `with_bearer`, 2
+auth-fatal classification". Two defects in one sentence: `to_ws_url` carries **11**
+tests, not 10 (the enumeration names 10 of them and omits
+`preserves_a_ws_query_value_ending_in_slash` or its siblings depending on how you
+count the "8 named"); and 10 + 2 + 2 = **14**, which contradicts the "12" the same
+sentence opens with. No partition of 20 into {`to_ws_url`, `with_bearer`,
+`from_response`, `network`, `is_auth_fatal`} yields a live count of 12: 11 + 2 = 13
+already exceeds it.
+
+So **this file's original 13/7 was right** and both corrections chasing it were
+wrong. The distinction worth keeping from Plan 2's version is that the auth-fatal pair
+is *live behaviour* that must be ported before its Rust test retires — a real point,
+and the reason the table above is three-way rather than two-way. Recorded here rather
+than in §2 alone because a count that has now been "corrected" twice in opposite
+directions needs its derivation on the page.
 
 ## 7. How to extend this matrix
 
