@@ -64,23 +64,44 @@ with Files / Interfaces / steps before this plan is executable.
 - The retirement is only honest if the replacement gate exists **in the same
   commit** that deletes the workflow. Two commits, and there is a window where
   neither gate runs.
-- **The model gate's own guard has a precondition this task must satisfy, and
-  the model is not the whole guard.** `api-access-gate.test.ts:95` asserts
-  `collect().length > 0` — a positive control against a walker that silently
-  returns nothing. `collect()` walks `<root>/<pkg>/src/**` (`:47` its
-  docstring, `:48` the function, `:50` the loop) over
-  `SCAN_ROOTS = ['apps', 'packages']` (`:24`),
-  so today it is satisfied by the other eleven source-bearing
-  packages and would stay green even if the agent contributed nothing.
-  `apps/agent/src` currently holds exactly **one** `.ts` file
-  (`session/packetizer.ts`). An agent-side gate therefore needs two things the
-  model gate does not: a control scoped to the agent's own roots, and that
-  control stated together with the precondition under which it is meaningful —
-  the count must be taken *after* the agent's TypeScript source has landed, and
-  R6's deletions (`vendor/`, `target/`, the `.rs` tree) change what the walker
-  sees. A control that cannot fail is the vacuous green this plan exists to
-  avoid, and a control whose precondition the executor has to guess is a
-  green-or-setup-question, not a gate.
+- **The model gate's guard cannot fail on the agent's behalf, and the agent
+  gate we already shipped has an assertion that guards nothing.** Two separate
+  defects, and T2 must not inherit either.
+  - *The model gate.* `api-access-gate.test.ts:95` asserts
+    `collect().length > 0`. `collect()` (`:48`) iterates
+    `SCAN_ROOTS = ['apps', 'packages']` (`:24`) and calls `walk(srcDir, out)`
+    (`:60`); `walk` (`:66`) does `readdirSync(dir)` inside `try` with
+    `catch { return; }` (`:70-71`), and `collect` itself has
+    `catch { continue; }` (`:55-56`) around the *root* listing. So an absent
+    `apps/agent/src` is silently skipped exactly like a package that legitimately
+    has no `src`. There is no arrangement of the tree in which `collect()`
+    returns zero *because* the agent is missing — the guard is satisfied by any
+    one of the other eleven source-bearing packages (`for r in apps packages; do
+    for p in $r/*/src; done; done` → 12 directories, one of them the agent's).
+  - *The agent gate.* `agent-api-access-gate.test.ts:59` asserts
+    `files.every((f) => f.endsWith('.ts'))`. It cannot fail: `walk` (`:35`)
+    pushes only `full.endsWith('.ts')`, so the list is `.ts`-only by
+    construction and `every` restates the filter that produced it. Measured at
+    this SHA: `walk(AGENT_SRC)` returns 1 file and `every` is `true`, while
+    `apps/agent/src` holds 20 `.rs` files that the `.rs` filter removes before
+    the assertion ever sees them. The live guard in that file is `:58`'s
+    `files.length > 0` alone — and `walk` (`:32`) has **no** `try`, so it throws
+    on a missing directory, which is the property actually doing the work.
+  - *What T2 must therefore assert.* A control that fails when the walker sees
+    the wrong roots — not one that restates the walker's own filter. Concretely:
+    the governed set must differ from the walked set by at least one file once
+    the sanctioned `api/` module exists (`governed()` currently equals
+    `walk()` because `api/` does not exist yet, so the three scans are
+    boundary-less today and become boundary-bearing the moment it lands), and
+    the walked set must be pinned to a **count taken at the SHA** rather than
+    "greater than zero", since R6's `.rs` deletions and the port's TS additions
+    move that count without moving the guarantee.
+  - *The precondition, stated so the executor does not have to guess it.* The
+    count is only meaningful after the agent's TypeScript source has landed;
+    before that it is 1, and a `> 0` control passes on a tree that is 20 `.rs`
+    files and one `.ts` file. A control that cannot fail is the vacuous green
+    this plan exists to avoid, and a control whose precondition is unstated is a
+    green-or-setup-question, not a gate.
 
 ### T3. `ci-node.yml`: add `apps/agent/**` to `paths:` AND remove the three filters — one change, both halves
 
