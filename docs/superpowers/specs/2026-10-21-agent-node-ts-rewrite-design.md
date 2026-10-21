@@ -310,7 +310,7 @@ produces a connection that negotiates fine and displays nothing.
 | `@ponter/shared` | `SignalMessage`, `IceServerConfig`, `DataChannelMessage`, `TerminalDataMessage`, `FilesErrorCode`, `canonicalProofMessage`, `normalizeFingerprint`, `parseSdpFingerprint`, `AgentErrorCode`, `BrowserErrorCode` | None — the Rust agent's types are hand-copies of these. The port deletes the copies. |
 | `@ponter/crypto` | `EncryptionManager`, `deriveSharedSecret`, `hkdfSha256`, `importAesGcmKey`, `aesGcmEncrypt/Decrypt` | None for the E2EE session key. The IndexedDB-backed `savePrivateKey`/`loadPrivateKey` are **not** used; the agent keeps its own Ed25519 PKCS#8 file (C7). |
 | `@ponter/webrtc-core` | `PeerConnection`, `RTCPeerConnectionLike`, `DataChannelManager`, `toWsUrl`, `stripTrailingSlashes`, `ReconnectBackoff` | `WeriftAdapter` must **gain** sender support. Today it has **no `addTrack` at all** — only `addTransceiver` and `onTrack`, both receive-only (`packages/webrtc-core/src/adapters/werift.ts:201`, `:208`; `packages/webrtc-core/src/types.ts:20-52`). The port adds `addTrack` to **both** `RTCPeerConnectionLike` and `WeriftAdapter`, plus a way to reach werift's `MediaStreamTrack.writeRtp` (D3, D4). |
-| `@ponter/api-client` | `createApiClient` | The agent has no HTTP surface today (its `api.rs` HTTP layer is dead code — the wire report §5.4). Not used at first; available if a future agent API is needed. |
+| `@ponter/api-client` | `createApiClient` | The agent has no HTTP surface today — `api.rs`'s `ApiError`/`from_response`/`network`/`is_auth_fatal` are dead code with no caller outside that file (see R3, §4.7). Not used at first; available if a future agent API is needed. |
 | `@ponter/shared` (crypto side) | `e2ee-vectors.json` (`packages/crypto/test/vectors/`) | The agent's E2EE tests consume these vectors — the Rust agent already does (`apps/agent/src/e2ee.rs:246-254`). The port keeps that. |
 
 ### 3.5 The `PeerConnection` inversion
@@ -652,10 +652,24 @@ explicitly.
 |---|---|---|
 | R1 | The standalone CLI binary and its `clap` argument parser | Desktop-only (§6.2). The `AgentSupervisor` already passes configuration via environment variables, so no CLI surface is needed. |
 | R2 | The musl / terminal-only build variant | No cross-compilation (§6.2). |
-| R3 | `apps/agent/src/api.rs`'s HTTP error-mapping layer | Dead code — the agent has no HTTP client (wire report §5.4). `packages/api-client` owns this concern in TS. |
+| R3 | `api.rs`'s `ApiError::from_response` / `network` / `is_auth_fatal` — the HTTP error-mapping layer, **and only that** | Dead code — no caller outside `api.rs` itself; the agent has no HTTP client. `packages/api-client` owns this concern in TS. **This row retires 7 of `api.rs`'s 20 tests, not 20.** The other 13 cover two live helpers that must be re-homed, not deleted: `to_ws_url` (11 tests, called from `lib.rs:730`) and `with_bearer` (2 tests, called from `signal.rs:353`). See the note beneath this table. |
 | R4 | `apps/agent/vendor/xcap` (the Rust fork with the PipeWire lifetime fix) | Superseded by the native addon's capture implementation. The fork's `PATCH.md` rationale must be carried into the addon's capture code as a comment. |
 | R5 | The `QuietNoise` filter's Rust-crate-specific target names | Replaced by equivalent TS filter names (§4.5 B54). |
 | R6 | `build-agent.yml` and the agent GitHub Release | Desktop-only (§6.2). |
+
+**R3 does not retire `api.rs` as a file.** The module holds three things and only the first is dead:
+
+| Item | Tests | Caller | Disposition |
+|---|---|---|---|
+| `ApiError::from_response`, `network`, `is_auth_fatal` | 7 | none outside `api.rs` | **Retired** (R3) |
+| `to_ws_url` | 11 | `lib.rs:730`, before the signalling connect | **Re-homed** — see below |
+| `with_bearer` | 2 | `signal.rs:353`, on the WS upgrade request | **Re-homed** — see below |
+
+Deleting `api.rs` as a unit on R3's authority would take thirteen covered behaviours with it and the §8.1 accounting would silently drop them. Plan 3's Rust removal must keep `to_ws_url` and `with_bearer` alive in TypeScript before it deletes the module.
+
+**Where the 13 land.** `@ponter/webrtc-core/src/url.ts` already exports `toWsUrl` and `stripTrailingSlashes` (§3.4), so the URL half is a **reuse**, not a port — but the two implementations are **not** equivalent and the difference is a behaviour, not an implementation detail: the Rust `to_ws_url` preserves a `?`/`#` suffix that the TS `toWsUrl` drops. The Rust tests pin that (`preserves_a_ws_query_value_ending_in_slash`, `preserves_a_fragment_suffix_unchanged`, `trims_a_path_slash_before_the_query_without_altering_it`). Plan 2 must decide which behaviour the agent needs and pin it; silently adopting the TS helper changes what `AGENT_SERVER` values are accepted. `with_bearer` has no TS equivalent and is a small, direct port.
+
+**Correction note.** An earlier draft of this row cited a "wire report §5.4", and §3.4's `@ponter/api-client` row cited the same. No such document was ever committed — it was a session scratch file. The claim those rows make is independently true (verified: no caller outside `api.rs` references `ApiError`, `from_response`, `network`, or `is_auth_fatal`), so the citation is replaced rather than the claim retracted. This row also narrows the scope, which the earlier wording overstated.
 
 ---
 
