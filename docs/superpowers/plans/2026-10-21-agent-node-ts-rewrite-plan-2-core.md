@@ -7869,7 +7869,12 @@ Before this plan's work can be called done, the coverage matrix must record:
   in this plan's corrections block; the matrix's §6.2 carries the same derivation.
 - **B19 has no home here** — `applyBitrate` lives in Plan 1 Task 4's addon. If it
   did not land there, it is a Plan 3 gap.
-- **New R-entry: six retired noise rules** (above).
+- **New R-entry: ten noise rules recorded, none ported** (above). Not "six
+  retired": the retirement note accounts for all ten of `logging.rs:26-101` and
+  concludes Task 1's `NOISE` table **ships empty**, because every rule names a
+  Rust crate target and the TypeScript stack is werift. What the R-entry records
+  is the *rationale* each rule encodes, and the two live concerns it keeps
+  findable (the loopback STUN write, #8, and coturn's 403 SSRF guard, #9).
 - **New R-entry: `files-download-chunk` as a JSON outbound type** — dropped, never
   emitted by the Rust and therefore unobservable to any browser.
 - **Plan-quality declarations corrected:** `desktop-profile-parity.test.ts` is
