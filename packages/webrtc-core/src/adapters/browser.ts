@@ -1,6 +1,7 @@
 import type {
   RTCPeerConnectionLike,
   RTCDataChannelLike,
+  RTCRtpSenderLike,
   MediaStreamLike,
   MediaStreamTrackLike,
 } from '../types';
@@ -47,6 +48,39 @@ class BrowserDataChannel implements RTCDataChannelLike {
     this.dc.addEventListener('close', fire);
     this.dc.addEventListener('error', fire);
   }
+}
+
+/**
+ * Wrap a browser `RTCRtpSender` in the seam's read-only handle.
+ *
+ * A browser sender exposes its codec through `getParameters().codecs`, not a
+ * `codec` field, and it chooses that codec itself — so both mutating methods
+ * throw rather than pretend. `writeRtp` throwing matters most: a silent no-op
+ * here would look like a stream that simply never produced frames.
+ */
+function wrapBrowserSender(sender: RTCRtpSender): RTCRtpSenderLike {
+  return {
+    get codec() {
+      // The FIRST entry is the one the browser will send with.
+      const codec = sender.getParameters().codecs?.[0];
+      if (!codec) return undefined;
+      return {
+        mimeType: codec.mimeType,
+        payloadType: codec.payloadType,
+        ...(codec.sdpFmtpLine ? { parameters: codec.sdpFmtpLine } : {}),
+      };
+    },
+    selectNegotiatedCodec(): void {
+      throw new Error(
+        'BrowserPeerConnection sender.selectNegotiatedCodec is not supported: a browser sender chooses its own codec from the negotiated set.',
+      );
+    },
+    writeRtp(): void {
+      throw new Error(
+        'BrowserPeerConnection sender.writeRtp is not supported: a browser sender takes a MediaStreamTrack, not RTP packets.',
+      );
+    },
+  };
 }
 
 export class BrowserAdapter implements RTCPeerConnectionLike {
@@ -174,6 +208,31 @@ export class BrowserAdapter implements RTCPeerConnectionLike {
 
   getVideoReceiver(): RTCRtpReceiver | undefined {
     return this.pc.getReceivers().find((r) => r.track?.kind === 'video');
+  }
+
+  /**
+   * Attach a browser `MediaStreamTrack` and return a sender handle.
+   *
+   * The browser owns the encoder, the payload type and the RTP clock, so the
+   * handle is read-only apart from `codec`: `writeRtp` and
+   * `selectNegotiatedCodec` both throw rather than pretend. A browser sender
+   * takes a `MediaStreamTrack`, never RTP packets, and the negotiated codec is
+   * the browser's choice, not the caller's.
+   */
+  addTrack(
+    track: MediaStreamTrackLike,
+    stream?: MediaStreamLike,
+  ): RTCRtpSenderLike {
+    const browserTrack = track as unknown as MediaStreamTrack;
+    const browserStream = stream as unknown as MediaStream | undefined;
+    return wrapBrowserSender(
+      this.pc.addTrack(browserTrack, ...(browserStream ? [browserStream] : [])),
+    );
+  }
+
+  /** The senders this peer holds, in transceiver order. */
+  getSenders(): RTCRtpSenderLike[] {
+    return this.pc.getSenders().map(wrapBrowserSender);
   }
 
   async close(): Promise<void> {

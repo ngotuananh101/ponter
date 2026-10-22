@@ -4,11 +4,22 @@ name: CI (Node)
 # Node/TypeScript test suites.
 #
 # Split out of the old monolithic `ci.yml` so that a push only runs the work
-# that its changes actually affect. The Rust agent is deliberately EXCLUDED
-# here — it is fmt/clippy/check/test'd by `build-agent.yml` (which is
-# path-filtered on `apps/agent/**`), so building it on every Node-only push was
-# pure waste. The turbo `--filter='!@ponter/agent'` below keeps `pnpm lint` /
-# `pnpm typecheck` from invoking cargo (which this job no longer installs).
+# that its changes actually affect. The agent at `apps/agent` is deliberately
+# EXCLUDED here by the turbo `--filter='!@ponter/agent-node'` below.
+#
+# Two reasons, and only the second is permanent:
+#   1. `paths:` does not list `apps/agent/**`, so a branch that touches only the
+#      agent never reaches this job anyway. The exclusion makes that explicit.
+#   2. The directory holds BOTH the Rust crate — gated by `build-agent.yml` —
+#      and the `@ponter/agent-node` TypeScript package, which is not gated yet.
+#      When Plan 3 adds `apps/agent/**` to `paths:`, the filter is what keeps
+#      the not-yet-gating package out of a job that runs on unrelated pushes.
+#
+# The filter names the agent's CURRENT package name. Turbo treats a filter that
+# matches no package as a fatal error, not an empty selection, so renaming
+# `apps/agent/package.json` without updating these filters aborts the whole
+# workspace verify step — every Node push, not only an agent one. Keep all three
+# in step with that manifest.
 
 on:
   push:
@@ -66,14 +77,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # `!@ponter/agent` excludes the Rust crate: its lint/typecheck scripts
-      # shell out to cargo, and this job has no Rust toolchain. The agent is
-      # verified by build-agent.yml instead.
+      # `!@ponter/agent-node` excludes the agent's TS package: it is not gating
+      # yet, and `apps/agent/**` is absent from `paths:` (see the header note).
       - name: Lint workspace
-        run: pnpm exec turbo run lint --filter='!@ponter/agent'
+        run: pnpm exec turbo run lint --filter='!@ponter/agent-node'
 
       - name: Typecheck workspace
-        run: pnpm exec turbo run typecheck --filter='!@ponter/agent'
+        run: pnpm exec turbo run typecheck --filter='!@ponter/agent-node'
 
       - name: Check code formatting
         run: pnpm format:check
@@ -81,8 +91,8 @@ jobs:
       # Run every Node/TypeScript test suite through turbo, so the CI log and
       # exit code cover the whole workspace rather than a hand-picked few.
       #
-      # `!@ponter/agent` drops the Rust crate (its `test` script shells out to
-      # cargo, and this job has no Rust toolchain — `build-agent.yml` owns it).
+      # `!@ponter/agent-node` drops the agent's TS package, which is not gating
+      # yet (see the header note).
       # `!@ponter/web` and `!@ponter/shared` are excluded here only because
       # they are non-gating: their steps below keep the `continue-on-error:
       # true` behaviour they have always had, and turbo has no per-package
@@ -95,7 +105,7 @@ jobs:
       - name: Run Node test suites
         run: >-
           pnpm exec turbo run test
-          --filter='!@ponter/agent'
+          --filter='!@ponter/agent-node'
           --filter='!@ponter/web'
           --filter='!@ponter/shared'
           --continue=always

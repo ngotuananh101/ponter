@@ -13,10 +13,10 @@ Run the same gates CI runs:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm exec turbo run lint --filter='!@ponter/agent'
-pnpm exec turbo run typecheck --filter='!@ponter/agent'
+pnpm exec turbo run lint --filter='!@ponter/agent-node'
+pnpm exec turbo run typecheck --filter='!@ponter/agent-node'
 pnpm format:check
-pnpm exec turbo run test --filter='!@ponter/agent'
+pnpm exec turbo run test --filter='!@ponter/agent-node'
 ```
 
 For the Rust agent:

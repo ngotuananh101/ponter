@@ -1,4 +1,6 @@
 export * from './terminal.js';
+export { STREAM_PROFILES, streamProfileById } from './stream-profile.js';
+export type { StreamProfile } from './stream-profile.js';
 export type {
   DeviceType,
   User,

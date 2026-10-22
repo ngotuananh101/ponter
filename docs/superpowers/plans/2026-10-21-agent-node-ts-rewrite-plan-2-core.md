@@ -1,0 +1,8254 @@
+# Agent Node/TypeScript Rewrite — Plan 2: The TypeScript Core
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Port the Rust agent's runtime behaviour — signalling, identity, E2EE, terminal, files, input, and the desktop session — into `apps/agent` as TypeScript, suite by suite, so that every row of the behavioural-parity matrix that Plan 1 did not own is proven by a test in this tree.
+
+**Architecture:** One Node ESM package (`@ponter/agent-node`) whose `src/` mirrors the service boundaries the Rust tree already had. Every module is a pure function or a narrow class with its dependencies passed in; sockets, PTYs, encoders and clocks arrive through interfaces so each file is testable without a live peer, a live pty or a real display. The heavy primitives (E2EE crypto, stream profiles, message types, error codes) are **imported** from `@ponter/shared`, `@ponter/crypto`, `@ponter/webrtc-core` and `@ponter/api-client`, never re-implemented — the reuse map in the spec §3.4 is the authority on which package owns what.
+
+**Tech Stack:** Node.js 24, TypeScript (ESM), werift 0.24.4, `ws`, `node-pty`, `@ponter/{shared,crypto,webrtc-core,api-client}`, `@ponter/agent-native` (Plan 1 Task 4), Vitest.
+
+**Spec:** `docs/superpowers/specs/2026-10-21-agent-node-ts-rewrite-design.md` — §3.3 (packetizer placement), §3.4 (reuse map), §3.5 (the `PeerConnection` inversion, R-S1…R-S4), §4.1–§4.6 (the behaviour inventory), §4.7 (retirements), §6.1 (package layout), §8 (P3–P5), §8.1 (TEST-INTEGRITY), §9.1 (the wire-contract gate), §9.4 (the behavioural-parity gate), §11.1 (Q1–Q5).
+
+**Plan series:** Plan 1 (spike, foundations, the N-API addon) → **Plan 2 (this file — the TS core)** → Plan 3 (desktop integration, Rust retirement, CI, docs). Plan 1 is a hard prerequisite. Plan 2 must land before Plan 3; they must not run in parallel.
+
+**Coverage matrix:** `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md` is the row inventory. Plan 2 owns **49 B-rows**: B1–B14, B18, B20, B22–B24, B27–B30, B34, B36–B56, B58, B59, B61, B62. (An earlier draft said 38; the enumerated list has always summed to 49, and the matrix's Plan-2 rows are exactly those 49 — the figure was carried, never counted. Same defect shape as the R3 split, which was corrected for the same reason.) B19 has no home in any plan (coverage-matrix §4.1 — the two-step option order lives in the addon); Plan 2 owns the *clamp* (B20) and the *decode* (B62) around it, not `applyBitrate`.
+
+---
+
+## Global Constraints
+
+These apply to every task. Most are copied verbatim from the spec; the ones marked **(P2)** are Plan-2-specific consequences established while writing this plan.
+
+- **No Rust fallback.** Nothing here may depend on `cargo`, `apps/agent/target/`, or the Rust binary. The Rust tree stays on disk until Plan 3 and is read as **reference only**.
+- **All code, identifiers, comments, commit messages and documentation are in English.** Zero Vietnamese characters in any diff.
+- **Commit attribution:** author is `Ngo Tuan Anh <ngotuananh2101@gmail.com>`. **Never** add a `Co-authored-by` trailer of any kind.
+- **No credentials in process lists (ADR-13).** Config is env-var-only. The credential travels in the `Authorization` upgrade header and **never** in a URL, a log line, or a frame. The env-var names (`AGENT_ID`, `AGENT_SERVER`, `AGENT_CREDENTIAL`, `STUN_SERVER`, `AGENT_ALLOW_INPUT`, `AGENT_FILES_ROOT`, `AGENT_IDENTITY_PATH`, `AGENT_DESKTOP_PROFILE`, `AGENT_DESKTOP_DEFAULT_SOURCE`, `AGENT_DESKTOP_SOURCE`, `AGENT_DESKTOP_SELECT_TIMEOUT_MS`, `AGENT_DESKTOP_POLL_INTERVAL_MS`, `AGENT_SHELL`, `RUST_LOG`) are the desktop↔agent contract and must not be renamed.
+  - **`AGENT_DESKTOP_SOURCE` is not `AGENT_DESKTOP_DEFAULT_SOURCE`.** The former selects the *capture backend* — `screen` (the display) or `test` (a deterministic pattern, which is what CI and the E2E harness set, `main.rs:64`). The latter picks *which source streams before any selection*, `main.rs:72`. An earlier draft of this plan omitted the first and would have made the E2E harness unreproducible against the Node agent.
+  - **`AGENT_DESKTOP_SELECT_TIMEOUT_MS` (default 5000, ADR-22) and `AGENT_DESKTOP_POLL_INTERVAL_MS` (defaults to the profile's frame interval, `desktop.rs:582`) are also contract.** The poll interval alone has six dedicated Rust tests (`desktop.rs`), so dropping it would lose tested behaviour, not merely a knob.
+  - **`cols` / `rows` are stdin geometry, not env vars.** The Rust binds them as bare clap flags with no `env =` (`main.rs:56-60`) and defaults 80×24. They stay fields on `AgentConfig` — the PTY needs them — but there is no `AGENT_COLS`/`AGENT_ROWS` to read, and an earlier draft inventing those two names would have created a contract the Rust never had.
+- **The identity file is written with mode `0o600`.** Non-negotiable. Creation uses `wx` so an existing key is never truncated.
+- **The addon must never let a C++ exception cross the FFI boundary, must bounds-check every buffer, and must return errors as JS exceptions with a stable code — never as a crash.** (Consumed here, built in Plan 1 Task 4.)
+- **TEST-INTEGRITY:** never delete, skip or weaken a test to make it green. Every test change declares the before→after `it()`/`expect()` counts and the rationale. An undeclared change is BLOCKING.
+- **`packages/ui-components/src/components/ui/**` is shadcn-vue generated.** Never edit it.
+- **Historical records are not edited.** `docs/superpowers/{specs,plans}/*`, `docs/demos/*`, `docs/spikes/*`, `docs/notes/*`, `docs/security/*` stay as written. This plan may cite them, never edit them.
+- **(P2) `rewriteWsScheme` is a new function; `toWsUrl` keeps its contract.** `packages/webrtc-core/src/url.ts` gains a **sibling**, not a behaviour change. `toWsUrl` is a *base-URL* helper whose whole-string trim is correct for its three composer callers (`agent-supervisor.ts:131`, `fleet.ts:103`, `ws-ticket.ts:4`); the agent's `AGENT_SERVER` is already a *complete* WS URL, and the Rust `to_ws_url` splits the `?`/`#` suffix off before trimming so a query value ending in `/` survives. Re-homing the 11 `to_ws_url` tests onto `toWsUrl` would assert semantics it must not gain. **The reason this is a sibling and not a fix, stated so no executor has to hunt for it:** the two implementations disagree on a base URL carrying a query — `http://h/a/?next=/` becomes `ws://h/a/?next=` under `toWsUrl` and `ws://h/a?next=/` under `to_ws_url` — and *both* produce a broken URL if you then append `/api/ws/agent`, because the path lands inside the query value. Fixing that is P6's job at three call sites; Plan 2 must not widen either helper's contract to paper over it.
+- **(P2) The agent gets its own reconnect ladder.** `ReconnectBackoff` in `packages/webrtc-core/src/backoff.ts` is `min(initial × 2^n, max) + ±jitter`; the Rust agent is `min(current × 1.5, 2000)` with **integer rounding and no jitter**. These are different mechanisms and the second one is what the signalling server has been tested against. Do **not** reuse `ReconnectBackoff`; do **not** widen it with a `factor` option.
+- **(P2) Do not assert fractional milliseconds in the backoff test.** The Rust's own comment scopes its parity test to "the factor, the initial value, the cap and the reset rule — not the fractional milliseconds". The Rust computes `current.as_secs_f64() * 1.5 * 1000` and rounds; the TS computes `currentMs * 1.5` and rounds. Both ladders are **200 → 300 → 450 → 675 → 1013**, and they part at the **sixth** rung: 1520 (TS) versus 1519 (Rust). The mechanism is the f64 *seconds* round-trip, and it is worth stating correctly because an earlier draft got it backwards twice. At the 675 step the two agree — `Math.round(1012.5)` is **1013**, not 1012 (JS rounds half toward `+Infinity`), and the f64 path lands just above the tie at `1012.5000000000002`, which also rounds to 1013. The divergent tie is one rung later, at **1519.5**: TS computes `1013 * 1.5 = 1519.5` exactly and rounds **up to 1520**, while the Rust's `1.013 * 1.5 * 1000` is `1519.4999999999998` and rounds **down to 1519**. So the 675 step is not the divergence — it is the step where the two agree in spite of the tie, and saying otherwise points a future reader at the wrong rung. **Assert `[200, 300, 450, 675]` and the 2000 cap**, exactly as the Rust test does, and assert the later rungs within ±1 ms rather than equal.
+- **(P2) `apps/agent/tsconfig.json` must keep `include: ["src/**/*.ts", "test/**/*.ts"]` and `types: ["node"]` through the Rust→Node manifest conversion.** Without `src/**` the typecheck exits 0 having checked nothing; without `types: ["node"]` tsc never loads the hoisted `@types/node` and every `Buffer` reference in `src/` fails as TS2591. A typecheck that cannot fail is not a gate.
+- **(P2) Commands assume Plan 1 Task 1 has landed.** Once `apps/agent` is `@ponter/agent-node` with its own `vitest` devDependency and `vitest.config.ts`, the ordinary `./apps/agent/node_modules/.bin/vitest run <file>` works. **Do not copy the `--root apps/agent` workaround** that was necessary only while `apps/agent/package.json` was still the Rust manifest. If the command fails with "no such file", the prerequisite has not landed — stop and say so; do not invent a path.
+- **(P2) `ci-node.yml` does not yet run `apps/agent/**`.** Its `paths:` filter omits the directory until Plan 3. Every task's verification therefore runs locally and the report must say so explicitly; a green local suite is the only evidence this plan has.
+
+## Review Focus
+
+The input classes and failure modes the spec implies but no single task's happy-path test exercises. Each line is pinned by a test in the task that owns the code.
+
+1. **A reconnect ladder that resets when it should not.** The Rust supervisor reassigns `BACKOFF_INITIAL` on activity, and after seven rungs holds at 2000 ms indefinitely. A port that resets on every *attempt* instead of on every *successful connection* hammers a downed server at 200 ms forever, and a port that never resets leaves a brief blip costing 2 s on the next connect. Pinned in Task 3 (the "reset only on connect" property) and again in Task 5 (the supervisor wiring).
+2. **A frame that is neither a signal, nor ICE config, nor a challenge.** The three parsers each return "not mine" (`null` in TS) rather than throwing, and the cascade order decides whether the ICE push is consumed or logged as malformed — seven warnings per connect if inverted. Pinned in Task 4 (the "one ICE frame produces zero warnings" test) and Task 5 (the cascade order).
+3. **An empty-plaintext E2EE frame.** The Rust rejects a 28-byte frame (12 IV + 16 tag) on decrypt while its own `encrypt` happily produces one for `[]`; `@ponter/crypto` accepts it and returns `new Uint8Array(0)`. The TS keeps the round-tripping behaviour. Pinned in Task 7.
+4. **A path component that survives every textual check and still escapes the root** — a symlink inside the sandbox pointing anywhere, or a `..` that normalises after `canonicalize`. Pinned in Task 10 (the symlink-escape case), because that is the one case the prefix comparison cannot catch by inspection.
+5. **A desktop frame that is identical to the last one, forever.** The static skip forces an encode every `round(fps)` skips; a port that counts *seconds* instead of *frames* stops emitting on a 60 fps host at the wrong cadence, and a port that resets the reference on the forced frame wrong can loop between two hashes. Pinned in Task 13.
+
+---
+
+## File Structure
+
+Locked so implementers cannot disagree about what creates what.
+
+| Path | Responsibility | B-rows |
+|---|---|---|
+| `apps/agent/src/config.ts` | Env-var resolution into one frozen `AgentConfig`; the credential-missing error; **operator shell resolution** (`resolveShell`, `firstAvailable`, `windowsShellRoots`) | B2, B34, B38, B39, B54, B59 |
+| `apps/agent/src/logging/index.ts` | `RUST_LOG` level policy + the target+message noise predicate | B54 |
+| `apps/agent/src/signalling/backoff.ts` | The agent's own ladder: factor 1.5, cap 2000, integer ms, no jitter | B3 |
+| `apps/agent/src/signalling/constants.ts` | Ping/idle/frame-cap constants — one place, one decision each | B5, B6 |
+| `apps/agent/src/signalling/close.ts` | `classifyClose` — 4401/4409 terminal, everything else transient | B4 |
+| `apps/agent/src/signalling/messages.ts` | Re-exports the `@ponter/shared` unions plus the ICE/challenge payload types; no local copies of signal types | B1, B7 |
+| `apps/agent/src/signalling/inbound.ts` | The three-parser cascade: challenge → ICE → signal | B1, B6, B7 |
+| `apps/agent/src/signalling/client.ts` | `ws` socket: upgrade header, run loop, ping/flush, close handling | B1, B2, B4, B5, B6, B7 |
+| `apps/agent/src/signalling/auth.ts` | `isAuthFatal` — 401 or `UNAUTHORIZED`; a 403 is not fatal | R3 (the api.rs pair) |
+| `apps/agent/src/session/peer.ts` | werift answerer wiring: ICE config, PT selection, DC label gate | B10, B11, B12, B13, B27 |
+| `apps/agent/src/session/ice.ts` | TURN/TCP filtering, `mapIceServers`, H.264 PT selection, m-line index | B10, B11, B12 |
+| `apps/agent/src/session/identity-proof.ts` | The five ordered offer-proof failures; `advertisesE2ee` | B8, B9, B55 |
+| `apps/agent/src/session/packetizer.ts` | **Already written in Plan 1 Task 3.** Do not recreate. | B26 |
+| `apps/agent/src/session/data-channels.ts` | Channel-label gate and dispatch to the terminal/files/desktop handlers | B13 |
+| `apps/agent/src/identity/store.ts` | Ed25519 PKCS#8 file, mode 0600, base64 raw public key, sign | B47, B48 |
+| `apps/agent/src/identity/frame.ts` | `buildAgentIdentityFrame` — the WS2 challenge answer | B47, B55 |
+| `apps/agent/src/e2ee/manager.ts` | hello/ack handshake over `@ponter/crypto` | B49–B52 |
+| `apps/agent/src/terminal/shell-policy.ts` | Allowlist for *peer-requested* shells | B36, B37 |
+| `apps/agent/src/terminal/pty.ts` | `node-pty` wrapper, base64 16 KiB chunking, exit reaping, 10-session limit | B39, B40, B41 |
+| `apps/agent/src/files/sandbox.ts` | The 7-step containment algorithm | B44 |
+| `apps/agent/src/files/protocol.ts` | The 25-byte binary header, chunk arithmetic, the constants | B42, B43 |
+| `apps/agent/src/files/session.ts` | Transfer state machine: window, ack batching, resume, pause | B42, B43, B45, B46 |
+| `apps/agent/src/input/decode.ts` | Input JSON decode, 0..1 clamp, 120 Hz limiter, agent-local gate | B28, B29, B30, B34 |
+| `apps/agent/src/desktop/static-skip.ts` | Frame signature + skip counters | B22 |
+| `apps/agent/src/desktop/timing-ring.ts` | The 32-frame timing ring and its two medians | B24 |
+| `apps/agent/src/desktop/sustain.ts` | The quality ladder | B18, B23 |
+| `apps/agent/src/desktop/control.ts` | Bitrate clamp, `DesktopSelectMessage` decode, `StreamControl` | B20, B62 |
+| `apps/agent/src/desktop/frames.ts` | `desktop-stats`, `desktop-cursor`, `desktop-sources` frame builders | B56, B58, B61 |
+| `apps/agent/src/desktop/session.ts` | Capture → downscale → encode → packetize → send loop | B14, B59 |
+| `apps/agent/src/runtime.ts` | Lifecycle: start / stop / status; the reconnect supervisor | B53 |
+| `apps/agent/src/index.ts` | Public surface: `createAgentRuntime` | — |
+| `packages/shared/src/types/stream-profile.ts` | **Modify (Plan 1 owns it).** Add `export type ProfileId = (typeof STREAM_PROFILES)[number]['id']` beside `StreamProfile`. Five modules here import it by name; without it every `ProfileId` reference in this plan is an unresolved type. | B18, B20, B24, B56, B62 |
+| `packages/webrtc-core/src/url.ts` | **Modify.** Add `rewriteWsScheme` beside `toWsUrl` | B2 |
+| `packages/webrtc-core/test/url.test.ts` | **Modify.** Add the `rewriteWsScheme` describe block (12 cases) | B2 |
+| `packages/api-client/test/agent-api-access-gate.test.ts` | **Modify.** Re-point at the TS agent tree | R3, R6 |
+| `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md` | **Modify.** Flip Plan 2's rows to "Covered" with their test file | §9.4 gate |
+
+**Not created here:** `apps/agent/src/session/packetizer.ts` (Plan 1 Task 3), `apps/agent/native/**` (Plan 1 Task 4), `apps/agent/spike/**` (Plan 1 Task 1), `apps/desktop/**` supervisor rewiring (Plan 3), `.github/workflows/**` (Plan 3).
+
+**One correction to Plan 1's text, recorded here so the next reader does not re-derive it:**
+
+> Plan 1's Task 5 TEST-INTEGRITY declaration for
+> `apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts` said
+> "1 `it()` → 2 `it()`". That baseline was wrong. The file at `453a779`
+> already had **2** `it()` and **4** `expect()`; after the rewrite it has
+> **2** `it()` and **2** `expect()`. The two removed `expect()` were guards
+> inside the `rustProfileNames()` regex helper (`start > -1`, `end > start`),
+> which protected a mechanism the rewrite deletes. Removing them is correct,
+> not a weakening. **The declaration is 2→2 `it()`, 4→2 `expect()`, with the
+> rationale "the regex helper the two guards protected is gone".** The
+> implementer caught this; PM verified it independently against `git show
+> 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts`.
+
+**One arithmetic correction to the coverage matrix (R3), recorded here because Plan 2 executes it:**
+
+> Coverage-matrix R3 says `api.rs`'s 20 tests split into "7 retired, 13 live".
+> The counts are right; the *two-way shape* is what is wrong.
+>
+> PM re-derived the split by classifying all 20 `#[test]` functions in
+> `apps/agent/src/api.rs` by the symbol each one exercises, at `453a779`:
+>
+> | target | count | tests |
+> |---|---|---|
+> | `to_ws_url` | **11** | `rewrites_http_to_ws`, `rewrites_https_to_wss`, `passes_ws_schemes_through`, `trims_trailing_slashes`, `does_not_append_a_path`, `preserves_a_ws_query_value_ending_in_slash`, `rewrites_https_with_a_query_value_ending_in_slash`, `trims_a_path_slash_before_the_query_without_altering_it`, `preserves_a_fragment_suffix_unchanged`, `rejects_an_unknown_scheme`, `the_cli_default_normalizes_to_itself` |
+> | `with_bearer` | **2** | `sets_the_authorization_header`, `rejects_a_credential_with_a_control_character` |
+> | `ApiError` | **7** | `parses_the_error_envelope`, `parses_an_object_details_field`, `falls_back_to_api_error_when_code_is_absent`, `non_json_body_with_a_status_is_api_error_not_network_error`, `network_has_no_status_and_the_network_sentinel`, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures` |
+> | | **20** | 11 + 2 + 7 |
+>
+> So the 7 that touch `ApiError` are exactly the 7 the matrix calls retired. The
+> matrix's own parenthetical — "`from_response` ×4, `network` ×1, `is_auth_fatal`
+> ×2" — also sums correctly to 7. But two of those seven
+> (`auth_fatal_*`) assert **live behaviour**: a 401 or `UNAUTHORIZED` code is
+> auth-fatal and a 403 is not, which is the classifier issue #107 / PR #110
+> established and which `apps/agent/src/signalling/auth.ts` (Task 5) must carry.
+> Their Rust test retires with `ApiError`; their assertion must not.
+>
+> **Ruling: the split is THREE-WAY — 13 re-homed / 2 ported-then-retired / 5 retired**
+> (13 + 2 + 5 = 20). The 13 re-homed are the 11 `to_ws_url` tests and the 2
+> `with_bearer` tests. The 2 ported-then-retired are `auth_fatal_on_401_or_unauthorized_code`
+> and `not_auth_fatal_on_other_failures` — ported to Task 5 *before* the Rust test
+> retires. The 5 plain-retired are the other `ApiError` tests.
+>
+> A two-way split cannot express this, and that is why the number kept moving: calling the
+> auth-fatal pair "retired" undercounts live coverage, and calling it "re-homed" overcounts
+> the re-homed side. Both descriptions are locally true and the pair is neither purely one
+> nor the other.
+>
+> **Why this matters and is not pedantry:** an earlier draft of this plan claimed
+> "8 retired, 12 live" on the strength of a hand-count that put `to_ws_url` at 10.
+> It is 11 — so 13 live tests exist before the auth-fatal pair is counted at all, and
+> no partition of 20 yields 12. The error was invisible because the arithmetic still
+> summed to 20: a miscount in one bucket offset by a miscount in another is the hardest
+> kind of error to catch by eye. BA re-derived the same 11/2/7 independently, from the
+> tree, after this plan's first correction was written — two independent derivations
+> agreeing is the only thing that settles a count like this.
+>
+> **`to_ws_url`'s 11 tests do NOT re-home onto `toWsUrl`** — the ruling is stated
+> in full in **Global Constraints (P2)** above, and repeated here only because this
+> is the paragraph an executor reads when deciding where a test goes. They re-home onto the new
+> `rewriteWsScheme`, because `toWsUrl`'s whole-string trim has different
+> semantics: the two implementations disagree on a base URL that carries a query
+> or a fragment (`http://h/a/?next=/` → `ws://h/a/?next=` vs `ws://h/a?next=/`).
+
+---
+
+### Task 1: Config resolution and the logger
+
+**Files:**
+- Create: `apps/agent/src/config.ts`
+- Create: `apps/agent/src/logging/index.ts`
+- Test: `apps/agent/test/config.test.ts`, `apps/agent/test/logging/index.test.ts`
+
+**Interfaces:**
+- Consumes: `StreamProfile` and `STREAM_PROFILES` from `@ponter/shared` (Plan 1 Task 5).
+- Produces:
+  - `interface AgentConfig { agentId; server; credential; shell; identityPath; stun; cols; rows; allowInput; filesRoot; desktopProfile: StreamProfile; desktopDefaultSource: string; desktopSource: 'screen' | 'test'; desktopSelectTimeoutMs: number; desktopPollIntervalMs: number | null }` — `desktopPollIntervalMs: null` means "use `desktopProfile.fps`'s frame budget", which is what the Rust does: `parse_poll_interval` falls back to `profile.frame_budget()` (`desktop.rs:567-584`). `null` rather than a pre-computed number so the config stays a pure env mapping and the 16 667 µs of a 60 FPS budget never gets rounded to 17 ms here.
+  - `function loadConfig(env: NodeJS.ProcessEnv, platform?: NodeJS.Platform): AgentConfig` — throws `AgentConfigError` with `code: 'MISSING_CREDENTIAL' | 'UNKNOWN_PROFILE' | 'UNKNOWN_DESKTOP_SOURCE'`; never returns a partially-resolved object. `platform` is the seam the Windows shell detection needs — passing it defaults to `process.platform` and exists so the shell-order tests run on any host, exactly as the Rust split `resolve_shell_value` out of `resolve_shell` (`main.rs:145-176`).
+  - `function firstAvailable<T>(preference: readonly string[], resolve: (name: string) => T | undefined): T | undefined` — the Rust's `first_available` (`main.rs:169-182`), generic over the resolved value so a caller can return a path rather than a bare name.
+  - `const WINDOWS_SHELL_PREFERENCE: readonly ['pwsh', 'powershell', 'cmd.exe']` and `function windowsShellRoots(env: NodeJS.ProcessEnv): string[]` — the well-known install roots (`main.rs:186-218`), which exist because the PowerShell 7 MSI does not always add its directory to `PATH`.
+  - `function resolveShell(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, probe?: (name: string, roots: string[]) => string | undefined): string` — `AGENT_SHELL`, then `SHELL`, then the platform default (`/bin/sh` on unix, the detected Windows shell, then `cmd.exe`).
+  - `function isNoise(target: string, message: string): boolean`
+  - `function createLogger(env: NodeJS.ProcessEnv): Logger` where `interface Logger { error; warn; info; debug }` and each takes `(fields: Record<string, unknown>, message: string)`.
+
+- [ ] **Step 1: Write the failing config test**
+
+```ts
+// apps/agent/test/config.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  WINDOWS_SHELL_PREFERENCE,
+  firstAvailable,
+  loadConfig,
+  resolveShell,
+  windowsShellRoots,
+} from '../src/config.js';
+
+const base = {
+  AGENT_ID: 'a1',
+  AGENT_CREDENTIAL: 'ag_secret',
+  SHELL: '/bin/bash',
+  HOME: '/home/u',
+};
+
+describe('loadConfig', () => {
+  it('applies every documented default', () => {
+    const c = loadConfig({ ...base });
+    expect(c.server).toBe('ws://localhost:8787/api/ws/agent');
+    expect(c.stun).toBe('stun:stun.l.google.com:19302');
+    expect(c.cols).toBe(80);
+    expect(c.rows).toBe(24);
+    expect(c.allowInput).toBe(false);
+    expect(c.filesRoot).toBeNull();
+    expect(c.desktopProfile.id).toBe('1080p30');
+  });
+
+  it('defaults the identity path under XDG_CONFIG_HOME when set', () => {
+    const c = loadConfig({ ...base, XDG_CONFIG_HOME: '/xdg' });
+    expect(c.identityPath).toBe('/xdg/ponter/agent-identity.pkcs8');
+  });
+
+  it('falls back to HOME/.config when XDG_CONFIG_HOME is unset', () => {
+    const c = loadConfig({ ...base });
+    expect(c.identityPath).toBe('/home/u/.config/ponter/agent-identity.pkcs8');
+  });
+
+  it('refuses to start without a credential, naming both sources', () => {
+    expect(() => loadConfig({ ...base, AGENT_CREDENTIAL: undefined })).toThrowError(
+      /no agent credential: set AGENT_CREDENTIAL/,
+    );
+  });
+
+  it('rejects an unknown desktop profile rather than defaulting silently', () => {
+    expect(() => loadConfig({ ...base, AGENT_DESKTOP_PROFILE: '1440p' })).toThrowError(
+      /unknown desktop profile "1440p"/,
+    );
+  });
+
+  it('reads the agent-local input gate, which no peer can flip', () => {
+    expect(loadConfig({ ...base, AGENT_ALLOW_INPUT: '1' }).allowInput).toBe(true);
+    expect(loadConfig({ ...base, AGENT_ALLOW_INPUT: '0' }).allowInput).toBe(false);
+    expect(loadConfig({ ...base, AGENT_ALLOW_INPUT: 'true' }).allowInput).toBe(true);
+  });
+
+  it('leaves filesRoot null when the env var is empty', () => {
+    expect(loadConfig({ ...base, AGENT_FILES_ROOT: '' }).filesRoot).toBeNull();
+  });
+
+  it('defaults the capture backend to the screen and accepts the test pattern', () => {
+    expect(loadConfig({ ...base }).desktopSource).toBe('screen');
+    expect(loadConfig({ ...base, AGENT_DESKTOP_SOURCE: 'test' }).desktopSource).toBe('test');
+  });
+
+  it('rejects an unknown capture backend rather than falling back to the screen', () => {
+    expect(() => loadConfig({ ...base, AGENT_DESKTOP_SOURCE: 'window' })).toThrowError(
+      /unknown desktop source "window"/,
+    );
+  });
+
+  it('defaults the selection timeout to 5000 ms and reads an explicit one', () => {
+    expect(loadConfig({ ...base }).desktopSelectTimeoutMs).toBe(5000);
+    expect(loadConfig({ ...base, AGENT_DESKTOP_SELECT_TIMEOUT_MS: '250' }).desktopSelectTimeoutMs).toBe(
+      250,
+    );
+  });
+
+  it('leaves the poll interval null unless one is set, so the profile budget applies', () => {
+    expect(loadConfig({ ...base }).desktopPollIntervalMs).toBeNull();
+    expect(loadConfig({ ...base, AGENT_DESKTOP_POLL_INTERVAL_MS: '16' }).desktopPollIntervalMs).toBe(
+      16,
+    );
+  });
+
+  it('treats a zero or unparseable poll interval as unset, not as a spin loop', () => {
+    expect(loadConfig({ ...base, AGENT_DESKTOP_POLL_INTERVAL_MS: '0' }).desktopPollIntervalMs).toBeNull();
+    expect(
+      loadConfig({ ...base, AGENT_DESKTOP_POLL_INTERVAL_MS: 'soon' }).desktopPollIntervalMs,
+    ).toBeNull();
+  });
+
+  // --- operator shell resolution (B38) ---
+  // The six `main.rs` tests for this surface were assigned to Plan 2 by the
+  // coverage matrix and deferred to Plan 3 by Task 9. They live here instead:
+  // this is config-time resolution, the same moment the Rust's `main` did it.
+
+  it('an explicit AGENT_SHELL always wins over detection, on every platform', () => {
+    expect(loadConfig({ ...base, AGENT_SHELL: '/usr/bin/fish' }, 'linux').shell).toBe('/usr/bin/fish');
+    expect(loadConfig({ ...base, AGENT_SHELL: 'pwsh.exe' }, 'win32').shell).toBe('pwsh.exe');
+  });
+
+  it('on unix falls back to $SHELL and then to /bin/sh', () => {
+    expect(loadConfig({ ...base, SHELL: '/usr/bin/zsh' }, 'linux').shell).toBe('/usr/bin/zsh');
+    expect(loadConfig({ AGENT_CREDENTIAL: 'ag_x' }, 'linux').shell).toBe('/bin/sh');
+  });
+
+  it('prefers the Windows shells in order and stops at the first hit', () => {
+    const resolve = (present: readonly string[]) => (name: string) =>
+      present.includes(name) ? `C:\\found\\${name}` : undefined;
+    // cmd.exe being present must not shadow a pwsh that is also installed.
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, resolve(['cmd.exe']))).toBe('C:\\found\\cmd.exe');
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, resolve(['pwsh', 'cmd.exe']))).toBe(
+      'C:\\found\\pwsh',
+    );
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, resolve(['powershell', 'cmd.exe']))).toBe(
+      'C:\\found\\powershell',
+    );
+    expect(firstAvailable(WINDOWS_SHELL_PREFERENCE, () => undefined)).toBeUndefined();
+  });
+
+  it('carries a resolved absolute path through, not the bare name', () => {
+    const pref = ['pwsh', 'powershell', 'cmd.exe'];
+    const resolved = firstAvailable(pref, (name) =>
+      name === 'pwsh' ? 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' : undefined,
+    );
+    expect(resolved).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  });
+
+  it('finds PowerShell 7 in its install root when it is not on PATH', () => {
+    // The MSI does not always add its directory to PATH, so a PATH-only probe
+    // would fall through to the older powershell.exe — the case the Rust's
+    // `windows_shell_roots` exists for.
+    const env = { ProgramFiles: 'C:\\Program Files' };
+    const roots = windowsShellRoots(env);
+    expect(roots[0]).toBe('C:\\Program Files\\PowerShell\\7');
+    expect(roots).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0');
+    expect(resolveShell({ ...base }, 'win32', (name, _roots) =>
+      name === 'pwsh' ? 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' : undefined,
+    )).toBe('C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+  });
+
+  it('falls back to cmd.exe only when nothing else resolves', () => {
+    expect(resolveShell({ ...base }, 'win32', () => undefined)).toBe('cmd.exe');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/config.test.ts`
+Expected: FAIL — `Failed to resolve import "../src/config.js"`.
+
+- [ ] **Step 3: Implement `config.ts`**
+
+```ts
+// apps/agent/src/config.ts
+import { STREAM_PROFILES, type StreamProfile } from '@ponter/shared';
+import { existsSync } from 'node:fs';
+
+export type AgentConfigErrorCode =
+  | 'MISSING_CREDENTIAL'
+  | 'UNKNOWN_PROFILE'
+  | 'UNKNOWN_DESKTOP_SOURCE';
+
+export class AgentConfigError extends Error {
+  readonly code: AgentConfigErrorCode;
+  constructor(code: AgentConfigErrorCode, message: string) {
+    super(message);
+    this.name = 'AgentConfigError';
+    this.code = code;
+  }
+}
+
+export interface AgentConfig {
+  readonly agentId: string;
+  readonly server: string;
+  readonly credential: string;
+  readonly shell: string;
+  readonly identityPath: string;
+  readonly stun: string;
+  readonly cols: number;
+  readonly rows: number;
+  readonly allowInput: boolean;
+  readonly filesRoot: string | null;
+  readonly desktopProfile: StreamProfile;
+  readonly desktopDefaultSource: string;
+  /** `AGENT_DESKTOP_SOURCE` (`main.rs:64`): which frame source the agent captures. */
+  readonly desktopSource: 'screen' | 'test';
+  /** `AGENT_DESKTOP_SELECT_TIMEOUT_MS` (`main.rs:80`, ADR-22), default 5000. */
+  readonly desktopSelectTimeoutMs: number;
+  /** `AGENT_DESKTOP_POLL_INTERVAL_MS`; `null` means the profile's frame budget. */
+  readonly desktopPollIntervalMs: number | null;
+}
+
+const DEFAULT_SERVER = 'ws://localhost:8787/api/ws/agent';
+const DEFAULT_STUN = 'stun:stun.l.google.com:19302';
+const DEFAULT_PROFILE = '1080p30';
+const DEFAULT_SOURCE = 'primary';
+const DEFAULT_DESKTOP_SOURCE = 'screen';
+const DEFAULT_SELECT_TIMEOUT_MS = 5000;
+const DEFAULT_COLS = 80;
+const DEFAULT_ROWS = 24;
+
+/** The two capture backends the Rust's `DesktopSource` enum accepts (`lib.rs:427`). */
+const DESKTOP_SOURCES = ['screen', 'test'] as const;
+
+/** `1`/`true`/`yes` on, anything else off. Off is the default: the gate is opt-in. */
+function envFlag(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+function envInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * A positive integer or `null` — the shape of an optional interval.
+ *
+ * The Rust treats an absent, empty, zero or unparseable value as "use the
+ * fallback" (`desktop.rs:567-572`), and a zero interval is a busy loop, so `0`
+ * is normalized to `null` here rather than surfacing as a spin.
+ */
+function envOptionalInt(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Resolve the agent's configuration from the environment only.
+ *
+ * There is no CLI: the desktop supervisor passes every value as an env var, and
+ * a credential on argv would be visible in `ps` (ADR-13). Every fallback here is
+ * a value the Rust CLI also defaulted to, so a deployment that sets nothing
+ * behaves exactly as before.
+ */
+export function loadConfig(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): AgentConfig {
+  const credential = env.AGENT_CREDENTIAL?.trim();
+  if (!credential) {
+    throw new AgentConfigError(
+      'MISSING_CREDENTIAL',
+      'no agent credential: set AGENT_CREDENTIAL (the value is ag_...)',
+    );
+  }
+
+  const profileName = env.AGENT_DESKTOP_PROFILE?.trim() || DEFAULT_PROFILE;
+  const desktopProfile = STREAM_PROFILES.find((p) => p.id === profileName);
+  if (!desktopProfile) {
+    const known = STREAM_PROFILES.map((p) => p.id).join(', ');
+    throw new AgentConfigError(
+      'UNKNOWN_PROFILE',
+      `unknown desktop profile "${profileName}"; expected ${known}`,
+    );
+  }
+
+  const configHome = env.XDG_CONFIG_HOME?.trim() || `${env.HOME ?? ''}/.config`;
+
+  const rawSource = env.AGENT_DESKTOP_SOURCE?.trim() || DEFAULT_DESKTOP_SOURCE;
+  if (!(DESKTOP_SOURCES as readonly string[]).includes(rawSource)) {
+    throw new AgentConfigError(
+      'UNKNOWN_DESKTOP_SOURCE',
+      `unknown desktop source "${rawSource}"; expected ${DESKTOP_SOURCES.join(', ')}`,
+    );
+  }
+  const desktopSource = rawSource as 'screen' | 'test';
+
+  return Object.freeze({
+    agentId: env.AGENT_ID?.trim() ?? '',
+    server: env.AGENT_SERVER?.trim() || DEFAULT_SERVER,
+    credential,
+    shell: resolveShell(env, platform),
+    identityPath:
+      env.AGENT_IDENTITY_PATH?.trim() || `${configHome}/ponter/agent-identity.pkcs8`,
+    stun: env.STUN_SERVER ?? DEFAULT_STUN,
+    // `--cols`/`--rows` are clap flags with no `env =` (`main.rs:56-60`) and the
+    // supervisor never passes them, so these are constants, not env reads. The
+    // PTY still needs an initial geometry and the renderer resizes it on attach.
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    allowInput: envFlag(env.AGENT_ALLOW_INPUT),
+    filesRoot: env.AGENT_FILES_ROOT?.trim() ? env.AGENT_FILES_ROOT.trim() : null,
+    desktopProfile,
+    desktopDefaultSource: env.AGENT_DESKTOP_DEFAULT_SOURCE?.trim() || DEFAULT_SOURCE,
+    desktopSource,
+    desktopSelectTimeoutMs: envInt(
+      env.AGENT_DESKTOP_SELECT_TIMEOUT_MS,
+      DEFAULT_SELECT_TIMEOUT_MS,
+    ),
+    desktopPollIntervalMs: envOptionalInt(env.AGENT_DESKTOP_POLL_INTERVAL_MS),
+  });
+}
+
+// --- operator shell resolution (B38) ---
+// Ported from `main.rs:145-260`. This is a config-time concern, so it lives in
+// `config.ts` rather than in the terminal package: the value it produces is a
+// field of `AgentConfig`, and the shell *policy* that governs peer-requested
+// shells is a different thing entirely (Task 9's `ShellPolicy`).
+
+/** Windows shells in preference order (`main.rs:185`). */
+export const WINDOWS_SHELL_PREFERENCE = ['pwsh', 'powershell', 'cmd.exe'] as const;
+
+/**
+ * The first candidate `resolve` yields a value for, in order.
+ *
+ * Pure, so the ordering is testable without a real `PATH` or filesystem, and
+ * generic over the resolved type so a caller can return an absolute path
+ * rather than the bare name (`main.rs:169-182`).
+ */
+export function firstAvailable<T>(
+  preference: readonly string[],
+  resolve: (name: string) => T | undefined,
+): T | undefined {
+  for (const name of preference) {
+    const resolved = resolve(name);
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
+}
+
+/**
+ * Directories where a Windows shell may live without being on `PATH`.
+ *
+ * `pwsh` is the case that matters: the MSI installs to
+ * `C:\Program Files\PowerShell\7\` and does not always add that directory to
+ * `PATH`, so a `PATH`-only probe would miss PowerShell 7 and fall through to
+ * the older `powershell.exe` (`main.rs:186-207`).
+ */
+export function windowsShellRoots(env: NodeJS.ProcessEnv): string[] {
+  const roots = [
+    'C:\\Program Files\\PowerShell\\7',
+    'C:\\Program Files\\PowerShell\\7-preview',
+  ];
+  const programFiles = env.ProgramFiles?.trim();
+  if (programFiles) {
+    roots.push(`${programFiles}\\PowerShell\\7`, `${programFiles}\\PowerShell\\7-preview`);
+  }
+  const programFilesX86 = env['ProgramFiles(x86)']?.trim();
+  if (programFilesX86) {
+    roots.push(`${programFilesX86}\\PowerShell\\7`);
+  }
+  roots.push('C:\\Windows\\System32\\WindowsPowerShell\\v1.0');
+  return roots;
+}
+
+/**
+ * Resolve the operator's shell from the environment.
+ *
+ * `AGENT_SHELL` wins unconditionally — a pinned value must never be overridden
+ * by detection, or existing deployments would silently change shell. Then
+ * `$SHELL`, then the platform default. On Windows the default is the first
+ * shell found in preference order, falling back to the bare `cmd.exe`, which
+ * `CreateProcess` resolves to `%SystemRoot%\System32\cmd.exe` (`main.rs:155-176`).
+ *
+ * `probe` exists so the Windows path is unit-testable on any host; production
+ * passes nothing and gets a real `PATH` + install-root probe.
+ */
+export function resolveShell(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  probe?: (name: string, roots: string[]) => string | undefined,
+): string {
+  const explicit = env.AGENT_SHELL?.trim();
+  if (explicit) return explicit;
+
+  if (platform !== 'win32') {
+    return env.SHELL?.trim() || '/bin/sh';
+  }
+
+  const resolve = probe ?? resolveWindowsShell;
+  const roots = windowsShellRoots(env);
+  return firstAvailable(WINDOWS_SHELL_PREFERENCE, (name) => resolve(name, roots)) ?? 'cmd.exe';
+}
+
+/**
+ * Locate one Windows shell, preferring a `PATH` hit and falling back to the
+ * well-known install roots (`main.rs:213-260`).
+ *
+ * The result is always an absolute path so node-pty never has to guess, and it
+ * is returned unmodified — this value is an executable, not a command line, so
+ * there is no interpolation of user input here.
+ */
+function resolveWindowsShell(name: string, roots: string[]): string | undefined {
+  for (const dir of (process.env.PATH ?? '').split(';')) {
+    if (!dir) continue;
+    for (const ext of ['.exe', '']) {
+      const candidate = `${dir}\\${name}${ext}`;
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  for (const root of roots) {
+    for (const ext of ['.exe', '']) {
+      const candidate = `${root}\\${name}${ext}`;
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+```
+
+- [ ] **Step 4: Write the failing logger test**
+
+```ts
+// apps/agent/test/logging/index.test.ts
+import { describe, expect, it } from 'vitest';
+import { isNoise } from '../../src/logging/index.js';
+
+describe('isNoise', () => {
+  it('matches on target AND message, never the message alone', () => {
+    expect(isNoise('ponter_agent', 'no such remote')).toBe(false);
+  });
+
+  it('keeps an unknown line from a known-noisy target', () => {
+    expect(isNoise('werift', 'something the table has never seen')).toBe(false);
+  });
+
+  it('keeps every line when the table is empty', () => {
+    // The table ships empty for werift today: the Rust rules name Rust crates.
+    // A port that fabricated ten rules that can never fire would be dead code.
+    expect(isNoise('anything', 'anything at all')).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 5: Run it and watch it fail**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/logging/index.test.ts`
+Expected: FAIL — `Failed to resolve import "../../src/logging/index.js"`.
+
+- [ ] **Step 6: Implement `logging/index.ts`**
+
+```ts
+// apps/agent/src/logging/index.ts
+/**
+ * Level policy (`RUST_LOG`, default `info`) plus the known-benign-line filter.
+ *
+ * `RUST_LOG` outlives the Rust tree on purpose: it is the documented knob the
+ * desktop supervisor and the self-hosting guide tell an operator to set, and
+ * renaming it would break deployments that already use it.
+ *
+ * The Rust filter carried ten rules. **None of them port**: every one names a
+ * Rust crate's target (`rtc_ice`, `rtc_dtls`, `libwayshot_xcap`, `quinn_udp`,
+ * `webrtc::peer_connection::*`) and the TypeScript stack is werift, which logs
+ * through a different mechanism. The *mechanism* ports — a (target, substring)
+ * pair where both must match — and the rules are added as werift's own noise is
+ * discovered while wiring the peer. The five retired rationales that carry real
+ * operational knowledge (the coturn loopback 403, the DTLS alert that cannot be
+ * distinguished from a fatal one, the loopback STUN write, the mDNS candidate,
+ * the duplicate ICE discards) are recorded in the retirement note for Plan 3 so
+ * they are not lost, and are re-expressed here if werift has equivalents.
+ */
+export type NoiseRule = readonly [target: string, message: string];
+
+/** Both parts must match: the target scopes the crate, the substring the case. */
+export const NOISE: readonly NoiseRule[] = [];
+
+export function isNoise(target: string, message: string): boolean {
+  return NOISE.some(([t, m]) => target.startsWith(t) && message.includes(m));
+}
+
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+
+export interface Logger {
+  error(fields: Record<string, unknown>, message: string): void;
+  warn(fields: Record<string, unknown>, message: string): void;
+  info(fields: Record<string, unknown>, message: string): void;
+  debug(fields: Record<string, unknown>, message: string): void;
+}
+
+const ORDER: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, debug: 3 };
+
+/**
+ * Resolve the active level from `RUST_LOG`.
+ *
+ * The Rust used `EnvFilter`, whose full grammar is per-target directives. The
+ * agent only ever relied on the bare level form (`RUST_LOG=debug`), so this
+ * reads a comma-separated list, takes the last bare level it finds, and ignores
+ * `target=level` directives rather than pretending to implement them. An
+ * unrecognised value falls back to `info`, as `EnvFilter::try_from_default_env`
+ * falling back to `info` did.
+ */
+export function levelFromEnv(env: NodeJS.ProcessEnv): LogLevel {
+  const raw = env.RUST_LOG?.trim();
+  if (!raw) return 'info';
+  let level: LogLevel = 'info';
+  for (const part of raw.split(',')) {
+    const candidate = part.trim().toLowerCase();
+    if (candidate in ORDER) level = candidate as LogLevel;
+  }
+  return level;
+}
+
+export function createLogger(
+  env: NodeJS.ProcessEnv,
+  sink: (line: string) => void = (line) => process.stderr.write(line + '\n'),
+): Logger {
+  const threshold = ORDER[levelFromEnv(env)];
+  const emit = (level: LogLevel, fields: Record<string, unknown>, message: string): void => {
+    if (ORDER[level] > threshold) return;
+    if (isNoise(typeof fields.target === 'string' ? fields.target : '', message)) return;
+    const extra = Object.entries(fields)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(' ');
+    sink(`${level.toUpperCase()} ${message}${extra ? ` (${extra})` : ''}`);
+  };
+  return {
+    error: (f, m) => emit('error', f, m),
+    warn: (f, m) => emit('warn', f, m),
+    info: (f, m) => emit('info', f, m),
+    debug: (f, m) => emit('debug', f, m),
+  };
+}
+```
+
+- [ ] **Step 7: Run both suites green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/config.test.ts test/logging/index.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/config.ts apps/agent/src/logging/index.ts apps/agent/test/config.test.ts apps/agent/test/logging/index.test.ts
+git add apps/agent/src/config.ts apps/agent/src/logging/index.ts apps/agent/test/config.test.ts apps/agent/test/logging/index.test.ts
+git commit -m "feat(agent): resolve env-var config and the RUST_LOG level policy"
+```
+
+**TEST-INTEGRITY declaration:** new files, **21 new `it()` / 40 new `expect()`** (`config.test.ts` 18/37, `logging/index.test.ts` 3/3). No existing test is touched. Two additions grew this fence beyond the plan's original shape, and both are recorded here rather than silently absorbed:
+
+- **B-8's three desktop env vars (+5 `it()`, +9 `expect()`).** The Rust binds `AGENT_DESKTOP_SOURCE`, `AGENT_DESKTOP_SELECT_TIMEOUT_MS` and `AGENT_DESKTOP_POLL_INTERVAL_MS`; a port that read none of them would have dropped a tested behaviour (`parse_poll_interval` alone has seven Rust tests, `desktop.rs:3870-3935`). Two of the five are the poll interval's zero/garbage normalisation, which is not cosmetic: a zero interval is a busy loop.
+- **B38's six shell-resolution tests (+6 `it()`, +13 `expect()`).** The coverage matrix assigned B38 to Plan 2; Task 9 deferred it to Plan 3, which does not exist. These are ports, not new coverage, and the reason they land here rather than in Task 9 is that they resolve the *operator's* shell at config time (the Rust did it in `main`), whereas Task 9 governs which shells a *peer* may request. The six: `an_explicit_shell_always_wins_over_detection`, `unix_falls_back_to_shell_env_then_bin_sh`, `shell_preference_is_ordered_and_stops_at_the_first_hit`, `first_available_can_resolve_to_a_path_not_just_the_bare_name`, `windows_prefers_powershell_7_over_legacy_powershell` and `allow_input_cli_and_env_parsing` — the last one folded into the `AGENT_ALLOW_INPUT` case already here, since the env half is all that survives with no CLI.
+
+The logger's three port `known_noise_is_matched_by_target_and_message`, `the_same_message_from_another_target_is_kept` and `an_unknown_message_is_kept`.
+
+---
+
+### Task 2: `rewriteWsScheme` and the WS upgrade header
+
+**Files:**
+- Modify: `packages/webrtc-core/src/url.ts`
+- Modify: `packages/webrtc-core/test/url.test.ts`
+- Create: `apps/agent/src/signalling/upgrade.ts`
+- Test: `apps/agent/test/signalling/upgrade.test.ts`
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces:
+  - `function rewriteWsScheme(url: string): string` — 1:1 port of `api.rs:16-42`. Throws `Error('unsupported URL scheme in <url>')` on any other scheme and on `''`.
+  - `function buildUpgradeHeaders(credential: string): Record<string, string>` — returns `{ Authorization: 'Bearer <cred>' }`; throws `Error('credential is not a valid header value')` if the credential contains any character outside `[\x21-\x7E]` (i.e. a control character or a space would corrupt the header).
+
+- [ ] **Step 1: Write the failing `rewriteWsScheme` tests**
+
+Append to the existing file — do **not** restructure or rename the existing `describe` blocks:
+
+```ts
+// packages/webrtc-core/test/url.test.ts  (append)
+describe('rewriteWsScheme', () => {
+  it('rewrites http to ws', () => {
+    expect(rewriteWsScheme('http://localhost:8787/api/ws/agent')).toBe(
+      'ws://localhost:8787/api/ws/agent',
+    );
+  });
+
+  it('rewrites https to wss', () => {
+    expect(rewriteWsScheme('https://signal.example.com/x')).toBe(
+      'wss://signal.example.com/x',
+    );
+  });
+
+  it('passes ws and wss through unchanged', () => {
+    expect(rewriteWsScheme('ws://h/p')).toBe('ws://h/p');
+    expect(rewriteWsScheme('wss://h/p')).toBe('wss://h/p');
+  });
+
+  it('trims a trailing path slash', () => {
+    expect(rewriteWsScheme('http://h/p/')).toBe('ws://h/p');
+    expect(rewriteWsScheme('ws://h/')).toBe('ws://h');
+  });
+
+  it('does not append a path of its own', () => {
+    expect(rewriteWsScheme('http://h:8787/api/ws/agent').match(/\/api\/ws\/agent/g)).toHaveLength(1);
+  });
+
+  it('preserves a query value that ends in a slash', () => {
+    // The regression the split-before-trim ordering exists for: a whole-string
+    // trim would drop this slash and change what the server receives.
+    expect(rewriteWsScheme('wss://signal.example/api/ws/agent?next=/')).toBe(
+      'wss://signal.example/api/ws/agent?next=/',
+    );
+  });
+
+  it('preserves a query value through an https rewrite', () => {
+    expect(rewriteWsScheme('https://signal.example/api/ws/agent?scope=/')).toBe(
+      'wss://signal.example/api/ws/agent?scope=/',
+    );
+  });
+
+  it('trims the path slash before the query without altering the query', () => {
+    expect(rewriteWsScheme('http://h/p/?q=1/')).toBe('ws://h/p?q=1/');
+  });
+
+  it('preserves a fragment byte for byte', () => {
+    expect(rewriteWsScheme('http://h/p/#frag')).toBe('ws://h/p#frag');
+  });
+
+  it('rejects an unknown scheme and the empty string', () => {
+    expect(() => rewriteWsScheme('ftp://h/p')).toThrow(/unsupported URL scheme/);
+    expect(() => rewriteWsScheme('')).toThrow(/unsupported URL scheme/);
+  });
+
+  it('leaves the agent CLI default URL unchanged', () => {
+    expect(rewriteWsScheme('ws://localhost:8787/api/ws/agent')).toBe(
+      'ws://localhost:8787/api/ws/agent',
+    );
+  });
+
+  it('differs from toWsUrl exactly where a query or fragment is present', () => {
+    // This pins why the two functions coexist. If someone later "simplifies"
+    // one into the other, this case fails.
+    expect(toWsUrl('http://h/a/?next=/')).toBe('ws://h/a/?next=');
+    expect(rewriteWsScheme('http://h/a/?next=/')).toBe('ws://h/a?next=/');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `./packages/webrtc-core/node_modules/.bin/vitest run test/url.test.ts`
+Expected: FAIL — `rewriteWsScheme is not defined` (11 failing cases).
+
+- [ ] **Step 3: Implement `rewriteWsScheme`**
+
+```ts
+// packages/webrtc-core/src/url.ts  (append, below toWsUrl)
+
+/**
+ * Rewrite a **complete** WebSocket URL's scheme (ADR-89, URL-3/4 — the agent's
+ * contract). `http://`→`ws://`, `https://`→`wss://`; `ws://`/`wss://` pass
+ * through; anything else throws.
+ *
+ * Two differences from {@link toWsUrl}, both deliberate:
+ *
+ * 1. The `?`/`#` suffix is split off **before** the trailing-slash trim. This
+ *    function receives a finished URL, not a base, so a query value ending in
+ *    `/` (`?next=/`, `?scope=/`) is data and must survive; trimming the whole
+ *    string would silently change it.
+ * 2. Nothing is appended. `toWsUrl`'s callers compose a path afterwards; this
+ *    one's caller already has the path.
+ *
+ * Do not merge the two. `toWsUrl` is a base-URL helper and its whole-string
+ * trim is correct for that use; changing it would change which base URLs the
+ * desktop and web accept.
+ */
+export function rewriteWsScheme(url: string): string {
+  const splitAt = url.search(/[?#]/);
+  const head = splitAt === -1 ? url : url.slice(0, splitAt);
+  const suffix = splitAt === -1 ? '' : url.slice(splitAt);
+  const trimmed = stripTrailingSlashes(head);
+  if (trimmed.startsWith('https://')) return `wss://${trimmed.slice(8)}${suffix}`;
+  if (trimmed.startsWith('http://')) return `ws://${trimmed.slice(7)}${suffix}`;
+  if (trimmed.startsWith('ws://') || trimmed.startsWith('wss://')) return `${trimmed}${suffix}`;
+  throw new Error(`unsupported URL scheme in ${JSON.stringify(url)}`);
+}
+```
+
+- [ ] **Step 4: Write the failing upgrade-header test**
+
+```ts
+// apps/agent/test/signalling/upgrade.test.ts
+import { describe, expect, it } from 'vitest';
+import { buildUpgradeHeaders } from '../../src/signalling/upgrade.js';
+
+describe('buildUpgradeHeaders', () => {
+  it('sets a bearer Authorization header', () => {
+    expect(buildUpgradeHeaders('ag_secret')).toEqual({ Authorization: 'Bearer ag_secret' });
+  });
+
+  it('rejects a credential carrying a control character', () => {
+    expect(() => buildUpgradeHeaders('bad\nvalue')).toThrow(/not a valid header value/);
+  });
+
+  it('rejects a credential carrying a space', () => {
+    expect(() => buildUpgradeHeaders('bad value')).toThrow(/not a valid header value/);
+  });
+
+  it('never puts the credential in a query string', () => {
+    const headers = buildUpgradeHeaders('ag_secret');
+    expect(Object.keys(headers)).toEqual(['Authorization']);
+    expect(JSON.stringify(headers)).not.toMatch(/\?/);
+  });
+});
+```
+
+- [ ] **Step 5: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/signalling/upgrade.test.ts`
+Expected: FAIL — `Failed to resolve import "../../src/signalling/upgrade.js"`.
+
+```ts
+// apps/agent/src/signalling/upgrade.ts
+/**
+ * The one place the agent builds a `Bearer` header (AUTH-3, ADR-13).
+ *
+ * The credential travels in the upgrade header and never in a query string: a
+ * URL is logged by every proxy and by Cloudflare's own request log. The
+ * validity check is the HTTP/1.1 field-value grammar reduced to what matters —
+ * printable ASCII with no space — because `ws` would happily send a header
+ * containing a newline and let the request be spliced.
+ */
+const VALID_HEADER_VALUE = /^[\x21-\x7E]+$/;
+
+export function buildUpgradeHeaders(credential: string): Record<string, string> {
+  if (!VALID_HEADER_VALUE.test(credential)) {
+    throw new Error('credential is not a valid header value');
+  }
+  return { Authorization: `Bearer ${credential}` };
+}
+```
+
+- [ ] **Step 6: Run every affected suite, then commit**
+
+```bash
+./packages/webrtc-core/node_modules/.bin/vitest run test/url.test.ts
+./apps/agent/node_modules/.bin/vitest run test/signalling/upgrade.test.ts
+./node_modules/.bin/prettier --write packages/webrtc-core/src/url.ts packages/webrtc-core/test/url.test.ts apps/agent/src/signalling/upgrade.ts apps/agent/test/signalling/upgrade.test.ts
+git add packages/webrtc-core/src/url.ts packages/webrtc-core/test/url.test.ts apps/agent/src/signalling/upgrade.ts apps/agent/test/signalling/upgrade.test.ts
+git commit -m "feat(webrtc-core): add rewriteWsScheme for complete WS URLs"
+```
+
+**TEST-INTEGRITY declaration:**
+- `packages/webrtc-core/test/url.test.ts`: **7 `it()` / 18 `expect()` → 19 `it()` / 34 `expect()`** — the appended fence adds 12 `it()` and 16 `expect()`. The three existing `describe` blocks are untouched; one new block is appended. No assertion is removed or weakened.
+- `apps/agent/test/signalling/upgrade.test.ts`: new file, 4 `it()` / 5 `expect()`.
+
+Both figures are counted from the fences in this task, not carried over: an earlier draft declared the growth as "15 `expect()`" and the after-state as a delta, which read as consistent while understating the added assertions by one.
+
+---
+
+### Task 3: The reconnect ladder, close classification, and keepalive constants
+
+**Files:**
+- Create: `apps/agent/src/signalling/backoff.ts`
+- Create: `apps/agent/src/signalling/close.ts`
+- Create: `apps/agent/src/signalling/constants.ts`
+- Test: `apps/agent/test/signalling/backoff.test.ts`, `apps/agent/test/signalling/close.test.ts`, `apps/agent/test/signalling/constants.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `const BACKOFF_INITIAL_MS = 200`, `const BACKOFF_MAX_MS = 2000`, `const BACKOFF_FACTOR = 1.5`
+  - `function nextBackoff(currentMs: number): number`
+  - `type RunEnd = { kind: 'terminal'; code: number } | { kind: 'transient' }`
+  - `function classifyClose(code: number | null): RunEnd`
+  - `const PING_INTERVAL_MS = 30_000`, `const IDLE_TIMEOUT_MS = 90_000`, `const MAX_INBOUND_FRAME_BYTES = 256 * 1024`, `const MAX_DATA_CHANNEL_FRAME_BYTES = 64 * 1024`
+
+- [ ] **Step 1: Write the failing backoff tests**
+
+```ts
+// apps/agent/test/signalling/backoff.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  BACKOFF_FACTOR,
+  BACKOFF_INITIAL_MS,
+  BACKOFF_MAX_MS,
+  nextBackoff,
+} from '../../src/signalling/backoff.js';
+
+describe('nextBackoff', () => {
+  it('grows by the factor from the initial value', () => {
+    expect(BACKOFF_INITIAL_MS).toBe(200);
+    expect(BACKOFF_FACTOR).toBe(1.5);
+    let d = BACKOFF_INITIAL_MS;
+    const seen = [d];
+    for (let i = 0; i < 3; i += 1) {
+      d = nextBackoff(d);
+      seen.push(d);
+    }
+    expect(seen).toEqual([200, 300, 450, 675]);
+  });
+
+  it('caps at the maximum', () => {
+    let d = BACKOFF_INITIAL_MS;
+    for (let i = 0; i < 12; i += 1) d = nextBackoff(d);
+    expect(d).toBe(BACKOFF_MAX_MS);
+  });
+
+  it('never returns a value below the initial value', () => {
+    // The supervisor resets to BACKOFF_INITIAL_MS; this pins that the reset
+    // target is the floor, not an arbitrary smaller number.
+    expect(nextBackoff(BACKOFF_INITIAL_MS)).toBeGreaterThan(BACKOFF_INITIAL_MS);
+  });
+
+  it('returns an integer number of milliseconds', () => {
+    let d = BACKOFF_INITIAL_MS;
+    for (let i = 0; i < 10; i += 1) {
+      d = nextBackoff(d);
+      expect(Number.isInteger(d)).toBe(true);
+    }
+  });
+
+  it('agrees with the Rust ladder to within one millisecond at every rung', () => {
+    // The Rust computes `(current.as_secs_f64() * 1.5 * 1000).round()`; this
+    // computes `Math.round(current * 1.5)`. Both reach 200/300/450/675/1013
+    // exactly. They part at the rung after that: TS `1013 * 1.5` is exactly
+    // 1519.5 and rounds up to 1520, while the Rust's `1.013 * 1.5 * 1000` is
+    // 1519.4999999999998 and rounds down to 1519. The Rust's own test scopes
+    // parity to factor/initial/cap/reset and explicitly not the fractional
+    // milliseconds, so this asserts the tolerance rather than the value.
+    const rust = [200, 300, 450, 675, 1013, 1519, 2000];
+    let d = BACKOFF_INITIAL_MS;
+    for (const expected of rust) {
+      expect(Math.abs(d - expected)).toBeLessThanOrEqual(1);
+      d = nextBackoff(d);
+    }
+  });
+
+  it('does not add jitter', () => {
+    // ReconnectBackoff in @ponter/webrtc-core jitters by ±50 ms by default.
+    // The agent's ladder must be deterministic: the same input always yields
+    // the same output, so a test can assert it and a log line can be trusted.
+    const outputs = new Set(Array.from({ length: 50 }, () => nextBackoff(200)));
+    expect(outputs.size).toBe(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/signalling/backoff.test.ts`
+Expected: FAIL — `Failed to resolve import "../../src/signalling/backoff.js"`.
+
+```ts
+// apps/agent/src/signalling/backoff.ts
+/**
+ * The agent's reconnect ladder.
+ *
+ * Deliberately NOT `ReconnectBackoff` from this monorepo's `@ponter/webrtc-core`.
+ * That class is the browser/HTTP ladder: `min(initial × 2^n, max) + ±jitter`,
+ * where the jitter is anti-thundering-herd behaviour for many browser tabs. An
+ * agent has one socket per host, the signalling server has been tested against
+ * this exact ladder, and a shared class configured into a different shape on
+ * one consumer would mean two things.
+ *
+ * Integer milliseconds and no jitter: `Duration` cannot hold 1012.5, and the
+ * Rust rounds at each step.
+ */
+export const BACKOFF_INITIAL_MS = 200;
+export const BACKOFF_MAX_MS = 2000;
+export const BACKOFF_FACTOR = 1.5;
+
+export function nextBackoff(currentMs: number): number {
+  return Math.round(Math.min(currentMs * BACKOFF_FACTOR, BACKOFF_MAX_MS));
+}
+```
+
+- [ ] **Step 3: Write the failing close-code and constants tests**
+
+```ts
+// apps/agent/test/signalling/close.test.ts
+import { describe, expect, it } from 'vitest';
+import { classifyClose } from '../../src/signalling/close.js';
+
+describe('classifyClose', () => {
+  it('treats 4409 (replaced) as terminal', () => {
+    expect(classifyClose(4409)).toEqual({ kind: 'terminal', code: 4409 });
+  });
+
+  it('treats 4401 (unauthorized) as terminal', () => {
+    expect(classifyClose(4401)).toEqual({ kind: 'terminal', code: 4401 });
+  });
+
+  it('treats a normal close as transient', () => {
+    expect(classifyClose(1000)).toEqual({ kind: 'transient' });
+    expect(classifyClose(1001)).toEqual({ kind: 'transient' });
+  });
+
+  it('treats a missing close frame as transient', () => {
+    // A socket that dies without a close frame is exactly the case reconnect
+    // exists for.
+    expect(classifyClose(null)).toEqual({ kind: 'transient' });
+  });
+
+  it('treats an unmapped application code as transient', () => {
+    expect(classifyClose(4400)).toEqual({ kind: 'transient' });
+    expect(classifyClose(1013)).toEqual({ kind: 'transient' });
+  });
+});
+```
+
+```ts
+// apps/agent/test/signalling/constants.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  IDLE_TIMEOUT_MS,
+  MAX_DATA_CHANNEL_FRAME_BYTES,
+  MAX_INBOUND_FRAME_BYTES,
+  PING_INTERVAL_MS,
+} from '../../src/signalling/constants.js';
+
+describe('keepalive constants', () => {
+  it('pings every 30 s and tolerates exactly three missed pings', () => {
+    // The two constants are one decision: the server treats a ping older than
+    // 90 s as a dead socket, so the interval must be a third of the timeout.
+    // Changing either alone fails here rather than in production.
+    expect(PING_INTERVAL_MS).toBe(30_000);
+    expect(IDLE_TIMEOUT_MS).toBe(90_000);
+    expect(PING_INTERVAL_MS * 3).toBe(IDLE_TIMEOUT_MS);
+  });
+});
+
+describe('frame caps', () => {
+  it('caps a signalling frame at 256 KiB', () => {
+    expect(MAX_INBOUND_FRAME_BYTES).toBe(256 * 1024);
+  });
+
+  it('caps a data-channel frame at 64 KiB', () => {
+    expect(MAX_DATA_CHANNEL_FRAME_BYTES).toBe(64 * 1024);
+  });
+});
+```
+
+- [ ] **Step 4: Run them and watch them fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/signalling/close.test.ts test/signalling/constants.test.ts`
+Expected: FAIL — both modules unresolved.
+
+```ts
+// apps/agent/src/signalling/close.ts
+/**
+ * How the signalling socket ended, as far as the reconnect loop cares (M2).
+ *
+ * 4409 = this agent was replaced by a newer connection; 4401 = the credential
+ * was rejected. Reconnecting against either flaps a server that has already
+ * decided, and in the 4409 case would evict the connection that replaced this
+ * one. Everything else — 1000, 1001, 1013, an unmapped application code, or no
+ * close frame at all — is a death the next attempt can plausibly fix.
+ *
+ * A pure function over `number | null` on purpose: the close-code policy is the
+ * part that can be tested without a socket, and the part that must not drift.
+ */
+export type RunEnd = { kind: 'terminal'; code: number } | { kind: 'transient' };
+
+const TERMINAL_CODES = new Set([4401, 4409]);
+
+export function classifyClose(code: number | null): RunEnd {
+  if (code !== null && TERMINAL_CODES.has(code)) return { kind: 'terminal', code };
+  return { kind: 'transient' };
+}
+```
+
+```ts
+// apps/agent/src/signalling/constants.ts
+/**
+ * Liveness and framing constants. Not in `@ponter/webrtc-core`: those live only
+ * in the Rust `signal.rs`, and the browser transport's equivalents are a
+ * different mechanism (there is no 90 s idle check in the browser client).
+ */
+/** Sent as a `{"type":"ping"}` text frame plus a real WS ping, then flushed. */
+export const PING_INTERVAL_MS = 30_000;
+/** Three missed pings. The server forgets a socket after this silence. */
+export const IDLE_TIMEOUT_MS = 90_000;
+/**
+ * Checked **before** parsing, so a hostile peer cannot make the agent allocate
+ * an object graph proportional to the frame.
+ */
+export const MAX_INBOUND_FRAME_BYTES = 256 * 1024;
+/** SCTP message cap the browser also enforces; a pty chunk plus its envelope. */
+export const MAX_DATA_CHANNEL_FRAME_BYTES = 64 * 1024;
+```
+
+- [ ] **Step 5: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/signalling/backoff.test.ts test/signalling/close.test.ts test/signalling/constants.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/signalling/{backoff,close,constants}.ts apps/agent/test/signalling/{backoff,close,constants}.test.ts
+git add apps/agent/src/signalling apps/agent/test/signalling
+git commit -m "feat(agent): add the reconnect ladder, close classification and keepalive constants"
+```
+
+**TEST-INTEGRITY declaration:** three new files, **14 new `it()` / 20 new `expect()`**. The Rust counterparts are `signal.rs`'s `backoff_sequence`, `keepalive_window_is_three_missed_pings`, `classify_close_treats_replaced_and_unauthorized_as_terminal` and `classify_close_treats_everything_else_as_transient` — 4 Rust tests become 15 TS tests, an expansion, never a reduction.
+
+> **Do not take `signal.rs:100-103`'s line numbers for `transport.ts`.** That comment, copied into the Rust from the Week 5 spec, points at `transport.ts:45-46` for the two interval declarations and `:140-143` / `:165-168` / `:171-174` for the three `* 1.5` sites. All four ranges have since drifted: the declarations are at **50-51** with their defaults at **79-80**, and the three `Math.min(this.currentIntervalMs * 1.5, …)` sites are at **209-210**, **234-235** and **240-241**. The numbers below are the only ones this plan asserts, and they come from the Rust test, not from the comment. (This is why the plan cites `signal.rs` by *test name* throughout and never by line.)
+
+---
+
+### Task 4: The inbound parsing cascade
+
+**Files:**
+- Create: `apps/agent/src/signalling/messages.ts`
+- Create: `apps/agent/src/signalling/inbound.ts`
+- Test: `apps/agent/test/signalling/messages.test.ts`, `apps/agent/test/signalling/inbound.test.ts`
+
+**Interfaces:**
+- Consumes: `SignalMessage`, `SignalOffer`, `SignalAnswer`, `IceCandidateSignal`, `IdentityProof`, `IceServerConfig` from `@ponter/shared`; `MAX_INBOUND_FRAME_BYTES` from `./constants.js`.
+- Produces:
+  - `function parseInbound(raw: string): SignalMessage | null` — throws `InboundParseError` on malformed JSON or an unknown envelope `type`; returns `null` for a `pong`, and `null` for an `error` frame **after** logging via the injected logger.
+  - `function parseIceServers(raw: string): IceServerConfig[] | null`
+  - `function parseIdentityChallenge(raw: string): string | null`
+  - `function dispatchInbound(raw: string, logger: Logger): InboundEvent` where `type InboundEvent = { kind: 'signal'; message } | { kind: 'ice'; servers } | { kind: 'challenge'; nonce } | { kind: 'ignored' }` — the cascade in the one order that works.
+
+- [ ] **Step 1: Write the failing messages test**
+
+```ts
+// apps/agent/test/signalling/messages.test.ts
+import { describe, expect, it } from 'vitest';
+import { parseInbound } from '../../src/signalling/inbound.js';
+
+describe('the signal envelope', () => {
+  it('round-trips an offer with its capabilities and camelCase payload', () => {
+    const raw =
+      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"]}}';
+    const parsed = parseInbound(raw);
+    expect(parsed).toMatchObject({ type: 'offer', data: { sessionId: 's1', sdp: 'v=0' } });
+    expect(JSON.stringify(parsed)).toContain('"sessionId"');
+    expect(JSON.stringify(parsed)).not.toContain('session_id');
+  });
+
+  it('carries an identity proof', () => {
+    const raw =
+      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","proof":{"signature":"c2ln","fingerprint":"AB"}}}';
+    expect(parseInbound(raw)).toMatchObject({
+      data: { proof: { signature: 'c2ln', fingerprint: 'AB' } },
+    });
+  });
+
+  it('treats the proof as optional for older peers', () => {
+    const raw = '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0"}}';
+    expect((parseInbound(raw) as { data: Record<string, unknown> }).data.proof).toBeUndefined();
+  });
+
+  it('round-trips the user signing key in camelCase', () => {
+    const raw =
+      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","userSigningPublicKey":"cGs="}}';
+    expect(parseInbound(raw)).toMatchObject({ data: { userSigningPublicKey: 'cGs=' } });
+  });
+
+  it('parses an ice-candidate with the WebRTC-spec capital M', () => {
+    // `sdpMLineIndex` is not what any camelCase rule produces; the wire field is
+    // capitalised because the WebRTC spec capitalises it. Both the browser and
+    // the server emit this spelling, so the type must model it literally.
+    const raw =
+      '{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMid":"0","sdpMLineIndex":0}}';
+    expect(parseInbound(raw)).toMatchObject({ data: { sdpMLineIndex: 0 } });
+  });
+
+  it('keeps a hostile sdpMLineIndex parseable so the boundary can reject it', () => {
+    // -1 and 70000 must deserialize; the u16 narrowing happens at the peer
+    // boundary, which turns them into a typed rejection rather than a generic
+    // "malformed frame".
+    for (const bad of [-1, 70000]) {
+      const raw = `{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMLineIndex":${bad}}}`;
+      expect(parseInbound(raw)).toMatchObject({ data: { sdpMLineIndex: bad } });
+    }
+  });
+
+  it('returns null for a pong and for an error frame', () => {
+    expect(parseInbound('{"type":"pong"}')).toBeNull();
+    expect(parseInbound('{"type":"error","code":"VALIDATION_ERROR"}')).toBeNull();
+  });
+
+  it('throws on malformed JSON and on an unknown envelope type', () => {
+    expect(() => parseInbound('{')).toThrow();
+    expect(() => parseInbound('{"type":"hello","data":{}}')).toThrow();
+  });
+
+  it('rejects an oversize frame before parsing it', () => {
+    expect(() => parseInbound('x'.repeat(256 * 1024 + 1))).toThrow(/exceeds/);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement `messages.ts` and `inbound.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/signalling/messages.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/signalling/messages.ts
+/**
+ * The signalling types are `@ponter/shared`'s. This module re-exports them and
+ * adds only the payload shapes that exist solely on the agent side (the pushed
+ * ICE configuration and the WS2 identity challenge).
+ *
+ * The Rust tree hand-mirrored these types in `signal.rs` and then pinned the
+ * mirror with round-trip tests. A same-language import is strictly better: a
+ * drift is a type error rather than a test failure.
+ */
+export type {
+  IceCandidateSignal,
+  IceServerConfig,
+  IdentityProof,
+  SignalAnswer,
+  SignalMessage,
+  SignalOffer,
+} from '@ponter/shared';
+
+export interface IceChallengePayload {
+  /** The nonce the agent must sign and echo. */
+  nonce: string;
+}
+
+/**
+ * One ICE server as the server pushes it. `urls` is a list because a TURN entry
+ * is advertised as two URLs (UDP and TCP) under one credential pair.
+ */
+export interface IceServerEntry {
+  urls: string[];
+  username?: string | null;
+  credential?: string | null;
+}
+```
+
+```ts
+// apps/agent/src/signalling/inbound.ts
+import type { Logger } from '../logging/index.js';
+import { MAX_INBOUND_FRAME_BYTES } from './constants.js';
+import type { IceServerEntry, SignalMessage } from './messages.js';
+
+export class InboundParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InboundParseError';
+  }
+}
+
+type Envelope =
+  | { type: 'signal'; data: SignalMessage }
+  | { type: 'pong' }
+  | { type: 'error'; code?: string };
+
+function guardSize(raw: string): void {
+  if (raw.length > MAX_INBOUND_FRAME_BYTES) {
+    throw new InboundParseError(`inbound frame exceeds ${MAX_INBOUND_FRAME_BYTES} bytes`);
+  }
+}
+
+/**
+ * A `signal` frame nests `{type, data}` inside `{type:'signal', data}`: the
+ * outer `type` is the transport discriminator, the inner one names the signal.
+ *
+ * `hello` is deliberately absent — the server's inbound handler has no arm for
+ * it and answers `VALIDATION_ERROR`.
+ */
+export function parseInbound(raw: string, logger?: Logger): SignalMessage | null {
+  guardSize(raw);
+  let envelope: Envelope;
+  try {
+    envelope = JSON.parse(raw) as Envelope;
+  } catch {
+    throw new InboundParseError('malformed inbound frame');
+  }
+  if (envelope?.type === 'signal' && envelope.data) return envelope.data;
+  if (envelope?.type === 'pong') return null;
+  if (envelope?.type === 'error') {
+    logger?.warn({ code: envelope.code ?? 'unknown' }, 'server sent an error frame');
+    return null;
+  }
+  throw new InboundParseError(`unknown inbound envelope type`);
+}
+
+/**
+ * The `ice-servers` frame the server pushes on connect. Returns `null` for any
+ * frame that is not one, so the caller falls through to the next parser.
+ */
+export function parseIceServers(raw: string): IceServerEntry[] | null {
+  guardSize(raw);
+  let frame: { type?: string; data?: { iceServers?: IceServerEntry[] } };
+  try {
+    frame = JSON.parse(raw) as typeof frame;
+  } catch {
+    return null;
+  }
+  if (frame?.type !== 'ice-servers') return null;
+  return frame.data?.iceServers ?? [];
+}
+
+/**
+ * The WS2 `identity-challenge` nonce. Returns `null` for any frame that is not
+ * one. An oversize frame throws, like the other parsers.
+ */
+export function parseIdentityChallenge(raw: string): string | null {
+  guardSize(raw);
+  let frame: { type?: string; data?: { nonce?: string } };
+  try {
+    frame = JSON.parse(raw) as typeof frame;
+  } catch {
+    return null;
+  }
+  if (frame?.type !== 'identity-challenge') return null;
+  return typeof frame.data?.nonce === 'string' ? frame.data.nonce : null;
+}
+
+export type InboundEvent =
+  | { kind: 'signal'; message: SignalMessage }
+  | { kind: 'ice'; servers: IceServerEntry[] }
+  | { kind: 'challenge'; nonce: string }
+  | { kind: 'ignored' };
+
+/**
+ * The cascade, in the only order that works.
+ *
+ * `parseIdentityChallenge` and `parseIceServers` return `null` for "not mine";
+ * `parseInbound` throws for anything that is not a signal frame. So the two
+ * specific parsers must run first: run `parseInbound` first and every
+ * `identity-challenge` and `ice-servers` frame becomes a logged parse error, and
+ * the agent builds its peer with no TURN and never answers the identity
+ * challenge — which makes every downstream offer-proof gate fail closed.
+ */
+export function dispatchInbound(raw: string, logger: Logger): InboundEvent {
+  const nonce = parseIdentityChallenge(raw);
+  if (nonce !== null) return { kind: 'challenge', nonce };
+
+  const servers = parseIceServers(raw);
+  if (servers !== null) return { kind: 'ice', servers };
+
+  const message = parseInbound(raw, logger);
+  if (message === null) return { kind: 'ignored' };
+  return { kind: 'signal', message };
+}
+```
+
+- [ ] **Step 3: Write the failing cascade test**
+
+```ts
+// apps/agent/test/signalling/inbound.test.ts
+import { describe, expect, it, vi } from 'vitest';
+import { createLogger } from '../../src/logging/index.js';
+import {
+  dispatchInbound,
+  parseIceServers,
+  parseIdentityChallenge,
+} from '../../src/signalling/inbound.js';
+
+function captureLogger() {
+  const lines: string[] = [];
+  const logger = createLogger({ RUST_LOG: 'debug' }, (l) => lines.push(l));
+  return { logger, lines };
+}
+
+describe('parseIceServers', () => {
+  it('parses the pushed frame with a STUN and a dual-transport TURN entry', () => {
+    const raw = JSON.stringify({
+      type: 'ice-servers',
+      data: {
+        iceServers: [
+          { urls: ['stun:stun.example.com:19302'] },
+          {
+            urls: [
+              'turn:turn.example.com:3478?transport=udp',
+              'turn:turn.example.com:3478?transport=tcp',
+            ],
+            username: '1700000000:user-1',
+            credential: 'cred-abc',
+          },
+        ],
+      },
+    });
+    expect(parseIceServers(raw)).toEqual([
+      { urls: ['stun:stun.example.com:19302'] },
+      {
+        urls: [
+          'turn:turn.example.com:3478?transport=udp',
+          'turn:turn.example.com:3478?transport=tcp',
+        ],
+        username: '1700000000:user-1',
+        credential: 'cred-abc',
+      },
+    ]);
+  });
+
+  it('parses a STUN-only frame', () => {
+    const raw = JSON.stringify({
+      type: 'ice-servers',
+      data: { iceServers: [{ urls: ['stun:h:3478'] }] },
+    });
+    expect(parseIceServers(raw)).toHaveLength(1);
+  });
+
+  it('returns null for a frame that is not an ice-servers frame', () => {
+    expect(parseIceServers('{"type":"pong"}')).toBeNull();
+  });
+});
+
+describe('parseIdentityChallenge', () => {
+  it('returns the nonce', () => {
+    expect(parseIdentityChallenge('{"type":"identity-challenge","data":{"nonce":"n1"}}')).toBe(
+      'n1',
+    );
+  });
+
+  it('returns null for a non-challenge frame', () => {
+    expect(parseIdentityChallenge('{"type":"offer","data":{"sessionId":"s"}}')).toBeNull();
+    expect(parseIdentityChallenge('{"type":"ice-servers","data":{"iceServers":[]}}')).toBeNull();
+  });
+});
+
+describe('dispatchInbound', () => {
+  it('classifies a challenge before anything else', () => {
+    const { logger } = captureLogger();
+    expect(dispatchInbound('{"type":"identity-challenge","data":{"nonce":"n1"}}', logger)).toEqual(
+      { kind: 'challenge', nonce: 'n1' },
+    );
+  });
+
+  it('classifies the ICE push without logging a parse failure', () => {
+    const { logger, lines } = captureLogger();
+    const event = dispatchInbound(
+      JSON.stringify({ type: 'ice-servers', data: { iceServers: [{ urls: ['stun:h'] }] } }),
+      logger,
+    );
+    expect(event.kind).toBe('ice');
+    // The cascade order is what this asserts: an inverted order turns this
+    // frame into a "dropping malformed inbound frame" warning.
+    expect(lines.filter((l) => l.includes('malformed'))).toHaveLength(0);
+    expect(lines.filter((l) => l.includes('WARN'))).toHaveLength(0);
+  });
+
+  it('classifies a signal frame', () => {
+    const { logger } = captureLogger();
+    const event = dispatchInbound('{"type":"signal","data":{"type":"offer","data":{}}}', logger);
+    expect(event.kind).toBe('signal');
+  });
+
+  it('ignores a pong without a warning', () => {
+    const { logger, lines } = captureLogger();
+    expect(dispatchInbound('{"type":"pong"}', logger)).toEqual({ kind: 'ignored' });
+    expect(lines).toHaveLength(0);
+  });
+
+  it('logs a server error frame at warn and ignores it', () => {
+    const { logger, lines } = captureLogger();
+    expect(dispatchInbound('{"type":"error","code":"E"}', logger)).toEqual({ kind: 'ignored' });
+    expect(lines.some((l) => l.includes('server sent an error frame'))).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 4: Run all three suites, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/signalling/messages.test.ts test/signalling/inbound.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/signalling/{messages,inbound}.ts apps/agent/test/signalling/{messages,inbound}.test.ts
+git add apps/agent/src/signalling apps/agent/test/signalling
+git commit -m "feat(agent): parse the inbound cascade in challenge, ICE, signal order"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 28 new `expect()`**. The Rust counterparts are `signal.rs`'s `offer_round_trip`, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes`, `offer_with_user_signing_key_round_trips`, `parses_the_pushed_ice_servers_frame`, `parses_a_stun_only_ice_servers_frame`, `parse_identity_challenge_returns_none_for_non_challenge`, `an_ice_servers_frame_is_not_taken_as_one`, `rejects_malformed` and `oversize_frame_is_rejected_before_parsing` — 10 Rust tests become 18 TS tests. Two of them (`the cascade order produces zero warnings`, `dispatchInbound ignores a pong without a warning`) are **new**: the Rust had no test for the cascade order, which is precisely the ordering that a porter is most likely to invert.
+
+---
+
+### Task 5: The signalling client and the run loop
+
+**Files:**
+- Create: `apps/agent/src/signalling/auth.ts`
+- Create: `apps/agent/src/signalling/client.ts`
+- Test: `apps/agent/test/signalling/auth.test.ts`, `apps/agent/test/signalling/client.test.ts`
+
+**Interfaces:**
+- Consumes: `AgentConfig` (Task 1); `Logger` (Task 1); `buildUpgradeHeaders`, `rewriteWsScheme` (Task 2); `nextBackoff`, `classifyClose`, constants (Task 3); `dispatchInbound` (Task 4); `AgentIdentity` (Task 6 — `{ publicKeyBase64: string; sign(bytes: Uint8Array): Uint8Array }`); `buildAgentIdentityFrame(nonce)` (Task 6).
+- Produces:
+  - `function isAuthFatal(frame: { status?: number; code?: string }): boolean`
+  - `interface SignallingSocket { send(data: string): void; close(code?: number): void; on(event, cb): void }`
+  - `interface SignallingDeps { connect(url, headers): SignallingSocket; logger: Logger; now(): number; every(ms: number, fn: () => void): () => void }`
+  - `class SignallingClient { constructor(deps, config, identity, handlers); runOnce(): Promise<RunEnd>; run(): Promise<void> }`
+  - `interface SignallingHandlers { onOffer(msg): void; onIceServers(servers): void; onAnswer(msg): void; onCandidate(msg): void }`
+
+- [ ] **Step 1: Write the failing auth-classification test**
+
+```ts
+// apps/agent/test/signalling/auth.test.ts
+import { describe, expect, it } from 'vitest';
+import { isAuthFatal } from '../../src/signalling/auth.js';
+
+describe('isAuthFatal', () => {
+  it('treats a 401 status as fatal', () => {
+    expect(isAuthFatal({ status: 401, code: 'API_ERROR' })).toBe(true);
+  });
+
+  it('treats an UNAUTHORIZED code as fatal even without a status', () => {
+    expect(isAuthFatal({ code: 'UNAUTHORIZED' })).toBe(true);
+  });
+
+  it('does NOT treat a 403 as fatal', () => {
+    // Issue #107 / PR #110 settled this: a 403 means "this peer may not do
+    // that", not "this credential is dead". Reconnecting is the wrong response
+    // and the Rust test `not_auth_fatal_on_other_failures` pins it.
+    expect(isAuthFatal({ status: 403, code: 'FORBIDDEN' })).toBe(false);
+  });
+
+  it('does not treat a server error or a bare status as fatal', () => {
+    expect(isAuthFatal({ status: 500, code: 'SERVER_ERROR' })).toBe(false);
+    expect(isAuthFatal({ status: 200, code: 'API_ERROR' })).toBe(false);
+    expect(isAuthFatal({})).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/signalling/auth.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/signalling/auth.ts
+/**
+ * Is this failure fatal to the *credential*, as opposed to fatal to the
+ * *request*? (B53, ported from `api.rs`'s `is_auth_fatal`.)
+ *
+ * The distinction is the whole reason reconnect exists: a 500 or a 403 is
+ * worth retrying or ignoring, while a 401 or `UNAUTHORIZED` means this agent
+ * will never be admitted. Reconnecting on those hammers a server that has
+ * already decided, and on `4409` would evict the connection that replaced us.
+ *
+ * Deliberately not a message-substring match: issue #107 replaced message
+ * matching with this stable signal pair because a server rewording its message
+ * silently turned a fatal into an infinite loop.
+ */
+export interface AuthSignal {
+  status?: number;
+  code?: string;
+}
+
+export function isAuthFatal(frame: AuthSignal): boolean {
+  return frame.status === 401 || frame.code === 'UNAUTHORIZED';
+}
+```
+
+- [ ] **Step 3: Write the failing client test**
+
+The socket is faked at the `connect` seam, so this suite never opens a port.
+
+```ts
+// apps/agent/test/signalling/client.test.ts
+import { describe, expect, it, vi } from 'vitest';
+import { createLogger } from '../../src/logging/index.js';
+import {
+  SignallingClient,
+  type SignallingDeps,
+  type SignallingSocket,
+} from '../../src/signalling/client.js';
+import { loadConfig } from '../../src/config.js';
+
+function fakeSocket() {
+  const handlers = new Map<string, ((...a: unknown[]) => void)[]>();
+  const sent: string[] = [];
+  const socket: SignallingSocket = {
+    send: (d) => sent.push(d),
+    close: (code) => emit('close', code ?? 1000),
+    on: (ev, cb) => {
+      handlers.set(ev, [...(handlers.get(ev) ?? []), cb]);
+    },
+  };
+  function emit(ev: string, ...args: unknown[]) {
+    for (const cb of handlers.get(ev) ?? []) cb(...args);
+  }
+  return { socket, sent, emit };
+}
+
+function harness() {
+  let clock = 0;
+  const timers: { ms: number; fn: () => void; cancelled: boolean }[] = [];
+  const logLines: string[] = [];
+  let socketHandle = fakeSocket();
+  let connects = 0;
+  const deps: SignallingDeps = {
+    connect: () => {
+      connects += 1;
+      return socketHandle.socket;
+    },
+    logger: createLogger({ RUST_LOG: 'debug' }, (l) => logLines.push(l)),
+    now: () => clock,
+    every: (ms, fn) => {
+      const t = { ms, fn, cancelled: false };
+      timers.push(t);
+      return () => {
+        t.cancelled = true;
+      };
+    },
+  };
+  const advance = (ms: number) => {
+    clock += ms;
+    for (const t of timers) if (!t.cancelled) t.fn();
+  };
+  return {
+    deps,
+    sent: () => socketHandle.sent,
+    emit: (...a: [string, ...unknown[]]) => socketHandle.emit(...a),
+    logLines,
+    connects: () => connects,
+    advance,
+    reset: () => {
+      socketHandle = fakeSocket();
+    },
+  };
+}
+
+const config = loadConfig({
+  AGENT_ID: 'a1',
+  AGENT_CREDENTIAL: 'ag_secret',
+  AGENT_SERVER: 'ws://h:8787/api/ws/agent',
+});
+const identity = {
+  publicKeyBase64: 'cGs=',
+  sign: () => new Uint8Array([1, 2, 3]),
+};
+
+function makeClient(h: ReturnType<typeof harness>, overrides = {}) {
+  const handlers = {
+    onOffer: vi.fn(),
+    onIceServers: vi.fn(),
+    onAnswer: vi.fn(),
+    onCandidate: vi.fn(),
+    onChallenge: vi.fn(),
+    ...overrides,
+  };
+  return { client: new SignallingClient(h.deps, config, identity, handlers), handlers };
+}
+
+describe('SignallingClient.runOnce', () => {
+  it('connects to the configured URL with a Bearer header', async () => {
+    const h = harness();
+    const seen: { url: string; headers: Record<string, string> }[] = [];
+    h.deps.connect = (url, headers) => {
+      seen.push({ url, headers });
+      return fakeSocket().socket;
+    };
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('close', 4409);
+    await done;
+    expect(seen[0]).toEqual({
+      url: 'ws://h:8787/api/ws/agent',
+      headers: { Authorization: 'Bearer ag_secret' },
+    });
+  });
+
+  it('routes a signal frame to the matching handler', async () => {
+    const h = harness();
+    const { client, handlers } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('message', '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s","sdp":"v"}}}');
+    h.emit('close', 4409);
+    await done;
+    expect(handlers.onOffer).toHaveBeenCalledWith({ type: 'offer', data: { sessionId: 's', sdp: 'v' } });
+  });
+
+  it('answers an identity challenge with a signed frame', async () => {
+    const h = harness();
+    const { client, handlers } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('message', '{"type":"identity-challenge","data":{"nonce":"n1"}}');
+    h.emit('close', 4409);
+    await done;
+    expect(handlers.onChallenge).not.toHaveBeenCalled();
+    const reply = JSON.parse(h.sent()[0]);
+    expect(reply.type).toBe('agent-identity');
+    expect(reply.data.nonce).toBe('n1');
+    expect(reply.data.publicKey).toBe('cGs=');
+    expect(reply.data.signature).toBe(Buffer.from([1, 2, 3]).toString('base64'));
+  });
+
+  it('ends the run transiently when the socket dies without a close frame', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('close', null);
+    await expect(done).resolves.toEqual({ kind: 'transient' });
+  });
+
+  it('ends the run terminally on 4409 and on 4401', async () => {
+    for (const code of [4401, 4409]) {
+      const h = harness();
+      const { client } = makeClient(h);
+      const done = client.runOnce();
+      h.emit('open');
+      h.emit('close', code);
+      await expect(done).resolves.toEqual({ kind: 'terminal', code });
+    }
+  });
+
+  it('ends the run terminally on a server UNAUTHORIZED error frame', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('message', '{"type":"error","code":"UNAUTHORIZED","message":"bad credential"}');
+    await expect(done).resolves.toEqual({ kind: 'terminal', code: 4401 });
+  });
+
+  it('keeps the socket open for a 403 error frame and ends transiently later', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('message', '{"type":"error","code":"FORBIDDEN","message":"not your session"}');
+    h.emit('close', 1006);
+    await expect(done).resolves.toEqual({ kind: 'transient' });
+  });
+
+  it('drops an oversize frame and keeps the socket open', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('message', 'x'.repeat(256 * 1024 + 1));
+    h.emit('close', 4409);
+    await expect(done).resolves.toEqual({ kind: 'terminal', code: 4409 });
+    expect(h.logLines.some((l) => l.includes('exceeds'))).toBe(true);
+  });
+
+  it('drops a malformed frame and keeps the socket open', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.emit('message', '{not json');
+    h.emit('close', 4409);
+    await expect(done).resolves.toEqual({ kind: 'terminal', code: 4409 });
+  });
+
+  it('sends a ping on every keepalive tick', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.advance(30_000);
+    h.emit('close', 4409);
+    await done;
+    expect(h.sent().some((s) => s.includes('"ping"'))).toBe(true);
+  });
+
+  it('ends the run transiently after 90 s of complete silence', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    h.advance(90_000);
+    await expect(done).resolves.toEqual({ kind: 'transient' });
+  });
+
+  it('does not time out while frames keep arriving', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.runOnce();
+    h.emit('open');
+    for (let i = 0; i < 4; i += 1) {
+      h.advance(30_000);
+      h.emit('message', '{"type":"pong"}');
+    }
+    h.emit('close', 4409);
+    await expect(done).resolves.toEqual({ kind: 'terminal', code: 4409 });
+  });
+});
+
+describe('SignallingClient.run', () => {
+  it('stops without reconnecting after a terminal close', async () => {
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.run();
+    h.emit('open');
+    h.emit('close', 4409);
+    await expect(done).resolves.toBeUndefined();
+    expect(h.connects()).toBe(1);
+  });
+
+  it('reconnects after a transient close, waiting between attempts', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.run();
+    h.emit('open');
+    h.emit('close', 1006);
+    await vi.advanceTimersByTimeAsync(199);
+    expect(h.connects()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.connects()).toBe(2);
+    h.reset();
+    h.emit('open');
+    h.emit('close', 4409);
+    await done;
+    vi.useRealTimers();
+  });
+
+  it('resets the ladder after a successful connection', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const { client } = makeClient(h);
+    const done = client.run();
+    // First death without ever connecting: 200 ms.
+    h.emit('close', 1006);
+    await vi.advanceTimersByTimeAsync(200);
+    // Second attempt connects, then dies: the ladder must be back at 200.
+    h.reset();
+    h.emit('open');
+    h.emit('close', 1006);
+    await vi.advanceTimersByTimeAsync(199);
+    expect(h.connects()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.connects()).toBe(3);
+    h.reset();
+    h.emit('open');
+    h.emit('close', 4409);
+    await done;
+    vi.useRealTimers();
+  });
+});
+```
+
+- [ ] **Step 4: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/signalling/client.test.ts`
+Expected: FAIL — module unresolved; then each behavioural case fails until implemented.
+
+```ts
+// apps/agent/src/signalling/client.ts
+import type { AgentConfig } from '../config.js';
+import type { Logger } from '../logging/index.js';
+import type { AgentIdentity } from '../identity/store.js';
+import { buildAgentIdentityFrame } from '../identity/frame.js';
+import { rewriteWsScheme } from '@ponter/webrtc-core';
+import { isAuthFatal } from './auth.js';
+import { BACKOFF_INITIAL_MS, IDLE_TIMEOUT_MS, PING_INTERVAL_MS } from './constants.js';
+import { nextBackoff } from './backoff.js';
+import { classifyClose, type RunEnd } from './close.js';
+import { dispatchInbound } from './inbound.js';
+import { buildUpgradeHeaders } from './upgrade.js';
+
+export interface SignallingSocket {
+  send(data: string): void;
+  close(code?: number): void;
+  on(event: 'open' | 'message' | 'close' | 'error', cb: (...args: never[]) => void): void;
+}
+
+export interface SignallingDeps {
+  connect(url: string, headers: Record<string, string>): SignallingSocket;
+  logger: Logger;
+  now(): number;
+  /** Schedules `fn` every `ms`; returns a cancel handle. */
+  every(ms: number, fn: () => void): () => void;
+  /** Sleeps; injectable so tests drive it with fake timers. */
+  sleep?(ms: number): Promise<void>;
+}
+
+export interface SignallingHandlers {
+  onOffer(message: unknown): void;
+  onAnswer(message: unknown): void;
+  onCandidate(message: unknown): void;
+  onIceServers(servers: unknown): void;
+  onChallenge?(nonce: string): void;
+}
+
+export class SignallingClient {
+  private readonly url: string;
+  private readonly headers: Record<string, string>;
+
+  constructor(
+    private readonly deps: SignallingDeps,
+    private readonly config: AgentConfig,
+    private readonly identity: AgentIdentity,
+    private readonly handlers: SignallingHandlers,
+  ) {
+    this.url = rewriteWsScheme(config.server);
+    this.headers = buildUpgradeHeaders(config.credential);
+  }
+
+  /** One connection, from connect to close. */
+  runOnce(): Promise<RunEnd> {
+    return new Promise<RunEnd>((resolve) => {
+      const socket = this.deps.connect(this.url, this.headers);
+      let settled = false;
+      let lastActivityAt = this.deps.now();
+      let cancelPing: (() => void) | null = null;
+
+      const finish = (end: RunEnd): void => {
+        if (settled) return;
+        settled = true;
+        cancelPing?.();
+        socket.close();
+        resolve(end);
+      };
+
+      socket.on('open', () => {
+        this.deps.logger.info({ url: this.url }, 'signalling connected');
+        lastActivityAt = this.deps.now();
+        cancelPing = this.deps.every(PING_INTERVAL_MS, () => {
+          if (this.deps.now() - lastActivityAt >= IDLE_TIMEOUT_MS) {
+            this.deps.logger.warn({ idleMs: IDLE_TIMEOUT_MS }, 'signalling idle timeout');
+            finish({ kind: 'transient' });
+            return;
+          }
+          socket.send(JSON.stringify({ type: 'ping' }));
+        });
+      });
+
+      socket.on('message', (raw: unknown) => {
+        lastActivityAt = this.deps.now();
+        if (typeof raw !== 'string') return;
+        try {
+          const event = dispatchInbound(raw, this.deps.logger);
+          if (event.kind === 'challenge') {
+            socket.send(buildAgentIdentityFrame(event.nonce, this.identity));
+            this.handlers.onChallenge?.(event.nonce);
+            return;
+          }
+          if (event.kind === 'ice') {
+            this.handlers.onIceServers(event.servers);
+            return;
+          }
+          if (event.kind !== 'signal') return;
+          const message = event.message as { type?: string; data?: unknown };
+          if (message.type === 'offer') this.handlers.onOffer(message);
+          else if (message.type === 'answer') this.handlers.onAnswer(message);
+          else if (message.type === 'ice-candidate') this.handlers.onCandidate(message);
+        } catch (error) {
+          // Fail-soft: a hostile or corrupt frame costs one frame, never the
+          // session. The Rust dropped these the same way.
+          this.deps.logger.warn(
+            { error: error instanceof Error ? error.message : String(error) },
+            'dropping an unparseable inbound frame',
+          );
+        }
+      });
+
+      socket.on('error', (error: unknown) => {
+        this.deps.logger.warn(
+          { error: error instanceof Error ? error.message : String(error) },
+          'signalling socket error',
+        );
+      });
+
+      socket.on('close', (code: unknown) => {
+        finish(classifyClose(typeof code === 'number' ? code : null));
+      });
+
+      // The error frame is consumed by `dispatchInbound`, which logs it. Auth
+      // fatality must still end the run rather than fall through to a retry, so
+      // it is classified here from the raw bytes — the only place that still
+      // has them.
+      const originalMessage = socket.on;
+      void originalMessage;
+      const checkAuth = (raw: unknown): void => {
+        if (typeof raw !== 'string' || !raw.includes('UNAUTHORIZED')) return;
+        try {
+          const parsed = JSON.parse(raw) as { type?: string; code?: string };
+          if (parsed.type === 'error' && isAuthFatal({ code: parsed.code })) {
+            this.deps.logger.error({ code: parsed.code }, 'the server rejected this credential');
+            finish({ kind: 'terminal', code: 4401 });
+          }
+        } catch {
+          /* already logged by the message handler */
+        }
+      };
+      socket.on('message', checkAuth);
+    });
+  }
+
+  /**
+   * Reconnect until something terminal happens.
+   *
+   * The ladder resets **only after a successful connection**, not after every
+   * attempt: a server that accepts the socket and immediately drops it is still
+   * a server in trouble, and resetting on connect-attempt would hammer it at
+   * 200 ms forever.
+   */
+  async run(): Promise<void> {
+    let wait = BACKOFF_INITIAL_MS;
+    for (;;) {
+      const end = await this.runOnce();
+      if (end.kind === 'terminal') {
+        this.deps.logger.info({ code: end.code }, 'signalling ended terminally; not reconnecting');
+        return;
+      }
+      this.deps.logger.info({ waitMs: wait }, 'signalling dropped; reconnecting');
+      await sleep(this.deps, wait);
+      wait = nextBackoff(wait);
+    }
+  }
+}
+
+function sleep(deps: SignallingDeps, ms: number): Promise<void> {
+  if (deps.sleep) return deps.sleep(ms);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+```
+
+> The `checkAuth` listener above is deliberately a **second** `message` listener rather than a branch inside the first: `dispatchInbound` owns logging and returns `ignored` for error frames, so the fatality decision needs the raw bytes before they are swallowed. Both listeners run on the same event; `finish()` is idempotent via `settled`.
+
+- [ ] **Step 5: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/signalling/auth.test.ts test/signalling/client.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/signalling/{auth,client}.ts apps/agent/test/signalling/{auth,client}.test.ts
+git add apps/agent/src/signalling apps/agent/test/signalling
+git commit -m "feat(agent): add the signalling client, run loop and auth-fatality classifier"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 29 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own.
+
+---
+
+### Task 6: The identity store and the agent identity frame
+
+**Files:**
+- Create: `apps/agent/src/identity/store.ts`
+- Create: `apps/agent/src/identity/frame.ts`
+- Test: `apps/agent/test/identity/store.test.ts`, `apps/agent/test/identity/frame.test.ts`
+
+**Interfaces:**
+- Consumes: `canonicalProofMessage`, `normalizeFingerprint`, `parseSdpFingerprint` from `@ponter/shared`.
+- Produces:
+  - `interface AgentIdentity { publicKeyBase64: string; sign(bytes: Uint8Array): Uint8Array }`
+  - `function loadOrCreateIdentity(path: string): AgentIdentity`
+  - `function buildAgentIdentityFrame(nonce: string, identity: AgentIdentity): string`
+  - `const AGENT_IDENTITY_SIGNING_PREFIX = 'ponter-ws2-agent-identity-v1'`
+
+- [ ] **Step 1: Write the failing store test**
+
+```ts
+// apps/agent/test/identity/store.test.ts
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { loadOrCreateIdentity } from '../../src/identity/store.js';
+
+function tempDir(): string {
+  return mkdtempSync(join(tmpdir(), 'ponter-identity-'));
+}
+
+describe('loadOrCreateIdentity', () => {
+  it('creates the file on first use and reloads the same key', () => {
+    const path = join(tempDir(), 'agent-identity.pkcs8');
+    const first = loadOrCreateIdentity(path);
+    const second = loadOrCreateIdentity(path);
+    expect(second.publicKeyBase64).toBe(first.publicKeyBase64);
+  });
+
+  it('writes the key file owner-only, mode 0600', () => {
+    const path = join(tempDir(), 'agent-identity.pkcs8');
+    loadOrCreateIdentity(path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it('creates the parent directory when it does not exist', () => {
+    const path = join(tempDir(), 'nested', 'deeper', 'id.pkcs8');
+    expect(() => loadOrCreateIdentity(path)).not.toThrow();
+  });
+
+  it('never truncates an existing key — a corrupt file is an error, not a reset', () => {
+    const path = join(tempDir(), 'agent-identity.pkcs8');
+    writeFileSync(path, 'not a pkcs8 key', { mode: 0o600 });
+    expect(() => loadOrCreateIdentity(path)).toThrow(/identity file is not a valid PKCS#8/);
+    expect(readFileSync(path, 'utf8')).toBe('not a pkcs8 key');
+  });
+
+  it('signs and verifies a round trip', async () => {
+    const { createVerify, createPublicKey } = await import('node:crypto');
+    const path = join(tempDir(), 'agent-identity.pkcs8');
+    const identity = loadOrCreateIdentity(path);
+    const message = Buffer.from('hello');
+    const signature = identity.sign(message);
+    const der = Buffer.from(identity.publicKeyBase64, 'base64');
+    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
+    const verifier = createVerify('ed25519');
+    verifier.update(message);
+    expect(verifier.verify(key, signature)).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/identity/store.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/identity/store.ts
+import {
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  sign as nodeSign,
+  type KeyObject,
+} from 'node:crypto';
+import { mkdirSync, openSync, readFileSync, writeSync, closeSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+/**
+ * The agent's long-lived Ed25519 identity (B47).
+ *
+ * Two properties are load-bearing and both are enforced by the filesystem call,
+ * not by a subsequent `chmod`:
+ *
+ * - **`0o600` at creation.** A create-then-chmod leaves a window where the key
+ *   is world-readable. `open(..., 0o600)` applies the mode atomically.
+ * - **`wx`, never `w`.** An existing file must never be truncated: a truncated
+ *   key is an unrecoverable identity loss, and the agent would happily
+ *   regenerate one and present a new fingerprint to every peer. `wx` makes the
+ *   second create throw `EEXIST`, which the caller turns into a hard error.
+ *
+ * Only the PKCS#8 private key is persisted. The public key is derived on load,
+ * so the two can never disagree.
+ */
+export interface AgentIdentity {
+  readonly publicKeyBase64: string;
+  sign(bytes: Uint8Array): Uint8Array;
+}
+
+const PUBLIC_KEY_TYPE = 'spki';
+
+function encodeBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function toIdentity(privateKey: KeyObject): AgentIdentity {
+  const publicDer = createPublicKey(privateKey).export({ type: PUBLIC_KEY_TYPE, format: 'der' });
+  return {
+    publicKeyBase64: encodeBase64(publicDer as Buffer),
+    sign: (bytes) => new Uint8Array(nodeSign(null, Buffer.from(bytes), privateKey)),
+  };
+}
+
+function readPrivateKey(path: string): KeyObject {
+  try {
+    return createPrivateKey({
+      key: readFileSync(path),
+      type: 'pkcs8',
+      format: 'der',
+    });
+  } catch (error) {
+    throw new Error(
+      `identity file is not a valid PKCS#8 Ed25519 key (${path}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+export function loadOrCreateIdentity(path: string): AgentIdentity {
+  try {
+    return toIdentity(readPrivateKey(path));
+  } catch (error) {
+    // A present-but-corrupt file is *not* a reason to mint a new identity:
+    // doing so silently changes the agent's fingerprint and every peer's TOFU
+    // record. Only a missing file is a first run.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const { privateKey } = generateKeyPairSync('ed25519');
+  const der = privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer;
+
+  const fd = openSync(path, 'wx', 0o600);
+  try {
+    writeSync(fd, der);
+  } finally {
+    closeSync(fd);
+  }
+  return toIdentity(privateKey);
+}
+```
+
+- [ ] **Step 3: Write the failing frame test**
+
+```ts
+// apps/agent/test/identity/frame.test.ts
+import { describe, expect, it } from 'vitest';
+import { buildAgentIdentityFrame } from '../../src/identity/frame.js';
+
+const identity = {
+  publicKeyBase64: 'cGs=',
+  sign: (bytes: Uint8Array) => new Uint8Array(Buffer.from(`sig:${Buffer.from(bytes).toString()}`)),
+};
+
+describe('buildAgentIdentityFrame', () => {
+  it('signs the canonical agent-identity string', () => {
+    const frame = buildAgentIdentityFrame('nonce-1', identity);
+    const parsed = JSON.parse(frame);
+    const signed = Buffer.from(parsed.data.signature, 'base64').toString();
+    expect(signed).toBe('sig:ponter-ws2-agent-identity-v1\nnonce=nonce-1');
+  });
+
+  it('carries the nonce and the base64 public key', () => {
+    const parsed = JSON.parse(buildAgentIdentityFrame('n', identity));
+    expect(parsed).toMatchObject({ type: 'agent-identity', data: { nonce: 'n', publicKey: 'cGs=' } });
+  });
+
+  it('is a single line of JSON with no trailing newline', () => {
+    const frame = buildAgentIdentityFrame('n', identity);
+    expect(frame).not.toContain('\n');
+    expect(frame.trim()).toBe(frame);
+  });
+
+  it('produces a different signature for a different nonce', () => {
+    const a = JSON.parse(buildAgentIdentityFrame('a', identity)).data.signature;
+    const b = JSON.parse(buildAgentIdentityFrame('b', identity)).data.signature;
+    expect(a).not.toBe(b);
+  });
+});
+```
+
+- [ ] **Step 4: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/identity/frame.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/identity/frame.ts
+import type { AgentIdentity } from './store.js';
+
+/**
+ * The agent→server WS2 identity frame (B48's agent side).
+ *
+ * The signed bytes are a two-line string, not the JSON: signing the serialized
+ * frame would make the signature depend on key order and whitespace, so a
+ * server implementation in another language could not reproduce it. The
+ * `nonce=` line is the challenge echo that makes the signature fresh — without
+ * it a captured frame replays forever.
+ */
+export const AGENT_IDENTITY_SIGNING_PREFIX = 'ponter-ws2-agent-identity-v1';
+
+export function buildAgentIdentityFrame(nonce: string, identity: AgentIdentity): string {
+  const message = `${AGENT_IDENTITY_SIGNING_PREFIX}\nnonce=${nonce}`;
+  const signature = identity.sign(new TextEncoder().encode(message));
+  return JSON.stringify({
+    type: 'agent-identity',
+    data: {
+      nonce,
+      publicKey: identity.publicKeyBase64,
+      signature: Buffer.from(signature).toString('base64'),
+    },
+  });
+}
+```
+
+- [ ] **Step 5: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/identity
+./node_modules/.bin/prettier --write apps/agent/src/identity apps/agent/test/identity
+git add apps/agent/src/identity apps/agent/test/identity
+git commit -m "feat(agent): add the Ed25519 identity store and the WS2 identity frame"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 11 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested.
+
+---
+
+### Task 7: The E2EE handshake
+
+**Files:**
+- Create: `apps/agent/src/e2ee/manager.ts`
+- Test: `apps/agent/test/e2ee/manager.test.ts`
+
+**Interfaces:**
+- Consumes: `@ponter/crypto`'s `EncryptionManager` and key helpers (B49–B51, already gating per D4); `AgentIdentity` (Task 6).
+- Produces:
+  - `class AgentE2ee { beginTerminalE2ee(terminalId): Promise<{ ecdhPublicKey: string; signature: string }>; acceptHello(msg): boolean; isArmed(terminalId): boolean }`
+  - `const WS1_TERMINAL_INFO = 'ponter-ws1-terminal-v1'`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/e2ee/manager.test.ts
+import { describe, expect, it } from 'vitest';
+import { generateKeyPairSync, sign as nodeSign, verify as nodeVerify } from 'node:crypto';
+import { AgentE2ee } from '../../src/e2ee/manager.js';
+
+const agentIdentity = {
+  publicKeyBase64: 'cGs=',
+  sign: (bytes: Uint8Array) => new Uint8Array(nodeSign(null, Buffer.from(bytes), agentPrivate)),
+};
+
+const { privateKey: agentPrivate } = generateKeyPairSync('ed25519');
+
+function peerHello(binding: string) {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const ecdhPublicKey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString(
+    'base64',
+  );
+  const signature = nodeSign(null, Buffer.from(binding), agentPrivate).toString('base64');
+  return { ecdhPublicKey, signature };
+}
+
+describe('AgentE2ee', () => {
+  it('produces an ack carrying its ephemeral ECDH key and a signature', async () => {
+    const e2ee = new AgentE2ee(agentIdentity);
+    const ack = await e2ee.beginTerminalE2ee('t1');
+    expect(Buffer.from(ack.ecdhPublicKey, 'base64').length).toBeGreaterThan(0);
+    expect(ack.signature.length).toBeGreaterThan(0);
+  });
+
+  it('arms no session before a peer hello arrives', async () => {
+    const e2ee = new AgentE2ee(agentIdentity);
+    await e2ee.beginTerminalE2ee('t1');
+    expect(e2ee.isArmed('t1')).toBe(false);
+  });
+
+  it('arms the session after a valid hello and round-trips a frame', async () => {
+    const e2ee = new AgentE2ee(agentIdentity);
+    await e2ee.beginTerminalE2ee('t1');
+    const hello = peerHello('ponter-ws1-terminal-v1\nterminalId=t1');
+    expect(e2ee.acceptHello({ terminalId: 't1', ...hello })).toBe(true);
+    expect(e2ee.isArmed('t1')).toBe(true);
+  });
+
+  it('rejects a mis-signed hello and yields no session', async () => {
+    const e2ee = new AgentE2ee(agentIdentity);
+    await e2ee.beginTerminalE2ee('t1');
+    const hello = peerHello('a different binding');
+    expect(e2ee.acceptHello({ terminalId: 't1', ...hello })).toBe(false);
+    expect(e2ee.isArmed('t1')).toBe(false);
+  });
+
+  it('rejects a hello for a terminal that was never begun', () => {
+    const e2ee = new AgentE2ee(agentIdentity);
+    expect(e2ee.acceptHello({ terminalId: 'nope', ...peerHello('x') })).toBe(false);
+  });
+
+  it('round-trips an EMPTY plaintext frame', async () => {
+    // The Rust refused a 28-byte frame (12 IV + 16 tag) on decrypt while its own
+    // encrypt produced exactly that for []. @ponter/crypto accepts it and returns
+    // an empty buffer; that is the behaviour this port keeps, because it is the
+    // one that round-trips.
+    const e2ee = new AgentE2ee(agentIdentity);
+    await e2ee.beginTerminalE2ee('t1');
+    e2ee.acceptHello({ terminalId: 't1', ...peerHello('ponter-ws1-terminal-v1\nterminalId=t1') });
+    const sealed = e2ee.seal('t1', new Uint8Array(0));
+    expect(sealed).toHaveLength(28);
+    expect(e2ee.open('t1', sealed)).toEqual(new Uint8Array(0));
+  });
+
+  it('rejects a tampered frame', async () => {
+    const e2ee = new AgentE2ee(agentIdentity);
+    await e2ee.beginTerminalE2ee('t1');
+    e2ee.acceptHello({ terminalId: 't1', ...peerHello('ponter-ws1-terminal-v1\nterminalId=t1') });
+    const sealed = e2ee.seal('t1', Buffer.from('secret'));
+    sealed[sealed.length - 1] ^= 0xff;
+    expect(() => e2ee.open('t1', sealed)).toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/e2ee/manager.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/e2ee/manager.ts
+import { randomBytes } from 'node:crypto';
+import { EncryptionManager } from '@ponter/crypto';
+import type { AgentIdentity } from '../identity/store.js';
+
+/** The HKDF `info` string. Shared with the browser; changing it breaks every peer. */
+export const WS1_TERMINAL_INFO = 'ponter-ws1-terminal-v1';
+
+export interface E2eeHello {
+  terminalId: string;
+  ecdhPublicKey: string;
+  signature: string;
+}
+
+interface PendingSession {
+  manager: EncryptionManager;
+  armed: boolean;
+}
+
+function bindingMessage(terminalId: string): string {
+  return `${WS1_TERMINAL_INFO}\nterminalId=${terminalId}`;
+}
+
+/**
+ * The WS1 terminal E2EE handshake (B52).
+ *
+ * Fail-closed by construction: a session is created **unarmed**, and only
+ * `acceptHello` — after verifying the peer's signature over the binding string
+ * — arms it. An unarmed session refuses to seal. The Rust had the same shape and
+ * the same reason: arming on the ack alone would let a peer that never proved
+ * key possession receive plaintext.
+ *
+ * The primitives (ECDH, HKDF, AES-GCM, the frame layout, the shared vectors) are
+ * `@ponter/crypto`'s and are already gating; this class is only the wiring.
+ */
+export class AgentE2ee {
+  private readonly sessions = new Map<string, PendingSession>();
+
+  constructor(private readonly identity: AgentIdentity) {}
+
+  async beginTerminalE2ee(
+    terminalId: string,
+  ): Promise<{ ecdhPublicKey: string; signature: string }> {
+    const manager = await EncryptionManager.create({ info: WS1_TERMINAL_INFO, salt: terminalId });
+    this.sessions.set(terminalId, { manager, armed: false });
+    const ecdhPublicKey = manager.exportPublicKeySpki();
+    const signature = Buffer.from(
+      this.identity.sign(new TextEncoder().encode(bindingMessage(terminalId))),
+    ).toString('base64');
+    return { ecdhPublicKey, signature };
+  }
+
+  acceptHello(hello: E2eeHello): boolean {
+    const session = this.sessions.get(hello.terminalId);
+    if (!session) return false;
+    let ok = false;
+    try {
+      ok = session.manager.acceptPeerHello({
+        ecdhPublicKey: hello.ecdhPublicKey,
+        signature: hello.signature,
+        message: bindingMessage(hello.terminalId),
+        nonce: randomBytes(0),
+      });
+    } catch {
+      ok = false;
+    }
+    session.armed = ok;
+    return ok;
+  }
+
+  isArmed(terminalId: string): boolean {
+    return this.sessions.get(terminalId)?.armed === true;
+  }
+
+  seal(terminalId: string, plaintext: Uint8Array): Uint8Array {
+    return this.requireArmed(terminalId).encrypt(plaintext);
+  }
+
+  open(terminalId: string, framed: Uint8Array): Uint8Array {
+    return this.requireArmed(terminalId).decrypt(framed);
+  }
+
+  private requireArmed(terminalId: string): EncryptionManager {
+    const session = this.sessions.get(terminalId);
+    if (!session?.armed) throw new Error(`no armed e2ee session for terminal ${terminalId}`);
+    return session.manager;
+  }
+}
+```
+
+> **Implementation note for the executor:** `EncryptionManager`'s exact option names (`salt`, `info`, `exportPublicKeySpki`, `acceptPeerHello`) must be read from `packages/crypto/src/` before implementing — the plan names the behaviours, the package names the symbols. If `acceptPeerHello` does not exist, the verification half is `packages/crypto`'s existing `verifyKeyBinding`, and that is what this class calls. **Do not re-implement ECDH or HKDF here**; that is what makes B49–B51 already proven.
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/e2ee
+./packages/crypto/node_modules/.bin/vitest run
+./node_modules/.bin/prettier --write apps/agent/src/e2ee apps/agent/test/e2ee
+git add apps/agent/src/e2ee apps/agent/test/e2ee
+git commit -m "feat(agent): wire the WS1 terminal E2EE handshake fail-closed"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **7 new `it()` / 11 new `expect()`**. Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and `a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do **not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the empty-plaintext round trip (the divergence ruling) and hello-for-an-unbegun-terminal.
+
+---
+
+### Task 8: The werift peer — ICE config, payload type, track order, data-channel gate
+
+**Files:**
+- Create: `apps/agent/src/session/peer.ts`
+- Create: `apps/agent/src/session/ice.ts`
+- Test: `apps/agent/test/session/peer.test.ts`, `apps/agent/test/session/ice.test.ts`
+
+**Interfaces:**
+- Consumes: `IceServerEntry` (Task 4); `IceCandidateSignal`; werift's `RTCPeerConnection`.
+- Produces:
+  - `function mapIceServers(entries: IceServerEntry[], stunFallback: string): RTCIceServer[]`
+  - `function isUnusableTurnTcp(url: string): boolean`
+  - `function selectH264PayloadType(codecs: { mimeType: string; payloadType: number }[]): number | null`
+  - `function requiredH264PayloadType(codecs): number` — throws `'the desktop sender has no negotiated H.264 codec'`
+  - `function narrowMlineIndex(raw: unknown): number | null` — `null` for out-of-u16-range and negatives
+  - `function h264Mode1Codec(offerSdp: string): { mimeType; payloadType; parameters? } | null` — the browser's H.264 `packetization-mode=1` entry; `null` when absent (an absent `packetization-mode` is mode **0**)
+  - `class SessionPeer { answer(offerSdp, opts): Promise<{ answerSdp; sender: RTCRtpSenderLike | null }> }` — **the returned `sender` is Task 19's `RtpSenderSink`**; `answer()` performs the R-S3 re-point and throws for a desktop offer with no mode-1 H.264 entry
+
+- [ ] **Step 1: Write the failing ICE + payload-type tests**
+
+```ts
+// apps/agent/test/session/ice.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  isUnusableTurnTcp,
+  mapIceServers,
+  narrowMlineIndex,
+  requiredH264PayloadType,
+  selectH264PayloadType,
+} from '../../src/session/ice.js';
+
+describe('isUnusableTurnTcp', () => {
+  it('matches only turn: URLs with transport=tcp', () => {
+    expect(isUnusableTurnTcp('turn:turn.example.com:3478?transport=tcp')).toBe(true);
+    expect(isUnusableTurnTcp('turn:turn.example.com:3478?transport=udp')).toBe(false);
+    expect(isUnusableTurnTcp('turns:turn.example.com:5349?transport=tcp')).toBe(false);
+    expect(isUnusableTurnTcp('stun:stun.example.com:19302')).toBe(false);
+  });
+});
+
+describe('mapIceServers', () => {
+  it('maps a STUN-only entry with no credentials', () => {
+    expect(mapIceServers([{ urls: ['stun:h:3478'] }], '')).toEqual([
+      { urls: ['stun:h:3478'] },
+    ]);
+  });
+
+  it('maps a TURN entry with its credential pair', () => {
+    expect(
+      mapIceServers([{ urls: ['turn:h:3478?transport=udp'], username: 'u', credential: 'c' }], ''),
+    ).toEqual([{ urls: ['turn:h:3478?transport=udp'], username: 'u', credential: 'c' }]);
+  });
+
+  it('drops a TURN/TCP url and keeps the UDP sibling', () => {
+    expect(
+      mapIceServers(
+        [
+          {
+            urls: ['turn:h:3478?transport=udp', 'turn:h:3478?transport=tcp'],
+            username: 'u',
+            credential: 'c',
+          },
+        ],
+        '',
+      ),
+    ).toEqual([{ urls: ['turn:h:3478?transport=udp'], username: 'u', credential: 'c' }]);
+  });
+
+  it('drops an entry left with no usable urls', () => {
+    expect(mapIceServers([{ urls: ['turn:h:3478?transport=tcp'] }], '')).toEqual([]);
+  });
+
+  it('keeps a Cloudflare-style turns url untouched', () => {
+    const url = 'turns:turn.cloudflare.com:5349?transport=udp';
+    expect(mapIceServers([{ urls: [url] }], '')).toEqual([{ urls: [url] }]);
+  });
+
+  it('defaults absent credentials to an empty string', () => {
+    expect(mapIceServers([{ urls: ['turn:h'] }], '')).toEqual([{ urls: ['turn:h'], username: '', credential: '' }]);
+  });
+
+  it('falls back to the configured STUN url only when nothing was pushed', () => {
+    expect(mapIceServers([], 'stun:fallback:3478')).toEqual([{ urls: ['stun:fallback:3478'] }]);
+  });
+
+  it('lets the pushed entries win over the configured STUN url', () => {
+    expect(mapIceServers([{ urls: ['stun:pushed:3478'] }], 'stun:fallback:3478')).toEqual([
+      { urls: ['stun:pushed:3478'] },
+    ]);
+  });
+});
+
+describe('selectH264PayloadType', () => {
+  it('picks H.264 even when VP8 is offered first', () => {
+    expect(
+      selectH264PayloadType([
+        { mimeType: 'video/VP8', payloadType: 96 },
+        { mimeType: 'video/rtx', payloadType: 97 },
+        { mimeType: 'video/H264', payloadType: 102 },
+        { mimeType: 'video/H264', payloadType: 127 },
+      ]),
+    ).toBe(102);
+  });
+
+  it('matches the mime type case-insensitively', () => {
+    expect(selectH264PayloadType([{ mimeType: 'video/h264', payloadType: 102 }])).toBe(102);
+  });
+
+  it('returns null when no H.264 was negotiated', () => {
+    expect(selectH264PayloadType([{ mimeType: 'video/VP8', payloadType: 96 }])).toBeNull();
+  });
+
+  it('takes the first H.264 entry, not the lowest payload type', () => {
+    expect(
+      selectH264PayloadType([
+        { mimeType: 'video/H264', payloadType: 127 },
+        { mimeType: 'video/H264', payloadType: 102 },
+      ]),
+    ).toBe(127);
+  });
+});
+
+describe('requiredH264PayloadType', () => {
+  it('throws a named error instead of returning null', () => {
+    expect(() => requiredH264PayloadType([{ mimeType: 'video/VP8', payloadType: 96 }])).toThrow(
+      /no negotiated H\.264 codec/,
+    );
+  });
+});
+
+describe('narrowMlineIndex', () => {
+  it('accepts 0 and 65535', () => {
+    expect(narrowMlineIndex(0)).toBe(0);
+    expect(narrowMlineIndex(65535)).toBe(65535);
+  });
+
+  it('rejects negatives and anything above u16', () => {
+    expect(narrowMlineIndex(-1)).toBeNull();
+    expect(narrowMlineIndex(65536)).toBeNull();
+  });
+
+  it('rejects a non-integer', () => {
+    expect(narrowMlineIndex(1.5)).toBeNull();
+    expect(narrowMlineIndex('0')).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement `ice.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/session/ice.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/session/ice.ts
+import type { IceServerEntry } from '../signalling/messages.js';
+
+export interface RtcIceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+/**
+ * The agent has no TURN-over-TCP transport, so a `turn:` URL advertising
+ * `transport=tcp` is unusable and must be removed rather than passed through:
+ * werift would accept the entry, fail the allocation, and the ICE failure would
+ * look like a network problem. `turns:` is deliberately **not** matched — its
+ * TCP form is a TLS variant the port does support, and the test pins that.
+ */
+export function isUnusableTurnTcp(url: string): boolean {
+  return url.startsWith('turn:') && url.includes('transport=tcp');
+}
+
+/**
+ * The server pushes ICE configuration on connect; the CLI's `--stun` is only a
+ * fallback for the case where none was pushed (B10). Pushed-wins is the Rust's
+ * behaviour and matters for a self-hosted deployment whose coturn is not the
+ * one baked into the default config.
+ */
+export function mapIceServers(entries: IceServerEntry[], stunFallback: string): RtcIceServer[] {
+  const mapped: RtcIceServer[] = [];
+  for (const entry of entries) {
+    const urls = entry.urls.filter((url) => !isUnusableTurnTcp(url));
+    if (urls.length === 0) continue;
+    const server: RtcIceServer = { urls };
+    if (entry.username != null || entry.credential != null) {
+      server.username = entry.username ?? '';
+      server.credential = entry.credential ?? '';
+    }
+    mapped.push(server);
+  }
+  if (mapped.length === 0 && stunFallback !== '') return [{ urls: [stunFallback] }];
+  return mapped;
+}
+
+/**
+ * The **negotiated** H.264 payload type (B27).
+ *
+ * `codecs[0].payloadType` is wrong whenever the browser offers VP8 first, which
+ * Chrome does. The list order is the offer's order and the first H.264 entry
+ * wins — not the lowest payload number, which is why the test pins 127 over 102
+ * when 127 comes first.
+ */
+export function selectH264PayloadType(
+  codecs: readonly { mimeType: string; payloadType: number }[],
+): number | null {
+  const match = codecs.find((codec) => codec.mimeType.toLowerCase() === 'video/h264');
+  return match ? match.payloadType : null;
+}
+
+export function requiredH264PayloadType(
+  codecs: readonly { mimeType: string; payloadType: number }[],
+): number {
+  const payloadType = selectH264PayloadType(codecs);
+  if (payloadType === null) throw new Error('the desktop sender has no negotiated H.264 codec');
+  return payloadType;
+}
+
+/**
+ * `sdpMLineIndex` is a u16 on the wire; the Rust narrowed it at the boundary
+ * and rejected `-1`/`65535+` as a typed error rather than a malformed frame.
+ * JSON gives us a number of unbounded range and possibly a non-integer, so the
+ * narrowing has to be explicit.
+ */
+export function narrowMlineIndex(raw: unknown): number | null {
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return null;
+  if (raw < 0 || raw > 65535) return null;
+  return raw;
+}
+```
+
+- [ ] **Step 3: Write the failing peer test, then implement `peer.ts`**
+
+```ts
+// apps/agent/test/session/peer.test.ts
+import { describe, expect, it, vi } from 'vitest';
+import { h264Mode1Codec, SessionPeer } from '../../src/session/peer.js';
+
+/**
+ * Minimal Chrome-shaped H.264 offers. Only the lines `h264Mode1Codec` reads are
+ * here — `a=rtpmap:` and `a=fmtp:` — because these tests exercise THIS task's
+ * parsing, not werift's negotiation. Package-internal, so the offers are
+ * inlined rather than imported from `@ponter/webrtc-core`'s test fixtures.
+ */
+const MODE1_FIRST = [
+  'v=0',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 102 104',
+  'a=rtpmap:96 VP8/90000',
+  'a=rtpmap:102 H264/90000',
+  'a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  'a=rtpmap:104 H264/90000',
+  'a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  '',
+].join('\r\n');
+
+const MODE0_FIRST = [
+  'v=0',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 104 102',
+  'a=rtpmap:96 VP8/90000',
+  'a=rtpmap:104 H264/90000',
+  'a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  'a=rtpmap:102 H264/90000',
+  'a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  '',
+].join('\r\n');
+
+/** An offer with H.264, but no mode-1 entry at all. */
+const MODE0_ONLY = [
+  'v=0',
+  'm=video 9 UDP/TLS/RTP/SAVPF 104',
+  'a=rtpmap:104 H264/90000',
+  'a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  '',
+].join('\r\n');
+
+describe('h264Mode1Codec', () => {
+  it('picks the mode-1 entry even when the mode-0 entry comes first', () => {
+    expect(h264Mode1Codec(MODE0_FIRST)).toEqual({
+      mimeType: 'video/H264',
+      payloadType: 102,
+      parameters:
+        'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    });
+  });
+
+  it('returns the whole fmtp string as parameters, so the caller can echo it', () => {
+    expect(h264Mode1Codec(MODE1_FIRST)?.parameters).toBe(
+      'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    );
+  });
+
+  it('treats an ABSENT packetization-mode as mode 0 and returns null', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 102',
+      'a=rtpmap:102 H264/90000',
+      'a=fmtp:102 profile-level-id=42e01f',
+      '',
+    ].join('\r\n');
+    // RFC 6184 §8.1: the default is 0. Reading absence as mode 1 would select
+    // an entry the browser is not depacketizing as mode 1 — R-S3 defeated on
+    // exactly the peers it exists to protect.
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+
+  it('returns null for an H.264 entry with no fmtp line at all', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 102',
+      'a=rtpmap:102 H264/90000',
+      '',
+    ].join('\r\n');
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+
+  it('returns null when the offer carries no H.264', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 96',
+      'a=rtpmap:96 VP8/90000',
+      '',
+    ].join('\r\n');
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+
+  it('parses an LF-only offer as well as a CRLF one', () => {
+    expect(h264Mode1Codec(MODE0_FIRST.replace(/\r\n/g, '\n'))?.payloadType).toBe(102);
+  });
+
+  it('does not match a non-90000 H.264 clock rate as video/H264', () => {
+    const offer = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 102',
+      'a=rtpmap:102 H264/45000',
+      'a=fmtp:102 packetization-mode=1',
+      '',
+    ].join('\r\n');
+    expect(h264Mode1Codec(offer)).toBeNull();
+  });
+});
+
+function fakePeerFactory() {
+  const calls: string[] = [];
+  const sender = {
+    codec: undefined,
+    selectNegotiatedCodec: vi.fn(() => {
+      calls.push('selectNegotiatedCodec');
+    }),
+    writeRtp: vi.fn(),
+  };
+  const peer = {
+    addTrack: vi.fn(() => {
+      calls.push('addTrack');
+      return sender;
+    }),
+    setRemoteDescription: vi.fn(async () => {
+      calls.push('setRemoteDescription');
+    }),
+    createAnswer: vi.fn(async () => {
+      calls.push('createAnswer');
+      return { sdp: 'v=0 answer', type: 'answer' as const };
+    }),
+    setLocalDescription: vi.fn(async () => {
+      calls.push('setLocalDescription');
+    }),
+    close: vi.fn(async () => {}),
+  };
+  return { peer, sender, calls };
+}
+
+const TRACK = { track: { id: 'video' } };
+
+describe('SessionPeer.answer', () => {
+  it('attaches the desktop track before setRemoteDescription', async () => {
+    const { peer, calls } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(calls.indexOf('addTrack')).toBeLessThan(calls.indexOf('setRemoteDescription'));
+  });
+
+  /**
+   * The ordering that R-S3 depends on, and the reason this test asserts the
+   * call sequence rather than the result: `selectNegotiatedCodec` throws
+   * "was not negotiated" before `setRemoteDescription` has populated the
+   * transceiver's codec list, and does nothing useful for the emitted SDP
+   * after `createAnswer` has already built the m-line from it.
+   */
+  it('re-points the sender after setRemoteDescription and before createAnswer', async () => {
+    const { peer, calls } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(calls).toEqual([
+      'addTrack',
+      'setRemoteDescription',
+      'selectNegotiatedCodec',
+      'createAnswer',
+      'setLocalDescription',
+    ]);
+  });
+
+  it('re-points at the payload type parsed out of the offer', async () => {
+    const { peer, sender } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(sender.selectNegotiatedCodec).toHaveBeenCalledWith({
+      mimeType: 'video/H264',
+      payloadType: 102,
+      parameters:
+        'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    });
+  });
+
+  it('returns the sender, so the desktop loop has something to write RTP to', async () => {
+    const { peer, sender } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    const result = await session.answer(MODE0_FIRST, { desktop: true, track: TRACK });
+    expect(result.sender).toBe(sender);
+    expect(result.answerSdp).toBe('v=0 answer');
+  });
+
+  it('throws rather than answering when the offer has no mode-1 H.264 entry', async () => {
+    const { peer, sender } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await expect(
+      session.answer(MODE0_ONLY, { desktop: true, track: TRACK }),
+    ).rejects.toThrow(/no H\.264 entry with packetization-mode=1/);
+    // The re-point must NOT have happened: selecting the mode-0 entry would
+    // make the failure invisible instead of loud.
+    expect(sender.selectNegotiatedCodec).not.toHaveBeenCalled();
+  });
+
+  it('throws when a desktop session is answered with no track', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'control' });
+    await expect(session.answer(MODE0_FIRST, { desktop: true })).rejects.toThrow(
+      /no outbound track/,
+    );
+  });
+
+  it('answers a non-desktop session without attaching a track or re-pointing', async () => {
+    const { peer, sender, calls } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    const result = await session.answer(MODE1_FIRST, { desktop: false });
+    expect(calls).not.toContain('addTrack');
+    expect(sender.selectNegotiatedCodec).not.toHaveBeenCalled();
+    expect(result.sender).toBeNull();
+  });
+});
+
+describe('SessionPeer.handleDataChannel', () => {
+  it('closes a data channel with the wrong label', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    const wrong = { label: async () => 'control', close: vi.fn(async () => {}) };
+    await session.handleDataChannel(wrong);
+    expect(wrong.close).toHaveBeenCalled();
+  });
+
+  it('accepts a data channel with the expected label', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    const right = { label: async () => 'terminal', close: vi.fn(async () => {}) };
+    await session.handleDataChannel(right);
+    expect(right.close).not.toHaveBeenCalled();
+    expect(session.channel).toBe(right);
+  });
+
+  it('closes a SECOND channel even when its label is right', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    await session.handleDataChannel({ label: async () => 'terminal', close: vi.fn(async () => {}) });
+    const second = { label: async () => 'terminal', close: vi.fn(async () => {}) };
+    await session.handleDataChannel(second);
+    expect(second.close).toHaveBeenCalled();
+  });
+
+  it('drops an unlabelled channel without closing it', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    const bad = {
+      label: async () => {
+        throw new Error('no label');
+      },
+      close: vi.fn(async () => {}),
+    };
+    await expect(session.handleDataChannel(bad)).resolves.toBeUndefined();
+    expect(bad.close).not.toHaveBeenCalled();
+  });
+
+  it('closes a channel with no code argument, as this API has none', async () => {
+    const { peer } = fakePeerFactory();
+    const session = new SessionPeer(peer as never, { acceptedLabel: 'terminal' });
+    const wrong = { label: async () => 'nope', close: vi.fn(async () => {}) };
+    await session.handleDataChannel(wrong);
+    expect(wrong.close).toHaveBeenCalledWith();
+  });
+});
+```
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/session/peer.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/session/peer.ts
+import type { RTCRtpSenderLike } from '@ponter/webrtc-core';
+
+export interface PeerLike {
+  /**
+   * Attach the outbound track. Returns the sender — the SAME handle whose
+   * `writeRtp` the desktop loop calls, which is why `answer()` returns it.
+   * Plan 1 Task 2's `RTCRtpSenderLike` is the real type; this is the slice.
+   * werift's `addTrack` is synchronous (`peerConnection.js:981`), so the
+   * return is not awaited here — but a mock may return a promise, and `await`
+   * covers both.
+   */
+  addTrack?(track: unknown, stream?: unknown): RTCRtpSenderLike | Promise<RTCRtpSenderLike>;
+  setRemoteDescription(desc: { type: 'offer'; sdp: string }): Promise<void>;
+  createAnswer(): Promise<{ type: 'answer'; sdp: string }>;
+  setLocalDescription(desc: { type: 'answer'; sdp: string }): Promise<void>;
+  close(): Promise<void>;
+}
+
+/**
+ * **R-S3 is a method on the SENDER, not on the peer connection.**
+ *
+ * `RTCPeerConnectionLike` has no `selectNegotiatedCodec` (`types.ts:78-127`);
+ * the adapter attaches it to the `RTCRtpSenderLike` its `addTrack` returns
+ * (`adapters/werift.ts:338`). An earlier draft of this task put it on
+ * `PeerLike` and called it as `this.peer.selectNegotiatedCodec(...)`, which
+ * would have been `undefined` at runtime — the re-point silently skipped, the
+ * sender left on the browser's mode-0 entry, and every frame depacketized
+ * wrongly with no error anywhere. This is the third time a per-task seam in
+ * this plan has been guessed at a layer above where it lives; the rule is to
+ * read the adapter, never to infer the shape from the method's name.
+ */
+
+/**
+ * Find the browser's H.264 `packetization-mode=1` entry in an offer.
+ *
+ * This is R-S3's input. It parses the offer's `a=rtpmap:`/`a=fmtp:` pairs and
+ * returns the first H.264 entry whose fmtp explicitly carries
+ * `packetization-mode=1`. Returns `null` when the browser offered no such
+ * entry, in which case no re-point is possible and the caller treats that as a
+ * hard failure for a desktop session: the packetizer emits mode-1 framing and a
+ * mode-0-only peer cannot decode it.
+ *
+ * An **absent** `packetization-mode` is mode 0, not mode 1 — RFC 6184 §8.1
+ * states the default is 0. Treating absence as mode 1 would silently select a
+ * non-existent mode-1 entry and defeat R-S3 on exactly the peers it protects.
+ */
+export function h264Mode1Codec(offerSdp: string): {
+  mimeType: string;
+  payloadType: number;
+  parameters?: string;
+} | null {
+  const lines = offerSdp.split(/\r\n|\n/);
+  for (const line of lines) {
+    const rtpmap = /^a=rtpmap:(\d+) (H264)\/90000$/i.exec(line);
+    if (!rtpmap) continue;
+    const payloadType = Number(rtpmap[1]);
+    const fmtp = lines.find((l) => l.startsWith(`a=fmtp:${payloadType} `));
+    const parameters = fmtp ? fmtp.slice(`a=fmtp:${payloadType} `.length) : '';
+    // RFC 6184 §8.1: `packetization-mode` defaults to 0, but every real H.264
+    // offer carries it explicitly. An absent key means mode 0 by the letter of
+    // the RFC — do NOT treat absent as mode 1.
+    const mode = /(?:^|;)packetization-mode=(\d+)/.exec(parameters);
+    if (mode && mode[1] === '1') {
+      return { mimeType: 'video/H264', payloadType, parameters };
+    }
+  }
+  return null;
+}
+
+export interface DataChannelLike {
+  label(): Promise<string>;
+  close(): Promise<void>;
+}
+
+export interface SessionPeerOptions {
+  acceptedLabel: string;
+}
+
+/**
+ * The answerer half of one session.
+ *
+ * **Track before `setRemoteDescription`, always** (B12). `addTrack` creates the
+ * transceiver and therefore the m-line; adding it after the remote description
+ * exists means the offer's video m-line is answered `inactive` and the browser
+ * never receives a track. There is no error anywhere — the video is simply
+ * black — which is why `answer()` enforces the order internally instead of
+ * leaving it to the caller, and why the test asserts the call order rather than
+ * the result.
+ *
+ * The data-channel gate (B13) closes a wrong-label channel immediately and
+ * swallows the close error: the peer is hostile or buggy, and a failed close is
+ * not something the agent can act on. A second channel with the *right* label is
+ * also closed — one session has exactly one channel.
+ *
+ * `close()` takes no code. The Rust API had none either (DCEP teardown is
+ * unparameterised), so inventing a 4000-series code here would be a protocol
+ * claim the transport cannot honour.
+ */
+export class SessionPeer {
+  channel: DataChannelLike | null = null;
+
+  constructor(
+    private readonly peer: PeerLike,
+    private readonly options: SessionPeerOptions,
+  ) {}
+
+  async answer(
+    offerSdp: string,
+    opts: { desktop: boolean; track?: { track: unknown; stream?: unknown } },
+  ): Promise<{ answerSdp: string; sender: RTCRtpSenderLike | null }> {
+    // B12: the track is attached BEFORE setRemoteDescription. `addTrack` is what
+    // creates the transceiver and therefore the offer's video m-line; doing it
+    // after means the m-line is answered `inactive` and the browser gets no
+    // video — silently, with no error anywhere.
+    let sender: RTCRtpSenderLike | null = null;
+    if (opts.desktop) {
+      if (!opts.track) {
+        throw new Error('a desktop session was answered with no outbound track to send');
+      }
+      sender = await this.peer.addTrack?.(opts.track.track, opts.track.stream);
+      if (!sender) {
+        throw new Error('the peer connection has no addTrack; it cannot answer a desktop session');
+      }
+    }
+    await this.peer.setRemoteDescription({ type: 'offer', sdp: offerSdp });
+
+    // R-S3: re-point the sender at the browser's H.264 `packetization-mode=1`
+    // entry, and do it HERE — after `setRemoteDescription`, before
+    // `createAnswer`.
+    //
+    //   - It must be after `setRemoteDescription`: that call is what runs
+    //     `prepareSend` and assigns `transceiver.codecs` from the offer
+    //     (transceiverManager.js:276-277), so before it there is nothing
+    //     negotiated to select from and `selectNegotiatedCodec` would throw
+    //     "was not negotiated".
+    //   - It must be before `createAnswer`: that call builds the answer's
+    //     `m=video` payload-type order from `transceiver.codecs`
+    //     (sdpManager.js:90-100). Re-pointing afterwards leaves the emitted SDP
+    //     advertising the old order while the sender writes the new payload
+    //     type — a mismatch the browser resolves by dropping the packets.
+    //
+    // The entry comes from the OFFER, parsed by `h264Mode1Codec` — the adapter
+    // exposes senders, not the transceiver's codec list, so there is no
+    // accessor to ask.
+    if (sender) {
+      const mode1 = h264Mode1Codec(offerSdp);
+      if (!mode1) {
+        // The packetizer only emits mode-1 framing (single-NAL / STAP-A /
+        // FU-A). A mode-0-only peer cannot decode any of it. Failing here is
+        // the only place this is visible at all: the connection would come up
+        // healthy and the video would simply be black.
+        throw new Error(
+          'the desktop offer carries no H.264 entry with packetization-mode=1; the packetizer cannot serve this peer',
+        );
+      }
+      sender.selectNegotiatedCodec(mode1);
+    }
+
+    const answer = await this.peer.createAnswer();
+    await this.peer.setLocalDescription(answer);
+    return { answerSdp: answer.sdp, sender };
+  }
+
+  async handleDataChannel(channel: DataChannelLike): Promise<void> {
+    let label: string;
+    try {
+      label = await channel.label();
+    } catch {
+      return;
+    }
+    if (label !== this.options.acceptedLabel) {
+      await channel.close().catch(() => undefined);
+      return;
+    }
+    if (this.channel !== null) {
+      await channel.close().catch(() => undefined);
+      return;
+    }
+    this.channel = channel;
+  }
+}
+```
+
+- [ ] **Step 4: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/session/ice.test.ts test/session/peer.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/session/{ice,peer}.ts apps/agent/test/session/{ice,peer}.test.ts
+git add apps/agent/src/session apps/agent/test/session
+git commit -m "feat(agent): add the werift answerer, ICE mapping and data-channel gate"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **36 new `it()` / 48 new `expect()`** (`ice.test.ts` 17/23, `peer.test.ts` 19/25). Ports all 16 `rtc.rs` tests except `answer_advertises_e2ee_only_when_offer_proposed_it` (that becomes Task 14's B55 assertion, `advertisesE2ee`) and `reporting_estimator_publishes_its_initial_target` (moves to Task 19's runtime).
+
+The count is 36, not the 22 an earlier draft of this declaration claimed. That draft predated the R-S3 repair and was never re-derived against the block: the 16-port arithmetic was carried in the prose while `h264Mode1Codec`'s seven parsing tests and `answer()`'s seven R-S3 tests were written underneath it. The same error class — a count written from a story about the task rather than from the task's own `it()` lines — is what produced the `api.rs` 12/8 split corrected in R3. Every declaration in this plan is now counted, not recalled.
+
+**New coverage this task owes and now carries** (seven tests, all in the `SessionPeer.answer` and `h264Mode1Codec` blocks) — none of which the Rust could have had, because there was no `h264Mode1Codec` and no re-point:
+- the re-point's **position in the call sequence** (`addTrack → setRemoteDescription → selectNegotiatedCodec → createAnswer → setLocalDescription`). This is the load-bearing one: before `setRemoteDescription` the selection throws "not negotiated", and after `createAnswer` the emitted SDP still advertises the old payload-type order;
+- the payload type actually selected, parsed from the offer rather than from an adapter accessor;
+- `answer()` returning the sender, so Task 19's `sendRtp` has a `writeRtp` to call;
+- a hard throw — and **no re-point** — when the offer has no mode-1 entry;
+- a hard throw when a desktop session is answered with no track;
+- absent `packetization-mode` read as **mode 0** (RFC 6184 §8.1), which is the difference between R-S3 working and R-S3 selecting a non-existent entry.
+
+---
+
+### Task 9: The shell allowlist
+
+**Files:**
+- Create: `apps/agent/src/terminal/shell-policy.ts`
+- Test: `apps/agent/test/terminal/shell-policy.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `const UNIX_SHELL_FLOOR: readonly string[]`
+  - `function loadShellPolicy(options: { configured: string; etcShells?: string }): ShellPolicy`
+  - `class ShellPolicy { resolveClientShell(requested: string): string }` — throws `ShellRefusedError` with the Rust's exact messages.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/terminal/shell-policy.test.ts
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { loadShellPolicy } from '../../src/terminal/shell-policy.js';
+
+function scratch() {
+  const dir = mkdtempSync(join(tmpdir(), 'ponter-shell-'));
+  const allowed = join(dir, 'allowed.sh');
+  writeFileSync(allowed, '#!/bin/sh\n');
+  chmodSync(allowed, 0o755);
+  return { dir, allowed };
+}
+
+describe('ShellPolicy.resolveClientShell', () => {
+  it('resolves an allowlisted executable to its canonical path', () => {
+    const { allowed } = scratch();
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(policy.resolveClientShell(allowed)).toBe(allowed);
+  });
+
+  it('refuses a relative path', () => {
+    const { allowed } = scratch();
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell('bin/sh')).toThrow(/is not an absolute path/);
+  });
+
+  it('refuses a path that does not exist', () => {
+    const { dir, allowed } = scratch();
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell(join(dir, 'missing'))).toThrow(/cannot be resolved/);
+  });
+
+  it('refuses a directory', () => {
+    const { dir, allowed } = scratch();
+    const nested = join(dir, 'sub');
+    mkdirSync(nested);
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell(nested)).toThrow(/is not a file/);
+  });
+
+  it('refuses a non-executable file', () => {
+    const { allowed } = scratch();
+    const plain = join(allowed, '..', 'plain.sh');
+    writeFileSync(plain, '#!/bin/sh\n');
+    chmodSync(plain, 0o644);
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell(plain)).toThrow(/is not executable/);
+  });
+
+  it('checks the executable bit BEFORE allowlist membership', () => {
+    // A 0644 file that is also absent from the allowlist must fail as
+    // "not executable": reporting "not in the allowlist" would send the user to
+    // edit a config file that would not fix the problem.
+    const { dir, allowed } = scratch();
+    const plain = join(dir, 'plain.sh');
+    writeFileSync(plain, '#!/bin/sh\n');
+    chmodSync(plain, 0o644);
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell(plain)).toThrow(/is not executable/);
+  });
+
+  it('refuses an executable that is not in the allowlist', () => {
+    const { dir, allowed } = scratch();
+    const outside = join(dir, 'outside.sh');
+    writeFileSync(outside, '#!/bin/sh\n');
+    chmodSync(outside, 0o755);
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell(outside)).toThrow(/is not in the shell allowlist/);
+  });
+
+  it('accepts a symlink that resolves to an allowlisted target', () => {
+    const { dir, allowed } = scratch();
+    const link = join(dir, 'link.sh');
+    symlinkSync(allowed, link);
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(policy.resolveClientShell(link)).toBe(allowed);
+  });
+
+  it('refuses a symlink that resolves outside the allowlist', () => {
+    const { dir, allowed } = scratch();
+    const target = join(dir, 'target.sh');
+    writeFileSync(target, '#!/bin/sh\n');
+    chmodSync(target, 0o755);
+    const link = join(dir, 'link.sh');
+    symlinkSync(target, link);
+    const policy = loadShellPolicy({ configured: allowed });
+    expect(() => policy.resolveClientShell(link)).toThrow(/is not in the shell allowlist/);
+  });
+
+  it('always allows the configured shell, even one outside the floor', () => {
+    const { dir, allowed } = scratch();
+    const custom = join(dir, 'custom.sh');
+    writeFileSync(custom, '#!/bin/sh\n');
+    chmodSync(custom, 0o755);
+    const policy = loadShellPolicy({ configured: custom });
+    expect(policy.resolveClientShell(custom)).toBe(custom);
+    expect(policy.resolveClientShell(allowed)).toBe(allowed);
+  });
+
+  it('allows entries listed in the supplied /etc/shells content', () => {
+    const { dir } = scratch();
+    const extra = join(dir, 'extra.sh');
+    writeFileSync(extra, '#!/bin/sh\n');
+    chmodSync(extra, 0o755);
+    const policy = loadShellPolicy({
+      configured: extra,
+      etcShells: `# comment\n\n${extra}\n`,
+    });
+    expect(policy.resolveClientShell(extra)).toBe(extra);
+  });
+
+  it('treats a missing /etc/shells as an empty list rather than an error', () => {
+    const { allowed } = scratch();
+    expect(() => loadShellPolicy({ configured: allowed, etcShells: '' })).not.toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/terminal/shell-policy.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/terminal/shell-policy.ts
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
+
+/**
+ * The four shells that exist on a stock POSIX host. The floor is not a
+ * convenience: without it, a container with no `/etc/shells` would have an empty
+ * allowlist and the terminal feature would be silently dead.
+ */
+export const UNIX_SHELL_FLOOR: readonly string[] = [
+  '/bin/sh',
+  '/bin/bash',
+  '/usr/bin/sh',
+  '/usr/bin/bash',
+];
+
+export class ShellRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShellRefusedError';
+  }
+}
+
+export interface ShellPolicyOptions {
+  /** `AGENT_SHELL` / `$SHELL`. Always allowed — the operator chose it. */
+  configured: string;
+  /** Contents of `/etc/shells`, or `''` when the file is absent or unreadable. */
+  etcShells?: string;
+}
+
+function canonicalise(candidate: string): string | null {
+  try {
+    return realpathSync(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function etcShellsEntries(content: string): string[] {
+  return content
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'));
+}
+
+/**
+ * Which shells a peer is allowed to spawn (B36, B37 — B38 is the
+ * operator's own shell, resolved at config time in `config.ts`).
+ *
+ * Two properties the Rust established and this keeps:
+ *
+ * - **Canonical on both sides of the comparison.** A symlink to an allowlisted
+ *   shell is accepted; a symlink pointing anywhere else is refused. Comparing
+ *   strings would accept `/tmp/evil -> /bin/sh` under a `/tmp/evil` entry and
+ *   refuse the same shell through a legitimate link.
+ * - **Order matters: executable bit before allowlist membership.** A 0644 file
+ *   outside the allowlist fails as "not executable"; telling the user to edit
+ *   the allowlist would not fix it.
+ */
+export class ShellPolicy {
+  private readonly allowed: ReadonlySet<string>;
+
+  constructor(options: ShellPolicyOptions) {
+    const allowed = new Set<string>();
+    for (const candidate of [
+      options.configured,
+      ...UNIX_SHELL_FLOOR,
+      ...etcShellsEntries(options.etcShells ?? ''),
+    ]) {
+      const resolved = canonicalise(candidate);
+      if (resolved) allowed.add(resolved);
+    }
+    this.allowed = allowed;
+  }
+
+  /**
+   * Resolve a peer-requested shell, or throw with the reason.
+   *
+   * The messages are the Rust's, because they reach the browser as the
+   * `terminal-error` detail and the web UI shows them verbatim.
+   */
+  resolveClientShell(requested: string): string {
+    if (!isAbsolute(requested)) {
+      throw new ShellRefusedError(`${requested} is not an absolute path`);
+    }
+    const resolved = canonicalise(requested);
+    if (resolved === null) {
+      throw new ShellRefusedError(`${requested} cannot be resolved`);
+    }
+    if (!statSync(resolved).isFile()) {
+      throw new ShellRefusedError(`${requested} is not a file`);
+    }
+    try {
+      accessSync(resolved, constants.X_OK);
+    } catch {
+      throw new ShellRefusedError(`${requested} is not executable`);
+    }
+    if (!this.allowed.has(resolved)) {
+      throw new ShellRefusedError(`${requested} is not in the shell allowlist`);
+    }
+    return resolved;
+  }
+}
+
+/**
+ * Windows has no allowlist: the operator's configured shell is the only
+ * candidate, and there is no `/etc/shells`. The PowerShell probe order
+ * (`pwsh` → `powershell` → `cmd.exe`) is resolved at config time by
+ * `resolveShell` in `config.ts` (Task 1), because it picks the *operator's*
+ * shell, not a peer-requested one. This module's job is the POSIX policy,
+ * which is a different question: which shells a *peer* may ask for.
+ */
+export function loadShellPolicy(options: ShellPolicyOptions): ShellPolicy {
+  return new ShellPolicy(options);
+}
+
+/** Reads `/etc/shells`, treating every failure as "no extra entries". */
+export function readEtcShells(): string {
+  try {
+    return readFileSync('/etc/shells', 'utf8');
+  } catch {
+    return '';
+  }
+}
+```
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/terminal/shell-policy.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/terminal/shell-policy.ts apps/agent/test/terminal/shell-policy.test.ts
+git add apps/agent/src/terminal apps/agent/test/terminal
+git commit -m "feat(agent): port the POSIX shell allowlist with its resolution order"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **12 new `it()` / 13 new `expect()`**. Ports all 10 `shell_policy.rs` tests, plus two **new**: the executable-bit-before-allowlist ordering (present in code, untested in Rust) and the empty-`/etc/shells` case. `two_paths_that_resolve_to_the_same_file_are_one_entry` ports as the symlink-accept case, since the TS canonicalises into a `Set` and therefore cannot hold two entries.
+
+---
+
+### Task 10: The file sandbox
+
+**Files:**
+- Create: `apps/agent/src/files/sandbox.ts`
+- Test: `apps/agent/test/files/sandbox.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `class FilesRoot { static open(root: string): FilesRoot; resolveExisting(wire: string): string; resolveParentForCreate(wireDir: string, name: string): string }`
+  - `class SandboxError extends Error { code: FilesErrorCode }`
+  - `type FilesErrorCode = 'PATH_OUTSIDE_ROOT' | 'INVALID_PATH' | 'NOT_FOUND' | 'NOT_A_FILE' | 'NOT_A_DIRECTORY' | 'FILE_EXISTS' | 'FILE_TOO_LARGE' | 'TRANSFER_BUSY' | 'TRANSFER_UNKNOWN' | 'TRANSFER_TIMEOUT' | 'IO_ERROR' | 'BAD_FRAME' | 'RESUME_INVALID' | 'DIR_NOT_EMPTY' | 'PERMISSION_DENIED' | 'QUEUE_FULL'`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/files/sandbox.test.ts
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { FilesRoot, SandboxError } from '../../src/files/sandbox.js';
+
+function root() {
+  const dir = mkdtempSync(join(tmpdir(), 'ponter-files-'));
+  mkdirSync(join(dir, 'docs'));
+  writeFileSync(join(dir, 'docs', 'a.txt'), 'hello');
+  return dir;
+}
+
+function code(fn: () => unknown): string {
+  try {
+    fn();
+    return 'OK';
+  } catch (error) {
+    return (error as SandboxError).code;
+  }
+}
+
+describe('FilesRoot.resolveExisting', () => {
+  it('resolves an empty path to the root itself', () => {
+    const dir = root();
+    expect(FilesRoot.open(dir).resolveExisting('')).toBe(dir);
+  });
+
+  it('resolves a nested relative path', () => {
+    const dir = root();
+    expect(FilesRoot.open(dir).resolveExisting('docs/a.txt')).toBe(join(dir, 'docs', 'a.txt'));
+  });
+
+  it('rejects a NUL byte', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs\0/a.txt'))).toBe('INVALID_PATH');
+  });
+
+  it('rejects a backslash on every platform, not only Windows', () => {
+    // The Rust checks this unconditionally because a Windows-authored client
+    // sends `docs\a.txt` and a POSIX host would otherwise treat it as one
+    // filename containing a backslash.
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs\\a.txt'))).toBe('INVALID_PATH');
+  });
+
+  it('rejects an absolute path', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('/etc/passwd'))).toBe('INVALID_PATH');
+  });
+
+  it('rejects an empty component', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs//a.txt'))).toBe('INVALID_PATH');
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs/'))).toBe('INVALID_PATH');
+  });
+
+  it('rejects a "." component', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('./docs/a.txt'))).toBe('INVALID_PATH');
+  });
+
+  it('lets ".." through and then rejects the escape by containment', () => {
+    // ".." is not an INVALID_PATH: it is legal, and canonicalize resolves it
+    // first. The rejection comes from the containment check, which is why the
+    // two errors are different and both must exist.
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('docs/../..'))).toBe('PATH_OUTSIDE_ROOT');
+  });
+
+  it('rejects a symlink that resolves outside the root', () => {
+    const dir = root();
+    const outside = mkdtempSync(join(tmpdir(), 'ponter-outside-'));
+    writeFileSync(join(outside, 'secret'), 'x');
+    symlinkSync(outside, join(dir, 'escape'));
+    expect(code(() => FilesRoot.open(dir).resolveExisting('escape/secret'))).toBe(
+      'PATH_OUTSIDE_ROOT',
+    );
+  });
+
+  it('accepts a symlink that stays inside the root', () => {
+    const dir = root();
+    symlinkSync(join(dir, 'docs'), join(dir, 'alias'));
+    expect(FilesRoot.open(dir).resolveExisting('alias/a.txt')).toBe(join(dir, 'docs', 'a.txt'));
+  });
+
+  it('uses component-wise containment, not string prefix', () => {
+    const dir = root();
+    const sibling = `${dir}2`;
+    mkdirSync(sibling);
+    writeFileSync(join(sibling, 'x'), 'x');
+    symlinkSync(sibling, join(dir, 'sibling'));
+    expect(code(() => FilesRoot.open(dir).resolveExisting('sibling/x'))).toBe('PATH_OUTSIDE_ROOT');
+  });
+
+  it('reports NOT_FOUND for a missing path', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveExisting('nope'))).toBe('NOT_FOUND');
+  });
+});
+
+describe('FilesRoot.resolveParentForCreate', () => {
+  it('resolves a valid parent and name', () => {
+    const dir = root();
+    expect(FilesRoot.open(dir).resolveParentForCreate('docs', 'b.txt')).toBe(
+      join(dir, 'docs', 'b.txt'),
+    );
+  });
+
+  it('treats an empty directory as the root', () => {
+    const dir = root();
+    expect(FilesRoot.open(dir).resolveParentForCreate('', 'b.txt')).toBe(join(dir, 'b.txt'));
+  });
+
+  it('rejects a name containing a slash, a backslash, a NUL, or a dot', () => {
+    const dir = root();
+    for (const name of ['a/b', 'a\\b', 'a\0b', '.', '..', '']) {
+      expect(code(() => FilesRoot.open(dir).resolveParentForCreate('docs', name))).toBe(
+        'INVALID_PATH',
+      );
+    }
+  });
+
+  it('rejects a parent that is a file', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(dir).resolveParentForCreate('docs/a.txt', 'b'))).toBe(
+      'NOT_A_DIRECTORY',
+    );
+  });
+});
+
+describe('FilesRoot.open', () => {
+  it('rejects a root that does not exist', () => {
+    expect(code(() => FilesRoot.open(join(tmpdir(), 'definitely-not-here')))).toBe('NOT_FOUND');
+  });
+
+  it('rejects a root that is a file', () => {
+    const dir = root();
+    expect(code(() => FilesRoot.open(join(dir, 'docs', 'a.txt')))).toBe('NOT_A_DIRECTORY');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/files/sandbox.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/files/sandbox.ts
+import { realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, sep } from 'node:path';
+
+export type FilesErrorCode =
+  | 'PATH_OUTSIDE_ROOT'
+  | 'INVALID_PATH'
+  | 'NOT_FOUND'
+  | 'NOT_A_FILE'
+  | 'NOT_A_DIRECTORY'
+  | 'FILE_EXISTS'
+  | 'FILE_TOO_LARGE'
+  | 'TRANSFER_BUSY'
+  | 'TRANSFER_UNKNOWN'
+  | 'TRANSFER_TIMEOUT'
+  | 'IO_ERROR'
+  | 'BAD_FRAME'
+  | 'RESUME_INVALID'
+  | 'DIR_NOT_EMPTY'
+  | 'PERMISSION_DENIED'
+  | 'QUEUE_FULL';
+
+export class SandboxError extends Error {
+  constructor(
+    readonly code: FilesErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SandboxError';
+  }
+}
+
+export function errnoToCode(error: unknown): FilesErrorCode {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') return 'NOT_FOUND';
+  if (code === 'EEXIST') return 'FILE_EXISTS';
+  if (code === 'EACCES' || code === 'EPERM') return 'PERMISSION_DENIED';
+  if (code === 'ENOTDIR') return 'NOT_A_DIRECTORY';
+  if (code === 'EISDIR') return 'NOT_A_DIRECTORY';
+  return 'IO_ERROR';
+}
+
+/**
+ * The sandbox (B44), in the Rust's exact seven-step order.
+ *
+ * Order is load-bearing, not stylistic:
+ *
+ * 1. NUL, 2. backslash, 3. absolute, 4. component-wise join — the cheap textual
+ * rejections come first so a hostile client cannot make the agent touch the
+ * filesystem before the path is known to be well-formed.
+ *
+ * `..` is **allowed through step 4** and resolved by `realpath` in step 6. That
+ * is deliberate and is why `..` produces `PATH_OUTSIDE_ROOT` rather than
+ * `INVALID_PATH`: rejecting it textually would refuse legitimate
+ * `docs/../a.txt`, while resolving it and then checking containment catches the
+ * escape and the legitimate case with the same code path.
+ *
+ * Containment is **component-wise**, not a string prefix: `/srv/files2` must not
+ * be inside `/srv/files`, and `startsWith` would say it is.
+ *
+ * `realpath` also resolves symlinks, which is the only check that catches a link
+ * planted inside the sandbox pointing anywhere else.
+ */
+export class FilesRoot {
+  private constructor(readonly root: string) {}
+  static open(root: string): FilesRoot {
+    let canonical: string;
+    try {
+      canonical = realpathSync(root);
+    } catch (error) {
+      throw new SandboxError(errnoToCode(error), `files root ${root} is not resolvable`);
+    }
+    if (!statSync(canonical).isDirectory()) {
+      throw new SandboxError('NOT_A_DIRECTORY', `files root ${root} is not a directory`);
+    }
+    try {
+      // The Rust probes read_dir so an unreadable root closes the gate at
+      // startup rather than at the first listing.
+      statSync(canonical);
+    } catch (error) {
+      throw new SandboxError(errnoToCode(error), `files root ${root} is not readable`);
+    }
+    return FilesRoot.open(canonical);
+  }
+
+  resolveExisting(wirePath: string): string {
+    const joined = this.joinWire(wirePath);
+    let canonical: string;
+    try {
+      canonical = realpathSync(joined);
+    } catch (error) {
+      throw new SandboxError(errnoToCode(error), `cannot resolve ${wirePath}`);
+    }
+    this.ensureContained(canonical, wirePath);
+    return canonical;
+  }
+
+  resolveParentForCreate(wireDir: string, name: string): string {
+    if (name === '' || name === '.' || name === '..') {
+      throw new SandboxError('INVALID_PATH', 'name is not a valid file name');
+    }
+    if (name.includes('/') || name.includes('\\') || name.includes('\0')) {
+      throw new SandboxError('INVALID_PATH', 'name must not contain a path separator');
+    }
+    const parent = this.resolveExisting(wireDir);
+    if (!statSync(parent).isDirectory()) {
+      throw new SandboxError('NOT_A_DIRECTORY', `${wireDir} is not a directory`);
+    }
+    // The target is NOT canonicalised: it does not exist yet.
+    return join(parent, name);
+  }
+
+  private joinWire(wirePath: string): string {
+    if (wirePath.includes('\0')) throw new SandboxError('INVALID_PATH', 'path contains a NUL');
+    if (wirePath.includes('\\')) {
+      throw new SandboxError('INVALID_PATH', 'backslash is not a POSIX path separator');
+    }
+    if (isAbsolute(wirePath)) throw new SandboxError('INVALID_PATH', 'path must be relative');
+    if (wirePath === '') return this.root;
+
+    let current = this.root;
+    for (const component of wirePath.split('/')) {
+      if (component === '') {
+        throw new SandboxError('INVALID_PATH', 'empty path component');
+      }
+      if (component === '.') throw new SandboxError('INVALID_PATH', 'dot path component');
+      current = join(current, component);
+    }
+    return current;
+  }
+
+  private ensureContained(canonical: string, wirePath: string): void {
+    if (canonical === this.root) return;
+    if (!canonical.startsWith(this.root + sep)) {
+      throw new SandboxError('PATH_OUTSIDE_ROOT', `${wirePath} resolves outside the files root`);
+    }
+  }
+}
+```
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/files/sandbox.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/files/sandbox.ts apps/agent/test/files/sandbox.test.ts
+git add apps/agent/src/files apps/agent/test/files
+git commit -m "feat(agent): port the files sandbox with component-wise containment"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **18 new `it()` / 19 new `expect()`**. Ports `path_policy_rejects_dotdot_escape`, `path_policy_rejects_absolute`, `path_policy_rejects_empty_components_and_dots`, `path_policy_rejects_symlink_escape`, `path_policy_rejects_prefix_confusion`, `upload_create_path_validates_parent_and_name`, `root_resolution_fails_when_missing_not_a_dir_or_unreadable`. **New:** the NUL and backslash rejections as separate cases (the Rust tested them inside one `path_policy_*` test), and the inside-the-root symlink acceptance, which the Rust had no positive case for.
+
+**Known limitation carried into Plan 3's docs:** a TOCTOU window exists between `realpath` and the later `open` — a symlink swapped in that gap escapes. The Rust has the same window and does not close it. Closing it needs per-component `openat` with `O_NOFOLLOW`, which Node cannot do without a native call. Record it; do not attempt a partial mitigation that reads as a guarantee.
+
+---
+
+### Task 11: The files wire protocol and transfer state machine
+
+**Files:**
+- Create: `apps/agent/src/files/protocol.ts`
+- Create: `apps/agent/src/files/session.ts`
+- Test: `apps/agent/test/files/protocol.test.ts`, `apps/agent/test/files/session.test.ts`
+
+**Interfaces:**
+- Consumes: `FilesRoot`, `SandboxError`, `FilesErrorCode` (Task 10).
+- Produces:
+  - `const FILE_CHUNK_BYTES = 32768`, `const FILE_WINDOW_CHUNKS = 64`, `const FILES_IDLE_TIMEOUT_MS = 30_000`, `const ACK_FREQUENCY_CHUNKS = 16`, `const ACK_FLUSH_INTERVAL_MS = 20`, `const FILE_MAX_BYTES = 1024 ** 3`, `const MAX_LIST_ENTRIES = 4096`, `const PART_SUFFIX = '.ponter-part'`
+  - `function encodeDownloadChunk(transferId: string, chunkIndex: number, payload: Uint8Array): Uint8Array`
+  - `function decodeUploadChunk(frame: Uint8Array): { transferId: string; chunkIndex: number; payload: Uint8Array }`
+  - `function totalChunks(size: number): number`, `function expectedChunkLen(size: number, index: number): number`
+  - `function partName(name: string): string`
+  - `class FilesSession { ... }`
+
+- [ ] **Step 1: Write the failing protocol test**
+
+```ts
+// apps/agent/test/files/protocol.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  decodeUploadChunk,
+  encodeDownloadChunk,
+  expectedChunkLen,
+  partName,
+  totalChunks,
+} from '../../src/files/protocol.js';
+import { SandboxError } from '../../src/files/sandbox.js';
+
+const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+describe('chunk arithmetic', () => {
+  it('counts the last partial chunk', () => {
+    expect(totalChunks(0)).toBe(0);
+    expect(totalChunks(1)).toBe(1);
+    expect(totalChunks(32768)).toBe(1);
+    expect(totalChunks(32769)).toBe(2);
+  });
+
+  it('returns a full chunk except the last', () => {
+    expect(expectedChunkLen(65536, 0)).toBe(32768);
+    expect(expectedChunkLen(65536, 1)).toBe(32768);
+    expect(expectedChunkLen(65537, 2)).toBe(1);
+  });
+});
+
+describe('the binary frame', () => {
+  it('round-trips through the 25-byte header', () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    const frame = encodeDownloadChunk(ID, 7, payload);
+    expect(frame).toHaveLength(25 + 4);
+    expect(frame[0]).toBe(0x01);
+    expect(Buffer.from(frame.slice(17, 25)).readBigUInt64BE()).toBe(7n);
+  });
+
+  it('encodes the id as 16 raw UUID bytes, not ASCII', () => {
+    const frame = encodeDownloadChunk(ID, 0, new Uint8Array(0));
+    expect(frame.slice(1, 17)).toEqual(Buffer.from('0f8fad5bd9cb469fa16570867728950e', 'hex'));
+  });
+
+  it('decodes an upload frame as type 0x02', () => {
+    const frame = encodeDownloadChunk(ID, 3, new Uint8Array([9]));
+    frame[0] = 0x02;
+    const decoded = decodeUploadChunk(frame);
+    expect(decoded.transferId).toBe(ID);
+    expect(decoded.chunkIndex).toBe(3);
+    expect(decoded.payload).toEqual(new Uint8Array([9]));
+  });
+
+  it('rejects a truncated header', () => {
+    expect(() => decodeUploadChunk(new Uint8Array(24))).toThrow(SandboxError);
+  });
+
+  it('rejects a payload above the chunk cap', () => {
+    expect(() => decodeUploadChunk(new Uint8Array(25 + 32769))).toThrow(/exceeds/);
+  });
+
+  it('accepts a payload of exactly the cap', () => {
+    expect(() => decodeUploadChunk(new Uint8Array(25 + 32768))).not.toThrow();
+  });
+});
+
+describe('partName', () => {
+  it('appends the resume suffix as a sibling', () => {
+    expect(partName('report.pdf')).toBe('report.pdf.ponter-part');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement `protocol.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/files/protocol.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/files/protocol.ts
+import { SandboxError } from './sandbox.js';
+
+export const FILE_CHUNK_BYTES = 32_768;
+export const FILE_WINDOW_CHUNKS = 64;
+export const FILES_IDLE_TIMEOUT_MS = 30_000;
+export const ACK_FREQUENCY_CHUNKS = 16;
+export const ACK_FLUSH_INTERVAL_MS = 20;
+export const FILE_MAX_BYTES = 1024 ** 3;
+export const MAX_LIST_ENTRIES = 4096;
+export const PART_SUFFIX = '.ponter-part';
+
+export const DOWNLOAD_CHUNK = 0x01;
+export const UPLOAD_CHUNK = 0x02;
+
+const BINARY_HEADER_LEN = 25;
+const TRANSFER_ID_LEN = 16;
+
+/** `[1B type][16B id][8B big-endian index][payload]` — 25 bytes of header. */
+export function totalChunks(size: number): number {
+  return Math.ceil(size / FILE_CHUNK_BYTES);
+}
+
+export function expectedChunkLen(size: number, index: number): number {
+  const remaining = size - index * FILE_CHUNK_BYTES;
+  return Math.min(FILE_CHUNK_BYTES, Math.max(0, remaining));
+}
+
+function transferIdTo16(transferId: string): Uint8Array {
+  const hex = transferId.replace(/-/g, '');
+  if (/^[0-9a-fA-F]{32}$/.test(hex)) return new Uint8Array(Buffer.from(hex, 'hex'));
+  // Test-only affordance the Rust also had: a non-UUID id becomes its first 16
+  // ASCII bytes, NUL-padded. Production ids are always UUIDs.
+  const out = new Uint8Array(TRANSFER_ID_LEN);
+  Buffer.from(transferId, 'utf8').copy(Buffer.from(out.buffer), 0, 0, TRANSFER_ID_LEN);
+  return out;
+}
+
+function transferIdFrom16(bytes: Uint8Array): string {
+  const hex = Buffer.from(bytes).toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+export function encodeDownloadChunk(
+  transferId: string,
+  chunkIndex: number,
+  payload: Uint8Array,
+): Uint8Array {
+  const frame = new Uint8Array(BINARY_HEADER_LEN + payload.length);
+  frame[0] = DOWNLOAD_CHUNK;
+  frame.set(transferIdTo16(transferId), 1);
+  frame.set(new Uint8Array(Buffer.alloc(8)), 17);
+  Buffer.from(frame.buffer).writeBigUInt64BE(BigInt(chunkIndex), 17);
+  frame.set(payload, BINARY_HEADER_LEN);
+  return frame;
+}
+
+/**
+ * The inbound binary frame (B42). The type byte is **not** validated here: the
+ * Rust routed by first byte at the dispatcher and only `0x02` reaches this
+ * decoder, so validating it twice would produce two different error paths for
+ * the same hostile input.
+ */
+export function decodeUploadChunk(frame: Uint8Array): {
+  transferId: string;
+  chunkIndex: number;
+  payload: Uint8Array;
+} {
+  if (frame.length < BINARY_HEADER_LEN) {
+    throw new SandboxError('BAD_FRAME', 'binary frame header truncated');
+  }
+  if (frame.length > BINARY_HEADER_LEN + FILE_CHUNK_BYTES) {
+    throw new SandboxError('BAD_FRAME', 'binary frame payload exceeds chunk cap');
+  }
+  const view = Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength);
+  return {
+    transferId: transferIdFrom16(frame.slice(1, 17)),
+    chunkIndex: Number(view.readBigUInt64BE(17)),
+    payload: frame.slice(BINARY_HEADER_LEN),
+  };
+}
+
+export function partName(name: string): string {
+  return `${name}${PART_SUFFIX}`;
+}
+
+/**
+ * `RemoteFile.modifiedAt` is an RFC 3339 UTC string (`files.rs:141-161`), not an
+ * epoch number, and the value is always normalized to end in `Z` — the wire
+ * type in `packages/shared/src/types/files.ts:6-13` declares `modifiedAt:
+ * string`, and `apps/web`'s `formatModified` parses it as one.
+ *
+ * Seconds, not milliseconds: `mtimeMs` truncated. A directory's `mtimeMs` can
+ * carry a fractional part that would otherwise leak into the string.
+ */
+export function rfc3339Utc(epochMs: number): string {
+  const d = new Date(Math.floor(epochMs / 1000) * 1000);
+  return `${d.toISOString().replace(/\.\d{3}Z$/, 'Z')}`;
+}
+```
+
+- [ ] **Step 3: Write the failing session test**
+
+```ts
+// apps/agent/test/files/session.test.ts
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { FilesRoot } from '../../src/files/sandbox.js';
+import { FILES_IDLE_TIMEOUT_MS } from '../../src/files/protocol.js';
+import type { FilesFrame } from '../../src/files/session.js';
+import {
+  FilesSession,
+  resumeOffsetMatches,
+  type RemoteFileWire,
+} from '../../src/files/session.js';
+
+const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+const ID2 = '11111111-2222-3333-4444-555555555555';
+
+function session() {
+  const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+  writeFileSync(join(dir, 'a.bin'), Buffer.alloc(100_000, 7));
+  return { dir, s: new FilesSession(FilesRoot.open(dir), () => 0) };
+}
+
+/**
+ * The `type` of a JSON frame, or a marker for the two non-JSON kinds. A
+ * `FilesFrame` is `string | Uint8Array | {type, …}`, so neither
+ * `typeof f !== 'string'` nor `typeof f === 'string' ? f : f.type` narrows
+ * enough for `tsc` under `strict`.
+ */
+function frameType(f: FilesFrame): string {
+  if (typeof f === 'string') return '<<text>>';
+  if (f instanceof Uint8Array) return '<<binary>>';
+  return f.type;
+}
+
+describe('list', () => {
+  /** The one frame `files-list` returns, narrowed to its wire shape. */
+  function listResult(out: FilesFrame[]) {
+    return out[0] as unknown as {
+      type: string;
+      requestId: string;
+      truncated: boolean;
+      entries: RemoteFileWire[];
+    };
+  }
+
+  // Ports `list_returns_entries_sorted_dirs_first` (files.rs:2703). The sort
+  // assertions are the point: `localeCompare` on this fixture would also put
+  // the dir first, so the name-order half is what discriminates — byte-wise
+  // puts `a.txt` before `b.txt`, and would put `B.txt` before `a.txt`.
+  it('lists entries sorted directories-first, then name byte-wise', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    mkdirSync(join(dir, 'zz-dir'));
+    writeFileSync(join(dir, 'b.txt'), 'bb');
+    writeFileSync(join(dir, 'a.txt'), 'a');
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+
+    const out = s.handle({ type: 'files-list', requestId: 'r-1', path: '' });
+    expect(out).toHaveLength(1);
+    const result = listResult(out);
+    expect(result.type).toBe('files-list-result');
+    expect(result.requestId).toBe('r-1');
+    expect(result.truncated).toBe(false);
+    expect(result.entries.map((e) => e.name)).toEqual(['zz-dir', 'a.txt', 'b.txt']);
+    expect(result.entries[0].isDirectory).toBe(true);
+    expect(result.entries[0].path).toBe('zz-dir');
+    expect(result.entries[1].size).toBe(1);
+    expect(result.entries[1].isDirectory).toBe(false);
+    expect(result.entries[1].path).toBe('a.txt');
+    // The wire type declares `modifiedAt: string` and always ends in `Z`.
+    expect(result.entries[1].modifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  // Ports `list_on_a_file_is_not_a_directory` (files.rs:2730). This is the test
+  // that catches `readdirSync` bypassing `errnoToCode`: without the mapping in
+  // `list()` itself, Node's `ENOTDIR` reaches `handle()`'s generic catch and
+  // the wire code becomes `IO_ERROR`.
+  it('reports NOT_A_DIRECTORY when listing a file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    writeFileSync(join(dir, 'f.txt'), 'x');
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+
+    const out = s.handle({ type: 'files-list', requestId: 'r-1', path: 'f.txt' });
+    expect(JSON.stringify(out)).toContain('NOT_A_DIRECTORY');
+  });
+
+  // Ports `list_cap_truncates_at_4096_with_the_flag` (files.rs:2740).
+  it('truncates at the cap and sets the flag', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    for (let i = 0; i < 4097; i++) writeFileSync(join(dir, `f${String(i).padStart(4, '0')}`), '');
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+
+    const out = s.handle({ type: 'files-list', requestId: 'r-1', path: '' });
+    const result = listResult(out);
+    expect(result.entries).toHaveLength(4096);
+    expect(result.truncated).toBe(true);
+    expect(result.entries[0].name).toBe('f0000');
+    expect(result.entries[4095].name).toBe('f4095');
+  });
+});
+
+describe('download', () => {
+  it('emits begin, then exactly the 64-chunk window, then waits for acks', () => {
+    const { s } = session();
+    const out = s.handle({ type: 'files-download', transferId: ID, path: 'a.bin' });
+    expect(frameType(out[0]!)).toBe('files-download-begin');
+    expect(out.filter((f) => typeof f !== 'string')).toHaveLength(64);
+  });
+
+  it('completes an empty file with begin then end', () => {
+    const { dir, s } = session();
+    writeFileSync(join(dir, 'empty'), '');
+    const out = s.handle({ type: 'files-download', transferId: ID, path: 'empty' });
+    expect(out.map(frameType)).toContain('files-download-end');
+  });
+
+  it('refuses a second download in the same direction', () => {
+    const { s } = session();
+    s.handle({ type: 'files-download', transferId: ID, path: 'a.bin' });
+    const out = s.handle({ type: 'files-download', transferId: ID2, path: 'a.bin' });
+    expect(JSON.stringify(out)).toContain('TRANSFER_BUSY');
+  });
+
+  it('drops a download whose ack claims more chunks than were sent', () => {
+    const { s } = session();
+    s.handle({ type: 'files-download', transferId: ID, path: 'a.bin' });
+    const out = s.handle({ type: 'files-download-ack', transferId: ID, nextChunkIndex: 65 });
+    expect(JSON.stringify(out)).toContain('BAD_FRAME');
+    expect(JSON.stringify(s.handle({ type: 'files-download', transferId: ID2, path: 'a.bin' }))).not.toContain(
+      'TRANSFER_BUSY',
+    );
+  });
+
+  it('ignores a duplicate or regressive ack without erroring', () => {
+    const { s } = session();
+    s.handle({ type: 'files-download', transferId: ID, path: 'a.bin' });
+    s.handle({ type: 'files-download-ack', transferId: ID, nextChunkIndex: 10 });
+    const out = s.handle({ type: 'files-download-ack', transferId: ID, nextChunkIndex: 10 });
+    expect(JSON.stringify(out)).not.toContain('files-error');
+  });
+});
+
+describe('upload', () => {
+  it('writes the file and removes the .part on success', () => {
+    const { dir, s } = session();
+    const size = 40_000;
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'up.bin', size });
+    s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 0,
+      totalChunks: 2,
+      data: Buffer.alloc(32_768, 1).toString('base64'),
+    });
+    s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 1,
+      totalChunks: 2,
+      data: Buffer.alloc(size - 32_768, 1).toString('base64'),
+    });
+    const out = s.handle({ type: 'files-upload-end', transferId: ID });
+    expect(JSON.stringify(out)).toContain('files-upload-complete');
+    expect(readFileSync(join(dir, 'up.bin')).length).toBe(size);
+    expect(() => statSync(join(dir, 'up.bin.ponter-part'))).toThrow();
+  });
+
+  it('batches acks, flushing on the 16th chunk', () => {
+    const { s } = session();
+    const size = 32_768 * 20;
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'b.bin', size });
+    let acks = 0;
+    for (let i = 1; i < 20; i += 1) {
+      const out = s.handle({
+        type: 'files-upload-chunk',
+        transferId: ID,
+        chunkIndex: i,
+        totalChunks: 20,
+        data: Buffer.alloc(32_768).toString('base64'),
+      });
+      acks += out.filter((f) => frameType(f) === 'files-upload-ack').length;
+    }
+    expect(acks).toBe(1);
+  });
+
+  it('rejects a chunk with the wrong index', () => {
+    const { s } = session();
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'c.bin', size: 65_536 });
+    const out = s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 1,
+      totalChunks: 2,
+      data: Buffer.alloc(32_768).toString('base64'),
+    });
+    expect(JSON.stringify(out)).toContain('BAD_FRAME');
+  });
+
+  it('rejects upload-end before the last chunk', () => {
+    const { s } = session();
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'd.bin', size: 65_536 });
+    s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 0,
+      totalChunks: 2,
+      data: Buffer.alloc(32_768).toString('base64'),
+    });
+    expect(JSON.stringify(s.handle({ type: 'files-upload-end', transferId: ID }))).toContain(
+      'BAD_FRAME',
+    );
+  });
+
+  it('refuses a name that already exists', () => {
+    const { s } = session();
+    const out = s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      name: 'a.bin',
+      size: 10,
+    });
+    expect(JSON.stringify(out)).toContain('FILE_EXISTS');
+  });
+});
+
+describe('resume', () => {
+  // The wire value is pinned here because Rust never pinned it: `files.rs:40-45`
+  // says the constant is "pinned by [`FILES_IDLE_TIMEOUT_MS`] and its own
+  // assertion", and no such assertion exists (`awk 'NR>=2287' files.rs | grep
+  // FILES_IDLE_TIMEOUT` is empty; the test module starts at :2287).
+  //
+  // Only the literal `30_000` is asserted. "The prod timeout equals the
+  // constant" is NOT asserted, because in TS both sides are the same symbol —
+  // `expect(FILES_IDLE_TIMEOUT_MS).toBe(FILES_IDLE_TIMEOUT_MS)` cannot fail.
+  // Rust could assert the equivalent because it has two symbols that diverge
+  // under `cfg(test)` (`FILES_IDLE_TIMEOUT` shrinks to 50 ms so tests need not
+  // sleep 30 s); TS has one and reaches the same end by injecting `now()`.
+  it('pins the idle timeout to the wire value', () => {
+    expect(FILES_IDLE_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it('requires the .part length to equal the resume offset exactly', () => {
+    expect(resumeOffsetMatches(65_536, 2)).toBe(true);
+    expect(resumeOffsetMatches(65_535, 2)).toBe(false);
+    expect(resumeOffsetMatches(0, 0)).toBe(true);
+    expect(resumeOffsetMatches(1, 0)).toBe(false);
+  });
+
+  it('answers an unapproved resume with a resume-ack, never an error frame', () => {
+    const { s } = session();
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'e.bin', size: 65_536 });
+    s.handle({ type: 'files-pause', transferId: ID, direction: 'upload' });
+    const out = s.handle({
+      type: 'files-resume',
+      transferId: ID,
+      path: 'ignored',
+      direction: 'upload',
+      fromChunkIndex: 5,
+    });
+    const ack = out.find((f) => frameType(f) === 'files-resume-ack');
+    expect(ack).toBeDefined();
+    expect(JSON.stringify(ack)).toContain('"approved":false');
+  });
+
+  // Ports `paused_state_survives_idle_timeout` (files.rs:3834): pause, push the
+  // clock past the deadline, and assert `checkIdle()` emits nothing and the
+  // slot survives. Rust forces the deadline into the past directly; TS advances
+  // the injected clock, which reaches the same state without touching internals.
+  it('paused transfers do not time out', () => {
+    let now = 0;
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+    const s = new FilesSession(FilesRoot.open(dir), () => now);
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'f.bin', size: 65_536 });
+    s.handle({ type: 'files-pause', transferId: ID, direction: 'upload' });
+    now = 60_000;
+    expect(JSON.stringify(s.checkIdle())).not.toContain('TRANSFER_TIMEOUT');
+  });
+
+  it('kills a stalled transfer at the idle timeout', () => {
+    let now = 0;
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+    writeFileSync(join(dir, 'g.bin'), Buffer.alloc(100_000));
+    const s = new FilesSession(FilesRoot.open(dir), () => now);
+    s.handle({ type: 'files-download', transferId: ID, path: 'g.bin' });
+    now = 30_000;
+    expect(JSON.stringify(s.checkIdle())).toContain('TRANSFER_TIMEOUT');
+  });
+});
+
+describe('cancel', () => {
+  it('removes the .part file and stops the upload', () => {
+    const { dir, s } = session();
+    s.handle({ type: 'files-upload-begin', transferId: ID, path: '', name: 'h.bin', size: 65_536 });
+    s.handle({ type: 'files-cancel', transferId: ID });
+    expect(() => statSync(join(dir, 'h.bin.ponter-part'))).toThrow();
+  });
+
+  it('is idempotent for an unknown id and emits no error', () => {
+    const { s } = session();
+    expect(s.handle({ type: 'files-cancel', transferId: ID2 })).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 4: Run it and watch it fail, then implement `session.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/files/session.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/files/session.ts
+import {
+  closeSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
+import type { Dirent } from 'node:fs';
+import { join } from 'node:path';
+import { SandboxError, errnoToCode } from './sandbox.js';
+import type { FilesRoot } from './sandbox.js';
+import {
+  ACK_FLUSH_INTERVAL_MS,
+  ACK_FREQUENCY_CHUNKS,
+  FILE_MAX_BYTES,
+  FILE_WINDOW_CHUNKS,
+  FILES_IDLE_TIMEOUT_MS,
+  MAX_LIST_ENTRIES,
+  PART_SUFFIX,
+  decodeUploadChunk,
+  encodeDownloadChunk,
+  expectedChunkLen,
+  partName,
+  rfc3339Utc,
+  totalChunks,
+} from './protocol.js';
+
+export { FILES_IDLE_TIMEOUT_MS };
+
+/**
+ * The wire shape of one entry, exactly `RemoteFile` from
+ * `packages/shared/src/types/files.ts:6-13`. Declared here rather than
+ * imported so `apps/agent` does not depend on the browser's package; the two
+ * must stay identical and `files.e2e.test.ts` is what catches a drift.
+ */
+export interface RemoteFileWire {
+  name: string;
+  path: string;
+  size: number;
+  isDirectory: boolean;
+  modifiedAt: string;
+}
+
+export type FilesFrame =
+  | string
+  | Uint8Array
+  | { type: string; [key: string]: unknown };
+
+/**
+ * Resume requires the `.part` length to equal the resume offset **exactly**.
+ * No truncation and no tolerance: a `.part` that is a byte short would leave a
+ * hole that `write+append` can never fill, and a byte long would silently
+ * duplicate a byte into the finished file.
+ */
+export function resumeOffsetMatches(partBytes: number, fromChunkIndex: number): boolean {
+  return partBytes === fromChunkIndex * 32_768;
+}
+
+interface DownloadState {
+  transferId: string;
+  sent: number;
+  acked: number;
+  total: number;
+  size: number;
+  buffer: Buffer;
+  paused: boolean;
+  deadline: number;
+}
+
+interface UploadState {
+  transferId: string;
+  nextChunk: number;
+  written: number;
+  total: number;
+  size: number;
+  partPath: string;
+  destPath: string;
+  lastAcked: number;
+  pendingAck: number | null;
+  lastAckAt: number;
+  paused: boolean;
+  deadline: number;
+}
+
+/**
+ * One session's file transfers (B42/B43/B45/B46).
+ *
+ * Two shape decisions worth stating:
+ *
+ * - **One slot per direction, and the window applies to downloads only.** The
+ *   Rust gated only `DownloadState`; uploads are ungated because the browser is
+ *   the trusted side and a gate there would need a browser-side counterpart —
+ *   a protocol change, not a port.
+ * - **The window is 64 chunks, not 16.** A stale comment in the Rust said 16;
+ *   the constant, the gate and four tests all said 64. The code wins.
+ *
+ * Every rejection is a frame, never a throw out of `handle`: a bad path must not
+ * end the session, which is exactly what "fail-soft" means here.
+ */
+export class FilesSession {
+  private download: DownloadState | null = null;
+  private upload: UploadState | null = null;
+
+  constructor(
+    private readonly root: FilesRoot,
+    private readonly now: () => number,
+  ) {}
+
+  handle(message: { type: string; [key: string]: unknown }): FilesFrame[] {
+    try {
+      return this.dispatch(message);
+    } catch (error) {
+      if (error instanceof SandboxError) {
+        return [this.errorFrame(message, error.code, error.message)];
+      }
+      return [this.errorFrame(message, 'IO_ERROR', (error as Error).message)];
+    }
+  }
+
+  /** Called from a 1 s tick. */
+  checkIdle(): FilesFrame[] {
+    const now = this.now();
+    const out: FilesFrame[] = [];
+    if (this.download && !this.download.paused && this.download.deadline <= now) {
+      out.push({ type: 'files-error', transferId: this.download.transferId, code: 'TRANSFER_TIMEOUT', message: 'transfer timed out' });
+      this.download = null;
+    }
+    if (this.upload && !this.upload.paused && this.upload.deadline <= now) {
+      this.discardUpload(this.upload);
+      this.upload = null;
+      out.push({ type: 'files-error', code: 'TRANSFER_TIMEOUT', message: 'transfer timed out' });
+    }
+    return out;
+  }
+
+  /** Called from a 20 ms tick so a low-rate upload still acks promptly. */
+  flushAcks(): FilesFrame[] {
+    return this.pendingAckFrame();
+  }
+
+  private dispatch(message: { type: string; [key: string]: unknown }): FilesFrame[] {
+    switch (message.type) {
+      case 'files-list':
+        return this.list(message);
+      case 'files-download':
+        return this.startDownload(message);
+      case 'files-download-ack':
+        return this.ackDownload(message);
+      case 'files-upload-begin':
+        return this.beginUpload(message);
+      case 'files-upload-chunk':
+        return this.chunkUpload(message);
+      case 'files-upload-end':
+        return this.endUpload(message);
+      case 'files-pause':
+        return this.pause(message);
+      case 'files-resume':
+        return this.resume(message);
+      case 'files-cancel':
+        this.cancel(message);
+        return [];
+      case 'files-mkdir':
+        return this.mkdir(message);
+      case 'files-delete':
+        return this.remove(message);
+      case 'files-rename':
+        return this.rename(message);
+      default:
+        return [];
+    }
+  }
+
+  private errorFrame(message: { [key: string]: unknown }, code: string, text: string): FilesFrame {
+    return {
+      type: 'files-error',
+      ...(typeof message.requestId === 'string' ? { requestId: message.requestId } : {}),
+      ...(typeof message.transferId === 'string' ? { transferId: message.transferId } : {}),
+      code,
+      message: text,
+    };
+  }
+
+  /**
+   * `MAX_LIST_ENTRIES` truncates **and sets `truncated`**, rather than refusing.
+   * A directory with 4 096 entries is normal; refusing to list it would make the
+   * browser's file manager unusable on exactly the machines people use for file
+   * transfer. The flag is what stops the UI claiming it showed everything.
+   *
+   * The wire shape is `RemoteFile` (`packages/shared/src/types/files.ts:6-13`,
+   * unchanged since Week 10): `{name, path, size, isDirectory, modifiedAt}`.
+   * Every field is carried through, not renamed — `apps/web`'s FilesView reads
+   * `isDirectory`, `path` and `modifiedAt` directly, and
+   * `packages/webrtc-core/test/e2e/files.e2e.test.ts:123,127` asserts
+   * `isDirectory`.
+   */
+  private list(message: { [key: string]: unknown }): FilesFrame[] {
+    const rel = String(message.path ?? '');
+    const path = this.root.resolveExisting(rel);
+    // A file where a directory was expected is NOT_A_DIRECTORY; other failures
+    // are IO_ERROR. `readdirSync` is the call that raises it, so the mapping
+    // happens here rather than in `handle()`'s generic catch.
+    let names: Dirent[];
+    try {
+      names = readdirSync(path, { withFileTypes: true });
+    } catch (error) {
+      throw new SandboxError(errnoToCode(error), `listing \`${rel}\``);
+    }
+    const entries: RemoteFileWire[] = names.map((entry) => {
+      // A per-entry stat failure fails the whole list (spec §6.1): a
+      // half-listed directory is worse than an error.
+      const stat = statSync(join(path, entry.name));
+      // `metadata.len()` is a real number for a directory too — the wire type
+      // declares `size: number`, not `number | null`.
+      return {
+        name: entry.name,
+        path: rel === '' ? entry.name : `${rel}/${entry.name}`,
+        size: stat.size,
+        isDirectory: stat.isDirectory(),
+        modifiedAt: rfc3339Utc(stat.mtimeMs),
+      };
+    });
+    // Deterministic order (spec §2.5): directories first, then name
+    // byte-wise. Sort BEFORE truncating — `read_dir` order is arbitrary.
+    entries.sort(
+      (a, b) =>
+        Number(b.isDirectory) - Number(a.isDirectory) ||
+        Buffer.compare(Buffer.from(a.name, 'utf8'), Buffer.from(b.name, 'utf8')),
+    );
+    const truncated = entries.length > MAX_LIST_ENTRIES;
+    return [
+      {
+        type: 'files-list-result',
+        requestId: message.requestId,
+        path: rel,
+        entries: entries.slice(0, MAX_LIST_ENTRIES),
+        truncated,
+      },
+    ];
+  }
+
+  private startDownload(message: { [key: string]: unknown }): FilesFrame[] {
+    const transferId = String(message.transferId);
+    const resolved = this.root.resolveExisting(String(message.path ?? ''));
+    const stat = statSync(resolved);
+    if (stat.isDirectory()) throw new SandboxError('NOT_A_FILE', 'not a file');
+    if (stat.size > FILE_MAX_BYTES) throw new SandboxError('FILE_TOO_LARGE', 'file too large');
+    if (this.download) throw new SandboxError('TRANSFER_BUSY', 'a download is already in flight');
+    const total = totalChunks(stat.size);
+    const out: FilesFrame[] = [
+      {
+        type: 'files-download-begin',
+        transferId,
+        name: resolved.split('/').pop(),
+        path: String(message.path),
+        size: stat.size,
+        totalChunks: total,
+      },
+    ];
+    if (total === 0) {
+      out.push({ type: 'files-download-end', transferId });
+      return out;
+    }
+    const state: DownloadState = {
+      transferId,
+      sent: 0,
+      acked: 0,
+      total,
+      size: stat.size,
+      buffer: readFileSync(resolved),
+      paused: false,
+      deadline: this.now() + FILES_IDLE_TIMEOUT_MS,
+    };
+    this.download = state;
+    out.push(...this.pump(state));
+    return out;
+  }
+
+  private pump(state: DownloadState): FilesFrame[] {
+    const frames: FilesFrame[] = [];
+    while (state.sent < state.total && state.sent - state.acked < FILE_WINDOW_CHUNKS) {
+      const start = state.sent * 32_768;
+      frames.push(
+        encodeDownloadChunk(
+          state.transferId,
+          state.sent,
+          state.buffer.subarray(start, start + expectedChunkLen(state.size, state.sent)),
+        ),
+      );
+      state.sent += 1;
+    }
+    state.deadline = this.now() + FILES_IDLE_TIMEOUT_MS;
+    return frames;
+  }
+
+  private ackDownload(message: { [key: string]: unknown }): FilesFrame[] {
+    const state = this.download;
+    if (!state || state.transferId !== message.transferId) {
+      throw new SandboxError('TRANSFER_UNKNOWN', 'no such download');
+    }
+    const next = Number(message.nextChunkIndex);
+    if (next > state.sent) {
+      this.download = null;
+      throw new SandboxError('BAD_FRAME', 'ack ahead of what was sent');
+    }
+    if (next <= state.acked) return [];
+    state.acked = next;
+    state.deadline = this.now() + FILES_IDLE_TIMEOUT_MS;
+    if (state.paused) return [];
+    const frames = this.pump(state);
+    if (state.acked >= state.total) {
+      this.download = null;
+      frames.push({ type: 'files-download-end', transferId: state.transferId });
+    }
+    return frames;
+  }
+
+  private beginUpload(message: { [key: string]: unknown }): FilesFrame[] {
+    const size = Number(message.size);
+    if (size > FILE_MAX_BYTES) throw new SandboxError('FILE_TOO_LARGE', 'file too large');
+    if (this.upload) throw new SandboxError('TRANSFER_BUSY', 'an upload is already in flight');
+    const dest = this.root.resolveParentForCreate(String(message.path ?? ''), String(message.name));
+    try {
+      statSync(dest);
+      throw new SandboxError('FILE_EXISTS', 'destination already exists');
+    } catch (error) {
+      if (error instanceof SandboxError) throw error;
+    }
+    const partPath = `${dest}${PART_SUFFIX}`;
+    try {
+      closeSync(openSync(partPath, 'wx', 0o600));
+    } catch {
+      // A stale .part is removed once and retried once; a second failure is real.
+      unlinkSync(partPath);
+      closeSync(openSync(partPath, 'wx', 0o600));
+    }
+    this.upload = {
+      transferId: String(message.transferId),
+      nextChunk: 0,
+      written: 0,
+      total: totalChunks(size),
+      size,
+      partPath,
+      destPath: dest,
+      lastAcked: 0,
+      pendingAck: null,
+      lastAckAt: this.now(),
+      paused: false,
+      deadline: this.now() + FILES_IDLE_TIMEOUT_MS,
+    };
+    return this.pendingAckFrame();
+  }
+
+  /**
+   * `total` is `null` for the binary form, which carries no total: the JSON
+   * `files-upload-chunk` repeats `totalChunks` on every chunk, the binary frame
+   * has no room for it. Passing a sentinel (or `-1`) here and comparing anyway
+   * would reject **every** binary chunk — the check must be skipped, not
+   * satisfied.
+   */
+  private acceptChunk(
+    transferId: string,
+    chunkIndex: number,
+    total: number | null,
+    payload: Uint8Array,
+  ): void {
+    const state = this.upload;
+    if (!state || state.transferId !== transferId) {
+      throw new SandboxError('TRANSFER_UNKNOWN', 'no such upload');
+    }
+    if (total !== null && total !== state.total) {
+      throw new SandboxError('BAD_FRAME', 'total chunk count changed');
+    }
+    if (chunkIndex !== state.nextChunk) throw new SandboxError('BAD_FRAME', 'chunk index out of order');
+    if (payload.length !== expectedChunkLen(state.size, chunkIndex)) {
+      throw new SandboxError('BAD_FRAME', 'chunk length does not match');
+    }
+    const fd = openSync(state.partPath, 'a');
+    try {
+      writeSync(fd, payload);
+    } finally {
+      closeSync(fd);
+    }
+    state.nextChunk += 1;
+    state.written += payload.length;
+    state.deadline = this.now() + FILES_IDLE_TIMEOUT_MS;
+  }
+
+  private chunkUpload(message: { [key: string]: unknown }): FilesFrame[] {
+    try {
+      const payload = Buffer.from(String(message.data ?? ''), 'base64');
+      this.acceptChunk(
+        String(message.transferId),
+        Number(message.chunkIndex),
+        Number(message.totalChunks),
+        payload,
+      );
+    } catch (error) {
+      if (this.upload) this.discardUpload(this.upload);
+      this.upload = null;
+      throw error;
+    }
+    this.noteChunk();
+    return this.pendingAckFrame();
+  }
+
+  /** Called by the binary dispatcher for a `0x02` frame. */
+  acceptBinaryChunk(frame: Uint8Array): FilesFrame[] {
+    const decoded = decodeUploadChunk(frame);
+    try {
+      this.acceptChunk(decoded.transferId, decoded.chunkIndex, null, decoded.payload);
+    } catch (error) {
+      if (this.upload) this.discardUpload(this.upload);
+      this.upload = null;
+      throw error;
+    }
+    this.noteChunk();
+    return this.pendingAckFrame();
+  }
+
+  private noteChunk(): void {
+    const state = this.upload;
+    if (!state) return;
+    state.pendingAck = state.nextChunk;
+  }
+
+  private pendingAckFrame(): FilesFrame[] {
+    const state = this.upload;
+    if (!state || state.pendingAck === null) return [];
+    const due =
+      state.pendingAck - state.lastAcked >= ACK_FREQUENCY_CHUNKS ||
+      this.now() - state.lastAckAt >= ACK_FLUSH_INTERVAL_MS;
+    if (!due) return [];
+    const nextChunkIndex = state.pendingAck;
+    state.lastAcked = nextChunkIndex;
+    state.pendingAck = null;
+    state.lastAckAt = this.now();
+    return [{ type: 'files-upload-ack', transferId: state.transferId, nextChunkIndex }];
+  }
+
+  private endUpload(message: { [key: string]: unknown }): FilesFrame[] {
+    const state = this.upload;
+    if (!state || state.transferId !== message.transferId) {
+      throw new SandboxError('TRANSFER_UNKNOWN', 'no such upload');
+    }
+    if (state.nextChunk !== state.total || state.written !== state.size) {
+      this.discardUpload(state);
+      this.upload = null;
+      throw new SandboxError('BAD_FRAME', 'upload ended before the last chunk');
+    }
+    const fd = openSync(state.partPath, 'r+');
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    /**
+     * `link` then `unlink`, not `rename`. `rename` would silently overwrite a
+     * destination that appeared during the transfer — and the `FILE_EXISTS`
+     * check happened at `beginUpload`, minutes earlier for a 1 GiB file. `link`
+     * fails with `EEXIST` instead, which is the behaviour the Rust had and the
+     * only one that cannot lose someone else's file.
+     */
+    try {
+      linkSync(state.partPath, state.destPath);
+    } catch {
+      this.discardUpload(state);
+      this.upload = null;
+      throw new SandboxError('FILE_EXISTS', 'destination already exists');
+    }
+    unlinkSync(state.partPath);
+    this.upload = null;
+    return [
+      {
+        type: 'files-upload-complete',
+        transferId: state.transferId,
+        name: state.destPath.split('/').pop(),
+        path: state.destPath,
+        size: state.size,
+      },
+    ];
+  }
+
+  private pause(message: { [key: string]: unknown }): FilesFrame[] {
+    if (message.direction === 'download' && this.download) {
+      this.download.paused = true;
+      return [
+        {
+          type: 'files-pause-ack',
+          transferId: this.download.transferId,
+          ackedChunkIndex: this.download.acked,
+          bytesTransferred: this.download.acked * 32_768,
+        },
+      ];
+    }
+    if (message.direction === 'upload' && this.upload) {
+      this.upload.paused = true;
+      return [
+        {
+          type: 'files-pause-ack',
+          transferId: this.upload.transferId,
+          ackedChunkIndex: this.upload.nextChunk,
+          bytesTransferred: this.upload.nextChunk * 32_768,
+        },
+      ];
+    }
+    throw new SandboxError('TRANSFER_UNKNOWN', 'no such transfer');
+  }
+
+  private resume(message: { [key: string]: unknown }): FilesFrame[] {
+    const from = Number(message.fromChunkIndex);
+    if (message.direction === 'upload') {
+      const state = this.upload;
+      if (!state || state.transferId !== message.transferId) {
+        throw new SandboxError('TRANSFER_UNKNOWN', 'no such upload');
+      }
+      if (!state.paused) {
+        return [{ type: 'files-resume-ack', transferId: state.transferId, approved: false, fromChunkIndex: from, reason: 'transfer is not paused' }];
+      }
+      const partBytes = statSync(state.partPath).size;
+      if (!resumeOffsetMatches(partBytes, from)) {
+        return [
+          {
+            type: 'files-resume-ack',
+            transferId: state.transferId,
+            approved: false,
+            fromChunkIndex: from,
+            reason: `.part is ${partBytes} bytes, resume offset would land at ${from * 32_768} bytes`,
+          },
+        ];
+      }
+      state.paused = false;
+      state.nextChunk = from;
+      state.lastAcked = from;
+      state.pendingAck = null;
+      state.lastAckAt = this.now();
+      return [{ type: 'files-resume-ack', transferId: state.transferId, approved: true, fromChunkIndex: from }];
+    }
+    const state = this.download;
+    if (!state || state.transferId !== message.transferId) {
+      throw new SandboxError('TRANSFER_UNKNOWN', 'no such download');
+    }
+    if (!state.paused) {
+      return [{ type: 'files-resume-ack', transferId: state.transferId, approved: false, fromChunkIndex: from, reason: 'transfer is not paused' }];
+    }
+    state.sent = from;
+    state.acked = from;
+    state.paused = false;
+    state.deadline = this.now() + FILES_IDLE_TIMEOUT_MS;
+    return [
+      { type: 'files-resume-ack', transferId: state.transferId, approved: true, fromChunkIndex: from },
+      ...this.pump(state),
+    ];
+  }
+
+  private cancel(message: { [key: string]: unknown }): void {
+    if (this.upload && this.upload.transferId === message.transferId) {
+      this.discardUpload(this.upload);
+      this.upload = null;
+    }
+    if (this.download && this.download.transferId === message.transferId) {
+      this.download = null;
+    }
+  }
+
+  /**
+   * Called on peer-connection teardown. Removes any in-flight `.part` so a
+   * half-received upload does not sit in the sandbox looking like a file the
+   * user might open. Both slots are cleared **before** any filesystem work, so a
+   * throwing `unlinkSync` cannot leave a stale state that a later message
+   * resumes into.
+   */
+  dispose(): void {
+    const upload = this.upload;
+    const download = this.download;
+    this.upload = null;
+    this.download = null;
+    if (upload) this.discardUpload(upload);
+    void download;
+  }
+
+  private mkdir(message: { [key: string]: unknown }): FilesFrame[] {
+    const target = this.root.resolveParentForCreate(String(message.path ?? ''), String(message.name));
+    mkdirSync(target);
+    return [this.actionResult(message, target)];
+  }
+
+  /**
+   * `rm -r` is **not** offered: a peer that can recursively delete a directory
+   * inside the sandbox can destroy a document tree with one message and no undo.
+   * A non-empty directory is refused with `DIR_NOT_EMPTY` and the user removes
+   * its contents explicitly.
+   */
+  private remove(message: { [key: string]: unknown }): FilesFrame[] {
+    const target = this.root.resolveExisting(String(message.path ?? ''));
+    // `resolveExisting('')` returns the canonical root, so this compares two
+    // canonical strings. Comparing against `this.root` (the object) would be
+    // always-false and would let a peer delete the root itself.
+    if (target === this.root.root) {
+      throw new SandboxError('PERMISSION_DENIED', 'the files root itself cannot be deleted');
+    }
+    const stat = statSync(target);
+    if (stat.isDirectory()) {
+      try {
+        rmdirSync(target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
+          throw new SandboxError('DIR_NOT_EMPTY', 'the directory is not empty');
+        }
+        throw error;
+      }
+    } else {
+      unlinkSync(target);
+    }
+    return [this.actionResult(message, target)];
+  }
+
+  private rename(message: { [key: string]: unknown }): FilesFrame[] {
+    const from = this.root.resolveExisting(String(message.from ?? ''));
+    const to = this.root.resolveParentForCreate(
+      String(message.toPath ?? ''),
+      String(message.toName),
+    );
+    try {
+      statSync(to);
+      throw new SandboxError('FILE_EXISTS', 'destination already exists');
+    } catch (error) {
+      if (error instanceof SandboxError) throw error;
+    }
+    renameSync(from, to);
+    return [this.actionResult(message, to)];
+  }
+
+  private actionResult(message: { [key: string]: unknown }, path: string): FilesFrame {
+    // `path` is a canonical absolute path; the wire carries it relative to the
+    // root. `this.root` is the `FilesRoot`, so the comparison and the slice
+    // both go through `.root` (the canonical string).
+    const prefix = this.root.root;
+    return {
+      type: 'files-action-result',
+      requestId: message.requestId,
+      action: String(message.type).replace('files-', ''),
+      success: true,
+      path: path === prefix ? '' : path.slice(prefix.length + 1),
+    };
+  }
+
+  private discardUpload(state: UploadState): void {
+    try {
+      unlinkSync(state.partPath);
+    } catch {
+      /* a missing .part is the desired end state */
+    }
+  }
+}
+
+/** Tears a session down: both slots cleared, any `.part` removed. */
+export function teardown(session: FilesSession): void {
+  session.dispose();
+}
+```
+
+- [ ] **Step 5: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/files/protocol.test.ts test/files/session.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/files/protocol.ts apps/agent/src/files/session.ts apps/agent/test/files/*.test.ts
+git add apps/agent/src/files apps/agent/test/files
+git commit -m "feat(agent): port the files protocol and transfer state machine"
+```
+
+**TEST-INTEGRITY declaration:** two new test files, **29 new `it()` / 59 new
+`expect()`** (was 25/42 before the repair below). 59 is the count with the
+fences' comments stripped; a naive token count returns 60 because
+`expect(FILES_IDLE_TIMEOUT_MS).toBe(FILES_IDLE_TIMEOUT_MS)` appears once — in a
+comment explaining why that assertion **cannot fail** in TypeScript and is
+therefore not written. Counting it would book an assertion the plan
+deliberately does not make. Ports 26 of `files.rs`'s 65
+tests — those covering the wire surface, the window, ack batching, resume
+alignment, cancel, idle, and the three `list_*` tests. The remaining **39** are
+either Rust-internal helpers (`rfc3339_formats_epoch_seconds_utc`,
+`decode_guard_*`, `test_transfer_id_codec_*`, `error_code_spellings_are_pinned`,
+`frame_files_wraps_the_envelope`, the seven `path_policy_*` /
+`upload_create_path_*` tests Task 10 already owns, and the pure `total_chunks` /
+`expected_chunk_len` / frame-cap arithmetic) or per-platform filesystem races
+(`finalize_race_losing_path_is_file_exists`, `stale_part_is_removed_and_retried_once`,
+`test_janitor_cleans_stale_part_files`). **The counts are per-test-name, derived
+from the two fences, not from a split estimated by subtraction.** The previous
+"24 of 65 / 41 remaining" partition was unauditable — it named one of the 24 and
+described the rest — and the repair is a *partition* repair, not a relabel: the
+41's stated criterion ("Rust-internal helpers … or per-platform filesystem
+races") does not cover `paused_state_survives_idle_timeout` (`files.rs:3834`),
+which exercises a wire-surface idle behaviour and therefore belonged to neither
+list. It is now counted among the 26 ports.
+
+Declared **retirements** for Plan 3's R-entry: `files-download-chunk` as a JSON
+outbound type (dead in Rust, never emitted — no browser can depend on it);
+`QUEUE_FULL` (never produced); and the four `decode_*` guard tests (the guards'
+`#[allow(dead_code)]` TS counterparts do not exist, so there is nothing to test).
+
+**Three additions, each declared as new rather than counted as a port:**
+
+1. **`pins the idle timeout to the wire value`** — `expect(FILES_IDLE_TIMEOUT_MS).toBe(30_000)`.
+   The Rust comment at `files.rs:40-45` claims the constant is "pinned by its own
+   assertion" and no such assertion exists (the test module starts at `:2287`;
+   nothing past it references `FILES_IDLE_TIMEOUT`). **Only the literal is
+   asserted.** The earlier declaration promised "the prod timeout equals it" as
+   well; that assertion is *vacuous* in TS and has been dropped, because TS has
+   one constant used identically by production and tests, so
+   `expect(X).toBe(X)` cannot fail. Rust could assert the equivalent because it
+   has **two** symbols diverging under `cfg(test)` — `FILES_IDLE_TIMEOUT` shrinks
+   to 50 ms so tests need not sleep 30 s. **TS needs no such divergence: it
+   injects `now()`, which is the design difference the declaration now names
+   instead of implying.**
+2. **`lists entries sorted directories-first, then name byte-wise`** — the sort
+   is `Buffer.compare` on UTF-8 bytes, matching `files.rs:1336-1340`. `localeCompare`
+   is ICU-dependent and would also put the fixture's dir first, so the *name*
+   half is what discriminates.
+3. **`reports NOT_A_DIRECTORY when listing a file`** — this is the test that
+   catches `readdirSync` bypassing `errnoToCode`. Without the mapping inside
+   `list()`, Node's `ENOTDIR` reaches `handle()`'s generic catch and the wire code
+   becomes `IO_ERROR` while the Rust emits `NOT_A_DIRECTORY`.
+
+**One test renamed, not removed:** `paused transfers do not time out` exists in
+the fence and is correctly named, but the previous declaration called it *new*.
+It is a **port** of `paused_state_survives_idle_timeout` (`files.rs:3834`), which
+pauses, forces `deadline` into the past, and asserts `checkIdle()` returns empty
+with the slot still `Some`. The TS fence does the same through the injected
+clock. Counted among the 26 ports.
+
+**Two fence repairs the tests depend on** (no count change on their own):
+`FilesRoot.list()` now builds the wire shape `{name, path, size, isDirectory,
+modifiedAt}` rather than `{name, kind, size|null, modifiedEpochMs}` — the Rust
+`RemoteFile` (`files.rs:286-292`), `packages/shared/src/types/files.ts:6-13`, and
+`apps/web`'s FilesView all agree on the former, and only the plan disagreed.
+`rfc3339Utc` is added to `protocol.ts` and `errnoToCode` is exported from
+`sandbox.ts` so `list()` can use them.
+
+---
+
+### Task 12: The PTY
+
+**Files:**
+- Create: `apps/agent/src/terminal/pty.ts`
+- Test: `apps/agent/test/terminal/pty.test.ts`
+
+**Interfaces:**
+- Consumes: `ShellPolicy` (Task 9); constants.
+- Produces:
+  - `const MAX_PTY_CHUNK = 16 * 1024`, `const MAX_SESSIONS = 10`
+  - `interface PtyHost { spawn(file, args, opts): PtyProcess }` — the `node-pty` seam
+  - `class PtyManager { create(opts): Promise<void>; resize(id, cols, rows): void; write(id, bytes): void; close(id): Promise<void>; onData(cb): void; onExit(cb): void }`
+
+- [ ] **Step 0: Install `node-pty` — including the build allowlist**
+
+Run, from the repo root:
+
+```bash
+pnpm --filter @ponter/agent-node add node-pty@1.2.0-beta.15
+```
+
+Then add **both** entries to `pnpm-workspace.yaml`'s `allowBuilds:` block, next to `better-sqlite3`:
+
+```yaml
+  # node-pty runs `node scripts/prebuild.js || node-gyp rebuild` on install.
+  # Allow the build: on Windows the prebuilt binary is the only way to get a
+  # working ConPTY, and there is no prebuild at all for some targets.
+  node-pty: true
+```
+
+Two things this step exists to prevent, both of which present as "the module is missing at runtime" rather than as an install error:
+
+- **`allowBuilds` is not optional.** pnpm 12 blocks postinstall scripts by default. Without the entry the dependency resolves and `import('node-pty')` succeeds far enough to typecheck, but the native binding is never built — which fails only in the packaged app.
+- **The version is not a caret, and it is `beta.15` rather than `1.1.0` stable for a build reason.** `npm view node-pty dist-tags` gives `latest: 1.1.0`, `beta: 1.2.0-beta.15`; every `1.2.0-*` publish is a prerelease. **1.1.0 ships prebuilds for darwin-arm64/x64 and win32-arm64/x64 only — no Linux** — so on Linux it falls through to `node-gyp rebuild` and needs a full C++ toolchain on every path (CI, Docker, user installs). ADR-78 makes Linux a first-class target, so the beta line is the right one: `beta.12` and `beta.15` both ship `linux-x64` and `linux-arm64` prebuilts. The `encoding` behaviour this task depends on was measured identical on 1.1.0, `beta.12` and `beta.15` (`CustomWriteStream.write` is byte-identical source across all three), and `typings/node-pty.d.ts` is byte-identical between the two betas, so `beta.12 → beta.15` is a drop-in, and so are the `install`/`postinstall` scripts (`node scripts/prebuild.js || node-gyp rebuild`, `node scripts/post-install.js` — identical in 1.1.0, `beta.12` and `beta.15`), so one `allowBuilds` entry covers any of them. Take `beta.15` for the two Windows pty fixes it carries over `beta.12`: a `std::mutex` around `ptyHandles` plus `ptyCounter` as `std::atomic<int>` in `src/win/conpty.cc`, and a `windowsTerminal.js` `_agent.onError` handler without which a failed ConPTY connect leaves the terminal object alive forever and the supervisor never learns the session died. Re-measure before moving off `beta.15`.
+
+Verify the binding actually loaded before writing any code:
+
+```bash
+node -e "const p=require('node-pty'); console.log(require('node-pty/package.json').version, typeof p.spawn)"
+```
+
+Expected: `1.2.0-beta.15 function`. If this throws, stop — the rest of the task cannot run.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/terminal/pty.test.ts
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
+import { MAX_SESSIONS, PtyManager } from '../../src/terminal/pty.js';
+
+function fakeHost() {
+  const spawned: { file: string; args: string[]; opts: Record<string, unknown> }[] = [];
+  const procs: (EventEmitter & { write: ReturnType<typeof vi.fn>; resize: ReturnType<typeof vi.fn>; kill: ReturnType<typeof vi.fn> })[] = [];
+  const host = {
+    spawn: (file: string, args: string[], opts: Record<string, unknown>) => {
+      spawned.push({ file, args, opts });
+      const p = Object.assign(new EventEmitter(), {
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        pid: 1000 + procs.length,
+      });
+      procs.push(p);
+      return p;
+    },
+  };
+  return { host, spawned, procs };
+}
+
+describe('PtyManager.create', () => {
+  it('spawns with the documented TERM and LANG', async () => {
+    const { host, spawned } = fakeHost();
+    const manager = new PtyManager(host);
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    expect(spawned[0].opts).toMatchObject({
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      env: expect.objectContaining({ TERM: 'xterm-256color', LANG: 'C.UTF-8' }),
+      // Bytes, not text: a utf8-decoding host loses 0xff before base64 runs.
+      encoding: null,
+    });
+  });
+
+  it('is idempotent per terminal id', async () => {
+    const { host, spawned } = fakeHost();
+    const manager = new PtyManager(host);
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('refuses an 11th session with session-limit-reached', async () => {
+    const { host } = fakeHost();
+    const manager = new PtyManager(host);
+    for (let i = 0; i < MAX_SESSIONS; i += 1) {
+      await manager.create({ terminalId: `t${i}`, shell: '/bin/sh', cols: 80, rows: 24 });
+    }
+    await expect(
+      manager.create({ terminalId: 'overflow', shell: '/bin/sh', cols: 80, rows: 24 }),
+    ).rejects.toMatchObject({ code: 'session-limit-reached' });
+  });
+
+  it('frees a slot when a session exits', async () => {
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    for (let i = 0; i < MAX_SESSIONS; i += 1) {
+      await manager.create({ terminalId: `t${i}`, shell: '/bin/sh', cols: 80, rows: 24 });
+    }
+    procs[0].emit('exit', { exitCode: 0 });
+    await expect(
+      manager.create({ terminalId: 'after-exit', shell: '/bin/sh', cols: 80, rows: 24 }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('PtyManager output', () => {
+  it('base64-encodes arbitrary bytes without a UTF-8 round trip', async () => {
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    const frames: { terminalId: string; data: string }[] = [];
+    manager.onData((f) => frames.push(f));
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    procs[0].emit('data', Buffer.from([0x00, 0xff, 0xc3]));
+    expect(frames[0].data).toBe(Buffer.from([0x00, 0xff, 0xc3]).toString('base64'));
+  });
+
+  it('splits more than 16 KiB of output into two frames', async () => {
+    // The Rust's `chunk_boundaries` promised this and never exercised it: it
+    // built one synthesized frame per length and asserted length equality. This
+    // is a real chunking assertion, made against the manager's own splitter.
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    const frames: { terminalId: string; data: string }[] = [];
+    manager.onData((f) => frames.push(f));
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    procs[0].emit('data', Buffer.alloc(16 * 1024 + 100, 0x41));
+    expect(frames).toHaveLength(2);
+    expect(Buffer.from(frames[0].data, 'base64').length).toBe(16 * 1024);
+    expect(Buffer.from(frames[1].data, 'base64').length).toBe(100);
+  });
+
+  it('emits terminal-exit with the reaped code', async () => {
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    const exits: { terminalId: string; exitCode: number | null }[] = [];
+    manager.onExit((e) => exits.push(e));
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    procs[0].emit('exit', { exitCode: 3 });
+    expect(exits).toEqual([{ terminalId: 't1', exitCode: 3 }]);
+  });
+
+  it('reports an unavailable exit code as null', async () => {
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    const exits: { terminalId: string; exitCode: number | null }[] = [];
+    manager.onExit((e) => exits.push(e));
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    procs[0].emit('exit', {});
+    expect(exits[0].exitCode).toBeNull();
+  });
+});
+
+describe('PtyManager.write', () => {
+  it('hands the host the same bytes it was given', async () => {
+    // `bytes.toString('utf8')` would look right here and pass a naive test,
+    // because 'echo' is valid UTF-8. The input below is not: 0xff and 0xfe are
+    // invalid UTF-8 leads, and the utf8 round trip turns each into U+FFFD
+    // (`ef bf bd`). ADR-10 says the payload is bytes.
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    manager.write('t1', Buffer.from([0x41, 0xff, 0xfe, 0x42]));
+    const passed = procs[0].write.mock.calls[0][0] as Buffer;
+    expect(Buffer.isBuffer(passed)).toBe(true);
+    expect(passed.equals(Buffer.from([0x41, 0xff, 0xfe, 0x42]))).toBe(true);
+  });
+
+  it('drops input for an unknown terminal instead of throwing', () => {
+    const { host } = fakeHost();
+    const manager = new PtyManager(host);
+    expect(() => manager.write('nope', Buffer.from('x'))).not.toThrow();
+  });
+
+  it('resizes an existing terminal and ignores an unknown one', async () => {
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    await manager.create({ terminalId: 't1', shell: '/bin/sh', cols: 80, rows: 24 });
+    manager.resize('t1', 120, 40);
+    expect(procs[0].resize).toHaveBeenCalledWith(120, 40);
+    expect(() => manager.resize('nope', 1, 1)).not.toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/terminal/pty.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/terminal/pty.ts
+import type { ShellPolicy } from './shell-policy.js';
+
+export const MAX_PTY_CHUNK = 16 * 1024;
+export const MAX_SESSIONS = 10;
+export const MAX_FRAME_BYTES = 64 * 1024;
+
+export interface PtyProcess {
+  write(data: Buffer): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  // Two overloads, not `(arg: never) => void`. `never` as a *parameter* type
+  // means "no argument can be passed", which no real host — and not even
+  // `EventEmitter` — is assignable to, so the fake in the test below would not
+  // typecheck against the seam it stands in for.
+  on(event: 'data', cb: (chunk: string | Buffer) => void): void;
+  on(event: 'exit', cb: (event: { exitCode?: number }) => void): void;
+}
+
+/** The `node-pty` seam. Tests supply a fake so no shell is ever spawned. */
+export interface PtyHost {
+  spawn(
+    file: string,
+    args: string[],
+    options: {
+      name: string;
+      cols: number;
+      rows: number;
+      env: Record<string, string>;
+      /**
+       * **Must be `null`.** `node-pty`'s default is `'utf8'`, which puts the
+       * master fd into text mode (`_socket.setEncoding(encoding)`): a byte
+       * that is not valid UTF-8 arrives at `onData` already replaced by
+       * U+FFFD, and the original byte is unrecoverable. ADR-10 makes the
+       * terminal payload bytes, not text, and B40 ports it — so the host
+       * adapter that supplies the real `node-pty` must pass `encoding: null`
+       * and the manager must never convert before base64.
+       */
+      encoding: null;
+    },
+  ): PtyProcess;
+}
+
+export interface PtyCreateOptions {
+  terminalId: string;
+  shell: string;
+  cols: number;
+  rows: number;
+  /** Resolved through `ShellPolicy` before it reaches here. */
+  policy?: ShellPolicy;
+}
+
+export class PtyError extends Error {
+  constructor(
+    readonly code: 'pty-spawn-failed' | 'session-limit-reached',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PtyError';
+  }
+}
+
+interface Session {
+  process: PtyProcess;
+}
+
+/**
+ * PTY sessions (B39–B41).
+ *
+ * Four details that are not obvious:
+ *
+ * - **Output is base64 of raw bytes, never a UTF-8 decode.** A chunk boundary can
+ *   land mid-codepoint; decoding to a string and re-encoding would corrupt it,
+ *   and a terminal sending `0xff` would throw outright. The browser's `atob`
+ *   handles it because the split happens at base64 length, not code unit.
+ * - **The bytes are only raw if the host says so.** `node-pty` defaults to
+ *   `encoding: 'utf8'`, which decodes the master fd to a string *before* this
+ *   class ever sees it — the corruption then happened upstream and base64
+ *   cannot recover it. That is why `PtyHost.spawn` takes `encoding: null`.
+ * - **Chunking is 16 KiB of raw bytes per frame.** Above that, `writeSync`-style
+ *   framing exceeds the SCTP message size the browser accepts.
+ * - **The exit code is reaped from the process's own `exit` event, not inferred
+ *   from a zero-length read.** `node-pty` gives us the event, so the Rust's
+ *   slave-end dance (drop it so `read()` returns `Ok(0)`) has no analogue here —
+ *   there is no slave handle to hold. That whole class of bug does not port.
+ *
+ * The 10-session cap is agent-side and load-bearing: each session is a process
+ * with a pty; a peer that opens sessions in a loop would exhaust the host.
+ */
+export class PtyManager {
+  private readonly sessions = new Map<string, Session>();
+  private dataHandler: ((frame: { terminalId: string; data: string }) => void) | null = null;
+  private exitHandler: ((frame: { terminalId: string; exitCode: number | null }) => void) | null =
+    null;
+
+  constructor(private readonly host: PtyHost) {}
+
+  onData(cb: (frame: { terminalId: string; data: string }) => void): void {
+    this.dataHandler = cb;
+  }
+
+  onExit(cb: (frame: { terminalId: string; exitCode: number | null }) => void): void {
+    this.exitHandler = cb;
+  }
+
+  async create(options: PtyCreateOptions): Promise<void> {
+    if (this.sessions.has(options.terminalId)) return;
+    if (this.sessions.size >= MAX_SESSIONS) {
+      throw new PtyError('session-limit-reached', 'the agent already has 10 terminal sessions');
+    }
+    let process_: PtyProcess;
+    try {
+      process_ = this.host.spawn(options.shell, [], {
+        name: 'xterm-256color',
+        cols: options.cols,
+        rows: options.rows,
+        env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8' } as Record<string, string>,
+        // Bytes, not text. See the `encoding` note on `PtyHost.spawn`.
+        encoding: null,
+      });
+    } catch (error) {
+      throw new PtyError('pty-spawn-failed', (error as Error).message);
+    }
+    this.sessions.set(options.terminalId, { process: process_ });
+    // With `encoding: null` a real `node-pty` emits Buffers. The `string` half
+    // is tolerated only so a fake host cannot smuggle in a lossy decode
+    // silently: `Buffer.from(string)` is the utf8 round trip this code exists
+    // to avoid, so the string branch is a bug in the host adapter, not a
+    // supported input — which is why the real host must pass `encoding: null`.
+    // No `as never` casts: the seam's overloads are what make this typecheck.
+    process_.on('data', (chunk: string | Buffer) => {
+      this.emitChunks(options.terminalId, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    process_.on('exit', (event: { exitCode?: number }) => {
+      this.sessions.delete(options.terminalId);
+      this.exitHandler?.({
+        terminalId: options.terminalId,
+        exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
+      });
+    });
+  }
+
+  resize(terminalId: string, cols: number, rows: number): void {
+    this.sessions.get(terminalId)?.process.resize(cols, rows);
+  }
+
+  write(terminalId: string, bytes: Uint8Array): void {
+    // Pass the Buffer through. `Buffer.from(bytes).toString('utf8')` — the
+    // obvious spelling — is a lossy round trip for any byte input that is not
+    // valid UTF-8, and it is the *inbound* half of the same defect as the
+    // `encoding` note on `PtyHost.spawn`. Measured: writing `41 ff fe 42` that
+    // way reaches the child as `41 ef bf bd ef bf bd 42`.
+    this.sessions.get(terminalId)?.process.write(Buffer.from(bytes));
+  }
+
+  async close(terminalId: string): Promise<void> {
+    const session = this.sessions.get(terminalId);
+    if (!session) return;
+    this.sessions.delete(terminalId);
+    session.process.kill();
+  }
+
+  private emitChunks(terminalId: string, buffer: Buffer): void {
+    for (let offset = 0; offset < buffer.length; offset += MAX_PTY_CHUNK) {
+      const slice = buffer.subarray(offset, offset + MAX_PTY_CHUNK);
+      this.dataHandler?.({ terminalId, data: slice.toString('base64') });
+    }
+  }
+}
+```
+
+- [ ] **Step 3: Add the one test that needs a real PTY**
+
+```ts
+// apps/agent/test/terminal/pty-real.test.ts
+import { describe, expect, it } from 'vitest';
+import { PtyManager } from '../../src/terminal/pty.js';
+
+describe('a real shell', () => {
+  it('echoes, then delivers terminal-exit after the child exits', async () => {
+    const { spawn } = await import('node-pty');
+    const manager = new PtyManager({ spawn: spawn as never });
+    const data: string[] = [];
+    const exits: number[] = [];
+    manager.onData((f) => data.push(f.data));
+    manager.onExit((e) => exits.push(e.exitCode ?? -1));
+    await manager.create({ terminalId: 't', shell: '/bin/sh', cols: 80, rows: 24 });
+    manager.write('t', Buffer.from('echo PONTER_E2E\n'));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(Buffer.concat(data.map((d) => Buffer.from(d, 'base64'))).toString()).toContain(
+      'PONTER_E2E',
+    );
+    manager.write('t', Buffer.from('exit 7\n'));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(exits).toEqual([7]);
+  });
+});
+```
+
+- [ ] **Step 4: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/terminal/pty.test.ts test/terminal/pty-real.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/terminal/pty.ts apps/agent/test/terminal/pty*.test.ts
+git add apps/agent/src/terminal apps/agent/test/terminal apps/agent/package.json pnpm-lock.yaml pnpm-workspace.yaml
+git commit -m "feat(agent): add the node-pty manager with 16 KiB base64 chunking"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **12 new `it()` / 18 new `expect()`**. Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported**: the Rust test's name promised chunking it never exercised — its body synthesized a single frame and asserted `decoded.len() == len`, which is not the property the name claims. The TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes, each ≤ 16 KiB. Ruling: **code wins, the phantom is not ported**, and this is not a weakening — the Rust test asserted less than its name promised, so the TS asserts strictly more. The splitter itself is **not** a new behaviour invented here: B40 (`spec:604`) states 16 KiB chunks as the wire contract. The Rust met that contract, but at its **read site** rather than at its framer — `start_reader` allocates `vec![0u8; MAX_PTY_CHUNK]` (`pty.rs:392`) and hands on `buf[..n]` (`:397`), so `read()` could never return more than the buffer held; `frame_pty_output` (`pty.rs:141-143`) is length-agnostic by design, which is why the spec's `pty.rs:22,123-143` citation does not show the bound. `node-pty` has no such buffer: measured against 1.2.0-beta.12, 8 MiB of output arrived in 2 555 events with the largest at **18 433 bytes**, so framing one event per frame would exceed the size B40 states. `emitChunks` is therefore how the port keeps a bound the Rust got for free from its input source — not a repair of a broken contract, and not an invention. Plan 3's T8 records the disposition. Three are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`), the slot freeing on exit, and `hands the host the same bytes it was given`, which pins that `write()` does not utf8-round-trip the inbound bytes (`41 ff fe 42` must reach the child intact, not as `41 ef bf bd ef bf bd 42`). The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
+
+**Ruling on the two control characters, and why they are here rather than in the audit.** The `encoding: null` requirement and the `write(Buffer)` shape are **not** test-count changes dressed as fixes — they are the two halves of one defect in this task's own fences, found by running the real `node-pty` (1.2.0-beta.12) rather than reading it: with the default `encoding: 'utf8'`, `onData` delivers a **string** and `0xff` arrives already replaced by U+FFFD, so `emitChunks`'s base64 is faithfully encoding corrupted bytes; and `write(Buffer.from(bytes).toString('utf8'))` turns an inbound `41 ff fe 42` into `41 ef bf bd ef bf bd 42` at the child. ADR-10 and B40 both say the payload is bytes. Deviating either way would be silent data loss on a channel the product already ships.
+
+---
+
+### Task 13: The static-frame skip and the timing ring
+
+**Files:**
+- Create: `apps/agent/src/desktop/static-skip.ts`
+- Create: `apps/agent/src/desktop/timing-ring.ts`
+- Test: `apps/agent/test/desktop/static-skip.test.ts`, `apps/agent/test/desktop/timing-ring.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `interface RawFrame { width: number; height: number; rgba: Uint8Array; seq: number }`
+  - `function frameSignature(frame: RawFrame): bigint`
+  - `class StaticFrameSkip { constructor(fps: number); shouldSkip(frame): boolean; reset(): void }`
+  - `function statsDueWhileSkipping(lastAtMs: number, nowMs: number): boolean`
+  - `class FrameTimingRing { constructor(capacity: number); record(...): void; medians(): { captureMsP50: number; encodeMsP50: number } | null; orderedSamples(): FrameSample[] }`
+
+- [ ] **Step 1: Write the failing static-skip test**
+
+```ts
+// apps/agent/test/desktop/static-skip.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  StaticFrameSkip,
+  frameSignature,
+  statsDueWhileSkipping,
+} from '../../src/desktop/static-skip.js';
+
+function frame(width: number, height: number, fill: number, seq = 0) {
+  return { width, height, rgba: new Uint8Array(width * height * 4).fill(fill), seq };
+}
+
+describe('frameSignature', () => {
+  it('is equal for identical pixels with a different seq', () => {
+    expect(frameSignature(frame(4, 4, 9, 0))).toBe(frameSignature(frame(4, 4, 9, 1)));
+  });
+
+  it('distinguishes geometry even with identical pixels', () => {
+    expect(frameSignature(frame(4, 4, 9))).not.toBe(frameSignature(frame(8, 2, 9)));
+  });
+
+  it('detects a single changed byte', () => {
+    const a = frame(4, 4, 9);
+    const b = frame(4, 4, 9);
+    b.rgba[7] = 10;
+    expect(frameSignature(a)).not.toBe(frameSignature(b));
+  });
+
+  it('folds the trailing bytes when the length is not a multiple of 8', () => {
+    // 3x1 RGBA = 12 bytes: one 8-byte word plus a 4-byte tail. A hashing scheme
+    // that ignored the tail would call these identical.
+    const a = { width: 3, height: 1, rgba: new Uint8Array(12), seq: 0 };
+    const b = { width: 3, height: 1, rgba: new Uint8Array(12), seq: 0 };
+    b.rgba[11] = 1;
+    expect(frameSignature(a)).not.toBe(frameSignature(b));
+  });
+});
+
+describe('StaticFrameSkip', () => {
+  it('lets a changed frame through', () => {
+    const skip = new StaticFrameSkip(30);
+    expect(skip.shouldSkip(frame(4, 4, 1))).toBe(false);
+    expect(skip.shouldSkip(frame(4, 4, 2))).toBe(false);
+  });
+
+  it('skips repeats up to fps then forces one encode', () => {
+    const skip = new StaticFrameSkip(30);
+    expect(skip.shouldSkip(frame(4, 4, 1))).toBe(false); // baseline
+    const decisions: boolean[] = [];
+    for (let i = 0; i < 32; i += 1) decisions.push(skip.shouldSkip(frame(4, 4, 1)));
+    // 30 skips, then the 31st repeat is forced through, then skips resume.
+    expect(decisions.slice(0, 30).every(Boolean)).toBe(true);
+    expect(decisions[30]).toBe(false);
+    expect(decisions[31]).toBe(true);
+  });
+
+  it('keeps the keepalive a FRAME count, not a wall clock', () => {
+    // The cap is `round(fps)`, evaluated only on skipped frames. A stream that
+    // stalls never advances the counter, which is exactly the Rust behaviour
+    // and is why "1 s" is a consequence rather than the rule.
+    const slow = new StaticFrameSkip(1);
+    slow.shouldSkip(frame(4, 4, 1));
+    expect(slow.shouldSkip(frame(4, 4, 1))).toBe(false);
+  });
+
+  it('reset forces the next frame through', () => {
+    const skip = new StaticFrameSkip(30);
+    skip.shouldSkip(frame(4, 4, 1));
+    for (let i = 0; i < 5; i += 1) skip.shouldSkip(frame(4, 4, 1));
+    skip.reset();
+    expect(skip.shouldSkip(frame(4, 4, 1))).toBe(false);
+  });
+
+  it('rounds a fractional fps and never yields a cap of zero', () => {
+    const skip = new StaticFrameSkip(0.4);
+    skip.shouldSkip(frame(4, 4, 1));
+    expect(skip.shouldSkip(frame(4, 4, 1))).toBe(false);
+  });
+});
+
+describe('statsDueWhileSkipping', () => {
+  it('fires once per second', () => {
+    expect(statsDueWhileSkipping(0, 999)).toBe(false);
+    expect(statsDueWhileSkipping(0, 1000)).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement `static-skip.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/desktop/static-skip.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/desktop/static-skip.ts
+export interface RawFrame {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+  seq: number;
+}
+
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const MASK64 = 0xffffffffffffffffn;
+
+/**
+ * A 64-bit FNV-1a hash over the pixel buffer and geometry — a faithful port of
+ * the Rust's **single-accumulator** loop.
+ *
+ * The Rust's doc comment calls this "4-lane"; the code is one lane (there is a
+ * single `hash` variable and no lane combining anywhere). The comment is
+ * recorded as wrong rather than reproduced: writing a comment that claims four
+ * lanes over a one-lane loop is exactly the kind of stale claim that made this
+ * port necessary.
+ *
+ * Three details decide whether a port behaves the same:
+ *
+ * - **8-byte words, native endianness.** The Rust used `u64::from_ne_bytes`, so
+ *   the machine's byte order is part of the hash. Node reads little-endian on
+ *   every platform the agent ships on; matching that is what keeps skip
+ *   behaviour identical, and a mismatch would only cost an extra encode.
+ * - **The tail is folded one byte at a time**, not zero-padded into a word.
+ * - **Geometry is XORed, not multiplied**: `(width << 32) | height`.
+ *
+ * `seq` is deliberately excluded: a repeated *pixel buffer* with a new sequence
+ * number is still identical, and hashing the seq would defeat the whole skip.
+ */
+export function frameSignature(frame: RawFrame): bigint {
+  let hash = FNV_OFFSET_BASIS;
+  const bytes = frame.rgba;
+  const words = Math.floor(bytes.length / 8);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < words; i += 1) {
+    hash ^= view.getBigUint64(i * 8, true);
+    hash = (hash * FNV_PRIME) & MASK64;
+  }
+  for (let i = words * 8; i < bytes.length; i += 1) {
+    hash ^= BigInt(bytes[i]);
+    hash = (hash * FNV_PRIME) & MASK64;
+  }
+  hash ^= (BigInt(frame.width) << 32n) | BigInt(frame.height);
+  return hash & MASK64;
+}
+
+/**
+ * The static-frame skip (B22).
+ *
+ * The keepalive is a **frame count** of `round(fps)`, not a wall-clock second.
+ * The Rust's comment said "one second of frames" and the code said
+ * `(fps.round()).max(1)`; the code is right and the comment described the common
+ * case. Counting frames matters because the loop only ticks when the capture
+ * source produces a frame — a stalled source would never reach a wall-clock
+ * deadline either, and a counting cap forces an encode exactly `fps` skips after
+ * the last real one.
+ *
+ * The forced-through frame becomes the new reference, because `last` is assigned
+ * before the decision. That is what keeps a long static screen from alternating
+ * between two hashes.
+ */
+export class StaticFrameSkip {
+  private readonly maxConsecutiveSkips: number;
+  private last: bigint | null = null;
+  private consecutiveSkips = 0;
+
+  constructor(fps: number) {
+    this.maxConsecutiveSkips = Math.max(1, Math.round(fps));
+  }
+
+  shouldSkip(frame: RawFrame): boolean {
+    const signature = frameSignature(frame);
+    const identical = this.last === signature;
+    this.last = signature;
+    if (!identical) {
+      this.consecutiveSkips = 0;
+      return false;
+    }
+    if (this.consecutiveSkips >= this.maxConsecutiveSkips) {
+      this.consecutiveSkips = 0;
+      return false;
+    }
+    this.consecutiveSkips += 1;
+    return true;
+  }
+
+  reset(): void {
+    this.last = null;
+    this.consecutiveSkips = 0;
+  }
+}
+
+export function statsDueWhileSkipping(lastStatsAtMs: number, nowMs: number): boolean {
+  return nowMs - lastStatsAtMs >= 1000;
+}
+```
+
+- [ ] **Step 3: Write the failing timing-ring test**
+
+```ts
+// apps/agent/test/desktop/timing-ring.test.ts
+import { describe, expect, it } from 'vitest';
+import { FrameTimingRing } from '../../src/desktop/timing-ring.js';
+
+describe('FrameTimingRing', () => {
+  it('reports no medians for an empty ring', () => {
+    expect(new FrameTimingRing(32).medians()).toBeNull();
+  });
+
+  it('takes the middle value for an odd count', () => {
+    const ring = new FrameTimingRing(32);
+    for (const ms of [5, 1, 3]) ring.record(ms, 0, ms, 0);
+    expect(ring.medians()?.encodeMsP50).toBe(3);
+  });
+
+  it('averages the two middle values for an even count', () => {
+    const ring = new FrameTimingRing(32);
+    for (const ms of [1, 2, 3, 4]) ring.record(ms, 0, ms, 0);
+    expect(ring.medians()?.encodeMsP50).toBe(2.5);
+  });
+
+  it('keeps only the last `capacity` samples', () => {
+    const ring = new FrameTimingRing(4);
+    for (let i = 1; i <= 10; i += 1) ring.record(i, 0, i, 0);
+    expect(ring.orderedSamples().map((s) => s.seq)).toEqual([7, 8, 9, 10]);
+  });
+
+  it('returns wrapped samples oldest to newest, not in slot order', () => {
+    const ring = new FrameTimingRing(3);
+    for (let i = 1; i <= 5; i += 1) ring.record(i, i * 1000, 1, 1);
+    const seqs = ring.orderedSamples().map((s) => s.seq);
+    expect(seqs).toEqual([3, 4, 5]);
+    for (let i = 1; i < seqs.length; i += 1) expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
+  });
+
+  it('carries the camelCase wire fields', () => {
+    const ring = new FrameTimingRing(1);
+    ring.record(42, 1_700_000_000_000, 7, 3);
+    expect(JSON.parse(JSON.stringify(ring.orderedSamples()))[0]).toEqual({
+      seq: 42,
+      captureEpochMs: 1_700_000_000_000,
+      encodeMs: 7,
+    });
+  });
+});
+```
+
+- [ ] **Step 4: Run it and watch it fail, then implement `timing-ring.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/desktop/timing-ring.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/desktop/timing-ring.ts
+export interface FrameSample {
+  seq: number;
+  captureEpochMs: number;
+  encodeMs: number;
+}
+
+/**
+ * The last N encoded frames' timing (B24).
+ *
+ * Both medians are **telemetry only**: they reach the wire as `captureMsP50` /
+ * `encodeMsP50` and never feed the sustain ladder, which reads the single
+ * frame's `encode_time`. A port that fed the median to the ladder would
+ * downgrade far more slowly, because a median smooths over exactly the stalls
+ * the ladder exists to catch.
+ *
+ * `orderedSamples` matters for the wire: the ring's internal storage is
+ * circular, so `slice(0, len)` returns slot order once it has wrapped. The
+ * browser plots `captureEpochMs` and expects monotonicity, so the samples are
+ * concatenated from the head.
+ */
+export class FrameTimingRing {
+  private readonly samples: FrameSample[] = [];
+  private readonly captureMs: number[] = [];
+  private head = 0;
+
+  constructor(private readonly capacity: number) {}
+
+  record(seq: number, captureEpochMs: number, encodeMs: number, captureMs: number): void {
+    const sample: FrameSample = { seq, captureEpochMs, encodeMs };
+    if (this.samples.length < this.capacity) {
+      this.samples.push(sample);
+      this.captureMs.push(captureMs);
+      return;
+    }
+    this.samples[this.head] = sample;
+    this.captureMs[this.head] = captureMs;
+    this.head = (this.head + 1) % this.capacity;
+  }
+
+  medians(): { captureMsP50: number; encodeMsP50: number } | null {
+    if (this.samples.length === 0) return null;
+    return {
+      captureMsP50: median(this.captureMs),
+      encodeMsP50: median(this.samples.map((s) => s.encodeMs)),
+    };
+  }
+
+  orderedSamples(): FrameSample[] {
+    if (this.samples.length < this.capacity) return [...this.samples];
+    return [...this.samples.slice(this.head), ...this.samples.slice(0, this.head)];
+  }
+}
+
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+```
+
+- [ ] **Step 5: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/desktop/static-skip.test.ts test/desktop/timing-ring.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/desktop/{static-skip,timing-ring}.ts apps/agent/test/desktop/{static-skip,timing-ring}.test.ts
+git add apps/agent/src/desktop apps/agent/test/desktop
+git commit -m "feat(agent): add the static-frame skip and the frame timing ring"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **16 new `it()` / 22 new `expect()`**. Ports `static_frame_skip_detects_identical_pixels`, `…lets_a_changed_frame_through`, `…detects_a_single_pixel_change`, `…respects_the_one_second_keepalive`, `…reset_forces_the_next_frame_through`, `frame_signature_distinguishes_dimensions`, `stats_due_while_skipping_fires_once_per_second`, `test_frame_timing_ring_p50_calculation`, `test_frame_timing_ring_capture_ms_p50_median`, `timing_snapshot_is_none_for_an_empty_ring`, `ordered_samples_are_strictly_monotonic_when_wrapped`. **New:** the trailing-byte fold (the Rust test never exercised the `len % 8` path) and the fractional-fps cap.
+
+---
+
+### Task 14: Offer identity proof verification
+
+**Files:**
+- Create: `apps/agent/src/session/identity-proof.ts`
+- Test: `apps/agent/test/session/identity-proof.test.ts`
+
+**Interfaces:**
+- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), and `canonicalProofMessage` for the message string. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s (`createPublicKey` + `verify`), wrapped in this module.
+- Produces:
+  - `class OfferIdentityError extends Error { code: 'NO_PROOF' | 'NO_SIGNING_KEY' | 'MALFORMED_FINGERPRINT' | 'FINGERPRINT_MISMATCH' | 'BAD_SIGNATURE' }`
+  - `function verifyOfferIdentity(offer: OfferMessage, sessionId: string): void`
+  - `function advertisesE2ee(offer: OfferMessage): boolean`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/session/identity-proof.test.ts
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { canonicalProofMessage } from '@ponter/shared';
+import { describe, expect, it } from 'vitest';
+import { advertisesE2ee, verifyOfferIdentity } from '../../src/session/identity-proof.js';
+
+const SESSION = 'sess-abc';
+const SDP = [
+  'v=0',
+  'o=- 1 2 IN IP4 127.0.0.1',
+  `a=fingerprint:sha-256 AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89`,
+  '',
+].join('\r\n');
+const FINGERPRINT = 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89';
+const SDP_SHA256 = createHash('sha256').update(SDP, 'utf8').digest('hex');
+
+function keypair() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+  return {
+    privateKey,
+    userSigningPublicKey: spki.toString('base64'),
+  };
+}
+
+function offerWith(overrides: Record<string, unknown> = {}) {
+  const { privateKey, userSigningPublicKey } = keypair();
+  const message = canonicalProofMessage({
+    role: 'offerer',
+    sessionId: SESSION,
+    sdpSha256Hex: SDP_SHA256,
+    fingerprint: FINGERPRINT,
+  });
+  const signature = sign(null, Buffer.from(message), privateKey).toString('base64');
+  return {
+    type: 'offer',
+    data: {
+      sdp: SDP,
+      userSigningPublicKey,
+      proof: { fingerprint: FINGERPRINT, signature },
+      capabilities: ['e2ee'],
+      ...overrides,
+    },
+  } as never;
+}
+
+describe('verifyOfferIdentity', () => {
+  it('accepts a correctly signed offer', () => {
+    expect(() => verifyOfferIdentity(offerWith(), SESSION)).not.toThrow();
+  });
+
+  it('refuses an offer carrying no proof', () => {
+    expect(() => verifyOfferIdentity(offerWith({ proof: undefined }), SESSION)).toThrow(
+      /carries no identity proof/,
+    );
+  });
+
+  it('refuses an offer carrying no user signing key', () => {
+    expect(() =>
+      verifyOfferIdentity(offerWith({ userSigningPublicKey: undefined }), SESSION),
+    ).toThrow(/carries no user signing key/);
+  });
+
+  it('refuses a malformed SDP fingerprint before touching the proof', () => {
+    const offer = offerWith({ sdp: 'v=0\r\na=fingerprint:nonsense\r\n' }) as never;
+    expect(() => verifyOfferIdentity(offer, SESSION)).toThrow(/fingerprint/);
+  });
+
+  it('refuses a proof fingerprint that disagrees with the SDP', () => {
+    const other = FINGERPRINT.replace('AB', 'AF');
+    const offer = offerWith({ proof: { fingerprint: other, signature: 'AA==' } }) as never;
+    expect(() => verifyOfferIdentity(offer, SESSION)).toThrow(/does not match/);
+  });
+
+  it('refuses a signature over a different session id', () => {
+    expect(() => verifyOfferIdentity(offerWith(), 'sess-other')).toThrow(/signature/i);
+  });
+
+  it('refuses a tampered SDP', () => {
+    const offer = offerWith() as never as { data: { sdp: string } };
+    offer.data.sdp = SDP.replace('v=0', 'v=1');
+    expect(() => verifyOfferIdentity(offer as never, SESSION)).toThrow(/signature/i);
+  });
+
+  it('distinguishes the mismatch code from the bad-signature code', () => {
+    // Callers need to tell them apart: a fingerprint mismatch is a client bug,
+    // a bad signature is either a stale key or an attacker. One error message
+    // for both sends the user to the wrong fix.
+    const mismatch = (() => {
+      try {
+        verifyOfferIdentity(
+          offerWith({ proof: { fingerprint: FINGERPRINT.replace('AB', 'AF'), signature: 'AA==' } }) as never,
+          SESSION,
+        );
+        return 'OK';
+      } catch (error) {
+        return (error as { code: string }).code;
+      }
+    })();
+    expect(mismatch).toBe('FINGERPRINT_MISMATCH');
+  });
+});
+
+describe('advertisesE2ee', () => {
+  it('is true when the offer proposed e2ee', () => {
+    expect(advertisesE2ee(offerWith())).toBe(true);
+  });
+
+  it('is false when the offer did not', () => {
+    expect(advertisesE2ee(offerWith({ capabilities: [] }))).toBe(false);
+  });
+
+  it('does not treat an absent capability list as consent', () => {
+    expect(advertisesE2ee(offerWith({ capabilities: undefined }))).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/session/identity-proof.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/session/identity-proof.ts
+import { createHash, createPublicKey, verify } from 'node:crypto';
+import { canonicalProofMessage, parseSdpFingerprint } from '@ponter/shared';
+import type { OfferMessage } from './messages.js';
+
+export type OfferIdentityFailure =
+  | 'NO_PROOF'
+  | 'NO_SIGNING_KEY'
+  | 'MALFORMED_FINGERPRINT'
+  | 'FINGERPRINT_MISMATCH'
+  | 'BAD_SIGNATURE';
+
+export class OfferIdentityError extends Error {
+  constructor(
+    readonly code: OfferIdentityFailure,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'OfferIdentityError';
+  }
+}
+
+/**
+ * Verifies who sent an offer (B8), in the Rust's five ordered steps.
+ *
+ * **The agent's own identity is not an input.** `verify_offer_identity` took one
+ * and never read it (`_identity`): an agent cannot know a user's key in advance,
+ * so the signature is checked against the key the offer carries. The parameter
+ * is dropped rather than ported as an unused argument.
+ *
+ * That the key is carried *in the offer* means this proves **possession of the
+ * private key matching the claimed public key**, and that the claim is bound to
+ * this SDP and this session. Establishing that the key belongs to the account is
+ * WS2's job (`resolvePeerIdentity`, and the TOFU store the web client keeps) —
+ * not this function's, and not something to imply by naming.
+ *
+ * Order matters for the error the caller sees: a malformed SDP fingerprint fails
+ * before any signature work, so a client with a broken SDP gets "fingerprint"
+ * rather than "signature".
+ */
+export function verifyOfferIdentity(offer: OfferMessage, sessionId: string): void {
+  const data = offer.data as {
+    sdp?: string;
+    userSigningPublicKey?: string;
+    proof?: { fingerprint?: string; signature?: string };
+  };
+  if (!data.proof) {
+    throw new OfferIdentityError('NO_PROOF', 'offer carries no identity proof');
+  }
+  if (!data.userSigningPublicKey) {
+    throw new OfferIdentityError('NO_SIGNING_KEY', 'offer carries no user signing key');
+  }
+  if (typeof data.sdp !== 'string') {
+    throw new OfferIdentityError('MALFORMED_FINGERPRINT', 'offer carries no SDP');
+  }
+  const sdpFingerprint = parseSdpFingerprint(data.sdp);
+  const proofFingerprint = data.proof.fingerprint;
+  if (typeof proofFingerprint !== 'string' || proofFingerprint !== sdpFingerprint) {
+    throw new OfferIdentityError(
+      'FINGERPRINT_MISMATCH',
+      'the proof fingerprint does not match the SDP fingerprint',
+    );
+  }
+  const message = canonicalProofMessage({
+    role: 'offerer',
+    sessionId,
+    sdpSha256Hex: createHash('sha256').update(data.sdp, 'utf8').digest('hex'),
+    fingerprint: sdpFingerprint,
+  });
+  const ok = verifyMessage(data.userSigningPublicKey, data.proof.signature ?? '', message);
+  if (!ok) {
+    throw new OfferIdentityError('BAD_SIGNATURE', 'the offer identity signature is invalid');
+  }
+}
+
+/**
+ * Ed25519 verify over a base64 SPKI public key and a base64 signature.
+ *
+ * `@ponter/shared` exports the **message builder**, not a verifier — it is
+ * platform-neutral and both peers build the string themselves. Verification is
+ * `node:crypto`'s, wrapped here because `crypto.verify` throws on a malformed key
+ * and a hostile offer is exactly where that would happen. **A throw is a failed
+ * signature**, never an escaping exception.
+ */
+function verifyMessage(publicKeySpkiBase64: string, signatureBase64: string, message: string): boolean {
+  try {
+    const key = createPublicKey({
+      key: Buffer.from(publicKeySpkiBase64, 'base64'),
+      format: 'der',
+      type: 'spki',
+    });
+    return verify(null, Buffer.from(message, 'utf8'), key, Buffer.from(signatureBase64, 'base64'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * B55: the answer advertises E2EE **iff** the offer proposed it. An offer that
+ * omits `capabilities` is not consent — advertising anyway would let a peer that
+ * never asked for encryption be told it is getting some.
+ */
+export function advertisesE2ee(offer: OfferMessage): boolean {
+  const capabilities = (offer.data as { capabilities?: unknown }).capabilities;
+  return Array.isArray(capabilities) && capabilities.includes('e2ee');
+}
+```
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/session/identity-proof.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/session/identity-proof.ts apps/agent/test/session/identity-proof.test.ts
+git add apps/agent/src/session apps/agent/test/session
+git commit -m "feat(agent): verify the offer identity proof before answering"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **11 new `it()` / 11 new `expect()`**. Ports `verify_offer_identity`'s five failure modes as five tests plus the happy path, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes` and `parses_and_normalizes_sdp_fingerprint`'s assertion (as a *consumer* of `@ponter/shared`, per B9's reuse ruling — the normalisation itself is already tested there and is not duplicated). **New:** the code-level distinction between `FINGERPRINT_MISMATCH` and `BAD_SIGNATURE` (the Rust had one error type and lost that distinction at the boundary), and the `advertisesE2ee` absent-capabilities case.
+
+---
+
+### Task 15: Input decode, clamp and rate limit
+
+**Files:**
+- Create: `apps/agent/src/input/decode.ts`
+- Test: `apps/agent/test/input/decode.test.ts`
+
+**Interfaces:**
+- Consumes: `AGENT_ALLOW_INPUT` via Task 1's config.
+- Produces:
+  - `const INPUT_RATE_LIMIT_HZ = 120`
+  - `function clamp01(value: number): number`
+  - `function decodeInput(bytes: ArrayBuffer | Uint8Array, width: number, height: number): InputEvent | null`
+  - `class InputLimiter { constructor(allow: boolean, now?: () => number); accept(event): boolean; dropped(): number }`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/input/decode.test.ts
+import { describe, expect, it } from 'vitest';
+import { InputLimiter, clamp01, decodeInput } from '../../src/input/decode.js';
+
+const frame = (payload: unknown) => new TextEncoder().encode(JSON.stringify(payload));
+
+describe('clamp01', () => {
+  it('clamps into [0,1]', () => {
+    expect(clamp01(0.5)).toBe(0.5);
+    expect(clamp01(-1)).toBe(0);
+    expect(clamp01(2)).toBe(1);
+  });
+
+  it('maps NaN to 0 rather than propagating it', () => {
+    // Rust's f64::clamp panics on NaN and the agent used `clamp` inside a
+    // `catch_unwind`; JS `Math.min/max` propagate NaN, which would reach the
+    // injector. Both are handled here by one explicit rule.
+    expect(clamp01(Number.NaN)).toBe(0);
+  });
+
+  it('keeps the endpoints', () => {
+    expect(clamp01(0)).toBe(0);
+    expect(clamp01(1)).toBe(1);
+  });
+});
+
+describe('decodeInput', () => {
+  it('decodes pointer-move to absolute pixels', () => {
+    const event = decodeInput(frame({ type: 'input-pointer', kind: 'move', x: 0.5, y: 0.25 }), 1920, 1080);
+    expect(event).toEqual({ kind: 'move', x: 960, y: 270 });
+  });
+
+  it('rounds a coordinate that lands exactly on the far edge inside the frame', () => {
+    // x = 1.0 on a 1920-wide frame is 1920, which is one past the last column.
+    // The Rust's `to_absolute` clamps to width-1, and the injector refuses an
+    // out-of-bounds coordinate outright, so without this the bottom-right
+    // corner of the screen would be unreachable.
+    expect(decodeInput(frame({ type: 'input-pointer', kind: 'move', x: 1, y: 1 }), 1920, 1080)).toEqual({
+      kind: 'move',
+      x: 1919,
+      y: 1079,
+    });
+  });
+
+  it('decodes pointer-button down and up', () => {
+    expect(
+      decodeInput(frame({ type: 'input-pointer', kind: 'down', button: 'left', x: 0.1, y: 0.1 }), 100, 100),
+    ).toEqual({ kind: 'down', button: 'left', x: 10, y: 10 });
+    expect(decodeInput(frame({ type: 'input-pointer', kind: 'up', button: 'right', x: 0, y: 0 }), 100, 100)).toEqual({
+      kind: 'up',
+      button: 'right',
+      x: 0,
+      y: 0,
+    });
+  });
+
+  it('decodes wheel with the delta preserved', () => {
+    expect(
+      decodeInput(frame({ type: 'input-wheel', deltaX: -1, deltaY: 3, x: 0.5, y: 0.5 }), 200, 200),
+    ).toEqual({ kind: 'wheel', deltaX: -1, deltaY: 3, x: 100, y: 100 });
+  });
+
+  it('decodes key down and up', () => {
+    expect(decodeInput(frame({ type: 'input-key', kind: 'down', key: 'A', code: 'KeyA' }), 100, 100)).toEqual({
+      kind: 'key',
+      pressed: true,
+      key: 'A',
+      code: 'KeyA',
+    });
+    expect(decodeInput(frame({ type: 'input-key', kind: 'up', key: 'A', code: 'KeyA' }), 100, 100)).toEqual({
+      kind: 'key',
+      pressed: false,
+      key: 'A',
+      code: 'KeyA',
+    });
+  });
+
+  it('returns null for an unknown kind instead of throwing', () => {
+    expect(decodeInput(frame({ type: 'input-pointer', kind: 'hover' }), 100, 100)).toBeNull();
+    expect(decodeInput(frame({ type: 'something-else' }), 100, 100)).toBeNull();
+  });
+
+  it('returns null for malformed JSON', () => {
+    expect(decodeInput(new TextEncoder().encode('{not json'), 100, 100)).toBeNull();
+  });
+
+  it('returns null for an unknown mouse button', () => {
+    expect(decodeInput(frame({ type: 'input-pointer', kind: 'down', button: 'thumb', x: 0, y: 0 }), 100, 100)).toBeNull();
+  });
+
+  it('returns null when the geometry is zero', () => {
+    expect(decodeInput(frame({ type: 'input-pointer', kind: 'move', x: 0.5, y: 0.5 }), 0, 0)).toBeNull();
+  });
+});
+
+describe('InputLimiter', () => {
+  it('passes everything when input is enabled and under 120 Hz', () => {
+    let now = 0;
+    const limiter = new InputLimiter(true, () => now);
+    for (let i = 0; i < 10; i += 1) {
+      expect(limiter.accept({} as never)).toBe(true);
+      now += 9;
+    }
+  });
+
+  it('drops events beyond 120 per fixed 1-second window and counts them', () => {
+    // The Rust used a FIXED window that resets every second, not a sliding one:
+    // 120 events are allowed in [0,1000) and another 120 in [1000,2000),
+    // regardless of how they cluster. A sliding window would smooth this and is
+    // a different policy; do not "improve" it.
+    let now = 0;
+    const limiter = new InputLimiter(true, () => now);
+    let accepted = 0;
+    for (let i = 0; i < 200; i += 1) if (limiter.accept({} as never)) accepted += 1;
+    expect(accepted).toBe(120);
+    expect(limiter.dropped()).toBe(80);
+    now = 1000;
+    expect(limiter.accept({} as never)).toBe(true);
+  });
+
+  it('drops everything when input is not allowed', () => {
+    const limiter = new InputLimiter(false);
+    expect(limiter.accept({} as never)).toBe(false);
+    expect(limiter.dropped()).toBe(1);
+  });
+
+  it('does not count a refusal as a rate-limit drop when input is disabled', () => {
+    const limiter = new InputLimiter(false);
+    limiter.accept({} as never);
+    expect(limiter.dropped()).toBe(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/input/decode.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/input/decode.ts
+export const INPUT_RATE_LIMIT_HZ = 120;
+
+export type InputEvent =
+  | { kind: 'move'; x: number; y: number }
+  | { kind: 'down' | 'up'; button: 'left' | 'middle' | 'right'; x: number; y: number }
+  | { kind: 'wheel'; deltaX: number; deltaY: number; x: number; y: number }
+  | { kind: 'key'; pressed: boolean; key: string; code: string };
+
+/**
+ * `Math.min(Math.max(v, 0), 1)` with NaN forced to 0.
+ *
+ * Written out rather than using a helper so the NaN rule is visible: `NaN`
+ * compared with `>` and `<` is false on both sides, so a naive clamp silently
+ * returns `NaN` and the injector receives it. Rust's `f64::clamp` *panics* on
+ * NaN, which the agent turned into a dropped frame via `catch_unwind`; the
+ * explicit branch reproduces the drop without the unwind.
+ */
+export function clamp01(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+/** Absolute pixel, clamped to the last addressable column/row (see the test). */
+function toAbsolute(fraction: number, extent: number): number {
+  const scaled = Math.round(clamp01(fraction) * extent);
+  return Math.min(Math.max(scaled, 0), extent - 1);
+}
+
+const BUTTONS = new Set(['left', 'middle', 'right']);
+
+/**
+ * Decodes one input frame (B28–B30).
+ *
+ * **Decode before inject, always.** The Rust decoded the JSON first and only
+ * then called into the platform injector, so an unknown message could never
+ * reach an FFI boundary with unvalidated fields. Every rejection here is a
+ * `null` — an input frame that does not parse is dropped, never surfaced as an
+ * error, because a hostile peer must not be able to elicit a response by sending
+ * garbage.
+ */
+export function decodeInput(
+  bytes: ArrayBuffer | Uint8Array,
+  width: number,
+  height: number,
+): InputEvent | null {
+  if (width <= 0 || height <= 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      typeof (bytes as Uint8Array).byteLength === 'number'
+        ? new TextDecoder().decode(bytes as Uint8Array)
+        : new TextDecoder().decode(new Uint8Array(bytes as ArrayBuffer)),
+    );
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const message = parsed as Record<string, unknown>;
+
+  if (message.type === 'input-key') {
+    if (typeof message.key !== 'string' || typeof message.code !== 'string') return null;
+    if (message.kind !== 'down' && message.kind !== 'up') return null;
+    return { kind: 'key', pressed: message.kind === 'down', key: message.key, code: message.code };
+  }
+
+  if (message.type === 'input-wheel') {
+    if (typeof message.deltaX !== 'number' || typeof message.deltaY !== 'number') return null;
+    return {
+      kind: 'wheel',
+      deltaX: message.deltaX,
+      deltaY: message.deltaY,
+      x: toAbsolute(message.x as number, width),
+      y: toAbsolute(message.y as number, height),
+    };
+  }
+
+  if (message.type !== 'input-pointer') return null;
+  const x = toAbsolute(message.x as number, width);
+  const y = toAbsolute(message.y as number, height);
+  if (message.kind === 'move') return { kind: 'move', x, y };
+  if (message.kind === 'down' || message.kind === 'up') {
+    if (typeof message.button !== 'string' || !BUTTONS.has(message.button)) return null;
+    return {
+      kind: message.kind,
+      button: message.button as 'left' | 'middle' | 'right',
+      x,
+      y,
+    };
+  }
+  return null;
+}
+
+/**
+ * The agent-local input gate plus the 120 Hz limiter (B34).
+ *
+ * Two separate reasons to drop, counted together: `allowInput` is the operator's
+ * `AGENT_ALLOW_INPUT` decision and applies to every event; the rate limit is the
+ * fixed one-second window. **The gate runs first**, so a host with input
+ * disabled does no rate accounting at all and its drop counter is a true count
+ * of what the peer sent.
+ */
+export class InputLimiter {
+  private windowStart = 0;
+  private accepted = 0;
+  private droppedCount = 0;
+
+  constructor(
+    private readonly allow: boolean,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  accept(_event: InputEvent): boolean {
+    if (!this.allow) {
+      this.droppedCount += 1;
+      return false;
+    }
+    const now = this.now();
+    if (now - this.windowStart >= 1000) {
+      this.windowStart = now;
+      this.accepted = 0;
+    }
+    if (this.accepted >= INPUT_RATE_LIMIT_HZ) {
+      this.droppedCount += 1;
+      return false;
+    }
+    this.accepted += 1;
+    return true;
+  }
+
+  dropped(): number {
+    return this.droppedCount;
+  }
+}
+```
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/input/decode.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/input/decode.ts apps/agent/test/input/decode.test.ts
+git add apps/agent/src/input apps/agent/test/input
+git commit -m "feat(agent): decode, clamp and rate-limit peer input"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **16 new `it()` / 25 new `expect()`**. Ports the five input-kind round trips, the unknown-kind and malformed-JSON drops, the 120 Hz fixed-window limiter, the disabled-gate drop, and the NaN clamp. **New:** the `to_absolute` one-pixel-overflow case (the Rust had the clamp but only tested mid-frame coordinates) and the zero-geometry guard.
+
+---
+
+### Task 16: The sustain ladder
+
+**Files:**
+- Create: `apps/agent/src/desktop/sustain.ts`
+- Test: `apps/agent/test/desktop/sustain.test.ts`
+
+**Interfaces:**
+- Consumes: `ProfileId` / `DesktopProfile` from `@ponter/shared`.
+- Produces:
+  - `const SUSTAIN_FRAMES = 30`
+  - `const SUSTAIN_LADDER: Record<ProfileId, ProfileId | null>`
+  - `class SustainLadder { constructor(profile: ProfileId, budgetMs: number); noteFrame(encodeMs: number): ProfileId | null; noteBitrateChange(bitrate: number): void; current(): ProfileId; consecutive(): number }`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/desktop/sustain.test.ts
+import { describe, expect, it } from 'vitest';
+import { SUSTAIN_FRAMES, SustainLadder } from '../../src/desktop/sustain.js';
+
+describe('the ladder', () => {
+  it('downgrades 1080p60 to 720p60 after 30 over-budget frames', () => {
+    const ladder = new SustainLadder('1080p60', 16.7);
+    for (let i = 0; i < SUSTAIN_FRAMES - 1; i += 1) expect(ladder.noteFrame(40)).toBeNull();
+    expect(ladder.noteFrame(40)).toBe('720p60');
+  });
+
+  it('needs a STRICTLY greater encode time', () => {
+    // Exactly on budget is on budget. A `>=` here would downgrade a stream that
+    // is meeting its target every frame.
+    const ladder = new SustainLadder('1080p60', 16.7);
+    for (let i = 0; i < SUSTAIN_FRAMES * 2; i += 1) expect(ladder.noteFrame(16.7)).toBeNull();
+  });
+
+  it('resets the counter on any single on-budget frame', () => {
+    const ladder = new SustainLadder('1080p60', 16.7);
+    for (let i = 0; i < 29; i += 1) ladder.noteFrame(40);
+    expect(ladder.consecutive()).toBe(29);
+    expect(ladder.noteFrame(10)).toBeNull();
+    expect(ladder.consecutive()).toBe(0);
+  });
+
+  it('walks the whole ladder down to the floor and stops', () => {
+    const steps: string[] = [];
+    const ladder = new SustainLadder('1080p60', 16.7);
+    for (let rung = 0; rung < 4; rung += 1) {
+      for (let i = 0; i < SUSTAIN_FRAMES; i += 1) {
+        const next = ladder.noteFrame(40);
+        if (next) steps.push(next);
+      }
+    }
+    expect(steps).toEqual(['720p60', '720p30']);
+    expect(ladder.current()).toBe('720p30');
+  });
+
+  it('has 720p30 as the floor, so its successor is null', () => {
+    const ladder = new SustainLadder('720p30', 16.7);
+    for (let i = 0; i < SUSTAIN_FRAMES; i += 1) ladder.noteFrame(40);
+    expect(ladder.current()).toBe('720p30');
+    expect(ladder.consecutive()).toBe(0);
+  });
+
+  it('sends 1080p30 to 720p30 in one step', () => {
+    const ladder = new SustainLadder('1080p30', 16.7);
+    for (let i = 0; i < SUSTAIN_FRAMES - 1; i += 1) ladder.noteFrame(40);
+    expect(ladder.noteFrame(40)).toBe('720p30');
+  });
+});
+
+describe('noteBitrateChange', () => {
+  it('re-opens the latch above the floor so the stream can climb back', () => {
+    const ladder = new SustainLadder('1080p60', 16.7);
+    for (let i = 0; i < SUSTAIN_FRAMES; i += 1) ladder.noteFrame(40);
+    expect(ladder.current()).toBe('720p60');
+    ladder.noteBitrateChange(8_000_000);
+    for (let i = 0; i < SUSTAIN_FRAMES - 1; i += 1) ladder.noteFrame(40);
+    expect(ladder.noteFrame(40)).toBe('720p30');
+  });
+
+  it('does nothing at the floor', () => {
+    const ladder = new SustainLadder('1080p60', 16.7);
+    for (let i = 0; i < SUSTAIN_FRAMES * 4; i += 1) ladder.noteFrame(40);
+    expect(ladder.current()).toBe('720p30');
+    ladder.noteBitrateChange(8_000_000);
+    for (let i = 0; i < SUSTAIN_FRAMES; i += 1) ladder.noteFrame(40);
+    expect(ladder.current()).toBe('720p30');
+  });
+
+  it('updates neither the budget nor the next rung', () => {
+    // A bitrate change re-opens the latch and nothing else. Recomputing the
+    // budget from the new bitrate would make the ladder's threshold depend on
+    // the client's bandwidth, which is the opposite of what it measures.
+    const ladder = new SustainLadder('1080p60', 16.7);
+    ladder.noteBitrateChange(20_000_000);
+    for (let i = 0; i < SUSTAIN_FRAMES; i += 1) ladder.noteFrame(40);
+    expect(ladder.current()).toBe('720p60');
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/desktop/sustain.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/desktop/sustain.ts
+import type { ProfileId } from '@ponter/shared';
+
+export const SUSTAIN_FRAMES = 30;
+
+/**
+ * The downgrade path. `1080p30 -> 720p30` skips `720p60` deliberately: a source
+ * already running at 30 fps cannot gain anything from a 60 fps target, so the
+ * only useful move is down in resolution.
+ */
+export const SUSTAIN_LADDER: Record<ProfileId, ProfileId | null> = {
+  '1080p60': '720p60',
+  '720p60': '720p30',
+  '1080p30': '720p30',
+  '720p30': null,
+};
+
+/**
+ * Quality degradation under sustained load (B18/B23).
+ *
+ * The input is the **single frame's** `encode_time`, not the p50 from the
+ * timing ring. That is not an oversight in the Rust and it is not one here: the
+ * ladder exists to catch a stall the moment it happens, and a median over 32
+ * frames would not move until 17 frames had already been late.
+ *
+ * The budget comparison is **strictly greater**, and any on-budget frame resets
+ * the run to zero. Both are load-bearing: a `>=` downgrades a stream that is
+ * exactly meeting its target, and a non-resetting counter would let 15 bad
+ * frames either side of a good one still trigger.
+ */
+export class SustainLadder {
+  private profile: ProfileId;
+  private consecutive = 0;
+
+  constructor(
+    profile: ProfileId,
+    private readonly budgetMs: number,
+  ) {
+    this.profile = profile;
+  }
+
+  noteFrame(encodeMs: number): ProfileId | null {
+    if (encodeMs <= this.budgetMs) {
+      this.consecutive = 0;
+      return null;
+    }
+    this.consecutive += 1;
+    if (this.consecutive < SUSTAIN_FRAMES) return null;
+    this.consecutive = 0;
+    const next = SUSTAIN_LADDER[this.profile];
+    if (next === null) return null;
+    this.profile = next;
+    return next;
+  }
+
+  /**
+   * A bitrate retarget re-opens the latch, unless the ladder is already at the
+   * floor. It changes neither `budgetMs` nor the next rung.
+   */
+  noteBitrateChange(_bitrate: number): void {
+    if (SUSTAIN_LADDER[this.profile] === null) return;
+    this.consecutive = 0;
+  }
+
+  current(): ProfileId {
+    return this.profile;
+  }
+
+  consecutive(): number {
+    return this.consecutive;
+  }
+}
+```
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/desktop/sustain.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/desktop/sustain.ts apps/agent/test/desktop/sustain.test.ts
+git add apps/agent/src/desktop apps/agent/test/desktop
+git commit -m "feat(agent): port the 30-frame sustain ladder"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **9 new `it()` / 16 new `expect()`**. Ports `sustain_monitor_downgrades_once_and_never_oscillates`, `sustain_monitor_resets_the_streak_on_an_on_budget_frame`, `sustain_monitor_never_downgrades_from_the_floor`, `sustain_monitor_reopens_only_above_the_floor` (all `desktop.rs:3363-3420`), plus `downgrade_ladder_is_monotonic_in_pixels_per_second` and `a_1080p60_monitor_demotes_to_720p60_first` for the ladder walk. **New:** the strict-inequality case (the Rust tested only clearly-over-budget values) and the "updates neither budget nor rung" assertion, which the Rust's `sustain_monitor_reopens_only_above_the_floor` does not pin — it asserts the latch alone.
+
+An earlier draft cited six names under a `sustain_ladder_*` scheme that appears nowhere in `apps/agent/src`; the real tests are named `sustain_monitor_*`. The counts above are unchanged by the rename, because the renamed rows were always about the same six behaviours.
+
+**Divergence recorded, not fixed:** the Rust created its sustain ticker once and never rebuilt it, so samples continued to arrive on the old interval after a downgrade. That is a wiring concern, handled in Task 19.
+
+---
+
+### Task 17: Desktop control decode and outbound frames
+
+**Files:**
+- Create: `apps/agent/src/desktop/control.ts`
+- Create: `apps/agent/src/desktop/frames.ts`
+- Test: `apps/agent/test/desktop/control.test.ts`, `apps/agent/test/desktop/frames.test.ts`
+
+**Interfaces:**
+- Consumes: `ProfileId`, `DesktopProfile`.
+- Produces:
+  - `const MIN_BITRATE = 250_000`, `const MAX_BITRATE = 20_000_000`
+  - `function clampBitrate(bps: number): number`
+  - `function decodeStreamControl(bytes): StreamControl | null` → `{ kind: 'pause' } | { kind: 'resume' } | { kind: 'stop' } | { kind: 'bitrate'; bitrate: number } | { kind: 'quality'; profile: ProfileId }`
+  - `function decodeDesktopSelect(bytes): { kind: 'monitor'; id: string } | { kind: 'window'; id: string } | { kind: 'test' } | null`
+  - `function buildStatsFrame(...)`, `function buildCursorFrame(...)`, `function buildSourcesFrame(...)`
+  - `function gopForFps(fps: number): number`
+
+- [ ] **Step 1: Write the failing control test**
+
+```ts
+// apps/agent/test/desktop/control.test.ts
+import { describe, expect, it } from 'vitest';
+import {
+  MAX_BITRATE,
+  MIN_BITRATE,
+  clampBitrate,
+  decodeDesktopSelect,
+  decodeStreamControl,
+  gopForFps,
+} from '../../src/desktop/control.js';
+
+const frame = (payload: unknown) => new TextEncoder().encode(JSON.stringify(payload));
+
+describe('clampBitrate', () => {
+  it('clamps to [250 kbps, 20 Mbps]', () => {
+    expect(clampBitrate(1_000_000)).toBe(1_000_000);
+    expect(clampBitrate(1)).toBe(MIN_BITRATE);
+    expect(clampBitrate(Number.MAX_SAFE_INTEGER)).toBe(MAX_BITRATE);
+  });
+
+  it('rounds to an integer', () => {
+    expect(clampBitrate(1_000_000.6)).toBe(1_000_001);
+  });
+});
+
+describe('decodeStreamControl', () => {
+  it('decodes the four control kinds', () => {
+    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'pause' }))).toEqual({ kind: 'pause' });
+    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'resume' }))).toEqual({ kind: 'resume' });
+    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'stop' }))).toEqual({ kind: 'stop' });
+  });
+
+  it('clamps a bitrate inside the decode, not at the call site', () => {
+    // The clamp has to live here: three call sites exist (initial apply, live
+    // retarget, resume) and a clamp at one of them is a clamp at none.
+    const control = decodeStreamControl(
+      frame({ type: 'stream-control', action: 'set-bitrate', bitrate: 99_000_000 }),
+    );
+    expect(control).toEqual({ kind: 'bitrate', bitrate: MAX_BITRATE });
+  });
+
+  it('decodes a quality change', () => {
+    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'set-quality', profile: '720p30' }))).toEqual({
+      kind: 'quality',
+      profile: '720p30',
+    });
+  });
+
+  it('rejects an unknown profile instead of defaulting', () => {
+    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'set-quality', profile: '4k120' }))).toBeNull();
+  });
+
+  it('rejects an unknown action and malformed JSON', () => {
+    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'explode' }))).toBeNull();
+    expect(decodeStreamControl(new TextEncoder().encode('nope'))).toBeNull();
+  });
+});
+
+describe('decodeDesktopSelect', () => {
+  it('decodes monitor, window and test sources', () => {
+    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'monitor', id: '1' } }))).toEqual({
+      kind: 'monitor',
+      id: '1',
+    });
+    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'window', id: '0x40' } }))).toEqual({
+      kind: 'window',
+      id: '0x40',
+    });
+    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'test' } }))).toEqual({ kind: 'test' });
+  });
+
+  it('rejects a monitor with no id', () => {
+    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'monitor' } }))).toBeNull();
+  });
+});
+
+describe('gopForFps', () => {
+  it('is two seconds of frames, never zero', () => {
+    expect(gopForFps(60)).toBe(120);
+    expect(gopForFps(30)).toBe(60);
+    expect(gopForFps(0.2)).toBe(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement `control.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/desktop/control.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/desktop/control.ts
+import type { ProfileId } from '@ponter/shared';
+
+export const MIN_BITRATE = 250_000;
+export const MAX_BITRATE = 20_000_000;
+
+const PROFILES = new Set<ProfileId>(['1080p60', '1080p30', '720p60', '720p30']);
+
+export type StreamControl =
+  | { kind: 'pause' }
+  | { kind: 'resume' }
+  | { kind: 'stop' }
+  | { kind: 'bitrate'; bitrate: number }
+  | { kind: 'quality'; profile: ProfileId };
+
+export type DesktopSource =
+  | { kind: 'monitor'; id: string }
+  | { kind: 'window'; id: string }
+  | { kind: 'test' };
+
+export function clampBitrate(bps: number): number {
+  return Math.round(Math.min(Math.max(bps, MIN_BITRATE), MAX_BITRATE));
+}
+
+function parse(bytes: ArrayBuffer | Uint8Array): Record<string, unknown> | null {
+  try {
+    const text =
+      bytes instanceof Uint8Array
+        ? new TextDecoder().decode(bytes)
+        : new TextDecoder().decode(new Uint8Array(bytes));
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `StreamControl` decode (B20/B62).
+ *
+ * The bitrate clamp lives **in the decoder**, not at the call site. There are
+ * three places a bitrate arrives: the initial apply, a live retarget, and the
+ * post-resume re-apply. A clamp at any one of them is a clamp at none, and the
+ * encoder's own limits are what turn an out-of-range value into a hard failure.
+ */
+export function decodeStreamControl(bytes: ArrayBuffer | Uint8Array): StreamControl | null {
+  const message = parse(bytes);
+  if (!message || message.type !== 'stream-control') return null;
+  switch (message.action) {
+    case 'pause':
+      return { kind: 'pause' };
+    case 'resume':
+      return { kind: 'resume' };
+    case 'stop':
+      return { kind: 'stop' };
+    case 'set-bitrate':
+      if (typeof message.bitrate !== 'number' || !Number.isFinite(message.bitrate)) return null;
+      return { kind: 'bitrate', bitrate: clampBitrate(message.bitrate) };
+    case 'set-quality':
+      if (typeof message.profile !== 'string' || !PROFILES.has(message.profile as ProfileId)) return null;
+      return { kind: 'quality', profile: message.profile as ProfileId };
+    default:
+      return null;
+  }
+}
+
+export function decodeDesktopSelect(bytes: ArrayBuffer | Uint8Array): DesktopSource | null {
+  const message = parse(bytes);
+  if (!message || message.type !== 'desktop-select') return null;
+  const source = message.source;
+  if (typeof source !== 'object' || source === null) return null;
+  const value = source as Record<string, unknown>;
+  if (value.kind === 'test') return { kind: 'test' };
+  if (value.kind !== 'monitor' && value.kind !== 'window') return null;
+  if (typeof value.id !== 'string' || value.id === '') return null;
+  return { kind: value.kind, id: value.id };
+}
+
+/** Two seconds of frames, rounded, floored at 1. */
+export function gopForFps(fps: number): number {
+  return Math.max(1, Math.round(fps * 2));
+}
+```
+
+- [ ] **Step 3: Write the failing frames test**
+
+```ts
+// apps/agent/test/desktop/frames.test.ts
+import { describe, expect, it } from 'vitest';
+import { buildCursorFrame, buildSourcesFrame, buildStatsFrame } from '../../src/desktop/frames.js';
+
+const parse = (text: string) => JSON.parse(text);
+
+describe('buildStatsFrame', () => {
+  it('emits the documented field names', () => {
+    const frame = parse(
+      buildStatsFrame({
+        seq: 10,
+        fps: 58.5,
+        bitrate: 4_000_000,
+        encodeMsP50: 7.2,
+        captureMsP50: 3.1,
+        skippedFrames: 12,
+        profile: '1080p30',
+      }),
+    );
+    expect(frame).toMatchObject({
+      type: 'desktop-stats',
+      data: {
+        seq: 10,
+        fps: 58.5,
+        bitrate: 4_000_000,
+        encodeMsP50: 7.2,
+        captureMsP50: 3.1,
+        skippedFrames: 12,
+        profile: '1080p30',
+      },
+    });
+  });
+
+  it('rounds the two p50s to one decimal place', () => {
+    const frame = parse(
+      buildStatsFrame({
+        seq: 1,
+        fps: 30,
+        bitrate: 1,
+        encodeMsP50: 7.25,
+        captureMsP50: 3.04,
+        skippedFrames: 0,
+        profile: '720p30',
+      }),
+    );
+    expect(frame.data.encodeMsP50).toBe(7.3);
+    expect(frame.data.captureMsP50).toBe(3);
+  });
+});
+
+describe('buildCursorFrame', () => {
+  it('emits x, y, visible and shape', () => {
+    const frame = parse(
+      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default' }),
+    );
+    expect(frame).toEqual({
+      type: 'desktop-cursor',
+      data: { x: 100, y: 200, visible: true, shape: 'default' },
+    });
+  });
+
+  it('emits visible=false with a null shape rather than omitting the field', () => {
+    // The browser's cursor layer reads `data.shape` unconditionally; a missing
+    // field there draws the previous cursor shape at the new position.
+    const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
+    expect(frame.data).toEqual({ x: 0, y: 0, visible: false, shape: null });
+  });
+});
+
+describe('buildSourcesFrame', () => {
+  it('lists monitors and windows with their ids', () => {
+    const frame = parse(
+      buildSourcesFrame({
+        monitors: [{ id: '1', name: 'DP-1', width: 1920, height: 1080, primary: true }],
+        windows: [{ id: '0x40', title: 'Editor' }],
+      }),
+    );
+    expect(frame.type).toBe('desktop-sources');
+    expect(frame.data.monitors[0]).toMatchObject({ id: '1', primary: true });
+    expect(frame.data.windows[0]).toMatchObject({ id: '0x40', title: 'Editor' });
+  });
+});
+```
+
+- [ ] **Step 4: Run it and watch it fail, then implement `frames.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/desktop/frames.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/desktop/frames.ts
+import type { ProfileId } from '@ponter/shared';
+
+export interface StatsInput {
+  seq: number;
+  fps: number;
+  bitrate: number;
+  encodeMsP50: number;
+  captureMsP50: number;
+  skippedFrames: number;
+  profile: ProfileId;
+}
+
+export interface CursorInput {
+  x: number;
+  y: number;
+  visible: boolean;
+  shape: string | null;
+}
+
+export interface SourcesInput {
+  monitors: { id: string; name: string; width: number; height: number; primary: boolean }[];
+  windows: { id: string; title: string }[];
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+export function buildStatsFrame(input: StatsInput): string {
+  return JSON.stringify({
+    type: 'desktop-stats',
+    data: {
+      seq: input.seq,
+      fps: round1(input.fps),
+      bitrate: input.bitrate,
+      encodeMsP50: round1(input.encodeMsP50),
+      captureMsP50: round1(input.captureMsP50),
+      skippedFrames: input.skippedFrames,
+      profile: input.profile,
+    },
+  });
+}
+
+/**
+ * `shape: null` when the cursor is hidden is deliberate rather than omitting the
+ * key: the web cursor layer reads `data.shape` unconditionally and would draw
+ * the previous shape at the new position.
+ */
+export function buildCursorFrame(input: CursorInput): string {
+  return JSON.stringify({
+    type: 'desktop-cursor',
+    data: { x: input.x, y: input.y, visible: input.visible, shape: input.shape },
+  });
+}
+
+export function buildSourcesFrame(input: SourcesInput): string {
+  return JSON.stringify({
+    type: 'desktop-sources',
+    data: { monitors: input.monitors, windows: input.windows },
+  });
+}
+```
+
+- [ ] **Step 5: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/desktop/control.test.ts test/desktop/frames.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/desktop/{control,frames}.ts apps/agent/test/desktop/{control,frames}.test.ts
+git add apps/agent/src/desktop apps/agent/test/desktop
+git commit -m "feat(agent): decode stream control and build the desktop frames"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **15 new `it()` / 27 new `expect()`**. Ports `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
+
+An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_control_variants`, `decodes_desktop_select_variants`, `rejects_an_unknown_profile`, `gop_is_two_seconds_of_frames`, `stats_frame_field_names` and `cursor_frame_includes_shape_when_hidden` — seven names that appear nowhere in `apps/agent/src`. They were plausible re-spellings of the ported behaviours, which is why they read as a parity claim while describing no test that exists.
+
+---
+
+### Task 18: The data-channel router
+
+**Files:**
+- Create: `apps/agent/src/session/data-channels.ts`
+- Test: `apps/agent/test/session/data-channels.test.ts`
+
+**Interfaces:**
+- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `decodeStreamControl` / `decodeDesktopSelect` (Task 17), `decodeInput` / `InputLimiter` (Task 15).
+- Produces:
+  - `const CHANNEL_LABELS = { terminal: 'terminal', input: 'input', files: 'files', desktop: 'desktop', cursor: 'cursor' } as const`
+  - `class DataChannelRouter { constructor(deps); attach(channel): void; detach(label): void }`
+  - `type RouterDeps` — the five handlers, each injectable.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// apps/agent/test/session/data-channels.test.ts
+import { describe, expect, it, vi } from 'vitest';
+import { CHANNEL_LABELS, DataChannelRouter } from '../../src/session/data-channels.js';
+
+function fakeChannel(label: string) {
+  const handlers: Record<string, ((arg: never) => void)[]> = {};
+  return {
+    label,
+    readyState: 'open',
+    on: (event: string, cb: (arg: never) => void) => {
+      (handlers[event] ??= []).push(cb);
+    },
+    send: vi.fn(),
+    close: vi.fn(),
+    emit: (event: string, arg?: unknown) => {
+      for (const cb of handlers[event] ?? []) cb(arg as never);
+    },
+    handlerCount: (event: string) => (handlers[event] ?? []).length,
+  };
+}
+
+function router(overrides: Record<string, unknown> = {}) {
+  const deps = {
+    terminal: { write: vi.fn(), resize: vi.fn(), close: vi.fn(), create: vi.fn() },
+    files: { handle: vi.fn(() => []), acceptBinaryChunk: vi.fn(() => []) },
+    desktop: { onControl: vi.fn(), onSelect: vi.fn() },
+    input: { accept: vi.fn(() => true), decode: vi.fn(() => ({ kind: 'move', x: 1, y: 1 })) },
+    send: vi.fn(),
+    logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+    ...overrides,
+  };
+  return { deps, r: new DataChannelRouter(deps as never) };
+}
+
+describe('the label gate', () => {
+  it('accepts each of the five known labels', () => {
+    for (const label of Object.values(CHANNEL_LABELS)) {
+      const { r } = router();
+      const channel = fakeChannel(label);
+      expect(() => r.attach(channel as never)).not.toThrow();
+      expect(channel.close).not.toHaveBeenCalled();
+    }
+  });
+
+  it('closes an unknown label with no code argument', () => {
+    // Neither werift's `close()` nor the Rust's took a code. Passing one would
+    // compile against a wider type and do nothing at runtime.
+    const { r } = router();
+    const channel = fakeChannel('admin');
+    r.attach(channel as never);
+    expect(channel.close).toHaveBeenCalledWith();
+  });
+
+  it('closes a SECOND channel with an already-registered label', () => {
+    // Two `terminal` channels means two peers, or one confused one. Keeping both
+    // would deliver output to whichever the browser happened to bind.
+    const { r } = router();
+    const first = fakeChannel('terminal');
+    const second = fakeChannel('terminal');
+    r.attach(first as never);
+    r.attach(second as never);
+    expect(first.close).not.toHaveBeenCalled();
+    expect(second.close).toHaveBeenCalledWith();
+  });
+
+  it('drops a channel whose label throws, without closing it', () => {
+    const { r } = router();
+    const channel = {
+      get label() {
+        throw new Error('not ready');
+      },
+      close: vi.fn(),
+      on: vi.fn(),
+      send: vi.fn(),
+    };
+    expect(() => r.attach(channel as never)).not.toThrow();
+    expect(channel.close).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatch', () => {
+  it('routes a terminal frame to the pty', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel as never);
+    channel.emit('message', new TextEncoder().encode('{"type":"terminal-input","data":"bHM="}'));
+    expect(deps.terminal.write).toHaveBeenCalledWith('bHM=');
+  });
+
+  it('routes a files binary 0x02 frame to the files session', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('files');
+    r.attach(channel as never);
+    const binary = new Uint8Array(26);
+    binary[0] = 0x02;
+    channel.emit('message', binary);
+    expect(deps.files.acceptBinaryChunk).toHaveBeenCalledWith(binary);
+  });
+
+  it('routes a files JSON frame to the files session', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('files');
+    r.attach(channel as never);
+    channel.emit('message', new TextEncoder().encode('{"type":"files-list","path":""}'));
+    expect(deps.files.handle).toHaveBeenCalledWith({ type: 'files-list', path: '' });
+  });
+
+  it('sends whatever the files session returns', () => {
+    const { deps, r } = router({ files: { handle: () => [{ type: 'files-error', code: 'BAD_FRAME' }], acceptBinaryChunk: () => [] } });
+    const channel = fakeChannel('files');
+    r.attach(channel as never);
+    channel.emit('message', new TextEncoder().encode('{"type":"files-list","path":""}'));
+    expect(deps.send).toHaveBeenCalledWith('files', { type: 'files-error', code: 'BAD_FRAME' });
+  });
+
+  it('routes desktop control and select frames to their handlers', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('desktop');
+    r.attach(channel as never);
+    channel.emit('message', new TextEncoder().encode('{"type":"stream-control","action":"pause"}'));
+    expect(deps.desktop.onControl).toHaveBeenCalledWith({ kind: 'pause' });
+    channel.emit('message', new TextEncoder().encode('{"type":"desktop-select","source":{"kind":"test"}}'));
+    expect(deps.desktop.onSelect).toHaveBeenCalledWith({ kind: 'test' });
+  });
+
+  it('decodes input BEFORE the limiter and the injector', () => {
+    // The order is the security property: an undecodable frame never reaches the
+    // limiter's accounting or the injector's FFI call.
+    const order: string[] = [];
+    const { r } = router({
+      input: {
+        decode: () => {
+          order.push('decode');
+          return null;
+        },
+        accept: () => {
+          order.push('accept');
+          return true;
+        },
+      },
+    });
+    const channel = fakeChannel('input');
+    r.attach(channel as never);
+    channel.emit('message', new TextEncoder().encode('{"type":"input-pointer","kind":"hover"}'));
+    expect(order).toEqual(['decode']);
+  });
+
+  it('logs and ignores a corrupt JSON frame on any channel', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('desktop');
+    r.attach(channel as never);
+    expect(() => channel.emit('message', new TextEncoder().encode('{oops'))).not.toThrow();
+    expect(deps.logger.warn).toHaveBeenCalled();
+  });
+
+  it('detach removes the handlers so a late message is ignored', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel as never);
+    r.detach('terminal');
+    channel.emit('message', new TextEncoder().encode('{"type":"terminal-input","data":"eA=="}'));
+    expect(deps.terminal.write).not.toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/session/data-channels.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/session/data-channels.ts
+export const CHANNEL_LABELS = {
+  terminal: 'terminal',
+  input: 'input',
+  files: 'files',
+  desktop: 'desktop',
+  cursor: 'cursor',
+} as const;
+
+export type ChannelLabel = (typeof CHANNEL_LABELS)[keyof typeof CHANNEL_LABELS];
+
+const KNOWN = new Set<string>(Object.values(CHANNEL_LABELS));
+
+/** The slice of a werift data channel this module needs. */
+export interface RouterChannel {
+  readonly label: string;
+  on(event: 'message', cb: (data: ArrayBuffer | Uint8Array | string) => void): void;
+  close(): void;
+}
+
+export interface RouterDeps {
+  terminal: { write(data: string): void; resize(cols: number, rows: number): void };
+  files: {
+    handle(message: { type: string; [key: string]: unknown }): unknown[];
+    acceptBinaryChunk(frame: Uint8Array): unknown[];
+  };
+  desktop: {
+    onControl(control: unknown): void;
+    onSelect(source: unknown): void;
+  };
+  input: { decode(bytes: Uint8Array): unknown; accept(event: unknown): boolean; inject(event: unknown): void };
+  send(label: ChannelLabel, frame: unknown): void;
+  logger: { warn(message: string): void };
+}
+
+function toBytes(data: ArrayBuffer | Uint8Array | string): Uint8Array {
+  if (typeof data === 'string') return new TextEncoder().encode(data);
+  return data instanceof Uint8Array ? data : new Uint8Array(data);
+}
+
+function parseJson(bytes: Uint8Array): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The label gate and per-channel dispatch (B13).
+ *
+ * Three behaviours the Rust established and this keeps:
+ *
+ * - **One channel per label.** A second `terminal` channel is closed
+ *   immediately. Two open `terminal` channels would deliver pty output to
+ *   whichever the browser bound last, and the operator would see an apparently
+ *   dead terminal.
+ * - **`close()` takes no code argument.** Neither werift nor the Rust API
+ *   accepts one; passing one compiles against a wider type and does nothing.
+ * - **A `label()` that throws drops the channel without closing it.** werift
+ *   throws when the SCTP stream is not yet ready; the channel is then not ours
+ *   to close, and calling `close()` on it corrupts the peer connection.
+ *
+ * Input is **decoded before** the limiter and the injector: an undecodable frame
+ * must not reach a platform FFI call, and must not consume rate-limit budget.
+ */
+export class DataChannelRouter {
+  private readonly attached = new Map<string, RouterChannel>();
+
+  constructor(private readonly deps: RouterDeps) {}
+
+  attach(channel: RouterChannel): void {
+    let label: string;
+    try {
+      label = channel.label;
+    } catch {
+      return;
+    }
+    if (!KNOWN.has(label)) {
+      channel.close();
+      return;
+    }
+    if (this.attached.has(label)) {
+      channel.close();
+      return;
+    }
+    this.attached.set(label, channel);
+    channel.on('message', (data) => this.handle(label as ChannelLabel, data));
+  }
+
+  detach(label: ChannelLabel): void {
+    this.attached.delete(label);
+  }
+
+  private handle(label: ChannelLabel, data: ArrayBuffer | Uint8Array | string): void {
+    const bytes = toBytes(data);
+
+    if (label === CHANNEL_LABELS.files && !(typeof data === 'string') && bytes[0] === 0x02) {
+      this.emit(this.deps.files.acceptBinaryChunk(bytes));
+      return;
+    }
+
+    const message = parseJson(bytes);
+    if (message === null) {
+      this.deps.logger.warn(`dropped a malformed ${label} frame`);
+      return;
+    }
+
+    switch (label) {
+      case CHANNEL_LABELS.terminal: {
+        if (typeof message.data === 'string') this.deps.terminal.write(message.data);
+        return;
+      }
+      case CHANNEL_LABELS.files: {
+        this.emit(this.deps.files.handle(message));
+        return;
+      }
+      case CHANNEL_LABELS.input: {
+        const event = this.deps.input.decode(bytes);
+        if (event === null) return;
+        if (!this.deps.input.accept(event)) return;
+        this.deps.input.inject(event);
+        return;
+      }
+      case CHANNEL_LABELS.desktop: {
+        const control = this.deps.desktop.onControl as (value: unknown) => void;
+        void control;
+        this.dispatchDesktop(message);
+        return;
+      }
+      case CHANNEL_LABELS.cursor:
+        return;
+      default:
+        return;
+    }
+  }
+
+  private dispatchDesktop(message: Record<string, unknown>): void {
+    if (message.type === 'stream-control' || message.type === 'desktop-select') {
+      const bytes = new TextEncoder().encode(JSON.stringify(message));
+      const { decodeStreamControl, decodeDesktopSelect } = requireDesktopControl();
+      if (message.type === 'stream-control') {
+        const control = decodeStreamControl(bytes);
+        if (control) this.deps.desktop.onControl(control);
+        return;
+      }
+      const source = decodeDesktopSelect(bytes);
+      if (source) this.deps.desktop.onSelect(source);
+    }
+  }
+
+  private emit(frames: unknown[]): void {
+    for (const frame of frames ?? []) this.deps.send(CHANNEL_LABELS.files, frame);
+  }
+}
+
+/**
+ * Imported lazily so this module has no static dependency on the desktop control
+ * decoder — the router is attached to every peer, including peers that never
+ * open a desktop channel, and the decoder is only reachable through that one
+ * branch.
+ */
+function requireDesktopControl(): {
+  decodeStreamControl: (b: Uint8Array) => unknown;
+  decodeDesktopSelect: (b: Uint8Array) => unknown;
+} {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require('../desktop/control.js') as never;
+}
+```
+
+- [ ] **Step 3: Run green, format, commit**
+
+```bash
+./apps/agent/node_modules/.bin/vitest run test/session/data-channels.test.ts
+./node_modules/.bin/prettier --write apps/agent/src/session/data-channels.ts apps/agent/test/session/data-channels.test.ts
+git add apps/agent/src/session apps/agent/test/session
+git commit -m "feat(agent): route peer data channels behind the label gate"
+```
+
+**TEST-INTEGRITY declaration:** one new file, **12 new `it()` / 17 new `expect()`** — all twelve **new**, none ported. An earlier draft claimed six of them as ports (`rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`). None of those six names exists in `apps/agent/src`, and neither behaviour they describe has a Rust test: the label gate (`on_data_channel`, `rtc.rs:663-689`) has no test at all, and the only inbound router (`route_inbound`, `lib.rs:2739`) has none either. This is the reason the counts matter — a declaration that claims six ports under-reports new coverage and over-reports parity in the direction that survives review.
+
+What the twelve cover, stated as new work: the four label-gate cases (each of the five known labels accepted; an unknown label closed with no code argument; a second channel on an already-registered label closed; a channel whose label throws dropped without being closed), the eight dispatcher cases (terminal input routed to the pty; files binary `0x02` routed to the files session; files JSON routed to the files session; whatever the files session returns is sent back; desktop control and select routed to their handlers; input decoded BEFORE the limiter and injector; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers).
+
+The Rust's gate is the specification for the first four — `rtc.rs:663-689` accepts one label, refuses an unexpected one by closing it, drops an unlabelled channel, and closes a second `terminal` channel. That is parity of *behaviour* being ported without parity of *test* being ported, and the declaration now says so instead of implying the second.
+
+---
+
+### Task 19: Runtime lifecycle and the desktop session loop
+
+**Files:**
+- Create: `apps/agent/src/desktop/session.ts`
+- Create: `apps/agent/src/runtime.ts`
+- Create: `apps/agent/src/index.ts`
+- Test: `apps/agent/test/runtime.test.ts`, `apps/agent/test/desktop/session.test.ts`
+
+**Interfaces:**
+- Consumes: every prior task, and — load-bearing — **`packetizeAnnexB`** (Plan 1 Task 3) and the **`RTCRtpSenderLike`** seam (Plan 1 Task 2).
+- Produces:
+  - `class DesktopSession { constructor(deps); start(source, profile, bitrate): Promise<void>; control(control: StreamControl): void; select(source: DesktopSource): Promise<void>; stop(): Promise<void> }`
+  - `function resolveDefaultSource(config, sources): DesktopSource`
+  - `class AgentRuntime { static async start(config): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }`
+  - `function createAgentRuntime(config): Promise<AgentRuntime>`
+
+**⚠️ The video path, stated once because an earlier draft of this task got it
+wrong.** Desktop frames do **not** travel over a data channel. They leave the
+agent as **RTP**, through `sender.writeRtp(packet)` on the werift adapter's
+sender (Plan 1 Task 2), after `packetizeAnnexB` (Plan 1 Task 3) turns the
+encoder's Annex-B access unit into RFC 6184 mode-1 packets. That is what the
+Rust did — `apps/agent/src/desktop.rs:1767-1776` hands the buffer to
+`TrackLocalStaticSample.sample_writer(ssrc, payload_type).write_sample(&sample)`
+and the `rtc-rtp` crate packetizes it. `deps.send('desktop', …)` in this task
+is **not** the video path: it is for the JSON control/status frames
+(`desktop-stats`, `desktop-cursor`, `desktop-sources` — B56/B58/B61) which do
+travel on the `desktop` data channel. An earlier draft routed `encoded.data`
+straight to `deps.send('desktop', …)`, which would have put raw Annex-B bytes
+on a data channel and produced a black video with no error anywhere.
+
+- [ ] **Step 1: Write the failing default-source test**
+
+```ts
+// apps/agent/test/runtime.test.ts
+import { describe, expect, it } from 'vitest';
+import { resolveDefaultSource } from '../src/runtime.js';
+
+const sources = {
+  monitors: [
+    { id: '1', primary: false },
+    { id: '2', primary: true },
+  ],
+};
+
+describe('resolveDefaultSource', () => {
+  it('prefers the primary monitor by default', () => {
+    expect(resolveDefaultSource('primary', sources)).toEqual({ kind: 'monitor', id: '2' });
+  });
+
+  it('honours an explicit monitor id', () => {
+    expect(resolveDefaultSource('monitor:1', sources)).toEqual({ kind: 'monitor', id: '1' });
+  });
+
+  it('falls back to the first monitor when none is flagged primary', () => {
+    const flat = { monitors: [{ id: '7', primary: false }] };
+    expect(resolveDefaultSource('primary', flat)).toEqual({ kind: 'monitor', id: '7' });
+  });
+
+  it('resolves the test source', () => {
+    expect(resolveDefaultSource('test', sources)).toEqual({ kind: 'test' });
+  });
+
+  it('throws a named error when there are no sources at all', () => {
+    expect(() => resolveDefaultSource('primary', { monitors: [] })).toThrow(/no monitors/);
+  });
+
+  it('throws for an unknown selector rather than silently picking one', () => {
+    // A typo in AGENT_DESKTOP_DEFAULT_SOURCE must fail at startup. Defaulting
+    // would stream the wrong monitor and look like a capture bug.
+    expect(() => resolveDefaultSource('moniter:1', sources)).toThrow(/unknown desktop source/);
+  });
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail, then implement `runtime.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/runtime.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/runtime.ts
+import type { ProfileId } from '@ponter/shared';
+import type { AgentConfig } from './config.js';
+import type { DesktopSource } from './desktop/control.js';
+
+export interface DesktopSourceList {
+  monitors: { id: string; primary: boolean }[];
+}
+
+/**
+ * Resolves `AGENT_DESKTOP_DEFAULT_SOURCE` (B59).
+ *
+ * `primary` means "the monitor flagged primary, else the first one" — a headless
+ * or virtual host commonly reports no primary at all, and failing there would
+ * make the zero-click onboarding path dead on exactly the machines that need it.
+ *
+ * An unrecognised selector **throws**. Silently falling back to `primary` would
+ * turn a typo in the operator's env into a stream of the wrong monitor, which
+ * reads as a capture bug and is diagnosed hours later.
+ */
+export function resolveDefaultSource(selector: string, sources: DesktopSourceList): DesktopSource {
+  if (selector === 'test') return { kind: 'test' };
+  if (selector === 'primary') {
+    if (sources.monitors.length === 0) throw new Error('no monitors are available to capture');
+    const primary = sources.monitors.find((m) => m.primary) ?? sources.monitors[0];
+    return { kind: 'monitor', id: primary.id };
+  }
+  const monitor = /^monitor:(.+)$/.exec(selector);
+  if (monitor) {
+    if (!sources.monitors.some((m) => m.id === monitor[1])) {
+      throw new Error(`unknown desktop source ${selector}`);
+    }
+    // Present in `sources` but possibly captured by another process; the capture
+    // layer reports that, not this resolver.
+    return { kind: 'monitor', id: monitor[1] };
+  }
+  throw new Error(`unknown desktop source ${selector}`);
+}
+
+export interface RuntimeStatus {
+  agentId: string;
+  connected: boolean;
+  server: string;
+  filesRoot: string | null;
+  allowInput: boolean;
+  /** The profile **id** the config resolved to, not the whole record. */
+  desktopProfile: ProfileId;
+}
+
+/**
+ * The lifecycle owner (B14/B53).
+ *
+ * It exists as a class rather than a bag of closures for one reason: `stop()`
+ * must be idempotent and must tear down in a fixed order — desktop session,
+ * files session, pty sessions, then the socket — because a pty that outlives the
+ * socket leaves an orphan shell on the host. The order is `stop()`'s
+ * implementation, not a caller's responsibility.
+ *
+ * `createAgentRuntime` is the only public entry point; `AgentRuntime.start` is
+ * exported for tests that want a handle without the process-level wiring.
+ */
+export class AgentRuntime {
+  private stopped = false;
+
+  private constructor(private readonly config: AgentConfig) {}
+
+  static async start(config: AgentConfig): Promise<AgentRuntime> {
+    return new AgentRuntime(config);
+  }
+
+  status(): RuntimeStatus {
+    return {
+      agentId: this.config.agentId,
+      connected: false,
+      server: this.config.server,
+      filesRoot: this.config.filesRoot,
+      allowInput: this.config.allowInput,
+      desktopProfile: this.config.desktopProfile.id,
+    };
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+  }
+}
+
+export async function createAgentRuntime(config: AgentConfig): Promise<AgentRuntime> {
+  return AgentRuntime.start(config);
+}
+```
+
+- [ ] **Step 3: Write the failing desktop-session test**
+
+```ts
+// apps/agent/test/desktop/session.test.ts
+import { describe, expect, it, vi } from 'vitest';
+import { DesktopSession } from '../../src/desktop/session.js';
+
+function deps() {
+  return {
+    capture: {
+      sources: vi.fn(async () => ({ monitors: [{ id: '1', primary: true }], windows: [] })),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      nextFrame: vi.fn(async () => ({ width: 4, height: 4, rgba: new Uint8Array(64).fill(7), seq: 1 })),
+    },
+    encode: {
+      configure: vi.fn(),
+      encode: vi.fn(async () => ({ data: new Uint8Array([1, 2, 3]), keyframe: true })),
+      close: vi.fn(),
+    },
+    /**
+     * The RTP sink. Left as a null sender by default so the existing
+     * encode/skip/ladder tests are unaffected; the RTP path has its own tests
+     * below, which install a real fake sender.
+     */
+    rtp: {
+      sender: vi.fn(() => null as { writeRtp(packet: Uint8Array): void } | null),
+      payloadType: vi.fn(() => null as number | null),
+    },
+    send: vi.fn(),
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    now: () => 0,
+    rtpClock: () => 0,
+  };
+}
+
+describe('DesktopSession', () => {
+  it('configures the encoder with the profile gop before the first frame', async () => {
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ gop: 60 }));
+    expect(d.capture.start).toHaveBeenCalled();
+  });
+
+  it('clamps the initial bitrate through the same decode path', async () => {
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1);
+    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ bitrate: 250_000 }));
+  });
+
+  it('stops capture before closing the encoder', async () => {
+    const order: string[] = [];
+    const d = deps();
+    d.capture.stop = vi.fn(async () => {
+      order.push('capture');
+    });
+    d.encode.close = vi.fn(() => {
+      order.push('encoder');
+    });
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    await session.stop();
+    expect(order).toEqual(['capture', 'encoder']);
+  });
+
+  it('re-configures the encoder on a quality change', async () => {
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '1080p60', 4_000_000);
+    d.encode.configure.mockClear();
+    session.control({ kind: 'quality', profile: '720p30' });
+    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ gop: 60 }));
+  });
+
+  it('resets the static-skip on a bitrate change', async () => {
+    // One of the three reset sites: a bitrate change invalidates nothing about
+    // the pixels, but the encoder's quantiser just moved, so the next identical
+    // frame must still be sent or the browser keeps the pre-retarget picture.
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    const before = session.stats().skippedFrames;
+    session.control({ kind: 'bitrate', bitrate: 2_000_000 });
+    expect(session.stats().skippedFrames).toBe(before);
+    expect(session.skipIsReset()).toBe(true);
+  });
+
+  it('applies a bitrate received before the first encode', async () => {
+    // P5 contradiction #15: the Rust's apply_bitrate returned cmInitExpected
+    // before the first frame and the production arm only warned, so the setting
+    // was silently lost with no retry. The TS stores the value and applies it
+    // when the encoder is configured, because losing it is a defect, not a
+    // behaviour worth reproducing.
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    session.control({ kind: 'bitrate', bitrate: 3_000_000 });
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ bitrate: 3_000_000 }));
+  });
+
+  it('reports a stats frame with the sustained profile', async () => {
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '1080p60', 4_000_000);
+    expect(session.stats().profile).toBe('1080p60');
+  });
+
+  it('encodes a changed frame on pump and writes it to RTP, not to a data channel', async () => {
+    // The bug this pins: an earlier draft of this task sent the encoder's
+    // Annex-B buffer to `deps.send('desktop', …)`, i.e. down a data channel.
+    // That produces no error and a black video, because a data channel does not
+    // carry RTP. The assertion that matters is therefore NOT "a frame was
+    // delivered somewhere" — it is that the bytes reached `writeRtp` after
+    // being packetized, and that `deps.send` was NOT used for them.
+    const d = deps();
+    // A real Annex-B access unit: 4-byte start code + one NAL (type 5, IDR).
+    // The default mock returns `[1,2,3]`, which has no start code at all and
+    // would make `packetizeAnnexB` throw — so this test installs its own.
+    d.encode.encode = vi.fn(async () => ({
+      data: new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3]),
+      keyframe: true,
+    }));
+    const written: Buffer[] = [];
+    d.rtp.sender = vi.fn(() => ({ writeRtp: (p: Uint8Array) => written.push(Buffer.from(p)) }));
+    d.rtp.payloadType = vi.fn(() => 102);
+    const session = new DesktopSession(d as never);
+    session.setRtpIdentity(0x1234);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+
+    expect(await session.pump()).toBe(true);
+    expect(d.encode.encode).toHaveBeenCalledTimes(1);
+
+    // One NAL unit in one packet: a single type-5 slice under 1188 bytes
+    // becomes one single-NAL-unit packet.
+    expect(written).toHaveLength(1);
+    const packet = written[0]!;
+    // 12-byte RTP header + the 4 NAL bytes (start code stripped).
+    expect(packet.length).toBe(12 + 4);
+    expect(packet[0]! >> 6).toBe(2); // RTP version 2
+    expect(packet[1]! & 0x7f).toBe(102); // the negotiated payload type
+    expect(packet.readUInt32BE(8)).toBe(0x1234); // SSRC from setRtpIdentity
+    // Annex-B framing is gone: the start code must not survive into the payload.
+    expect([...packet.subarray(12, 16)]).not.toEqual([0, 0, 0, 1]);
+    expect(packet[12]).toBe(0x65); // the NAL header byte
+
+    // And the video did NOT go down a data channel.
+    expect(d.send).not.toHaveBeenCalled();
+  });
+
+  it('drops a frame instead of throwing when no sender exists yet', async () => {
+    // The zero-click path starts capture before the browser offers, so the
+    // first frames have nowhere to go. Dropping is correct; buffering would
+    // replay a stale picture the moment a peer connected.
+    const d = deps();
+    d.rtp.sender = vi.fn(() => null);
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    await expect(session.pump()).resolves.toBe(true);
+    expect(d.send).not.toHaveBeenCalled();
+  });
+
+  it('skips a repeated frame but keeps the keepalive', async () => {
+    const d = deps();
+    let n = 0;
+    d.capture.nextFrame = vi.fn(async () => {
+      n += 1;
+      return { width: 4, height: 4, rgba: new Uint8Array(64).fill(7), seq: n };
+    });
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    expect(await session.pump()).toBe(true); // baseline
+    expect(await session.pump()).toBe(false); // skipped
+    expect(session.stats().skippedFrames).toBe(1);
+  });
+
+  it('downgrades on pump after 30 over-budget frames and resets the skip', async () => {
+    const d = deps();
+    let clock = 0;
+    d.now = () => (clock += 40);
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '1080p60', 4_000_000);
+    for (let i = 0; i < 30; i += 1) await session.pump();
+    expect(session.stats().profile).toBe('720p60');
+    expect(session.skipIsReset()).toBe(true);
+    expect(d.encode.configure).toHaveBeenLastCalledWith(
+      expect.objectContaining({ profile: '720p60', gop: 120 }),
+    );
+  });
+});
+```
+
+- [ ] **Step 4: Run it and watch it fail, then implement `desktop/session.ts`**
+
+Run: `./apps/agent/node_modules/.bin/vitest run test/desktop/session.test.ts`
+Expected: FAIL — module unresolved.
+
+```ts
+// apps/agent/src/desktop/session.ts
+import type { ProfileId } from '@ponter/shared';
+import { packetizeAnnexB } from '../session/packetizer.js';
+import { clampBitrate, gopForFps, type DesktopSource, type StreamControl } from './control.js';
+import { StaticFrameSkip, type RawFrame } from './static-skip.js';
+import { SustainLadder } from './sustain.js';
+import { FrameTimingRing } from './timing-ring.js';
+
+/**
+ * The slice of `RTCRtpSenderLike` (Plan 1 Task 2) this module needs.
+ *
+ * `writeRtp` takes the **complete** RTP packet — the packetizer builds the
+ * 12-byte header, the adapter only adds SSRC/PT/seq/timestamp bookkeeping. This
+ * is the RTP path, not a data channel; see the task preamble.
+ */
+export interface RtpSenderSink {
+  writeRtp(packet: Uint8Array): void;
+}
+
+const PROFILES: Record<ProfileId, { fps: number; width: number; height: number }> = {
+  '1080p60': { fps: 60, width: 1920, height: 1080 },
+  '1080p30': { fps: 30, width: 1920, height: 1080 },
+  '720p60': { fps: 60, width: 1280, height: 720 },
+  '720p30': { fps: 30, width: 1280, height: 720 },
+};
+
+export interface DesktopSessionDeps {
+  capture: {
+    sources(): Promise<{ monitors: { id: string; primary: boolean }[]; windows: unknown[] }>;
+    start(source: DesktopSource): Promise<void>;
+    stop(): Promise<void>;
+    nextFrame(): Promise<RawFrame>;
+  };
+  encode: {
+    configure(options: { profile: ProfileId; bitrate: number; gop: number }): void;
+    encode(frame: RawFrame): Promise<{ data: Uint8Array; keyframe: boolean }>;
+    close(): void;
+  };
+  /**
+   * The RTP sink for video. **Not** a data channel — see the task preamble.
+   *
+   * The adapter's sender stamps SSRC, payload type, sequence number and
+   * timestamp; this dep supplies only the header fields the packetizer needs
+   * to build the packet, and the packet bytes back. Injectable so the loop can
+   * be tested with no encoder, no display and no peer.
+   */
+  rtp: {
+    /** The sender for the negotiated video track, or `null` before one exists. */
+    sender(): RtpSenderSink | null;
+    /** The negotiated payload type, read from the sender after the answer. */
+    payloadType(): number | null;
+  };
+  /**
+   * JSON control/status frames on the `desktop` **data channel** — B56/B58/B61.
+   * Never the video. Confusing this with the RTP sink above is the bug an
+   * earlier draft of this task contained.
+   */
+  send(label: 'desktop', frame: unknown): void;
+  logger: { info(m: string): void; warn(m: string): void; error(m: string): void; debug(m: string): void };
+  now?: () => number;
+  /** Injectable clock for the 90 kHz RTP timestamp. Defaults to `Date.now`. */
+  rtpClock?: () => number;
+}
+
+/**
+ * The capture → downscale → encode → packetize → send loop (B14/B59).
+ *
+ * Three states that must survive a change and do not in the obvious
+ * implementation:
+ *
+ * - **A bitrate received before the first encode.** `control({kind:'bitrate'})`
+ *   stores it and `start` applies it. Reproducing the Rust's "warn and drop"
+ *   would lose the client's setting with no retry and no signal — the browser
+ *   shows the new value in its UI and the stream keeps the old one. This is the
+ *   one P5 contradiction where the code is a **defect**, so the TS asserts the
+ *   correct behaviour and the divergence is stated here rather than hidden.
+ * - **The static-skip has exactly three reset sites** — bitrate change, source
+ *   swap, downgrade — and nowhere else. A reset on every control message would
+ *   make the skip useless; a missing reset after a retarget would keep sending
+ *   the pre-retarget picture.
+ * - **`stop()` tears down capture before the encoder.** The other order leaves
+ *   the encoder closing while a capture callback is mid-flight.
+ */
+export class DesktopSession {
+  private profile: ProfileId = '720p30';
+  private bitrate = 0;
+  private ladder: SustainLadder | null = null;
+  private skip: StaticFrameSkip | null = null;
+  private timing: FrameTimingRing | null = null;
+  private pendingBitrate: number | null = null;
+  private skipWasReset = false;
+  private seq = 0;
+  private skippedFrames = 0;
+  /** The RTP sequencer. Wraps at 2^16 inside the packetizer, per RFC 3550. */
+  private rtpSequence = 0;
+  /**
+   * The SSRC stamped into each packet header.
+   *
+   * Zero is a legal SSRC, and werift overwrites `header.ssrc` with the sender's
+   * own on the way out (`rtpSender.js:544`), so this value never reaches the
+   * wire when the real adapter is used. It is set from the sender when one
+   * exists so the packetizer's own conformance tests can assert a non-zero
+   * header; see `setRtpIdentity`.
+   */
+  private rtpSsrc = 0;
+  private started = false;
+
+  constructor(private readonly deps: DesktopSessionDeps) {}
+
+  /**
+   * Record the SSRC the packets should carry.
+   *
+   * Called by the runtime once the peer's answer exists. Kept separate from
+   * `start()` because the zero-click path starts capture **before** the browser
+   * has offered, so the identity is not known at start time and may arrive
+   * later. Not knowing it is not fatal: `sendRtp` drops frames until a sender
+   * exists anyway, and the real werift sender overrides `header.ssrc` with its
+   * own on the way out (`rtpSender.js:544`).
+   */
+  setRtpIdentity(ssrc: number): void {
+    this.rtpSsrc = ssrc;
+  }
+
+  async start(source: DesktopSource, profile: ProfileId, bitrate: number): Promise<void> {
+    this.profile = profile;
+    const effective = clampBitrate(this.pendingBitrate ?? bitrate);
+    this.pendingBitrate = null;
+    this.bitrate = effective;
+    const geometry = PROFILES[profile];
+    this.skip = new StaticFrameSkip(geometry.fps);
+    this.timing = new FrameTimingRing(32);
+    this.ladder = new SustainLadder(profile, 1000 / geometry.fps);
+    this.deps.encode.configure({ profile, bitrate: effective, gop: gopForFps(geometry.fps) });
+    await this.deps.capture.start(source);
+    this.started = true;
+  }
+
+  control(control: StreamControl): void {
+    switch (control.kind) {
+      case 'bitrate':
+        this.bitrate = control.bitrate;
+        this.skip?.reset();
+        this.skipWasReset = true;
+        this.ladder?.noteBitrateChange(control.bitrate);
+        if (!this.started) {
+          this.pendingBitrate = control.bitrate;
+          return;
+        }
+        this.deps.encode.configure({
+          profile: this.profile,
+          bitrate: control.bitrate,
+          gop: gopForFps(PROFILES[this.profile].fps),
+        });
+        return;
+      case 'quality': {
+        this.profile = control.profile;
+        const geometry = PROFILES[control.profile];
+        this.skip = new StaticFrameSkip(geometry.fps);
+        this.ladder = new SustainLadder(control.profile, 1000 / geometry.fps);
+        this.deps.encode.configure({
+          profile: control.profile,
+          bitrate: this.bitrate,
+          gop: gopForFps(geometry.fps),
+        });
+        return;
+      }
+      case 'pause':
+        return;
+      case 'resume':
+        this.skip?.reset();
+        return;
+      case 'stop':
+        return;
+    }
+  }
+
+  async select(source: DesktopSource): Promise<void> {
+    await this.deps.capture.stop();
+    await this.deps.capture.start(source);
+    // Source-swap reset: the new source is a new screen, so the previous
+    // signature is meaningless and must not suppress the first frame.
+    this.skip?.reset();
+    this.skipWasReset = true;
+  }
+
+  /**
+   * One iteration of the loop: capture → skip → encode → send.
+   *
+   * The caller drives this at the profile's frame interval (Task 18's runtime
+   * ticker does). Splitting the single iteration out rather than owning a timer
+   * here is what makes the loop testable without a capture device and what lets
+   * the runtime rebuild the interval when the profile changes — the Rust built
+   * its sustain ticker **once** and never rebuilt it, so samples kept arriving on
+   * the old cadence after a downgrade. The Rust creates its sustain interval once
+   * from `profile.frame_budget()` (`desktop.rs:1528`) and never rebuilds it, while a
+   * downgrade replaces the profile and the encoder (`desktop.rs:1731-1733`) and then
+   * stamps `duration: profile.frame_budget()` on each sample (`desktop.rs:1769`). After
+   * `720p60 → 720p30` the loop still ticks at 16.67 ms while samples are stamped
+   * 33.3 ms: the encoder is fed at double its configured `max_frame_rate` and the RTP
+   * sample durations disagree with the actual emission cadence. (`1080p60 → 720p60` is
+   * unaffected — same fps.) The ladder is rebuilt in
+   * `control()` and the interval is the caller's, so there is nothing left to go
+   * stale.
+   *
+   * Returns whether a frame was sent, so the runtime can count encoded frames
+   * without duplicating the skip decision.
+   */
+  async pump(): Promise<boolean> {
+    if (!this.started || !this.skip || !this.ladder) return false;
+    const frame = await this.deps.capture.nextFrame();
+    this.seq += 1;
+    this.skipWasReset = false;
+    if (this.skip.shouldSkip(frame)) {
+      this.skippedFrames += 1;
+      return false;
+    }
+    const encodeMs = await this.encodeAndSend(frame);
+    const downgrade = this.ladder.noteFrame(encodeMs);
+    if (downgrade) {
+      // A downgrade is the third and last reset site: the profile's geometry
+      // changed, so the next identical frame must be sent to establish the new
+      // reference at the new size.
+      this.skip.reset();
+      this.skipWasReset = true;
+      this.applyProfile(downgrade);
+    }
+    return true;
+  }
+
+  /**
+   * Times the encode only — the capture already happened when `pump` received
+   * the frame. That single number is both what the ladder reads (B23: the frame,
+   * not the p50) and what the timing ring records; the two consumers share one
+   * measurement so they cannot disagree about what "slow" means.
+   */
+  private async encodeAndSend(frame: RawFrame): Promise<number> {
+    const now = this.deps.now ?? Date.now;
+    const started = now();
+    const encoded = await this.deps.encode.encode(frame);
+    const encodeMs = now() - started;
+    this.timing?.record(this.seq, started, encodeMs, started);
+    this.sendRtp(encoded.data);
+    return encodeMs;
+  }
+
+  /**
+   * Annex-B → RFC 6184 packets → `sender.writeRtp`, once per packet.
+   *
+   * This is the whole video path and it is deliberately not `deps.send`. The
+   * encoder emits one Annex-B access unit per frame; `packetizeAnnexB` splits
+   * it into single-NAL / STAP-A / FU-A packets at the negotiated payload type;
+   * the werift sender stamps SSRC, sequence and timestamp onto each and pushes
+   * it out. Skipping the packetizer — or handing the buffer to a data channel —
+   * produces no error anywhere and a black video, which is why the test below
+   * asserts `writeRtp` was called with a packet whose `payloadType` is the
+   * negotiated one.
+   *
+   * The sequencer lives here, not in the packetizer: `packetizeAnnexB` returns
+   * `nextSequenceNumber` and the caller owns the counter, exactly as the Rust
+   * agent's `SampleWriter` did.
+   *
+   * A missing sender is not an error at frame time. `start()` can run before
+   * the browser's offer arrives (the zero-click path does exactly that), and a
+   * frame captured then has no one to send to yet. Dropping it and letting the
+   * next tick pick up is correct — the alternative, buffering, would replay a
+   * stale picture the moment the peer connected.
+   */
+  private sendRtp(annexB: Uint8Array): void {
+    const sender = this.deps.rtp.sender();
+    if (!sender) return;
+    const payloadType = this.deps.rtp.payloadType();
+    if (payloadType === null) return;
+
+    const clock = this.deps.rtpClock ?? Date.now;
+    // 90 kHz RTP clock. Milliseconds × 90 overflows 2^32 after ~13 hours, so
+    // the multiplication is done modulo 2^32 rather than on the raw product.
+    const rtpTimestamp = Math.floor((clock() * 90) % 2 ** 32);
+
+    const { packets, nextSequenceNumber } = packetizeAnnexB(Buffer.from(annexB), {
+      payloadType,
+      sequenceNumber: this.rtpSequence,
+      timestamp: rtpTimestamp,
+      ssrc: this.rtpSsrc,
+    });
+    for (const packet of packets) sender.writeRtp(packet.bytes);
+    this.rtpSequence = nextSequenceNumber;
+  }
+
+  private applyProfile(profile: ProfileId): void {
+    this.profile = profile;
+    const geometry = PROFILES[profile];
+    this.deps.encode.configure({
+      profile,
+      bitrate: this.bitrate,
+      gop: gopForFps(geometry.fps),
+    });
+  }
+
+  stats(): { seq: number; skippedFrames: number; profile: ProfileId; bitrate: number } {
+    return {
+      seq: this.seq,
+      skippedFrames: this.skippedFrames,
+      profile: this.ladder?.current() ?? this.profile,
+      bitrate: this.bitrate,
+    };
+  }
+
+  /** Test affordance: true immediately after one of the three reset sites. */
+  skipIsReset(): boolean {
+    return this.skipWasReset;
+  }
+
+  async stop(): Promise<void> {
+    if (!this.started) return;
+    this.started = false;
+    this.skip = null;
+    this.ladder = null;
+    await this.deps.capture.stop();
+    this.deps.encode.close();
+  }
+}
+```
+
+- [ ] **Step 5: Write `index.ts` and run everything**
+
+```ts
+// apps/agent/src/index.ts
+export { loadConfig } from './config.js';
+export type { AgentConfig } from './config.js';
+export { createAgentRuntime, AgentRuntime, resolveDefaultSource } from './runtime.js';
+export type { RuntimeStatus } from './runtime.js';
+```
+
+```bash
+./apps/agent/node_modules/.bin/vitest run
+./node_modules/.bin/tsc --noEmit -p apps/agent/tsconfig.json
+./node_modules/.bin/prettier --write apps/agent/src apps/agent/test
+git add apps/agent
+git commit -m "feat(agent): wire the runtime lifecycle and the desktop session"
+```
+
+**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 33 new `expect()`**. `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is the **only** port here — it re-homes from Task 8. Everything else is **new**, and an earlier draft named eight Rust tests that do not exist anywhere in `apps/agent/src`: `resolve_default_source_prefers_primary` / `…honours_an_explicit_id` / `…resolves_test` / `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture` / `…stops_capture_before_the_encoder` / `…reconfigures_on_a_quality_change`. The functions they name do exist — `default_source_id` (`desktop.rs:1004`) and `run_desktop_session` (`lib.rs:2002`/`2698`) — and neither has a test. The only in-tree use of `default_source_id` is the `#[ignore]`d live-display smoke (`desktop.rs:2707`), which asserts a frame, not a resolution rule.
+
+So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the seventeen cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
+
+The `expect()` count is larger than the `it()` count by more than usual because the RTP test is one `it()` with ten assertions: it is checking a serialized packet byte by byte, and a packet is not one property.
+
+**New, and the most important two in this task:** the RTP-path test and the no-sender drop. An earlier draft of this task wired the encoder's Annex-B output to `deps.send('desktop', …)` — a data channel — which would have shipped a black video with no error anywhere. Both are **new**, not ports: the Rust never tested the write path in isolation because `write_sample` did the packetizing for it. The RTP test asserts the header's payload type, SSRC, RTP version, that the Annex-B start code is **absent** from the payload, and that `deps.send` was **not** called.
+
+---
+
+## Closing sections
+
+### The retirement note (R5) — the ten noise rules, and what becomes of each
+
+`apps/agent/src/logging.rs:26-101` carries **ten** `(target, message)` rules, not
+six, and `logging.rs` has **eight** `#[test]`s. The table below accounts for every
+one of the ten. An earlier draft of this note invented four rules that do not
+exist ("ICE failed", "Ping timeout", an `rtc_sctp` rule, and a `libwayshot` /
+"error" pair whose real message reads differently), asserted both "none port" in
+Task 1 and "six retire" here, and reversed the DTLS decision the Rust source
+documents at length. The reconciliation is: **Task 1's `NOISE` table ships empty,
+and that is correct** — every rule names a Rust crate target, and the TypeScript
+stack is werift, whose logging is a different mechanism. What follows is not a
+port list; it is the rationale each rule encodes, so the knowledge survives even
+though the rules do not.
+
+| # | The real rule | What it suppressed, and where the concern lives now |
+|---|---|---|
+| 1 | `libwayshot_xcap` / "Ignoring a wl_output with version < 4." | Fires once per unrelated Wayland global, so a wall of identical lines each capture start. **Plan 3** — the portal/capture path is ADR-90's and its logging is Plan 3's. |
+| 2 | `rtc_ice` / "remote mDNS candidate added, but mDNS is disabled" | Expected, because the agent disables mDNS on purpose. Under werift the equivalent is a candidate that never gathers a pair — visible through the connection state, which the session must react to rather than hide (`classifyClose`, Task 3). |
+| 3 | `rtc_ice` / "no such remote" | A STUN success arriving after its pair is gone; rtc-ice discards it. No werift counterpart: werift's ICE agent does not log the discard. Nothing to retire and nothing to port. |
+| 4 | `rtc_ice` / "ErrMismatchUsername" | A peer sending with the `ufrag:ufrag` order swapped. Same as #3 — discarded silently by both stacks. |
+| 5 | `rtc::peer_connection::handler` / "unhandled STUN packet" | The layer above re-logging the two discards in #3/#4. If werift ever grows such a line, the rule shape here is what Task 1's empty table is for. |
+| 6 | `rtc::peer_connection::handler` / "ErrMismatchUsername" | The same re-log, same resolution as #5. |
+| 7 | `rtc_dtls` / "Unsupported Extension Type" | Chrome offers DTLS extensions this stack does not implement; ignoring them is correct per RFC 5246 §7.4.1.4 and the handshake completes. **Retires with no replacement** — werift implements a different extension set and logs no equivalent. |
+| 8 | `webrtc::peer_connection::driver` / "from 127.0.0.1:" | The loopback socket's STUN writes fail with EINVAL because gathering iterates every socket including loopback; only loopback writes are dropped, so a real-interface failure still shows. **Live concern, re-express here if werift logs it** — this is the one the port is most likely to need, because the Node agent keeps the loopback candidate for same-host peers. |
+| 9 | `webrtc::peer_connection::transport::turn_relayer` / "CreatePermission error response (error 403" | coturn's SSRF guard rejects loopback/ULA peers. Verified against deploy coturn 4.18.0; a 403 is always this guard (bad credentials surface as 401), so suppressing it cannot hide an auth fault. **Live concern for Plan 3's TURN work**, where the equivalent diagnostic is werift's relay-permission error. The permission and transaction *timeouts* it triggers are deliberately NOT suppressed — those are also what an unreachable TURN server emits. |
+| 10 | `quinn_udp` / "halting segmentation offload" | quinn-udp reports UDP segmentation offload being unavailable at INFO and falls back to `sendmsg`. **Retires with no replacement** — there is no QUIC transport in the Node agent. |
+
+**The DTLS alert line is NOT among these ten, and the Rust deliberately keeps it.**
+`logging.rs:56-63` documents the decision and `logging.rs:259` pins it with
+`the_dtls_alert_line_is_kept_even_though_it_usually_means_a_clean_close`: rtc
+renders `Error::ErrAlertFatalOrClose`, whose text is shared by a benign
+`close_notify` and a genuine fatal alert (handshake failure, fingerprint
+mismatch), so no string rule can tell them apart, and rtc logs no DTLS transport
+state — nothing else would surface the fatal case. One extra line per session is
+the price of never hiding a real DTLS failure. Any earlier note claiming this was
+retired had it backwards. Task 3's `classifyClose` covers *close codes on the
+signalling socket*; it does not and cannot cover a DTLS alert, so it is not a
+replacement for the Rust rule — there is no rule to replace.
+
+The mechanism ports intact — target-plus-substring matching, an unknown line is
+kept, a known phrase from an unknown target is kept, and `RUST_LOG` composes with
+the filter. Task 1's fence writes **three** tests for that mechanism
+(`matches on target AND message`, `keeps an unknown line from a known-noisy
+target`, `keeps every line when the table is empty`). The Rust has **eight**
+logging tests (`logging.rs:193-350`): six `is_noise` cases plus two end-to-end
+composed/bridged cases. Five of the six `is_noise` cases are per-rule assertions
+against rules that do not port, so they have nothing to assert against an empty
+table — that is a consequence of the retirement, not a coverage decision. The two
+end-to-end cases are a real loss and are recorded as such: the composed-filter
+and `log`-crate-bridge tests have no Node equivalent, because there is no `log`
+crate to bridge. Task 1's third test ("keeps every line when the table is empty")
+pins the property those per-rule cases collectively guaranteed. The **coturn 403**
+rationale (#9) does not retire: it is a signalling-server behaviour, not a log
+filter, and it lives in the desktop `agent-supervisor` tree as well.
+
+### Coverage-matrix update (the §9.4 gate)
+
+Before this plan's work can be called done, the coverage matrix must record:
+
+- **49 B-rows closed** across Tasks 1–19, with the owning task's test file named.
+- **R3 recorded as a three-way split: 13 re-homed / 2 ported-then-retired / 5
+  retired.** The earlier "12 re-homed / 8 retired" in this plan was arithmetically
+  impossible (`to_ws_url` alone carries 11, `with_bearer` 2). The enumeration is
+  in this plan's corrections block; the matrix's §6.2 carries the same derivation.
+- **B19 has no home here** — `applyBitrate` lives in Plan 1 Task 4's addon. If it
+  did not land there, it is a Plan 3 gap.
+- **New R-entry: ten noise rules recorded, none ported** (above). Not "six
+  retired": the retirement note accounts for all ten of `logging.rs:26-101` and
+  concludes Task 1's `NOISE` table **ships empty**, because every rule names a
+  Rust crate target and the TypeScript stack is werift. What the R-entry records
+  is the *rationale* each rule encodes, and the two live concerns it keeps
+  findable (the loopback STUN write, #8, and coturn's 403 SSRF guard, #9).
+- **New R-entry: `files-download-chunk` as a JSON outbound type** — dropped, never
+  emitted by the Rust and therefore unobservable to any browser.
+- **Plan-quality declarations corrected:** `desktop-profile-parity.test.ts` is
+  **2→2 `it()`, 4→2 `expect()`**, not the "1→2" Plan 1 wrote.
+
+### Self-review
+
+**Spec coverage.** Every §ref named in the header has an owning task: §3.3
+(config, Task 1), §3.4 (reuse map — `rewriteWsScheme` sibling, Task 2), §3.5
+(backoff/close, Task 3), §4.1–4.7 (files, Tasks 10–11), §6.1 (terminal, Tasks 12,
+18), §8 (desktop, Tasks 13, 16–17, 19), §8.1 (static skip, Task 13), §9.1
+(input, Task 15), §9.4 (coverage gate, above), §11.1 (identity proof, Task 14).
+
+**A gap this self-review found, and it was the worst one.** The first draft of
+this plan had **no consumer at all** for `packetizeAnnexB` (Plan 1 Task 3) and
+**no reference at all** to `RTCRtpSenderLike` (Plan 1 Task 2) — two artifacts
+Plan 1's own Interfaces block says "Task 3 and Plan 2 consume". Task 19's
+`encodeAndSend` sent the encoder's Annex-B buffer to `deps.send('desktop', …)`,
+i.e. down a **data channel**, where it would have produced no error and a black
+video. The Rust never did that: `apps/agent/src/desktop.rs:1767-1776` hands the
+buffer to `sample_writer(ssrc, payload_type).write_sample(&sample)` and the
+`rtc-rtp` crate packetizes it.
+
+This is exactly the failure class a self-review exists to catch — not a typo in
+one line, but two halves of a plan each internally consistent and jointly
+broken, joined by an interface nobody checked was consumed. Fixed by: naming
+both dependencies in Task 19's Interfaces, adding the `rtp` dep and
+`sendRtp()` to `DesktopSession`, splitting `deps.send` (JSON control frames on
+the data channel) from `deps.rtp` (video over RTP) by comment and by type, and
+adding the two tests that fail if the wire path regresses to a data channel.
+The general lesson, written down so the next planner applies it: **for every
+artifact a plan declares it "produces for a later plan", grep the later plan for
+that name.** An unconsumed producer is either dead code or a missing call site,
+and nothing else in the document distinguishes the two.
+
+**Placeholder scan.** No task says "similar to Task N"; every code block is
+complete; no step says "add error handling" without showing it. Three steps
+reference another task's *evidence* (Task 8's `rtc.rs` port split) but repeat the
+code they need.
+
+**Type consistency.** `FilesFrame`, `InputEvent`, `StreamControl`, `DesktopSource`
+and `ProfileId` are declared once and consumed by name in every later task.
+`clampBitrate` is exported from `control.ts` and imported by `session.ts` — not
+re-declared. `nextBackoff` is pure and takes milliseconds in every caller.
+
+**Review Focus coverage.** Each of the five named lines has its test:
+reconnect-reset → Task 5's `run()` test; unclassifiable-frame cascade → Task 4's
+zero-warnings test; empty-plaintext E2EE frame → Task 7; symlink escape → Task
+10's `rejects a symlink that resolves outside the root` and `uses component-wise
+containment, not string prefix`; forever-identical desktop frame → Task 13's
+keepalive-count test plus Task 19's bitrate reset.
+
+**Two P5 contradictions ruled here, both stated at their task:**
+**#11** (the never-rebuilt sustain ticker): the TS rebuilds the ladder in
+`control()` on a quality change because the ladder's `budgetMs` is derived from
+the profile's fps — a stale ladder would compare 33 ms frames against a 16.7 ms
+budget and downgrade to the floor immediately. The Rust's single-construction
+ticker is a **defect**, recorded as such in Task 19's review note.
+**#15** (the pre-first-encode `apply_bitrate` no-op): **fixed, not reproduced** —
+Task 19's `applies a bitrate received before the first encode` asserts the
+setting survives, with the divergence declared in the class comment.

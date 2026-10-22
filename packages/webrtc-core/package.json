@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./adapters/werift": "./src/adapters/werift.ts",
-    "./test/fake-websocket": "./test/fake-websocket.ts"
+    "./test/fake-websocket": "./test/fake-websocket.ts",
+    "./test/synthetic-offer": "./test/synthetic-offer.ts"
   },
   "scripts": {
     "lint": "eslint .",

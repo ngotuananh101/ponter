@@ -1,0 +1,15 @@
+{
+  "source": "fixtures/idr-1280x720.annexb",
+  "derivedBy": "ffmpeg -hide_banner -loglevel error -f h264 -i apps/agent/spike/fixtures/idr-1280x720.annexb -pix_fmt gray -f rawvideo /tmp/fixture-gray.raw, then a 4x4 region-mean over the 1280x720 luma plane",
+  "gridSize": 4,
+  "grid": [
+    [103.36, 197.7, 54.99, 154.04],
+    [100.48, 199.9, 56.96, 149.18],
+    [100.48, 200.32, 59.48, 155.44],
+    [100.49, 200.33, 59.26, 156.22]
+  ],
+  "mean": 128.04,
+  "min": 54.99,
+  "max": 200.33,
+  "note": "A black frame is uniform at 16 (or 0). The spread here is ~145 luma levels, so this grid separates 'pixels arrived' from 'the decoder produced a picture of nothing' without tolerance tuning."
+}

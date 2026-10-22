@@ -1,8 +1,13 @@
-import { RTCPeerConnection as WeriftPC } from 'werift';
+import {
+  RTCPeerConnection as WeriftPC,
+  MediaStream as WeriftMediaStream,
+  MediaStreamTrack as WeriftMediaStreamTrack,
+} from 'werift';
 import type { RTCRtpCodecParameters, TransceiverOptions } from 'werift';
 import type {
   RTCPeerConnectionLike,
   RTCDataChannelLike,
+  RTCRtpSenderLike,
   MediaStreamLike,
   MediaStreamTrackLike,
 } from '../types';
@@ -82,6 +87,14 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
   private readonly trackHandlers: Array<
     (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void
   > = [];
+  private readonly senders: RTCRtpSenderLike[] = [];
+  /** Outbound tracks this adapter created, so `addTrack` can recover the werift instance. */
+  private readonly outboundTracks = new Map<
+    MediaStreamTrackLike,
+    WeriftMediaStreamTrack
+  >();
+  /** Outbound tracks by track id, for `getOutboundTrackCodec`. */
+  private readonly tracksById = new Map<string, WeriftMediaStreamTrack>();
 
   constructor(
     config: {
@@ -209,6 +222,166 @@ export class WeriftAdapter implements RTCPeerConnectionLike {
     handler: (track: MediaStreamTrackLike, streams: MediaStreamLike[]) => void,
   ): void {
     this.trackHandlers.push(handler);
+  }
+
+  /**
+   * Create an outbound track of the given kind.
+   *
+   * A werift `MediaStreamTrack` is the object the RTP packets are pushed
+   * into; it is not a media source (there is no `srcObject` in Node), so it
+   * is created empty and the agent writes RTP into it directly.
+   *
+   * Returns the werift track ITSELF, widened to `MediaStreamTrackLike`. It
+   * is deliberately not projected into `{ kind, id: track.id, ssrc: track.ssrc }`:
+   * at construction both `id` and `ssrc` are `undefined` (verified), and
+   * `RTCRtpSender.registerTrack` assigns `track.id` later (rtpSender.js:429)
+   * while never assigning `ssrc` at all. A projection would return a fresh
+   * object carrying two `undefined`s, and `addTrack` would then have no way
+   * back to the instance the packets must go into.
+   */
+  createOutboundTrack(kind: 'audio' | 'video'): MediaStreamTrackLike {
+    const track = new WeriftMediaStreamTrack({ kind });
+    const handle = track as unknown as MediaStreamTrackLike;
+    this.outboundTracks.set(handle, track);
+    return handle;
+  }
+
+  /** Recover the werift track behind a `MediaStreamTrackLike` this adapter produced. */
+  private createWeriftTrack(
+    track: MediaStreamTrackLike,
+  ): WeriftMediaStreamTrack {
+    const known = this.outboundTracks.get(track);
+    if (known) return known;
+    // A track this adapter did not create. werift can still take it, but it
+    // carries none of our sender bookkeeping — surface that as a clear error
+    // rather than a silent second m-line.
+    throw new Error(
+      'WeriftAdapter.addTrack received a track it did not create; call createOutboundTrack(kind) first.',
+    );
+  }
+
+  /** Build the werift stream wrapper for an outbound track. */
+  private createWeriftStream(track: MediaStreamTrackLike): WeriftMediaStream {
+    const stream = new WeriftMediaStream();
+    stream.addTrack(this.createWeriftTrack(track));
+    return stream;
+  }
+
+  /** The senders this peer holds, in attach order. */
+  getSenders(): RTCRtpSenderLike[] {
+    return [...this.senders];
+  }
+
+  /**
+   * The codec the given outbound track stamps onto packets.
+   *
+   * R-S3's re-pointing has to move `sender.codec` AND `track.codec`
+   * (rtpSender.js:544 vs track.js:132-134), and a sender-only move is silent:
+   * the sender says H.264:102 while the track keeps stamping 104. This
+   * accessor exists so the test can assert the second half.
+   */
+  getOutboundTrackCodec(trackId: string): RTCRtpSenderLike['codec'] {
+    return this.tracksById.get(trackId)?.codec as RTCRtpSenderLike['codec'];
+  }
+
+  /**
+   * Attach an outbound track.
+   *
+   * The transceiver is created HERE, before setRemoteDescription — adding it
+   * afterwards yields a second, a=inactive m-line whose sender.codec is
+   * undefined, and werift's sendRtp then silently no-ops (spec R-S4, D4e).
+   *
+   * Note that werift's `addTrack` reuses an existing sender-less transceiver
+   * when one matches (`transceiverManager.js:110-152`), so calling this after
+   * `addTransceiver('video', { direction: 'sendrecv' })` attaches the track to
+   * that transceiver rather than creating a second m-line.
+   */
+  addTrack(
+    track: MediaStreamTrackLike,
+    stream?: MediaStreamLike,
+  ): RTCRtpSenderLike {
+    const weriftTrack = this.createWeriftTrack(track);
+    const weriftStream = stream ? this.createWeriftStream(track) : undefined;
+
+    // werift's `pc.addTrack` returns the SENDER, not the transceiver
+    // (peerConnection.js:981 — `return transceiver.sender`). The transceiver
+    // is the object that owns `codecs` and that the answer is built from
+    // (sdpManager.js:90), so it has to be looked up separately.
+    // `getTransceivers()` is ordered and `RTCRtpSender` holds no back-pointer
+    // to its transceiver (rtpTransceiver.js:15-30), so identity comparison on
+    // the sender is the only correct key.
+    const weriftSender = this.pc.addTrack(
+      weriftTrack,
+      ...(weriftStream ? [weriftStream] : []),
+    );
+    const transceiver = this.pc
+      .getTransceivers()
+      .find((t) => t.sender === weriftSender);
+    if (!transceiver) {
+      throw new Error(
+        'werift returned a sender that belongs to no transceiver; this adapter cannot manage its codecs.',
+      );
+    }
+
+    // `registerTrack` has now assigned `track.id = sender.trackId`
+    // (rtpSender.js:429), so the id is readable for the first time here.
+    // `ssrc` is still `undefined` — werift never assigns it on the track; the
+    // sender stamps its own SSRC onto the wire.
+    if (weriftTrack.id) {
+      this.tracksById.set(weriftTrack.id, weriftTrack);
+    }
+
+    const handle: RTCRtpSenderLike = {
+      get codec() {
+        return weriftSender.codec as RTCRtpSenderLike['codec'];
+      },
+      selectNegotiatedCodec(codec) {
+        const negotiated = transceiver.codecs ?? [];
+        const entry = negotiated.find(
+          (c) =>
+            c.mimeType.toLowerCase() === codec.mimeType.toLowerCase() &&
+            c.payloadType === codec.payloadType,
+        );
+        if (!entry) {
+          throw new Error(
+            `Codec ${codec.mimeType}:${codec.payloadType} was not negotiated; ` +
+              `the peer offered ${negotiated.map((c) => `${c.mimeType}:${c.payloadType}`).join(', ')}.`,
+          );
+        }
+        // R-S3 — re-point the sender at the chosen entry.
+        //
+        // THREE objects have to be moved together, and missing any one of
+        // them is a silent failure:
+        //
+        //  1. `transceiver.codecs` — reordered so the chosen entry leads.
+        //     werift's answer is built from this list (sdpManager.js:90-100),
+        //     so the m-line's payload-type order and the `a=fmtp:` lines
+        //     follow it. This does NOT re-point the sender: `prepareSend` ran
+        //     already, inside `setRemoteDescription`
+        //     (transceiverManager.js:276-277).
+        //  2. `sender.codec` — the sender stamps this payload type on the
+        //     wire (rtpSender.js:544), and this is the assignment that
+        //     actually moves the sender off the mode-0 entry.
+        //  3. `track.codec` — `MediaStreamTrack.writeRtp` overwrites the
+        //     packet's payload type with THIS value (track.js:132-134), and
+        //     `track.codec` is a separate field from `sender.codec`. Setting
+        //     only the sender leaves the track stamping the OLD payload type
+        //     into the packet, and the browser depacketizes it wrongly.
+        //
+        // MUTATE the codec object in place, never replace it: `{...codec}`
+        // drops the `name` prototype getter (parameters.js:54-56) and
+        // sdpManager.js:107 then throws `TypeError: Cannot read properties of
+        // undefined (reading 'toLowerCase')`.
+        transceiver.codecs = [entry, ...negotiated.filter((c) => c !== entry)];
+        weriftSender.codec = entry;
+        weriftTrack.codec = entry;
+      },
+      writeRtp(packet: Uint8Array) {
+        weriftTrack.writeRtp(Buffer.from(packet));
+      },
+    };
+    this.senders.push(handle);
+    return handle;
   }
 
   async getStats(): Promise<RTCStatsReport> {

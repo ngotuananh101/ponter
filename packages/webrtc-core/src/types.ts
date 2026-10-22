@@ -9,8 +9,66 @@ export interface RTCDataChannelLike {
   onStateChange(handler: (state: string) => void): void;
 }
 
+/**
+ * A negotiated RTP codec, as both adapters and werift describe it.
+ *
+ * Kept structural rather than imported from `werift` so this package's public
+ * types do not leak a dependency the browser adapter cannot satisfy.
+ */
+export interface RTCRtpCodecLike {
+  mimeType: string;
+  payloadType: number;
+  parameters?: string;
+}
+
 export interface MediaStreamTrackLike {
   readonly kind: string;
+  /**
+   * The track's identifier. Optional because the three existing
+   * `{ kind: 'video' }` literals in this repo
+   * (`packages/webrtc-core/test/media-channel.test.ts:19`,
+   * `packages/desktop-core/test/client.test.ts:20` and `:187`) satisfy this
+   * interface structurally, and `packages/desktop` typechecks against it.
+   * Making `id` required turns all three into TS2741 errors.
+   */
+  readonly id?: string;
+  /** The track's RTP SSRC. Optional for the same reason as `id`. */
+  readonly ssrc?: number;
+  /**
+   * The codec werift's `writeRtp` stamps onto every packet it is handed
+   * (`track.js:132-134`). Optional because only the werift adapter has one.
+   * R-S3's re-pointing has to move this field as well as the sender's.
+   */
+  readonly codec?: RTCRtpCodecLike;
+}
+
+/**
+ * A sender handle for one outbound media track.
+ *
+ * Introduced by the agent rewrite (spec §3.5). It is deliberately read-only
+ * on `codec` and write-only on `writeRtp`: the adapter owns the RTP
+ * bookkeeping (SSRC, payload type, sequence number, timestamp) and the
+ * caller supplies only the payload bytes.
+ */
+export interface RTCRtpSenderLike {
+  /** The negotiated codec, read back after setRemoteDescription + createAnswer. */
+  readonly codec?: RTCRtpCodecLike;
+  /**
+   * Point the sender at a specific negotiated codec.
+   *
+   * This is R-S3's mechanism (spec §3.5.1). werift filters the remote codec
+   * list by mime type only and never inspects `fmtp`, so a browser whose
+   * *first* H.264 entry is `packetization-mode=0` would otherwise be
+   * negotiated onto a mode-0 payload type while the packetizer emits mode-1
+   * framing. The caller re-points the sender at the browser's
+   * `packetization-mode=1` entry; the answer's `a=fmtp:` line for that
+   * payload type then stays byte-identical to the offer's.
+   *
+   * Throws when the codec is not one of the negotiated ones.
+   */
+  selectNegotiatedCodec(codec: RTCRtpCodecLike): void;
+  /** Push one outbound RTP packet. The adapter stamps SSRC / PT / seq / timestamp. */
+  writeRtp(packet: Uint8Array): void;
 }
 
 export interface MediaStreamLike {
@@ -49,6 +107,24 @@ export interface RTCPeerConnectionLike {
    * changes; callers must treat `undefined` as "no video receiver".
    */
   getVideoReceiver?(): unknown;
+  /**
+   * Attach an outbound track and return its sender.
+   *
+   * Optional because every existing adapter and mock implements this
+   * interface; a caller that asks for `media.video` and finds no `addTrack`
+   * gets a descriptive error, exactly as `addTransceiver` does today.
+   */
+  addTrack?(
+    track: MediaStreamTrackLike,
+    stream?: MediaStreamLike,
+  ): RTCRtpSenderLike;
+  /**
+   * The senders this peer holds, in transceiver order.
+   *
+   * Optional for the same reason as `addTrack`. A caller that needs a
+   * sender but finds no `getSenders` gets a descriptive error.
+   */
+  getSenders?(): RTCRtpSenderLike[];
 }
 
 export interface PeerConnectionOptions {
