@@ -14,7 +14,7 @@ Reproduce any row with the recipe in §10.
 
 | Class | Count |
 |---|---|
-| BLOCKING | 9 (B-1…B-9) closed; **B-10 RULED 2026-10-22 — it ships** (carrier landed `c81ae4b`, ruling recorded in Plan 3's T8 at `:231`); **B-11 closed 2026-10-21 by `d471109`**; **B-12 open** (raised by QA, measured 2026-10-22) — items 1/3/4 in §B-12b (buckets revised to **25/15/25**), the frame-to-wire + lifecycle boundary in §B-12c, the ack shape in §B-12d, the retire-clause re-derivation in §B-12e, the wire-spelling pin in §B-12f; item 2 **ruled 2026-10-22** to honour `recursive` |
+| BLOCKING | 9 (B-1…B-9) closed; **B-10 RULED 2026-10-22 — it ships** (carrier landed `c81ae4b`, ruling recorded in Plan 3's T8 at `:231`); **B-11 closed 2026-10-21 by `d471109`**; **B-12 open** (raised by QA, measured 2026-10-22) — items 1/3/4 in §B-12b (buckets revised to **25/15/25**), the frame-to-wire + lifecycle boundary in §B-12c, the ack shape in §B-12d, the retire-clause re-derivation in §B-12e, the wire-spelling pin in §B-12f, and a **live wire bug on `main`** in §B-12g; item 2 **ruled 2026-10-22** to honour `recursive` |
 | Non-blocking | 10 (N-6 partly mine and corrected; N-3a/N-3b closed by `d471109`; N-4 amended twice — the open part is PM-side and is recorded in §N-4/§N-4a) |
 | Refuted (plan is right, or the concern does not hold) | 4 |
 
@@ -24,9 +24,9 @@ The headline: **every one of the 19 tasks' TEST-INTEGRITY declarations is wrong*
 
 **B-10 was the largest item in the rewrite and is now RULED (owner, 2026-10-22): the loop ships, as a full port.** The **auto-ABR loop** — the 500 ms ticker that reads a congestion estimator and retargets the encoder, latched off by a manual `desktop-bitrate` frame — had **no B-row, no R-entry, no task, and no plan**; the manual bitrate path is covered (B19 + B62 + B20) while the automatic one sat outside the §9.4 gate's vocabulary entirely, so a "62 of 62" pass could not fail on it. The ruling is recorded where the work lands, in Plan 3's T8 (`…plan-3-desktop-retirement.md:231`), which now reads *"RULED BY THE OWNER (2026-10-22): it ships … This is now a task, not a question."* **What survives from this section is the evidence, not a question** — and two of the three sub-questions below stay in it because the ruling assigns them to the *task*, not to the owner: Plan 3 says the task "must state which" divergence it takes on the estimator and "must say so in the B-row" if it skips the pacer. A task that answers those by silence has still shipped a different control loop. See §3's B-10 for the measurements.
 
-**B-11 — raised 2026-10-21, CLOSED 2026-10-21 by `d471109`.** Plan 2's `FilesSession.list()` emitted a **different wire shape** from the Rust's `RemoteFile` — **seven divergences**: four field-shape (no `path`; `kind` where the Rust sends `isDirectory`; `size: null` where the Rust sends the directory's real `metadata.len()`; `modifiedEpochMs` where the wire type declares an RFC 3339 `Z` string) and three behavioural (dirs-first byte-wise sort replaced by `localeCompare`; a per-entry `statSync` failure silently substituted with `0` where the Rust fails the whole listing; `ENOTDIR` on `list()` of a file becoming `IO_ERROR` where the Rust sends `NOT_A_DIRECTORY`). Task 11 had **no test of `list()` at all**, and its declaration passed anyway because B43 is a **count** (12 inbound / 11 outbound) and a count cannot see a shape. **PM's repair `d471109` fixed all seven and added the three missing `list_*` tests**; I re-verified every one against the crate source and the fence now matches on all seven, with the declaration re-derived to **29 `it()` / 60 `expect()`** and both counts exact. See §3's B-11 for the evidence that stands as the record of what was wrong.
+**B-11 — raised 2026-10-21, CLOSED 2026-10-21 by `d471109`.** Plan 2's `FilesSession.list()` emitted a **different wire shape** from the Rust's `RemoteFile` — **seven divergences**: four field-shape (no `path`; `kind` where the Rust sends `isDirectory`; `size: null` where the Rust sends the directory's real `metadata.len()`; `modifiedEpochMs` where the wire type declares an RFC 3339 `Z` string) and three behavioural (dirs-first byte-wise sort replaced by `localeCompare`; a per-entry `statSync` failure silently substituted with `0` where the Rust fails the whole listing; `ENOTDIR` on `list()` of a file becoming `IO_ERROR` where the Rust sends `NOT_A_DIRECTORY`). Task 11 had **no test of `list()` at all**, and its declaration passed anyway because B43 is a **count** (12 inbound / 11 outbound) and a count cannot see a shape. **PM's repair `d471109` fixed all seven and added the three missing `list_*` tests**; I re-verified every one against the crate source and the fence now matches on all seven, with the declaration re-derived to **29 `it()` / 59 `expect()`** (60 is the naive token count; the plan's own declaration strips one commented-out assertion) and both counts exact. See §3's B-11 for the evidence that stands as the record of what was wrong.
 
-**B-12 — raised 2026-10-22 by QA, measured here, and the measured defect is not the one QA described.** Task 11's declaration says its partition is *derived* from the fences rather than estimated, but the criterion it gives for the non-ports — *Rust-internal helpers, Task 10's seven, pure arithmetic, or per-platform filesystem races* — covers only **15 of the 40**. **Twenty-five fall in none of those four categories**, and every one is a wire-surface or state-machine behaviour, several of them the *positive* half of a behaviour whose negative half the task does port. QA's quoted phrase — "named individually" — **does not appear anywhere in Task 11**; the plan describes the 26 by category, so QA's paraphrase overstates what the plan claims. But QA pointed at the right task and the right class, and the underlying defect is real: **seven guards the fence implements and no test ever trips** (`TRANSFER_UNKNOWN`, `BAD_FRAME` ×2, `FILE_TOO_LARGE`, `NOT_A_FILE`, `DIR_NOT_EMPTY`, `NOT_FOUND` — production-only tokens, zero assertions between them), and **the declaration's own totals are right for the wrong sets** — 26 is a count of `it()` titles reaching only **25** Rust tests, and two of its three declared "new" tests were already counted among *"the three `list_*` tests"* by its own ports sentence at `:5063-5065`. **B-12a is why it is BLOCKING:** of the three dispatch arms with **zero test sites** in the task (`files-mkdir`, `files-delete`, `files-rename`), `files-delete` **drops the `recursive` flag** that the Rust, `packages/shared` and the browser all carry — a fence deciding unilaterally that `rm -r` is not offered, recorded as a code comment rather than a declared divergence. Four artefacts agree and only the fence disagrees, which is B-11's disposition: a repair to an owned contract, not an owner question. **§B-12b is the finished repair for items 1, 3 and 4** — all 65 tests enumerated into three closing buckets (**25 ported / 15 correctly not ported / 25 gaps**), plus the 26-vs-25-vs-3 re-derivation. **§B-12c is the finding no bucket could hold:** `FilesSession` has no owner for the frame-to-wire boundary and no lifecycle owner — no envelope outbound, no envelope unwrap inbound, no timers, `deps.send` declared but never implemented (55 `as never` casts hide it), and no inbound frame cap — so the ported agent and the shipped browser cannot exchange a single files frame while every fence stays green. **§B-12d** is the ack shape (Rust separates the predicate from the take; the plan collapses both, making the 20 ms tick a no-op) and the `endUpload` frame the plan drops. **§B-12e** re-derives the retire clause name by name, including the two retirements that are *correct*. **§B-12f** is the wire-spelling pin: the Rust pins 14 of 16 codes non-vacuously across two tests, TypeScript spells 16 of 16 in two independent lists, and only one of them is enforced — the bare, untyped, untested `isFilesErrorCode` array is the one that decides wire behaviour, and it is exactly the one nothing relates to the union. **Item 2 (`recursive`) is settled: the owner ruled 2026-10-22 to honour it as the Rust does**, so the fence is the only artefact that moves — the retirement path was considered and rejected, and §B-12a records why.
+**B-12 — raised 2026-10-22 by QA, measured here, and the measured defect is not the one QA described.** Task 11's declaration says its partition is *derived* from the fences rather than estimated, but the criterion it gives for the non-ports — *Rust-internal helpers, Task 10's seven, pure arithmetic, or per-platform filesystem races* — covers only **15 of the 40**. **Twenty-five fall in none of those four categories**, and every one is a wire-surface or state-machine behaviour, several of them the *positive* half of a behaviour whose negative half the task does port. QA's quoted phrase — "named individually" — **does not appear anywhere in Task 11**; the plan describes the 26 by category, so QA's paraphrase overstates what the plan claims. But QA pointed at the right task and the right class, and the underlying defect is real: **seven guards the fence implements and no test ever trips** (`TRANSFER_UNKNOWN`, `BAD_FRAME` ×2, `FILE_TOO_LARGE`, `NOT_A_FILE`, `DIR_NOT_EMPTY`, `NOT_FOUND` — production-only tokens, zero assertions between them), and **the declaration's own totals are right for the wrong sets** — 26 is a count of `it()` titles reaching only **25** Rust tests, and two of its three declared "new" tests were already counted among *"the three `list_*` tests"* by its own ports sentence at `:5063-5065`. **B-12a is why it is BLOCKING:** of the three dispatch arms with **zero test sites** in the task (`files-mkdir`, `files-delete`, `files-rename`), `files-delete` **drops the `recursive` flag** that the Rust, `packages/shared` and the browser all carry — a fence deciding unilaterally that `rm -r` is not offered, recorded as a code comment rather than a declared divergence. Four artefacts agree and only the fence disagrees, which is B-11's disposition: a repair to an owned contract, not an owner question. **§B-12b is the finished repair for items 1, 3 and 4** — all 65 tests enumerated into three closing buckets (**25 ported / 15 correctly not ported / 25 gaps**), plus the 26-vs-25-vs-3 re-derivation. **§B-12c is the finding no bucket could hold:** `FilesSession` has no owner for the frame-to-wire boundary and no lifecycle owner — no envelope outbound, no envelope unwrap inbound, no timers, `deps.send` declared but never implemented (55 `as never` casts hide it), and no inbound frame cap — so the ported agent and the shipped browser cannot exchange a single files frame while every fence stays green. **§B-12d** is the ack shape (Rust separates the predicate from the take; the plan collapses both, making the 20 ms tick a no-op) and the `endUpload` frame the plan drops. **§B-12e** re-derives the retire clause name by name, including the two retirements that are *correct*. **§B-12f** is the wire-spelling pin: the Rust pins 14 of 16 codes non-vacuously across two tests, TypeScript spells 16 of 16 in two independent lists, and only one of them is enforced — the bare, untyped, untested `isFilesErrorCode` array is the one that decides wire behaviour, and it is exactly the one nothing relates to the union. **§B-12g** is that same array's **live** failure, and it is a bug on `main` today rather than a Plan-2 defect: the Rust writes the action-result error as `"{CODE}: {message}"` and the browser matches it exactly against bare codes, so **every** failed mkdir, delete and rename reaches the user as `BAD_FRAME` — *"The agent rejected a malformed message"* — and the unit test sends the bare shape the Rust never sends while the e2e asserts a substring on the raw frame without ever constructing a `FileClient`. **Three** options are stated with their costs — parse the prefix in the browser, add a bare `code` field to the frame, or fix it in the port; the disposition is the owner's, and it is not pre-judged here. **The owner ruled 2026-10-22: option (c) — fix it in the port, and let Plan 3 remove the Rust** — so the shipped Rust keeps the prefixed string and **`main` stays broken until Plan 3**, which is the accepted cost of that option; the port-side consequence is repair item R13. **Item 2 (`recursive`) is settled: the owner ruled 2026-10-22 to honour it as the Rust does**, so the fence is the only artefact that moves — the retirement path was considered and rejected, and §B-12a records why.
 
 ---
 
@@ -223,7 +223,7 @@ The declaration's retirements are separately checkable and mostly hold: `files-d
 - **`drained .part before resume` does not exist anywhere.** `grep -rn "drained"` over the whole 7,940-line plan returns exactly one line — `:4888`, the sentence making the claim. `grep -rn "drain"` likewise returns only that line. There is no `it()` by that name and no assertion matching the description. This is the same defect class as B-1…B-9: a declaration that does not describe the thing it points at.
 - **`paused transfers do not time out` exists (`:4221`) but is not new — it is a port.** The Rust has `paused_state_survives_idle_timeout` (`files.rs:3834`): it downloads, pauses, forces `deadline` into the past, and asserts `check_idle()` returns **empty** with the slot still `Some`. The plan's `:4221` fence does the same thing through the injected clock (`now = 60_000`, `expect(...).not.toContain('TRANSFER_TIMEOUT')`). **PM verified presence; presence is not the claim.** The claim is *"new"*, and the Rust test it ports is real. (Whether it sits among the declaration's 24 ported or its 41 unported does not rescue the wording: if it is one of the 24, it is a port; if it is one of the 41, then the 41's stated criterion — *"Rust-internal helpers … or per-platform filesystem races"* — does not cover a wire-surface idle behaviour either.)
 
-So the sentence is wrong **twice, in two different ways**: one phantom name, one real test misclassified as new. And the misclassification cannot be fixed by moving the name into the other bucket either, because the other bucket's own definition excludes it: the 41 are *"Rust-internal helpers … or per-platform filesystem races"*, and a wire-surface idle behaviour is neither. So the repair has to account for a test that belongs to **neither list as currently defined** — which is a partition repair, not a rename. The count around it is arithmetically fine — I re-walked the Task 11 range (`3888-4887`) and got **25 `it()` / 42 `expect()`**, exactly as declared. **The count is right and the prose is wrong**, which is precisely why re-deriving counts alone was never going to catch it, and why the fence-walker that closed B-1…B-9 is necessary but not sufficient.
+So the sentence is wrong **twice, in two different ways**: one phantom name, one real test misclassified as new. And the misclassification cannot be fixed by moving the name into the other bucket either, because the other bucket's own definition excludes it: the 41 are *"Rust-internal helpers … or per-platform filesystem races"*, and a wire-surface idle behaviour is neither. So the repair has to account for a test that belongs to **neither list as currently defined** — which is a partition repair, not a rename. The count around it is arithmetically fine — I re-walked the Task 11 range (`3888-4887`) **as it stood before `d471109`** and got **25 `it()` / 42 `expect()`**, exactly as declared. (That range now yields 29 / 60 raw, 59 with the fences' comments stripped — the pre-repair figure is the one this section is about, and the range is not "the fence" in either state; see §9.3 row 15.) **The count is right and the prose is wrong**, which is precisely why re-deriving counts alone was never going to catch it, and why the fence-walker that closed B-1…B-9 is necessary but not sufficient.
 
 #### N-3b. The `FILES_IDLE_TIMEOUT_MS` claim is half right, and its *reason* is inverted
 
@@ -466,9 +466,9 @@ pub struct RemoteFile { pub name: String, pub path: String, pub size: u64,
 
 **And an existing E2E goes red.** `packages/webrtc-core/test/e2e/files.e2e.test.ts:123,127` asserts `expect(notes?.isDirectory).toBe(false)` and `expect(docs?.isDirectory).toBe(true)`. Under Plan 2's shape both are `undefined`, so both fail — **the moment Task 11 lands**. `/mnt/Data/Ponta/remote-platform` has no other producer of `files-list-result` to update, which is what makes it a straight contradiction rather than a coordinated change.
 
-**Why the gate cannot see it — the same structural reason as B-10.** **B43** ("Files JSON message set (12 inbound, 11 outbound)") has a row, Plan 2 owns it, and Task 11's declaration (**25 `it()` / 42 `expect()`**) passes. Both counts are satisfied. **What no row and no test states is the *shape* of the message inside the row.** A count-based gate is blind to a field-level change, exactly as it was blind to a behaviour that had no row at all. This is the same lesson as B-10 from the other direction: B-10 is a behaviour with no row; **B-11 is a row whose contents changed while the row still passes.**
+**Why the gate cannot see it — the same structural reason as B-10.** **B43** ("Files JSON message set (12 inbound, 11 outbound)") has a row, Plan 2 owns it, and Task 11's declaration (**25 `it()` / 42 `expect()`** as it stood before `d471109`) passes. Both counts are satisfied. **What no row and no test states is the *shape* of the message inside the row.** A count-based gate is blind to a field-level change, exactly as it was blind to a behaviour that had no row at all. This is the same lesson as B-10 from the other direction: B-10 is a behaviour with no row; **B-11 is a row whose contents changed while the row still passes.**
 
-The gap is visible in the tests, not just in the type. **Task 11 contains no test of `list()` at all.** Its 25 `it()`s are chunk arithmetic, the binary frame, `partName`, download, upload, resume, and cancel — `grep` for a `list`/`sort`/`truncat`/`director` test in the task's range returns only `rejects a truncated header` (a binary-frame test, unrelated). So the declaration's 25/42 is *true* and *silent* on the one function whose output crosses the wire unchanged. The Rust, by contrast, has three (`files.rs:2703` ordering + directory-`size` + `path` + `Z`-suffix, `:2730` not-a-directory, `:2740` cap), and **none of them are in Task 11's port list**.
+The gap is visible in the tests, not just in the type. **Task 11 contains no test of `list()` at all.** Its 25 `it()`s (pre-`d471109`) are chunk arithmetic, the binary frame, `partName`, download, upload, resume, and cancel — `grep` for a `list`/`sort`/`truncat`/`director` test in the task's range returns only `rejects a truncated header` (a binary-frame test, unrelated). So the declaration's 25/42 (pre-`d471109`) is *true* and *silent* on the one function whose output crosses the wire unchanged. The Rust, by contrast, has three (`files.rs:2703` ordering + directory-`size` + `path` + `Z`-suffix, `:2730` not-a-directory, `:2740` cap), and **none of them are in Task 11's port list**.
 
 **Deliberate, or a fence error? The evidence says fence error, and the three possibilities are distinguishable:**
 
@@ -478,7 +478,7 @@ The gap is visible in the tests, not just in the type. **Task 11 contains no tes
 
 **Recommendation.** Treat it as **a plan repair, not an owner question** — the contract is already owned, and unlike B-10/N-4 there is no behaviour decision to make. Concretely, `list()` should build `{ name, path: joinRel(rel, entry.name), size: stat?.size ?? 0, isDirectory: entry.isDirectory(), modifiedAt: rfc3339Utc(...) }`, sort **dirs-first then byte-wise**, let a per-entry `stat` failure fail the list, and route `readdirSync` through `errnoToCode`. Task 11 should then gain the three `files.rs` list tests it currently omits (`list_returns_entries_sorted_dirs_first` `:2703`, `list_on_a_file_is_not_a_directory` `:2730`, `list_cap_truncates_at_4096_with_the_flag` `:2740`) — `grep` for each of those names in Plan 2 returns **0**, so the whole list surface is unported, which is *why* nothing caught divergences 1–7. **I have not edited Plan 2**; this is the evidence and the recommendation, and the landing edit is PM's.
 
-**Why the repair is not free, and why PM is right to hold it.** Adding those three tests changes Task 11's declared `25 it() / 42 expect()`, and a count change is itself a TEST-INTEGRITY declaration — it must be declared, reviewed, and shown to match its own fence. So the fence correction and the declaration correction have to land together, and they cannot land before **N-3** (Task 11's unauditable "24 of 41" partition) is resolved, or the plan would be right about `list()` and still wrong about what it ports. PM's ruling — fence repair is theirs, held until N-3 is settled, both derived from this section — is the correct sequencing.
+**Why the repair is not free, and why PM is right to hold it.** Adding those three tests changes Task 11's declared `25 it() / 42 expect()` (the pre-`d471109` figure), and a count change is itself a TEST-INTEGRITY declaration — it must be declared, reviewed, and shown to match its own fence. So the fence correction and the declaration correction have to land together, and they cannot land before **N-3** (Task 11's unauditable "24 of 41" partition) is resolved, or the plan would be right about `list()` and still wrong about what it ports. PM's ruling — fence repair is theirs, held until N-3 is settled, both derived from this section — is the correct sequencing.
 
 **The disposition distinction, stated once.** B-11 is **a docs defect, not an owner question**, and that is what puts it in §3 and not §4. The wire contract has four owners that already agree — the Rust, `packages/shared`, the browser, and the existing E2E — and only the plan disagrees. B-10 and N-4 are different: there, no artefact states the answer, so someone has to *decide*. A plan being wrong about an owned contract is repaired; a behaviour nobody has decided needs a ruling.
 
@@ -587,6 +587,7 @@ So the smaller-looking option cost more and broke a shipped UI promise, and the 
 2. **Implement `recursive` as the Rust does** (owner ruling, 2026-10-22 — no longer an open question). Task 11's `remove()` must read `message.recursive`, call `remove_dir_all` when it is true, and map `ENOTEMPTY` to `DIR_NOT_EMPTY` only when it is false; the deliberate-change comment at `…plan-2-core.md:4973-4978` must go, because it records a decision the owner did not take. `packages/shared` (`files.ts:160-164`), `packages/file-core/src/client.ts:189-196` and `DeleteConfirmDialog.vue` already carry the flag and need no change — the fence is the only artefact that has to move. **The implementation shape is settled, and it is a shape, not a one-liner — see §B-12d.** Because the flag now selects a destructive path, item 3's test sites for `files-delete` are the thing that makes this checkable rather than asserted: they must cover both polarities (`recursive: true` removing a non-empty directory, and `recursive: false` **or absent** returning `DIR_NOT_EMPTY`).
 3. Add test sites for the three untested dispatch arms and for `teardown()`, and for the seven guards in the table above that the fence implements and no test trips. Item 3 is what makes items 1–2 checkable rather than asserted.
 4. Re-derive the count. The 26 and the 3 are the right *totals* and the wrong *sets* (see above); §B-12b gives both.
+5. **State the port's `files-action-result` failure path, and do not inherit the Rust's by silence** (§B-12g). The plan's `actionResult` (`…plan-2-core.md:5019-5031`) has exactly one `success:` in the whole document — `success: true` at `:5028` — and never emits `success: false`, so a failed action becomes a `files-error` frame through `handle()`'s catch (`:4495-4503`) rather than an action result. That path *works* (the browser's `files-error` case settles `pendingActions`, `client.ts:630`, `:649-653`), but it is a **different mechanism than the Rust's**, and it silently drops the action-result failure contract. Two things must be stated rather than inherited: **which frame the port emits on an action failure, and why**; and **which code it carries** — the port's `mkdir` (`:4967-4971`) has no `EEXIST` mapping, so Node's `EEXIST` reaches `handle()`'s catch as **`IO_ERROR`**, not `FILE_EXISTS`, and `errnoToCode` (`:3738-3746`), which does map it, is not on that path. The port must not be left with neither contract. **This was the one repair item whose shape depended on the owner's §B-12g disposition** (browser parses the prefix, or the agent emits the bare code). **The owner ruled 2026-10-22: option (c), fix it in the port** — so the port emits a `files-action-result` frame with `success: false` and a **bare** code, and does **not** route action failures through `files-error`. The port's shape is therefore settled and stated; see §B-12g's ruling note and repair item R13.
 
 #### B-12b. The enumeration the repair needs: all 65, each in exactly one bucket, plus the 26/3 re-derivation
 
@@ -604,7 +605,7 @@ Buckets: **A** ported · **B** not ported, stated reason true · **C** **gap** �
 | 6 | `decode_guard_never_errors_on_foreign_frames` | `:2388` | **C** | GAP: asserts a frame carrying `"channel": "terminal"` decodes to `Ok(None)` (`files.rs:590`). The plan has **no payload-level channel check** — `grep -cE "channel ===\|channel !==\|envelope"` over the whole plan → 15 hits, **none in the files path** (the 15 are Task 5's signal envelope, `:3227`'s pty slot, and two prose clauses). The plan's primary defence is the *transport* label (Task 18's `attach`, `:7284-7292`); the Rust's is the *payload* field. The two agree on a well-behaved peer and diverge on a hand-crafted frame. "Declared retired (`decode_*` guards)" is false: the behaviour is not implemented. **This is a hardening the port lost, not a defence** — see §B-12c(b). |
 | 7 | `decode_guard_extracts_ids_for_attribution` | `:2415` | B | not ported: `decode_*` guard, declared retired |
 | 8 | `decode_round_trips_every_browser_to_agent_type` | `:2433` | **C** | GAP: it is the **inbound field-name contract**, and it reaches only **7 of the plan's 12 shapes**. `FilesInbound` declares 12 (`files.rs:489-504`) and `decode_files_frame` has 12 arms (`:596-632`); this test omits `Mkdir`, `Delete`, `Rename`, `Pause`, `Resume`. The plan's own `mkdir`/`rename` read names the wire does not carry — `message.path`/`message.name` against `dir`/`name`, and `message.from`/`message.toPath`/`message.toName` against `oldPath`/`newPath`. See §B-12c(f), with the `message.<field>` counts and their positive controls. |
-| 9 | `frame_files_wraps_the_envelope` | `:2484` | **C** | GAP, and it is the whole frame-to-wire boundary: asserts `value["channel"]=="files"`, `payload.requestId`, `truncated`, `timestamp` (`:2484-2501`). Measured over Task 11's span: `channel` → **0**, `timestamp` → **0** (positive control `requestId` → 8, `payload` → 21). `grep -cE "frame_files\|frameFiles"` over the whole plan → **1**, and that one hit is the retire clause's own prose. "Rust-internal helper / literal pin" is false — the browser is an observer. See §B-12c(a)/(b). |
+| 9 | `frame_files_wraps_the_envelope` | `:2484` | **C** | GAP, and it is the whole frame-to-wire boundary: asserts `value["channel"]=="files"`, `payload.requestId`, `truncated`, `timestamp` (`:2484-2501`). Measured over Task 11's span: `channel` → **0**, `timestamp` → **0** (positive control `requestId` → **8** lines / 12 occurrences, `payload` → **21** / 21 — `grep -c` counts lines; the zeros are identical under both readings). `grep -cE "frame_files\|frameFiles"` over the whole plan → **1**, and that one hit is the retire clause's own prose. "Rust-internal helper / literal pin" is false — the browser is an observer. See §B-12c(a)/(b). |
 
 | 10 | `error_frames_carry_the_code_and_attribution` | `:2503` | **C** | GAP: wire behaviour with no TS assertion |
 | 11 | `path_policy_rejects_dotdot_escape` | `:2518` | B | not ported: Task 10 owns it |
@@ -698,7 +699,7 @@ So the "new" set is really: 1 port-turned-new (`ignores a duplicate or regressiv
 
 An enumeration cannot report an absence it is not looking for. The 65-row table asks *"is this Rust test ported?"* and every row it **C**-marked answers a yes/no question about a behaviour. The defect below is a different kind: the behaviours exist in the fence, are correct in isolation, and **nothing connects them to a wire**. None of the 65 rows could have found it, because there is no Rust test whose absence is the symptom — the Rust tests it would have added are rows 9 and 6, and the rest is *wiring* that in Rust lives in `lib.rs` and here lives in no task.
 
-**(a) No envelope outbound.** The plan's `list()` returns a flat frame (`…plan-2-core.md:4617-4624`): `requestId`, `path`, `entries`, `truncated` are **siblings of `type`**. The Rust builds a `DataChannelMessage` envelope in `frame_files` (`files.rs:660-682`): `{ r#type, channel: FILES_CHANNEL, payload, timestamp }`. Measured over Task 11's span (3861-5125): `channel` → **0**, `timestamp` → **0**, with positive controls in the same span — `requestId` → **8**, `payload` → **21**, `envelope` → **1** (that one is the retire clause's prose). `grep -cE "frame_files|frameFiles"` over the entire plan → **1**, and it is the same prose clause.
+**(a) No envelope outbound.** The plan's `list()` returns a flat frame (`…plan-2-core.md:4617-4624`): `requestId`, `path`, `entries`, `truncated` are **siblings of `type`**. The Rust builds a `DataChannelMessage` envelope in `frame_files` (`files.rs:660-682`): `{ r#type, channel: FILES_CHANNEL, payload, timestamp }`. Measured over Task 11's span (3861-5125): `channel` → **0**, `timestamp` → **0**, with positive controls in the same span — `requestId` → **8** lines / 12 occurrences, `payload` → **21** / 21, `envelope` → **1** / 1 (that one is the retire clause's prose). (`grep -c` counts matching **lines**; the zeros are identical under both readings.) `grep -cE "frame_files|frameFiles"` over the entire plan → **1**, and it is the same prose clause.
 
 **What breaks, and how loud — and a correction, because "how loud" was the part I got wrong.** `packages/file-core/src/client.ts:546-551` reads `msg.payload.requestId` with **no guard** — the second line is `const pending = this.pendingLists.get(payload.requestId)`. Against a flat frame, `msg.payload` is `undefined`, so the read throws `TypeError: Cannot read properties of undefined`. **But the throw does not reach the caller.** `webrtc-core` opens a `try` **before** the typed-handler loop and closes it with a bare `catch {}` (`packages/webrtc-core/src/data-channel.ts:35-44`), so a handler throw is swallowed exactly as a JSON parse failure would be, the remaining handlers for that message are skipped, and the browser's `list()`/`mkdir()`/`delete()` promise **never settles** — no resolve, no reject, no `FilesError`. QA measured this end-to-end against the real `FileClient`. My first draft called it a crash; the truth is worse to attribute and not worse to survive: a **silent non-settling promise**, where every files call hangs and nothing in the console says why. And the fence suite goes green over it, because every fence builds and asserts its own flat object (`:4128` asserts `result.type === 'files-list-result'` on a flat frame) and **never crosses the boundary**.
 
@@ -791,7 +792,7 @@ The consequence is exact: `flushAcks()` re-evaluates the gate the chunk path jus
 | `error_code_spellings_are_pinned` (`files.rs:2357-2375`) | `PathOutsideRoot` … `BadFrame`; asserts `cases.len() == 12` | **12** |
 | `test_error_code_str_mapping` (`files.rs:3505-3509`) | `ResumeInvalid` → `RESUME_INVALID`, `QueueFull` → `QUEUE_FULL` | **2** |
 
-The two pinned by **no** test are `DIR_NOT_EMPTY` and `PERMISSION_DENIED` — both Week-11 additions, under the comment at **`files.rs:179`**: `// Week 11 additions (spec §3.4, packages/shared/src/types/files.ts):`. That comment names exactly the four codes the pin in the same file was never extended to cover, and the pin that should have covered them starts **2,178 lines later in the same file** (`:2357`) — which is the whole argument for why "the comment says wire contract" is not a guard.
+The two pinned by **no** test are `DIR_NOT_EMPTY` and `PERMISSION_DENIED` — both Week-11 additions, under the comment at **`files.rs:179`**: `// Week 11 additions (spec §3.4, packages/shared/src/types/files.ts):`. That comment names exactly the four codes the pin in the same file was never extended to cover, and the **12-code** pin that should have covered them starts **2,178 lines later in the same file** (`:2357`) — which is the whole argument for why "the comment says wire contract" is not a guard. There are two pins in the file, and the sentence is about this one: the second, `test_error_code_str_mapping`, is 3,326 lines later (`:3505`) and pins 2 codes, not 4.
 
 **And the agent does emit three of the four in production**, so none of them is "a code no agent produces": `PermissionDenied` at `files.rs:905`, `:913`, `:967`; `DirNotEmpty` at `:938`; `ResumeInvalid` at `:1019`, `:1026`. Only `QueueFull` is `#[allow(dead_code)]`, carrying *"the agent never produces this code itself — it is mirrored from the shared types for completeness."* (PM's first framing here was "four codes are TS-only / that no agent emits", and that was wrong in both halves; the enum declares all 16 at `:166-187`, with `as_str()` spelling all 16 at `:190-209`.)
 
@@ -838,9 +839,395 @@ So the union guards **spellings**, and the `Record` guards **completeness** — 
 
 **Why it matters for the port, and where it stops mattering.** The Rust's two unpinned spellings are both reachable on the **plan's** wire: `PERMISSION_DENIED` at `:4985` (the root-delete guard) and via `errnoToCode` at `:3742` (`EACCES`/`EPERM`), `DIR_NOT_EMPTY` at `:4993` (non-empty directory). So a divergence in either string would be caught by **no Rust test** — and on the TypeScript side, the `Record` catches a *missing* code but **not** a wrong spelling in a list nobody types against, which is precisely `isFilesErrorCode`. The Rust's two unpinned codes are in code the port re-implements.
 
-**Verdict, unchanged: row 4 stays B.** The property is observable (the browser switches on the spellings) and the browser's list agrees at 16 today, so the port does not *lose* a behaviour the browser relies on. What the port loses is the **pin** — and the two unpinned codes are on its own wire. The correct successor test, if PM wants one, is a `Record<FilesErrorCode, true>` exhaustiveness guard in `packages/shared` (which fails both when a code is added and when one is removed), **not** a re-port of the Rust literal table.
+**Verdict, unchanged: row 4 stays B.** The property is observable (the browser switches on the spellings) and the browser's list agrees at 16 today, so the port does not *lose* a behaviour the browser relies on. What the port loses is the **pin** — and the two unpinned codes are on its own wire. The correct successor test, if PM wants one, is a `Record<FilesErrorCode, true>` exhaustiveness guard in `packages/shared`, **not** a re-port of the Rust literal table.
+
+**And the successor is *stronger* than the thing it replaces — measured, in both directions, because "fails in both directions" is the whole claim and I would not write it down unprobed.** The Rust's 12-case table (`files.rs:2357-2375`) was compiled and run in three states, and its polarity is **not** "both directions":
+
+| change to the Rust enum | the 12-case table |
+|---|---|
+| **add** a 17th variant | **compiles and passes** — `cases.len() == 12` is still true and no case names the new code |
+| **remove** an *uncovered* code (`DIR_NOT_EMPTY`) | **compiles and passes** — 14 variants → 13, and the table never mentioned it |
+| **remove** a *covered* code (`PathOutsideRoot`) | **fails to compile** — `E0599: variant … not found for this enum` |
+
+So the Rust table catches **one** direction, and only *by the compiler*, not by its assertion: a code it happens to name cannot be deleted. It is blind to every addition, and blind to the removal of any code it does not name — which is exactly the two codes it does not name (`DIR_NOT_EMPTY`, `PERMISSION_DENIED`).
+
+The `Record<FilesErrorCode, true>` guard, probed in the same three states, catches **two**:
+
+| change | the `Record` guard |
+|---|---|
+| **add** a code to the union | `TS2741: Property 'BRAND_NEW_CODE' is missing … but required in type 'Record<U1, true>'` — **caught** |
+| **remove** a code from the union | `TS2353: Object literal may only specify known properties, and 'QUEUE_FULL' does not exist in type 'Record<U2, true>'` — **caught** |
+| **remove** a code, guard written as `{ ...otherRecord }` | **silent** — no excess-property check applies to a spread |
+
+The third row is the caveat, and it is the reason the shape matters: the guard must be a **fresh object literal** with one key per code, which is the natural way to write it. Written as a spread of another record it loses the removal direction and becomes weaker than the Rust table it replaces. **The port should carry the stronger guard** — a `Record` over the union, written as a literal — and B-12's **25 ported / 15 correctly not ported / 25 gaps** partition should record that the **ported successor is stronger than the Rust original**, not a re-derivation of it.
+
+**One condition, because it decides where the guard has to live.** The port declares its **own** 16-member union in `apps/agent/src/files/sandbox.ts` (`:3710-3726`) and **never imports** `FilesErrorCode` from `@ponter/shared` — the plan's Tasks 10 and 11 contain no `@ponter/shared` import, and `apps/agent/package.json` has no `@ponter/shared` dependency. The two unions are byte-identical today (all 16 members, same order — verified by comparing the two literal lists) but **nothing relates them**. So a guard in `packages/shared` is stronger than the Rust table **but does not cover the port's union** unless the port imports the shared one. That makes the import, not the guard, the load-bearing half — and it is the same "two independent lists" shape this section is about, in a third place.
 
 **Out of scope for Plan 2 — recorded so it does not enter the repair list.** The two decorative shared tests, and the untyped `isFilesErrorCode` array, live on `main`, are independent of the port, and are **not** Plan 2's to fix. They are recorded here for one reason: they are *why* the retirement of `error_code_spellings_are_pinned` was justified on a false premise — "the union is a compile-time guard" — even though the retirement's **verdict** still holds and the port-relevant finding is the 14-of-16 pin.
+
+#### B-12g. A live wire bug on `main`: `files-action-result` failures never reach the browser as a code
+
+> **Raised by PM 2026-10-22, and every claim re-verified here independently — including the reproduction, which I re-ran rather than transcribed.** This is **not** a Plan-2 defect: it is a live bug in the shipped Rust↔browser contract on `main` today. §B-12f's closing characterisation of `isFilesErrorCode` is therefore **understated**, and this section is what makes it exact.
+
+**The defect in one sentence.** The Rust writes a **prefixed** error string into the `files-action-result` frame (`"{CODE}: {message}"`), and the browser matches that string **exactly** against 16 bare codes — so **no** action failure ever reaches the browser as its own code: every one of them is rewritten to `BAD_FRAME`.
+
+**The Rust side — the string is prefixed by construction.** `impl Display for FilesError` (`files.rs:271-275`) writes `"{code}: {message}"`:
+
+```rust
+impl std::fmt::Display for FilesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code.as_str(), self.message)
+    }
+}
+```
+
+and all three action handlers put exactly that string on the wire — `error: Some(error.to_string())` at **`files.rs:1776`** (mkdir), **`:1800`** (delete) and **`:1826`** (rename). `grep -n "error: Some" apps/agent/src/files.rs` returns those three sites and no others. So every `FilesActionResult` failure carries `"FILE_EXISTS: directory already exists"`, never `"FILE_EXISTS"`.
+
+**The browser side — the match is exact.** `packages/file-core/src/client.ts:75-93` defines `isFilesErrorCode` as a bare 16-element literal array, and `:568` runs the **whole** string through it:
+
+```ts
+const code =
+  payload.error && isFilesErrorCode(payload.error)
+    ? payload.error
+    : ('BAD_FRAME' as FileClientErrorCode);
+```
+
+`Array.prototype.includes` is an exact comparison, so `"FILE_EXISTS: directory already exists"` is not a member of the array of bare codes and the predicate is **false**.
+
+**The reproduction, re-run here in `packages/file-core`'s own vitest** (real `makeFakeManager` harness, real `FileClient`, the probe file deleted afterwards and the tree returned to its pre-measurement state):
+
+```
+PROBE bare        = FILE_EXISTS
+PROBE prefixed    = BAD_FRAME
+PROBE prefixed2   = BAD_FRAME     # PERMISSION_DENIED: the files root itself cannot be deleted
+PROBE prefixed3   = BAD_FRAME     # DIR_NOT_EMPTY: the directory is not empty
+```
+
+The bare code is the shape the Rust **never** sends, and it is the shape the unit test sends (§B-12g's "why nothing catches it" below). The prefixed shape — the shape the Rust **always** sends — degrades to `BAD_FRAME`. **Both halves pass as written; that is the point.**
+
+**What the user sees.** `apps/web/src/lib/file-errors.ts:20` renders `BAD_FRAME` as *"The agent rejected a malformed message"*. The codes that become unreachable for the user are the ones the failure paths actually produce: `FILE_EXISTS` (mkdir on an existing name, rename onto an existing name), `DIR_NOT_EMPTY` (deleting a non-empty directory without `recursive`), and `PERMISSION_DENIED` (deleting the sandbox root). The web store maps the code through `fileErrorMessage(cause.code)` (`apps/web/src/stores/terminal.ts:124`), so the wrong code is what selects the wrong sentence. `NOT_FOUND` and `PATH_OUTSIDE_ROOT` are reachable on the action path too (`resolve_existing` at `files.rs:804-815`, `ensure_contained` at `:794-800`). **`QUEUE_FULL` is the one member of the list that is affected in principle but produced by nothing** — it is `#[allow(dead_code)]` in the Rust (`files.rs:186`) and appears in the TS only in the union, the predicate array and the web text map, so it cannot be the subject of this bug today.
+
+**Why nothing catches it — each suite asserts half the contract and neither crosses it.**
+
+| suite | what it sends / asserts | what it never touches |
+|---|---|---|
+| `packages/file-core/test/operations.test.ts:44-54` | emits a **bare** `'FILE_EXISTS'` and expects `code: 'FILE_EXISTS'` | the **prefixed** shape the Rust sends |
+| `packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts:667`, `:681` | asserts `toMatch(/FILE_EXISTS/)` / `toMatch(/PERMISSION_DENIED/)` on the **raw** frame | `FileClient` — the file's own header at `:64-65` says it *"never imports `packages/file-core`"*, and it does not |
+
+So the unit suite proves the predicate works **on a shape that never occurs**, and the e2e proves the agent emits a frame **containing the substring** — while the step that turns a substring into a code is the one step neither suite runs. The e2e is CI-gated (`.github/workflows/ci-e2e.yml:82`, and `apps/agent/**` is in that workflow's `paths:` at `:16`/`:28`), so the substring assertion *is* enforced while the predicate it never reaches is not.
+
+**The wire string is usually THREE segments, not two — and the segment count decides whether a browser-side parse is even correct.** `FilesError::io` (`files.rs:262-268`) builds `format!("{context}: {error}")` at `:267`, and `Display` (`:271-275`) then prefixes the code — so the composed string is `"{CODE}: {context}: {os error}"`. Reproduced:
+
+```
+string   = "IO_ERROR: removing file: No such file or directory"
+segments = 3
+split(': ', 2)[0]  = "IO_ERROR"                    <- the code
+split(': ').at(-1) = "No such file or directory"   <- a plausible token that is NOT a code
+```
+
+A **last**-segment parse would return the OS error text, not a code — a silent wrong answer that looks like a code-shaped string. The three-segment shape is the **common** case, not an edge case: `FilesError::io(` has **29** call sites in the file (24 distinct plain-string contexts plus 4 `format!` ones plus 1 duplicated context), covering `stat delete target`, `probing the mkdir target`, `renaming`, `removing file`, `listing \`{rel}\``, `open \`{path}\`` and the rest. **This is why a browser-side parse has to be specified, not improvised** — a first-segment parse is correct, a last-segment parse is silently wrong, and nothing in the type system distinguishes them.
+
+**Nothing pins the `Display` segment order — so the bug can come back with no test failing.** The Rust's spelling pins cover `as_str()` only (`:2357` and `:3505`); **no** assertion anywhere pins the *`Display` layout*. Measured with a control that is the offender itself:
+
+```
+# control: a file whose ONLY assertion pins the Display layout:
+#   assert_eq!(err.to_string(), "FILE_EXISTS: file already exists");
+grep -nE 'assert.*(to_string\(\)|format!\(|starts_with|ends_with|split)' <control>   -> 1
+grep -nE 'assert.*(to_string\(\)|format!\(|starts_with|ends_with|split)' apps/agent/src/files.rs
+#   -> 1, and it is :2725  assert!(result.entries[1].modified_at.ends_with('Z'), "RFC 3339 UTC")
+#      an unrelated RFC-3339 assertion, NOT a FilesError Display pin
+grep -rnE 'assert.*(to_string|format!)' apps/agent/src/ | grep -iE 'FilesError'   -> 0
+```
+
+**A note on the recipe this paragraph used to carry, because it was itself the defect class this audit prosecutes.** The old check was `grep -c '": '` with "controls" of 75 and 179. The pattern `": "` matches *quote-colon-space-quote*, which **never** occurs inside a single Rust string literal — so it returns **0 on every Rust file, including one that pins the `Display` layout perfectly.** I built that control and confirmed it. The two "positive controls" counted unrelated things (asserts containing a quote; asserts containing `: `) and did not show the pattern could see a layout pin. **The finding was right; the evidence for it was a no-op, and a published recipe an implementer could copy.** The sound check above replaces it.
+
+So a reformat of `Display` — or the Rust's own deletion and re-creation by Plan 3 — would reintroduce the identical `BAD_FRAME` symptom **with no test failing anywhere**. This is the strongest argument for making the code a **first-class field** rather than a string format, and it belongs in the option costs below.
+
+**The mirror hole on the `files-error` path, and what it does to the UI.** The `files-error` path carries a bare code (`files.rs:481`) but the browser **does not validate it** — `client.ts:630-636` constructs `new FilesError(payload.code, …)` unchecked, so an unknown code crosses **untouched**, with no `BAD_FRAME` fallback. The web side then does `FILE_ERROR_TEXT[code]` (`apps/web/src/lib/file-errors.ts:28-30`) — a `Record` lookup whose exhaustiveness is a **compile-time** property of the literal, **not** a runtime guard:
+
+```
+keys        = 17
+unknown     = undefined        (the declared return type is `string`)
+typeof      = undefined
+```
+
+and `FilesView.vue:268`'s `v-if="tab.fileError"` treats `undefined` as falsy, so the error banner **disappears entirely** rather than showing a wrong message:
+
+```
+undefined banner = false
+empty     banner = false
+known     banner = true
+```
+
+**Honest framing, stated because the two halves are different in kind.** This mirror hole is a **shape, not a live incident** — the Rust sends codes that are in the table today. It becomes live the moment a code is added to the union and to the `Record` but not to the wire, and the Rust's `Display` is exactly what would send it. The two paths fail in opposite ways, and the pairing is the point: **the error path trusts the wire, the action path trusts a string it never receives.**
+
+**And there is no Rust test either.** Split at the `mod tests` boundary (`files.rs:2287`), the two frame constructors in the same file, measured in the same invocation:
+
+| constructor | production sites | test-module sites |
+|---|---|---|
+| `Outbound::ActionResult` | **7** (`:669` the frame builder, `:1764`/`:1772`/`:1788`/`:1796`/`:1814`/`:1822` the six arm constructions) | **0** |
+| `Outbound::Error` | 2 (`:668`, `:1058`) | **5** (`:2506`, `:2696`, `:3087`, `:3211`, `:3235`) |
+
+The control is the point: the *same* grep shape over the *same* file finds **five** test sites for `files-error` and **none** for the action result. So the grep can see a test site when one exists; the action-result error string simply has none, and the conclusion is stronger than "no test mentions it" — **five** tests read the `files-error` frame and **zero** read the action-result frame. By contrast the `files-error` frame gets the bare code, not the `Display` string — `FilesErrorMessage::from_error` (`files.rs:476-484`) sets `code: error.code.as_str().to_string()` — which is why the `files-error` path is unaffected and only the action path is broken.
+
+**How this relates to §B-12f — it makes §B-12f's last sentence too kind.** §B-12f found that the bare, untyped `isFilesErrorCode` array is *"the one that decides wire behaviour"* and that a code added to the union *and* to the `Record` but missing from the array would slip through. That is a **latent** hole: it needs a code to be added. **This is the live form of the same hole** — the array is *correct today* (16 of 16, all bare) and the wire **still** delivers the wrong value, on **every** action failure, with no addition required. The two sections are one defect seen from two ends: §B-12f says the guard on the decision is untyped; §B-12g says the decision is **already wrong**.
+
+**This is the port's problem too, but in the opposite direction — and that is the part that belongs in the repair list.** The Rust's `files-action-result` failure contract is a **prefixed string**, so a faithful port would emit the same prefixed string and inherit the same bug. The plan does not: its `actionResult` (`…plan-2-core.md:5019-5031`) has **exactly one `success:` in the whole document** — `success: true` at `:5028` — and **never emits `success: false`**. A failed mkdir in the port therefore produces a `files-error` frame through `handle()`'s catch (`:4495-4503`), carrying the bare `error.code`, and the browser's `files-error` case **does** settle `pendingActions` (`client.ts:630`, `:649-653`) — so the port's path **works, by a different mechanism than the Rust's**, and it silently drops the `files-action-result` failure contract entirely.
+
+That is a genuine divergence in **shape**, and the repair must state which failure path the port takes and why, rather than leaving the port with neither. Two things constrain the answer, and both are measurements rather than preferences:
+
+- The port's own `mkdir` (`:4967-4971`) calls `mkdirSync(target)` with **no `EEXIST` mapping** — the Rust's `FilesRoot::mkdir` is at `files.rs:873`, probes existence at `:876-879` and returns `FILE_EXISTS` at `:880-883`. Node's `mkdirSync` throws `EEXIST`, and the plan's `handle()` catch (`:4495-4503`) maps a non-`SandboxError` to **`IO_ERROR`**. Probed here on Node: `EEXIST` → `instanceof SandboxError` is `false` → the plan's catch yields **`IO_ERROR`**, not `FILE_EXISTS`. So the port's mkdir failure is not merely the wrong *frame* — it is the wrong **code** as well, and `errnoToCode` (`:3738-3746`, which does map `EEXIST` → `FILE_EXISTS`) is not on this path.
+- The port declares its **own** 16-member union in `apps/agent/src/files/sandbox.ts` (`:3710-3726`) and **never imports** `FilesErrorCode` from `@ponter/shared` — the plan's Task 10 and Task 11 contain **no** `@ponter/shared` import at all, and `apps/agent/package.json` has **no** `@ponter/shared` dependency. The two unions are byte-identical today (all 16 members, same order) but **nothing relates them**, which is §B-12f's "two independent lists" in a third place. A `Record<FilesErrorCode, true>` guard in `packages/shared` (see §B-12f) would therefore **not** cover the port's own union unless the port imports the shared one.
+
+**Out of scope for Plan 2 — recorded so it does not enter the repair list.** The live bug lives in `packages/file-core` and `apps/agent` on `main`; it changes a **shipped contract** and it changes **what the port must emit**, so it is **not** an audit footnote and **not** mine to disposition. It is recorded here as a measured defect, and the options are stated neutrally, with their costs. **There are three, and the third is named so that its absence would be a decision rather than an oversight:**
+
+| option | what it changes | what it costs |
+|---|---|---|
+| **(a) the browser parses the prefix** | `client.ts` splits the string before matching, so the shipped Rust's format becomes the contract | the browser now depends on a **string format** the spec never states — `FilesActionResult.error` is typed `error?: string` with no format (`packages/shared/src/types/files.ts:172-177`, spec `:195-200`) — and the message text becomes load-bearing. The parse must be specified, not improvised: the string is usually **three** segments (`"{CODE}: {context}: {os error}"`), so a first-segment parse is correct and a last-segment parse silently returns the OS error text. And **nothing pins the `Display` layout**, so the format can change with no test failing. Minimum tests if chosen: a browser test with a **three-segment** fixture, **plus** a Rust test pinning the `Display` segment order. |
+| **(b) the agent adds a bare `code` field to `FilesActionResult`** — as `FilesErrorMessage` already has (`files.rs:467-474`) | one contract for one error; the browser validates once for both paths; the `undefined` hole closes at the source | costs the spec's §3.3 shape move (`spec:195-200`, `packages/shared/src/types/files.ts:172-177`) **and** the Rust — **and the port must implement the new shape immediately after**, or it introduces a third shape rather than removing one |
+| **(c) fix it in the port** | the Rust's prefixed form disappears when Plan 3 deletes `apps/agent/**` | `main` stays broken until then, and the port's own `mkdir` needs an `EEXIST` → `FILE_EXISTS` mapping **regardless** of which option is chosen (measured above) — so (c) is not free, and it does not discharge the live bug |
+
+PM carried the disposition to the owner separately. **This section did not
+pre-judge it** — it recorded the defect, the reproduction, the measurements, and
+the constraint that the port's answer must be **stated** rather than inherited
+by silence.
+
+**The owner ruled 2026-10-22: option (c) — fix it in the port, and let Plan 3
+remove the Rust.** The ruling landed *after* the section above was written, on
+the three options it stated, so the framing above is unchanged; what follows
+records what the ruling means and, equally, what it does not.
+
+- **The port emits the browser's existing contract, unmodified.** The
+  browser's `files-action-result` case (`packages/file-core/src/client.ts:557-573`)
+  already accepts a **bare** code — it runs `payload.error` through
+  `isFilesErrorCode` (`:568`). It is the **Rust's** prefixed string that the
+  predicate never matches. So the port produces what the browser already
+  expects, and **no browser change, no spec change, and no shared-type change**
+  is required: the bare code goes inside the existing `error?: string` field
+  (`packages/shared/src/types/files.ts:172-177`).
+- **The port's `actionResult` gains a `success: false` arm** carrying the
+  **bare** code from the `SandboxError`'s `readonly code` (the plan's
+  `SandboxError` at `…plan-2-core.md:3728` already carries it, so nothing is
+  parsed). **Action failures no longer route through `files-error`.** The port
+  takes **the Rust's frame and the browser's code format** — the combination
+  neither of the two existing artefacts has.
+- **`main` stays broken until Plan 3 deletes `apps/agent/**`.** The shipped
+  Rust keeps sending the prefixed string, so every failed `mkdir` / `delete` /
+  `rename` on the shipped product still reports `BAD_FRAME` until then. **This
+  is the owner's accepted cost of option (c), and it is recorded here so it
+  cannot be forgotten: the fix does not land on `main`.**
+- **What the ruling does not change.** The two vacuous shared assertions and
+  the untyped `isFilesErrorCode` array stay out of scope (§B-12f); the
+  `files-error` path's unvalidated code and the `undefined` text hole are
+  `main`-side defects in `packages/file-core` / `apps/web` and stay out of
+  scope; and the port's own `mkdir` needs the `EEXIST` → `FILE_EXISTS`
+  mapping **regardless** of the choice, so that stays in the repair list.
+
+The plan-side repair list is written and pinned at
+`.superpowers/probes/b12g-plan2-repair-v12/plan2-repair-list.md`
+(sha256 `59883f63c78f6878fc94741b20999d4febd4def75455c1fffa3dd1a2e5e32084`);
+the port-side shape it specifies is repair item **R13**. The owner brief it
+answers is forked to `.superpowers/probes/b12g-wire-contract-v2/owner-brief.md`
+(sha256 `971fd9474fb7afc9be864f3af5a1bd62c1eb59fe2e7a1140ec3d4d7476c4ffe5`) —
+v1 carried three wording errors QA measured, one of them in the sentence the
+owner read to choose. **Twelve earlier pins are dead and must not be cited:
+`08b2e0a4…` (repair list v11), `16473639…` (v10), `cf6ace63…` (v9), `08e12556…` (v8),
+`11914400…` (v7), `a0496e76…` (v6),
+`ea32a2a3…` (v5), `29e6f233…` (v4),
+`a3e8ab13…` (v3), `ef58ac32…` (v2), `16fc0ec0…` (v1), and `8bd4022a…` (owner
+brief v1).** Each was cited at its own pin, so every correction went to a new
+directory rather than under a live citation. **Every superseded directory that
+exists on disk carries a `DEAD.md` naming the live artifact on both the path
+line and its Hold sentence** — eleven of them — the two places a pin appears,
+which is where earlier repoints went wrong. Two entries have no directory to
+mark, and neither is a gap: **`16fc0ec0…`** (repair list v1) survives in no file
+and in no commit (`.superpowers/` is git-ignored and never was tracked; the
+earlier claim that it was preserved in git history is false as written — what
+survives is the *content* reproduced in PM's message to BA and QA at that pin),
+and **`8bd4022a…`** (owner brief v1) sits in `b12g-wire-contract/`, which does
+carry a marker — the directory is named for the probe, not for the brief. It is a specification, not an implementation; the repair lands in
+`plan-2-core.md` after QA's binding verdict, which v11 received and v12 answers.
+
+**v9 folds QA's five binding fixes on v8; none changes a requirement's
+direction.** (i) **Every audit citation in the repair list was stale at v8's
+own commit** — correct at `494a9ee`, the revision they were measured against,
+but v7's and v8's header edits moved this file, so by `b95cb96` `:1329` was a
+table row, `:1244` a `CONTRIBUTING.md` row and `:1124` blank. They are now
+cited by **section** (§10, §9.1, §6) with a table mapping each old number.
+(ii) **The quoted shorthand was not in this audit as the repair list quoted
+it** — this file describes the count in prose and prints the pattern only as
+`/\b(it|expect)\s*\(/` (§10), with the lookbehind in words, so the quotation
+marks asserted a text this file did not contain *at the revision the claim was
+measured against*. **The scope of that sentence is the correction of record:**
+the string `(?<![.$])it` appears **zero** times in this file at any revision
+through `494a9ee` and at `badf769`; `b95cb96` introduced the first occurrence,
+and it is the sentence asserting the zero; this addendum and the v8 note below
+quote it again. An earlier draft of this paragraph said "across every revision
+is zero", which was false at the commit that carried it. Reworded as a
+*literal transcription of the prose*, which is where the `\b` is lost.
+(iii) **R13's test had no home file** while the repair list requires a per-file declaration — it now lives in
+a new `apps/agent/test/files/action-result.test.ts`, and because Task 11's
+Step 5 runs `vitest` with two explicit file paths rather than a glob, R13 also
+owes that invocation and the Files block. (iv) **R13 declared `it()` in three
+numbers and `expect()` in none** — the table is now six, and records that the
+`it.each` blindness affects `it()` only, so `expect()` is 2 call sites / 16 at
+runtime. (v) **`errMsg` is `client.ts:566`**, cited twice as `:565`; all five
+`client.ts` citations now agree.
+
+**v10 folds QA's three findings on v9 — none load-bearing, all in the §0 text
+an implementer reads first — plus one of the same class that PM found while
+verifying them.** (i) **Three "under-reports by N" figures contradicted v9's
+own table.** The rule is **15 = 16 − 1** from the fence (`it.each` hides one
+`it(`) and **14 = 16 − 2** from the call-site count, and every `expect()` basis is 14
+because `expect(` is never wrapped. Three sites measured from the fence and
+said 14; one said an "`it()`-only declaration under-reports the assertion count
+by 15", which is wrong twice — such a declaration reports no `expect()` at all,
+so it under-reports by **16**. Every figure now names its basis inline.
+(ii) **`§"Counting methods"` resolves to no heading in any document** — zero
+in this file at any revision, zero in `plan-2-core.md`, zero tree-wide; the
+name survives only in three superseded probe READMEs. It was N10 one level up:
+line numbers replaced by section names, one of which points nowhere. Both
+sites now cite the repair list's own §2. Positive control: `§"Out of scope"`,
+cited in the same paragraph, does resolve. (iii) **"Zero at every revision" was
+false at the commit carrying it** — see (ii) of the v9 paragraph above, now
+scoped. (iv) **PM's: v9 said §10 prints the composed recipe.** It does not.
+§10 prints `/\b(it|expect)\s*\(/` and carries the lookbehind as words; §9.1
+prints no pattern at all. The composed regex is a join of §10's two halves, and
+§10 is the section that **keeps** the `\b` — which is why the recipe is 29 and
+not 31. The distinction v9 drew survives; the sentence about where the regex
+lives was false, one paragraph from N11's own fix.
+
+**v11 folds QA's three findings on v10 — one consequential — plus two residues
+PM found by sweeping.** (i) **The declaration's fence figure is 30, not 31.**
+v10 fixed the *gaps* between the counting bases but left the sentence naming
+which number is fence-legal, and it named the call-site one. Measured on R13's
+fence: `it()` is **1** by the recipe, **2** by call sites, **16** at runtime.
+Task 11's baseline is 29 with **no `it.each` in either of its two files**, so
+there the two axes coincide; R13 adds one `it.each(` the recipe cannot see, so
+the fence total moves by 1 (**29 → 30**) and the call-site total by 2
+(**29 → 31**). **B-1 in this audit compares *declared* against *fence actual***,
+so a declaration reading 31 books a **Δ +1** on Task 11 — a fresh B-1 finding
+of exactly the class the repair exists to close. `expect()` escapes only
+because both its axes land on 61, which is a coincidence of this fence, not a
+property of the rule. (ii) **The N18 sentence survived verbatim three lines
+into the repair list's §10** — the claim N18 declared false, in the paragraph
+explaining `it.each`; fixed, and the class was swept wider than QA's diff
+("printed in", "prints", "never prints", "as §10", plus `grep -F` for the
+composed regex paired with any section name) and found one site. (iii) **An
+`expect()` row was labelled with a method that returns 0 on that fence.** QA's
+measurement is right — `^\s*expect\(` is 0 there, because both assertions are
+`await expect(…)` — but the premise was not: no revision of the repair list
+defines "anchored" as a line-anchored regex. It meant "call sites a reader
+sees", under which the label was correct. The word *is* line-anchored in this
+audit's Rust sections (§B-12b), so a reader arriving from here reads it that
+way; the axis is renamed **"call sites (recipe-visible + `it.each`)"** so no
+reading is load-bearing. PM also found the file-level table carrying the same
+31/45 shape and R13's §9 row carrying the pre-rename axis.
+
+**v12 folds QA's three findings on v11 — two of them the class this section
+keeps reproducing: a fix that did not sweep its own class.** (i) **This audit
+announced the rename above and did not apply it.** The sentence two paragraphs
+up says, present tense, that the axis *is renamed* "call sites
+(recipe-visible + `it.each`)" — and the retired word then survived at **five**
+sites in this file (at `9cb377c`: `:1067`, `:1075`, `:1097`, `:1128`,
+`:1148` — four rule restatements and the fence-demonstration table; the
+numbers are historical, the sites are not). QA named four; the fifth was found
+by sweeping the class instead of the list, which is the discipline the finding
+itself is about. The worst was not the historical
+note but `:1075`, a **live restatement of the counting rule**. The nine
+remaining occurrences are all legitimate: seven are Rust attribute counts
+(§B-12b and the two recipe appendices near the end of this file), and two are
+in the v11 fold above, quoting the retired label in order to retire it. Cited
+by section, not by number — a line number here goes stale the moment this
+paragraph is written, which is N10's defect. (ii) **The plan paragraph the
+implementer edits carries three figures, and the repair list named two.** `plan-2-core.md:5057-5063` says *"29 `it()` / 59 `expect()` … a
+naive token count returns 60"*. Moving only 29 and 59 leaves **60** asserted
+beside a stripped **61** — false by the paragraph's own arithmetic, and false
+in the direction that reads as "this file has a commented-out assertion".
+Measured on R13's fence (raw `expect(` 2, no-comment-lines 2), R13 contributes
+**zero** commented assertions, so the pair moves **59/60 → 61/62** and the
+clause's reason survives. The paragraph's opening clause moves with them:
+*"two new test files"* → *"three"*. (iii) **"two numbers" and "six numbers"
+read as a contradiction** 708 lines apart in the repair list; one clause now
+reconciles them — two headline fence figures, each with its axis companions
+where an `it.each` is present.
+
+**v12's pin/marker follow-ups (QA's N25–N26), after the bind.** The bind was
+clean on all three folded findings, so these change no number an implementer
+writes — but two of them are claims of mine that were false as written, and
+one was a defect neither of us had found. (i) **v11 had no `DEAD.md`.** Nine
+markers existed for ten superseded versions, and the missing one was v11 — the
+copy QA had been verifying and the one the memory record cited as live, i.e.
+the most likely one for an auditor to open. The count "nine markers" was
+offered as evidence that the apparatus was complete; it was evidence of
+coverage, and nobody had asked the other half of the question: *is there a
+marker for every version?* The marker now exists. (ii) **The completeness claim
+was also false for `16fc0ec0…` (repair list v1)** — QA found it by way of
+`8bd4022a…`, whose directory they judged absent by globbing for a name
+containing `brief`; that one **does** exist (`b12g-wire-contract/`, the blob
+hashes to the pin). The v1 pin is the real gap: **no file on disk and no commit
+reproduces it**, and v2's README statement that it "is preserved in git history
+of this artifact dir" is false — `.superpowers/` is git-ignored (`.gitignore:45`)
+and nothing under it has ever been committed. What survives of v1 is its
+*content*, in PM's message to BA and QA at that pin. Both README and this
+section now say eleven markers, and name the one pin that has no blob to mark.
+
+**v8 adds one measurement and changes nothing else.** v7's warning that the
+audit's §9.1 prose description, *transcribed literally* as `(?<![.$])it\(`,
+must not be copied (the transcription drops the `\b`, so it matches
+`fake.emit(`) rested on second-hand numbers from Task 5's fence —
+a claim whose evidence sits where the reader cannot see it, which is the defect
+class this document prosecutes everywhere else. v8 measures it on the fence
+that holds R13's own snippet, where the offender and the pattern share a block:
+recipe **1**, shorthand **3**, call sites **2** — the two extra hits being
+`fake.emit('files-action-result', …)` in each test body. The fence is
+identified **by content** (`it.each(CODES.filter`), not by line number, because
+v8's own header edit moved it by one line.
+
+**v7 folds QA's three textual fixes on v6 — none changing a requirement's
+direction — plus one defect of the same class that fix 1's measurement
+exposed.** (i) **The `exports` instruction red the build.** v6 said R13
+"adds `"./test/helpers"` … creating the field"; followed literally that is a
+**subpath-only** map, and every bare `@ponter/file-core` import in `apps/web`
+stops resolving — measured against the real gate (`vue-tsc --noEmit`, which
+`ci-node.yml:86` runs and which does **not** exclude `@ponter/web`): **exit 2,
+21 errors** across 11 bare specifier occurrences in 4 files (10 `TS2307` plus
+11 cascading). The correct map names `"."` first; with it, exit 0. (ii) **R13
+owed its own lockfile sentence.** It adds a `workspace:*` devDependency, so
+`pnpm-lock.yaml` must regenerate in the same change — measured
+`ERR_PNPM_OUTDATED_LOCKFILE`, exit 1, at the gating install (`ci-node.yml:78`).
+v6 attributed that failure to the `--filter` exclusion, which has nothing to do
+with it; corrected. (iii) **The `it.each` arithmetic needed three numbers with
+their methods**, not two: fence `it(` = **1** by the audit's recipe (which is
+blind to `it.each(`), **2** call sites (recipe-visible + `it.each`), **16**
+runtime cases. The
+recipe is at `:1329`; v6 cited `:1124` (a different rule), and the `:1244`
+shorthand must not be copied — it drops the `\b`, matches `fake.emit(`, and
+yields 58 where the recipe yields 15 on Task 5's fence. (iv) **The "90
+pre-existing `*.vue` errors" baseline was `tsc`, not the gate.** `tsc
+--noEmit` in `apps/web` does emit 90; `vue-tsc --noEmit` emits **0**. A
+comparison against an already-red run cannot detect a new failure, so that
+row is now `vue-tsc` at 0.
+
+**v6 folds QA's two open items on v5 and one correction to QA's own suggested
+fix, settled by measurement.** (i) **N7**: v5's R13 test was specified as one
+frame with one code while §9 claimed it closed the pair for all 16 — an array
+holding `FILE_EXISTS` but missing `DIR_NOT_EMPTY` or `PERMISSION_DENIED` stays
+green. The test now iterates all 16, which makes **R12 an exported runtime
+value** (`FILES_ERROR_CODES`) and a **precondition of R13's coverage**. (ii)
+**The §6 sentence** "`packages/file-core` and `apps/web` are untouched" became
+false the moment R13 added an `exports` subpath; both sites now say **no
+browser *behaviour* change**, naming the subpath as the only `file-core` edit.
+(iii) **`BAD_FRAME` is exempted from the iteration**, because it is both a
+member of the array and the client's fallback (`client.ts:566-571`), so
+accepted and defaulted are indistinguishable — measured in
+`.superpowers/probes/b12g-n7-vacuity/`: an array with `BAD_FRAME` removed
+**passes all 16**, while one with `DIR_NOT_EMPTY` removed fails 1 (the positive
+control). The honest count is **15 discriminating + 1 declared
+non-discriminating + 1 fallback assertion**, never "16/16 covered". **15 is
+the boundary's ceiling, not the test's shortfall**: `isFilesErrorCode` is
+module-private (2 occurrences tree-wide, absent from `index.ts`), so the
+client's rejection is the only observable a test can reach.
 
 
 ### N-6. The `desktop-profile-parity` baseline was wrong; Plan 2's correction of it is right
@@ -914,7 +1301,7 @@ The Rust test `preserves_a_ws_query_value_ending_in_slash` (api.rs:182) pins exa
 - **Task 12's `emitChunks` behaviour change** is recorded (N-4) but not adjudicated — whether an agent-side 16 KiB splitter is wanted is an owner/spec question, not a docs question.
 - ~~**Whether the werift TWCC estimator is usable for a 500 ms-tick encoder retarget**, and whether werift's `transport-cc` negotiation is reachable from the adapter's `PeerConnection`.~~ **CLOSED 2026-10-21** — both answered with measured values and verified in package source; see the table under §3 B-10. The headline: reachable via `senderBWE`, seed is `0` not 4 Mbps, the offer's `rtcp-fb` is echoed while `extmap` is not, and the estimator leaks entries unbounded on the port's own path.
 - **Beyond `list()`, I did not audit the other files-protocol message shapes.** B-11 found the `list()` divergence; I did not check `files-download-begin`, `files-upload-ack`, `files-action-result` or the error frame against their Rust counterparts field by field. Given that B-11's shape survived a passing count-based gate, **the same failure is plausible in those** — that is the highest-value next sweep, and it is not done.
-- **I did not audit every sentence of every declaration, only their counts and their named tests.** N-3a and N-3b are both defects in *prose* inside a declaration whose *counts* were exactly right (25 `it()` / 42 `expect()` as it then stood, re-walked). Task 11 is the largest and most prose-heavy declaration in the plan; it is plausible that the other 18 have sentences of the same kind. The fence-walker cannot find them — it counts `it(`/`expect(` and would report the count as a pass.
+- **I did not audit every sentence of every declaration, only their counts and their named tests.** N-3a and N-3b are both defects in *prose* inside a declaration whose *counts* were exactly right (25 `it()` / 42 `expect()` as it stood before `d471109`, re-walked). Task 11 is the largest and most prose-heavy declaration in the plan; it is plausible that the other 18 have sentences of the same kind. The fence-walker cannot find them — it counts `it(`/`expect(` and would report the count as a pass.
 - **I typechecked and executed no fence.** PM's `180efe1` found three real defects in Task 12 by running the fences against the real `node-pty` — a UTF-8 corruption on the inbound path, a U+FFFD substitution on the outbound path, and a `PtyProcess.on` seam no real host could satisfy (visible as four `as never` casts). See §7.1: **this is the second failure class, and it is not one my method can rule out.**
 
 ---
@@ -956,13 +1343,13 @@ Three real defects in three consecutive tasks, all found the same way — **by e
 >
 > **B-10, the auto-ABR loop, is the largest thing in the rewrite — and it is RULED (owner, 2026-10-22: it ships, as a full port).** §3. It was not a plan defect but a **ledger hole** — a live behaviour of the Rust agent with no B-row, no R-entry, no task, and no owner. The ruling is recorded in Plan 3's T8 (`…plan-3-desktop-retirement.md:231`). The original fourth question about the `transport-cc` SDP delta was **withdrawn**: `register_default_interceptors` already registers it, so there is nothing to decide there — but the Rust comment saying otherwise is wrong and should be corrected in T9. **The carry into Plan 3's T8 that this paragraph asked for landed (`c81ae4b`), and the ruling followed it.** The three sub-questions are now the implementing task's to answer in writing — the estimator divergence, the pacer (werift has none, so "full port" means building it), and the seed — and the seed is the one the ruling did not name.
 >
-> **B-11, N-3, N-3a and N-3b were all four closed by PM's `d471109`, as one declared before→after — which is what I recommended and what the sequencing required.** I re-verified the repair independently rather than accepting it: all seven `list()` divergences are fixed (path built with `join_rel` semantics, `isDirectory` from `stat`, real directory `size`, `rfc3339Utc(stat.mtimeMs)`, dirs-first `Buffer.compare`, per-entry `statSync` throwing, `readdirSync` inside a try mapped through `errnoToCode`); the three `list_*` tests are present (`:4118`, `:4145`, `:4155`); the phantom `drained .part before resume` is gone; and the declaration is **29 `it()` / 60 `expect()`**, which I recounted from the fences — **both exact**. N-3b's repair also does the thing I asked for rather than the vacuous thing: it asserts only the wire literal `30_000` and **states in a comment why the prod-equals-constant assertion is omitted** (`:4300-4305`), naming the `cfg(test)` divergence explicitly. That is better than what I proposed.
+> **B-11, N-3, N-3a and N-3b were all four closed by PM's `d471109`, as one declared before→after — which is what I recommended and what the sequencing required.** I re-verified the repair independently rather than accepting it: all seven `list()` divergences are fixed (path built with `join_rel` semantics, `isDirectory` from `stat`, real directory `size`, `rfc3339Utc(stat.mtimeMs)`, dirs-first `Buffer.compare`, per-entry `statSync` throwing, `readdirSync` inside a try mapped through `errnoToCode`); the three `list_*` tests are present (`:4118`, `:4145`, `:4155`); the phantom `drained .part before resume` is gone; and the declaration is **29 `it()` / 59 `expect()`**, which I recounted from the fences — **both exact** (a naive token count returns 60 because `plan-2-core.md:4302` carries one `expect(...)` inside a comment explaining why that assertion cannot fail). N-3b's repair also does the thing I asked for rather than the vacuous thing: it asserts only the wire literal `30_000` and **states in a comment why the prod-equals-constant assertion is omitted** (`:4300-4305`), naming the `cfg(test)` divergence explicitly. That is better than what I proposed.
 >
 > **B-10 is settled, and what was open in this paragraph was the ruling, not the carrier.** `c81ae4b` put it in Plan 3's T8 (`:138`) with both landings spelled out, `78dd283`/`f95a921` corrected and tightened the evidence underneath it, and the owner **ruled on 2026-10-22 that it ships as a full port** — recorded in Plan 3's T8 at `:231`. I re-verified that evidence line by line (§9.0) and it holds, including the two facts that make "ship" expensive rather than free: werift has **no RTP pacer** (one `pacer` hit in the whole library, in SCTP), and its `SenderBandwidthEstimator` leaks its send history because the eviction loop runs over `Object.keys(sentInfo)` — four field names turned into `NaN` — and deletes nothing. `54b1c5c` correctly demoted the fourth question (the `transport-cc` SDP delta) from an owner decision to a settled fact, agreeing with §B-10's withdrawal of it. **What the ruling does not settle is who answers the remaining two:** Plan 3 assigns the estimator divergence and the pacer decision to the implementing task, and leaves the seed unstated — so they are written requirements now, not open questions to the owner, but a task that ignores them fails the item rather than deferring it.
 >
 > **N-4's *outcome* is settled and PM's reasoning for it improved.** `e9fe654` resolves it by measurement rather than deferral, which is the right method, and its `node-pty` evidence (8 MiB in 2 555 events, largest 18 433 bytes) is what justifies `emitChunks` when the Rust's own bound sat in its read buffer. What is still wrong is the mechanism sentence, which `844ba29` extended rather than repaired — see §N-4 below.
 >
-> **What this does not close.** **B-10 is ruled** (2026-10-22, it ships — Plan 3's T8 `:231`); its remaining sub-questions are now the implementing task's to answer in writing, not the owner's. **The "the Rust enforced nothing" claim now appears in three places across two plans plus the T8 preamble** (§N-4), and it is false as written; repairing it and repairing C12/B40's citations (§N-4a) are the same fix. **B-12 was raised 2026-10-22 and its plan-side content is drafted:** Task 11's criterion leaves **25 of 40 non-ports** uncovered, **seven of them guards the fence implements and no test trips**, three of its twelve dispatch arms have no test at all, and one of those — `files-delete` — silently dropped the `recursive` flag three other artefacts carry. **Bigger than any of those: `FilesSession` has no owner for the frame-to-wire boundary and no lifecycle owner (§B-12c)** — no envelope outbound, no unwrap inbound, no timers, `deps.send` declared and never implemented — so the port and the shipped browser cannot exchange a single files frame while every fence stays green; the ack shape (§B-12d), the retire-clause re-derivation (§B-12e) and the wire-spelling pin (§B-12f — the Rust pins 14 of 16 codes, TypeScript spells 16 of 16 in two lists of which only the typed one is enforced) complete the set. It is plan-side, in PM's lane, and it blocks **starting Task 11** for the same reason B-11 did. All repair items are now drafted in §B-12b…§B-12f — items 1, 3 and 4 ready to paste, and item 2 **ruled by the owner 2026-10-22** to honour `recursive` as the Rust does, so no part of B-12 is waiting on a ruling any more.
+> **What this does not close.** **B-10 is ruled** (2026-10-22, it ships — Plan 3's T8 `:231`); its remaining sub-questions are now the implementing task's to answer in writing, not the owner's. **The "the Rust enforced nothing" claim now appears in three places across two plans plus the T8 preamble** (§N-4), and it is false as written; repairing it and repairing C12/B40's citations (§N-4a) are the same fix. **B-12 was raised 2026-10-22 and its plan-side content is drafted:** Task 11's criterion leaves **25 of 40 non-ports** uncovered, **seven of them guards the fence implements and no test trips**, three of its twelve dispatch arms have no test at all, and one of those — `files-delete` — silently dropped the `recursive` flag three other artefacts carry. **Bigger than any of those: `FilesSession` has no owner for the frame-to-wire boundary and no lifecycle owner (§B-12c)** — no envelope outbound, no unwrap inbound, no timers, `deps.send` declared and never implemented — so the port and the shipped browser cannot exchange a single files frame while every fence stays green; the ack shape (§B-12d), the retire-clause re-derivation (§B-12e) and the wire-spelling pin (§B-12f — the Rust pins 14 of 16 codes, TypeScript spells 16 of 16 in two lists of which only the typed one is enforced) complete the set. It is plan-side, in PM's lane, and it blocks **starting Task 11** for the same reason B-11 did. All repair items are now drafted in §B-12b…§B-12f — items 1, 3 and 4 ready to paste, and item 2 **ruled by the owner 2026-10-22** to honour `recursive` as the Rust does, so no part of B-12 is waiting on a ruling any more. **One part of B-12 is not plan-side, and it is a live bug rather than a defect in the plan: §B-12g** — the shipped Rust prefixes the action-result error string and the shipped browser matches it exactly, so every failed mkdir, delete and rename reaches the user as `BAD_FRAME`. It changes a shipped contract and it changes what the port must emit, so it was **the owner's disposition**; the owner **ruled 2026-10-22: option (c), fix it in the port**, and the live bug itself must **not** enter the Plan-2 repair list — only the port-side consequence (R13) does. The two options and their costs are in §B-12g.
 
 Suggested order for the amendments (all of them plan-side; per PM's ruling, I do not edit Plan 2):
 
@@ -974,7 +1361,7 @@ Suggested order for the amendments (all of them plan-side; per PM's ruling, I do
 6. Add `AGENT_DESKTOP_SOURCE`, `AGENT_DESKTOP_SELECT_TIMEOUT_MS`, `AGENT_DESKTOP_POLL_INTERVAL_MS`; remove `AGENT_COLS`/`AGENT_ROWS` or declare them a deliberate addition to the contract (B-8).
 7. Correct 38 → 49 (B-9).
 8. Move the `decisions.md` rulings into the plan text (B-6).
-9. **B-12:** name all 65 (or restate the criterion so it partitions), implement `recursive` as the Rust does, add test sites for `files-mkdir` / `files-delete` / `files-rename` / `teardown()` / the seven unasserted guards, re-derive the 26-vs-25 count, **and give the frame-to-wire boundary an owner** — the two envelope tests in §B-12c, the two tick periods, and a real `deps.send` — plus the ack three-name shape and the `endUpload` final ack in §B-12d, and the two-list spelling problem in §B-12f — where the fix belongs in `packages/shared`/`packages/file-core`, not in Plan 2, so it is recorded and not repaired. **Items 1, 3 and 4 are drafted in §B-12b and need only paste + PM's acceptance. Item 2 is settled: the owner ruled 2026-10-22 to honour `recursive` (`remove_dir_all` when true, `DIR_NOT_EMPTY` only when false), so it is a fence repair rather than an owner question — the retirement path was considered and rejected, and §B-12a keeps the reasoning.**
+9. **B-12:** name all 65 (or restate the criterion so it partitions), implement `recursive` as the Rust does, add test sites for `files-mkdir` / `files-delete` / `files-rename` / `teardown()` / the seven unasserted guards, re-derive the 26-vs-25 count, **and give the frame-to-wire boundary an owner** — the two envelope tests in §B-12c, the two tick periods, and a real `deps.send` — plus the ack three-name shape and the `endUpload` final ack in §B-12d, and the two-list spelling problem in §B-12f — where the fix belongs in `packages/shared`/`packages/file-core`, not in Plan 2, so it is recorded and not repaired — **and the port must state which failure path it takes for `files-action-result` (§B-12g), because the plan's `actionResult` never emits `success: false` and a faithful port would inherit the shipped Rust's prefixed-string bug.** **Items 1, 3 and 4 are drafted in §B-12b and need only paste + PM's acceptance. Item 2 is settled: the owner ruled 2026-10-22 to honour `recursive` (`remove_dir_all` when true, `DIR_NOT_EMPTY` only when false), so it is a fence repair rather than an owner question — the retirement path was considered and rejected, and §B-12a keeps the reasoning.**
 
 ---
 
@@ -1087,6 +1474,10 @@ PM's independent reviewer put four defects in §10 and §B-12b to me in the firs
 | 11 | **PM's, retracted by PM** — "the Rust enum pins 12; four codes are TS-only" | The Rust enum declares **all 16** (`files.rs:166-187`, `as_str()` at `:190-209`) and the agent **emits** three of the four additions in production — `PermissionDenied` (`:905`, `:913`, `:967`), `DirNotEmpty` (`:938`), `ResumeInvalid` (`:1019`, `:1026`); only `QueueFull` is `#[allow(dead_code)]`. The real shape is a **14-of-16** pin split **12 + 2** across two Rust tests, against a TS side that spells **16 of 16**. §B-12f. | PM's own correction, recorded because the number reached my draft before the correction did. |
 | 12 | **PM's, corrected by PM** — "`MAX_DATA_CHANNEL_FRAME_BYTES` is declared and consumed by nothing" | It is declared `:1156`, re-exported `:1083`, and **asserted** `:1105`; `MAX_INBOUND_FRAME_BYTES` is declared `:1154`, asserted `:1101` and **enforced** `:1320-1321`. The one that is pinned-but-unenforced is `MAX_DATA_CHANNEL_FRAME_BYTES`; and **none** of the three is consulted on the files path. §B-12c(e). | A wider claim than the measurement supports. Corrected to the narrower true statement — *"pinned by a test and enforced nowhere"* — which is also the one that matters. |
 | 13 | **PM's, withdrawn by PM after QA's push-back** — "the union can grow to 40 members with every CI step reporting success", and "no exhaustive `Record` guard exists" | **Both halves are false, and the guard is the thing that reds the build.** `apps/web/src/lib/file-errors.ts:8` declares `FILE_ERROR_TEXT: Record<FileClientErrorCode, string>` with **17** keys, and `Record<Union, V>` is exhaustive by construction — adding a code to the union alone fails `vue-tsc` with `TS2741`. PM reproduced both polarities end-to-end (union alone → exit 2; union **and** `Record` → green). The second grep PM ran *did* find the guard — `Record<FileClientErrorCode` → 1 — and he read the hit as evidence of **absence**, because the pattern he searched for (`Record<FilesErrorCode`) names the *other* type. | The same failure mode as §9.2 and this table's rows 1-2, in its purest form: **a positive control read backwards**. The control did its job — it showed where the guard was — and was then read as proof there was no guard. The hole that survives is narrow and specific: `isFilesErrorCode` (`client.ts:75-93`), a bare array no type relates to the union, untested, and the one list that decides wire behaviour. §B-12f. |
+| 14 | **mine, round three** — five citations of "25 `it()` / 42 `expect()`" (`:226`, `:469`, `:471`, `:481`, and §6's "What the audit did not cover" bullet "I did not audit every sentence") | All five are **true of the plan before `d471109`** and false of it since; none of them said so. Re-measured at `d471109~1` over `3888-4887`: it=**25**, exp=**42** — exactly the declared figure. At `HEAD` the same span is it=**29**, exp=**60** raw / **59** with comments stripped. Fixed by time-qualifying every citation rather than by changing the number, because the pre-repair figure is what those paragraphs are *about*. | **A number written into a sentence that does not say which state it describes** — the class this audit prosecutes, committed by the audit. The trigger was PM's fence-range correction, which forced a re-measure of the range those five sites cite. |
+| 15 | **mine, round three** — the audit called the Task 11 fence `3888-4887` | **Neither `3888-4887` nor `4067-5046` is "the fence".** Task 11 writes **two** test files, and the declaration's `29 / 59` is their **sum**: `protocol.test.ts` (`3882-3957`) = 9 it / 18 exp; `session.test.ts` (`4069-4378`) = 20 it / **41** exp with comments stripped (42 raw). `9+20 = 29`, `18+41 = 59`. The span `4379-5046` is the `session.ts` **source** block — 0 `it(`, 0 `expect(` — which is why `4067-5046` and `4069-4378` measure identically (20/42). | A single span cannot be the fence when the fence is two files. This is why the `:226` repair is a **time qualifier**, not a range swap: the range was never the fence in either state. |
+| 16 | **mine, round three** — the audit said the declaration is "29 `it()` / **60** `expect()`" (`:27` and the §8 note closing B-11/N-3/N-3a/N-3b) | The plan's own declaration says **29 / 59** (`plan-2-core.md:5057-5058`), and it explains the gap itself: *"59 is the count with the fences' comments stripped; a naive token count returns 60 because `expect(FILES_IDLE_TIMEOUT_MS).toBe(FILES_IDLE_TIMEOUT_MS)` appears once — in a comment"* (`:4302`). So **60 is the naive count and 59 is the declared one**; the audit had quoted the wrong side of a distinction the plan draws explicitly. | Reading the plan's number off my own token counter instead of off the declaration, then calling it "exact". Both numbers are real; only one is the declaration. |
+| 17 | **PM's, retracted by PM after QA's measurement** — "the §10 `message.<field>` recipe's `transferId 10` should be `9`" | **The 10 is correct and is what the recipe prints.** `grep -c "message\.transferId\b"` → **10** (lines); `grep -o … &#124; wc -l` → **11** (occurrences); matching lines are `4563, 4628, 4683, 4723, 4778, 4828, 4899, 4925, 4942, 4946`. The **9** is reachable only by excluding `:4563`, which is a real `message.transferId` read — *the only place the port forwards `transferId` into a `files-error` frame* — and which carries the token **twice** on one line, hence 10 lines vs 11 occurrences. Re-measured at `HEAD`, in the working tree, at pinned `8a92601`, in all **14** revisions of the file in git history, in all **13** plan-sized blobs of the path (the other stored blobs under that path are non-plan files), and on every one of the **9** branches that carry the file at all (the two `backup/*` branches and the local `main` predate it and hold no copy; all nine give 10/11). No reading of the file anywhere in this repository returns 9. | PM saw two numbers disagree, assumed one was wrong, and picked the one that was not the recipe's output. The fix is not a corrected number — it is the **method label**, so the two readings cannot be compared as though they measured the same thing. |
 
 **What I am *not* claiming, stated because PM's framing implied it.** PM's third amendment says restoring the envelope "moves the Task 11 partition from 26/39 to **27/38**", and that `frame_files_wraps_the_envelope` plus `decode_guard_never_errors_on_foreign_frames` are the two losses. Verified: **both are genuinely lost**, and rows 6 and 9 are now bucket **C** on exactly that evidence. But **four** rows moved to **C**, not two — row 29 (`stale_part_is_removed_and_retried_once`) is the third, on independently measured evidence, and row 3's reason changed without its bucket changing. The partition in this audit is **25 ported / 40 non-ported** with **25 gaps**; whether the repaired fence reaches "27 ported of 65" depends on the two tests landing, and I am not asserting the post-repair number as though it were measured today.
 
@@ -1094,7 +1485,7 @@ PM's independent reviewer put four defects in §10 and §B-12b to me in the firs
 
 | file | before | after | reason |
 |---|---|---|---|
-| `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-audit.md` | 0 code fences added, 0 test bodies | **0** — no `it()`, no `expect()`, no fence body added, removed, or skipped | These rounds touch only §10 recipe commands and §B-12b…§B-12f prose. The audit document contains no executable test suite; its only code is reproduction recipes in §10, and **six of those changed** (the guard recipe's fence classification, the 65-recipe's command, the `it()` recipe's `\b`, the `as never` scope, the spelling-per-code loop, and the `message.<field>` loop). Each is reprinted with its now-correct output above, and each was re-run before being written down. |
+| `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-audit.md` | 0 code fences added, 0 test bodies | **0 `it()` / 0 `expect()`** — no test body added, removed, skipped, or weakened | **This change set is prose-only.** The audit document contains no executable test suite, so it has no `it()` or `expect()` counts to move: **0 → 0**. Its only code is the §10 blocks, and those are **reproduction recipes, not tests** — they are run by hand to produce the numbers quoted above, they are never collected by a test runner, and none of them asserts anything. Counting them as tests would be exactly the confusion this audit exists to catch. Across the whole PR, **eight §10 recipe sections had a command change**, measured by diffing each revision's §10 fence and comparing the non-comment lines per section: **B-12, B-12a, B-12b, B-12c, B-12d, B-12e, B-12f, B-12g** (first changes at `cb0b6ad`, `0814a5e`, `ae64564`, and `b2968e3` respectively). Two of those are **method labels only** — the `message.<field>` loop and the frame-to-wire span counts printed correct numbers and needed only to say which counting method they used. The rest were reprinted with their now-correct output, and every one was re-run before being written down. |
 | plan 2 core / plan 3 / spec | **unchanged by me** | **unchanged** | PM applies all plan-side edits; I have not touched them, and every repair here is a paste-ready block for PM to land. |
 
 So: **no `it()` count changes anywhere, because no test body changes anywhere.** The Task 11 declaration's own `29 it() / 59 expect()` is **not** edited by this round — PM's §B-12c repair will change it (two new envelope tests, and the ack split may add a third for the 20 ms branch), and that change needs its own before→after line **in the plan**, in the task it edits, at the time it lands. I am flagging it here so it cannot land undeclared: **§B-12c's two tests and §B-12d's tick test are additions to Task 11's fence and must move the declaration from 29/59 to whatever its fence then measures.**
@@ -1203,8 +1594,14 @@ grep -oE "\bit\('[^']+'" <(sed -n '3861,5125p' docs/superpowers/plans/2026-10-21
 for pat in channel timestamp requestId payload envelope; do
   printf '%-12s %s\n' "$pat" "$(awk 'NR>=3861&&NR<=5125' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md | grep -c "$pat")"
 done
-#   -> channel 0 · timestamp 0 · requestId 8 · payload 21 · envelope 1
+#   COUNTING METHOD: `grep -c` counts MATCHING LINES. The numbers below are LINE counts, and
+#   the command above is the one that prints them.
+#   -> channel 0 · timestamp 0 · requestId 8 lines / 12 occurrences · payload 21/21 · envelope 1/1
 #      (the `envelope` hit is the retire clause's prose, not code)
+#   `requestId` is the only field whose two readings differ, because :4562 mentions it twice on
+#   one line (`typeof message.requestId === 'string' ? { requestId: message.requestId }`).
+#   Every zero-result here — `channel` 0, `timestamp` 0 — is identical under both readings, and
+#   those are the load-bearing ones.
 echo -n "as never (WHOLE plan, NOT the span): "; grep -o "as never" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md | wc -l   # 55
 #   The scope matters: Task 11's span contains **0** `as never` — the cast that hides the missing
 #   `deps.send` is at :7068, in Task 18. Reporting 55 against the span would be a wrong number
@@ -1333,8 +1730,27 @@ P=docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md
 for f in transferId path name requestId direction oldPath newPath dir recursive from toPath toName; do
   printf "%-12s %s\n" "$f" "$(grep -c "message\.$f\b" $P)"
 done
-#   -> transferId 10, path 6, requestId 3, direction 3, name 2 (controls: nonzero)
-#      from/toPath/toName 1 each (the rename handler) — and oldPath/newPath/dir/recursive 0.
+#   COUNTING METHOD: `grep -c` counts MATCHING LINES, not occurrences. The numbers below are
+#   LINE counts, and the command above is the one that prints them — do not compare them to an
+#   occurrence count (`grep -o ... | wc -l`), which is a different measurement:
+#   -> transferId 10 lines / 11 occurrences, path 6/6, requestId 3/4, direction 3/3, name 2/2
+#      (controls: nonzero) · from/toPath/toName 1/1 each (the rename handler) —
+#      and oldPath/newPath/dir/recursive 0/0.
+#   The two fields that differ are the two guard lines that mention the field twice on one line:
+#   :4563 `typeof message.transferId === 'string' ? { transferId: message.transferId }` and
+#   :4562 (the same shape for `requestId`). Every OTHER field agrees under both readings, and
+#   the load-bearing claim — `oldPath`/`newPath`/`dir`/`recursive` = 0 — is identical either way.
+#
+#   NOTE ON THE "9": a line count of 9 for `transferId` is reachable ONLY by excluding the
+#   `typeof` guard line at :4563, which the command above does not exclude — :4563 IS a
+#   `message.transferId` read (it is the only place the port forwards `transferId` into a
+#   `files-error` frame), so it counts. The command as printed returns 10, and 10 is what this
+#   comment says. Re-measured at HEAD, in the working tree, at the pinned `8a92601`, in all 14
+#   revisions of this file in git history, in all 13 plan-sized blobs of the path, and on every
+#   one of the 9 branches that carry the file at all (incl. `origin/main`): 10 lines / 11
+#   occurrences, invariant. The "9" was proposed in review and withdrawn; §9.3 row 17 records
+#   why, and the counting distinction is stated once for the whole project in the pinned v4
+#   README.
 grep -n "pub enum FilesInbound" -A 16 apps/agent/src/files.rs   # 12 variants, :489-504
 grep -cE '^\s+"files-[a-z-]+" =>' apps/agent/src/files.rs       # decode arms: 12 (:596-632)
 #   (a bare `grep -c '"files-'` returns 34 — it also matches the wire constants and the tests.
@@ -1357,6 +1773,108 @@ sed -n '546,550p;901,941p' apps/agent/src/files.rs                              
 grep -n 'isDirectory' apps/web/src/components/files/DeleteConfirmDialog.vue                       # :26 -> recursive arg
 grep -n 'filesDelete' apps/web/src/components/files/FilesView.vue apps/web/src/stores/terminal.ts  # :145 -> :1890 -> client.delete
 grep -n "docs', true" apps/web/src/__tests__/FilesView.test.ts                                    # :443 pins recursive=true (the it( opens at :434)
+
+# B-12f (added): the polarity of the RUST's 12-case table — it does NOT fail in both
+#                directions, which is the claim the successor guard has to beat.
+#   The table is compiled and run in three states (rustc, in a scratch dir; the enum
+#   copied verbatim from files.rs:166-209 and the table from :2357-2375):
+#     (a) ADD a 17th variant        -> compiles and PASSES  (cases.len()==12 still true)
+#     (b) REMOVE an UNCOVERED code   -> compiles and PASSES  (DirNotEmpty, 14 -> 13 variants)
+#     (c) REMOVE a COVERED code      -> E0599 "variant … not found for this enum"
+#   => the Rust table catches ONE direction, and only via the compiler. It is blind to
+#      every addition and to the removal of any code it does not name — which are
+#      exactly DIR_NOT_EMPTY and PERMISSION_DENIED.
+#   The Record guard, same three states (tsc 6.0.3):
+#     (a) ADD a code to the union     -> TS2741 "Property 'BRAND_NEW_CODE' is missing"
+#     (b) REMOVE a code from the union -> TS2353 "may only specify known properties"
+#     (c) REMOVE a code, guard written as `{ ...otherRecord }` -> SILENT (no excess check on a spread)
+#   => the successor is STRONGER, but only when written as a FRESH OBJECT LITERAL.
+#      That is the condition on the recommendation, not a footnote.
+sed -n '2357,2375p' apps/agent/src/files.rs     # the table under test
+sed -n '166,209p'  apps/agent/src/files.rs     # the enum + as_str() it is copied from
+grep -c "Outbound::ActionResult" apps/agent/src/files.rs   # 7 — all PRODUCTION (see B-12g)
+grep -c "Outbound::Error"       apps/agent/src/files.rs   # 7 — and 3 of those ARE tests
+#   (the positive control: the same grep shape DOES find test sites when they exist)
+
+# B-12g: the live wire bug — the Rust prefixes the action-result error string and the
+#        browser matches it EXACTLY, so every action failure degrades to BAD_FRAME.
+sed -n '271,275p' apps/agent/src/files.rs     # Display: write!(f, "{}: {}", code.as_str(), message)
+grep -n "error: Some" apps/agent/src/files.rs # :1776 (mkdir), :1800 (delete), :1826 (rename) — 3 sites
+sed -n '75,93p' packages/file-core/src/client.ts  # isFilesErrorCode: 16 BARE codes, exact .includes()
+sed -n '566,571p' packages/file-core/src/client.ts # the call: the WHOLE string through the predicate
+sed -n '44,54p' packages/file-core/test/operations.test.ts   # the unit test sends a BARE code —
+                                                            #   the shape the Rust never sends
+grep -n "toMatch(/FILE_EXISTS/)\|toMatch(/PERMISSION_DENIED/)" \
+  packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts   # :667, :681 — SUBSTRING on the raw frame
+grep -n "never imports" packages/webrtc-core/test/e2e/files-advanced.e2e.test.ts  # :64-65 — no FileClient
+sed -n '476,484p' apps/agent/src/files.rs     # FilesErrorMessage::from_error: the files-error frame
+                                              #   carries the BARE code — only the action path is broken
+sed -n '20p' apps/web/src/lib/file-errors.ts   # BAD_FRAME -> "The agent rejected a malformed message"
+sed -n '124p' apps/web/src/stores/terminal.ts # the store maps the code through fileErrorMessage()
+#   The reproduction (run in packages/file-core's own vitest, real makeFakeManager +
+#   real FileClient; the probe file is deleted afterwards and the tree restored):
+#     bare 'FILE_EXISTS'                     -> rejects code: 'FILE_EXISTS'
+#     'FILE_EXISTS: directory already exists'-> rejects code: 'BAD_FRAME'
+#     'PERMISSION_DENIED: …root…'            -> rejects code: 'BAD_FRAME'
+#     'DIR_NOT_EMPTY: …not empty'            -> rejects code: 'BAD_FRAME'
+#   The e2e is CI-gated: ci-e2e.yml:82 runs the suite, and apps/agent/** is in paths: (:16, :28).
+#   The unit suite is NOT what catches this — it asserts half the contract and never crosses it.
+
+# B-12g: the port's side of the same contract
+grep -c "success:" docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md  # 1 — :5028 `success: true`
+sed -n '5019,5031p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md # actionResult: never false
+sed -n '4495,4503p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md # handle()'s catch
+sed -n '4967,4971p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md # mkdir: no EEXIST mapping
+sed -n '873p;876,879p;880,883p' apps/agent/src/files.rs  # the Rust's mkdir: fn :873, try_exists
+                                                        #   :876-879, FILE_EXISTS :880-883
+#   Node's mkdirSync throws EEXIST; the plan's catch maps a non-SandboxError to IO_ERROR.
+#   errnoToCode (:3738-3746) DOES map EEXIST -> FILE_EXISTS but is not on this path.
+grep -c "@ponter/shared" apps/agent/package.json                      # 0 — the agent has no shared dep
+grep -c "@ponter/shared" <(sed -n '3540,5130p' docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-2-core.md)  # 0
+#   -> the port declares its OWN 16-member union (sandbox.ts:3710-3726) and imports nothing
+#      from shared. The two unions are byte-identical today and NOTHING relates them, so a
+#      guard in packages/shared does not cover the port's union unless the port imports it.
+
+# B-12g: the segment count, and the Display layout that no test pins.
+#   FilesError::io builds "{context}: {error}" (:267) and Display prefixes the code (:273),
+#   so the composed wire string is usually THREE segments: "{CODE}: {context}: {os error}".
+sed -n '262,268p' apps/agent/src/files.rs   # FilesError::io — format!("{context}: {error}") at :267
+sed -n '271,275p' apps/agent/src/files.rs   # Display — write!(f, "{}: {}", code.as_str(), message)
+grep -c "FilesError::io(" apps/agent/src/files.rs   # 29 call sites (24 distinct plain contexts
+                                                    #   + 4 format! + 1 duplicated context)
+#   -> the three-segment shape is the COMMON case, not an edge case.
+#   Reproduction of the two parse strategies (node, no build step):
+#     const s = "IO_ERROR: removing file: No such file or directory";
+#     s.split(': ', 2)[0]  -> "IO_ERROR"                    (the code)
+#     s.split(': ').at(-1) -> "No such file or directory"   (a plausible NON-code token)
+#   => a last-segment parse silently returns the OS error text. The parse must be SPECIFIED.
+#   And nothing pins the Display LAYOUT — the Rust's pins cover as_str() only.
+#   Control FIRST, and it must be the offender itself (a file whose only assertion
+#   pins the layout: assert_eq!(err.to_string(), "FILE_EXISTS: file already exists")):
+grep -nE 'assert.*(to_string\(\)|format!\(|starts_with|ends_with|split)' <control-file>   # 1
+grep -nE 'assert.*(to_string\(\)|format!\(|starts_with|ends_with|split)' apps/agent/src/files.rs
+#   -> 1 hit, :2725  assert!(result.entries[1].modified_at.ends_with('Z'), "RFC 3339 UTC")
+#      an unrelated RFC-3339 assertion — NOT a FilesError Display pin.
+grep -rnE 'assert.*(to_string|format!)' apps/agent/src/ | grep -iE 'FilesError'   # 0
+#   NOTE: an earlier version of this recipe used `grep -c '": '` with controls of
+#   75 / 179. That pattern matches quote-colon-space-quote, which never occurs
+#   inside one Rust string literal, so it returns 0 on EVERY Rust file —
+#   including one that pins the layout perfectly. It was a no-op; this is not.
+#   => a reformat of Display — or the Rust's deletion and re-creation by Plan 3 — would
+#      reintroduce the identical BAD_FRAME symptom with NO test failing anywhere.
+
+# B-12g: the mirror hole on the files-error path, and its effect on the UI.
+awk 'NR>=630 && NR<=636 {printf "%d\t%s\n", NR, $0}' packages/file-core/src/client.ts  # new FilesError(payload.code, …) — UNCHECKED
+awk 'NR>=28 && NR<=30 {printf "%d\t%s\n", NR, $0}' apps/web/src/lib/file-errors.ts     # FILE_ERROR_TEXT[code] — a compile-time
+                                                                                        #   exhaustive literal, NOT a runtime guard
+grep -cE '^  [A-Z_]+:' apps/web/src/lib/file-errors.ts   # 17 keys (the positive control)
+grep -n 'v-if="tab.fileError"' apps/web/src/components/files/FilesView.vue             # :268 — undefined is falsy
+#   -> an unknown code crosses the files-error path UNTOUCHED (no BAD_FRAME fallback),
+#      FILE_ERROR_TEXT[unknown] is `undefined` (declared return type is `string`), and the
+#      banner's v-if treats undefined as falsy => the banner DISAPPEARS rather than lying.
+#      This is a SHAPE, not a live incident: the Rust sends codes that are in the table today.
+#      The pairing is the point: the ERROR path trusts the wire; the ACTION path trusts a
+#      string it never receives.
 
 # N-6 (corrected): the rewrite is Plan 1 Task 5, landed in 7d723e6
 git show 453a779:apps/desktop/src/main/__tests__/desktop-profile-parity.test.ts | grep -c 'expect('                        # 4  (before)
