@@ -70,7 +70,7 @@ Locked so implementers cannot disagree about what creates what.
 | `apps/agent/src/session/ice.ts` | TURN/TCP filtering, `mapIceServers`, H.264 PT selection, m-line index | B10, B11, B12 |
 | `apps/agent/src/session/identity-proof.ts` | The five ordered offer-proof failures; `advertisesE2ee` | B8, B9, B55 |
 | `apps/agent/src/session/packetizer.ts` | **Already written in Plan 1 Task 3.** Do not recreate. | B26 |
-| `apps/agent/src/session/data-channels.ts` | Channel-label gate and dispatch to the terminal/files/desktop handlers | B13 |
+| `apps/agent/src/session/data-channels.ts` | Channel-label gate, envelope unwrap, dispatch to the terminal/files/desktop handlers, the outbound `send` | B13 |
 | `apps/agent/src/identity/store.ts` | Ed25519 PKCS#8 file, mode 0600, base64 raw public key, sign | B47, B48 |
 | `apps/agent/src/identity/frame.ts` | `buildAgentIdentityFrame` — the WS2 challenge answer | B47, B55 |
 | `apps/agent/src/e2ee/manager.ts` | hello/ack handshake over `@ponter/crypto` | B49–B52 |
@@ -86,7 +86,7 @@ Locked so implementers cannot disagree about what creates what.
 | `apps/agent/src/desktop/control.ts` | Bitrate clamp, `DesktopSelectMessage` decode, `StreamControl` | B20, B62 |
 | `apps/agent/src/desktop/frames.ts` | `desktop-stats`, `desktop-cursor`, `desktop-sources` frame builders | B56, B58, B61 |
 | `apps/agent/src/desktop/session.ts` | Capture → downscale → encode → packetize → send loop | B14, B59 |
-| `apps/agent/src/runtime.ts` | Lifecycle: start / stop / status; the reconnect supervisor | B53 |
+| `apps/agent/src/runtime.ts` | Lifecycle: start / stop / status; the tick driver's interval handles (MAJOR-1) | B53 |
 | `apps/agent/src/index.ts` | Public surface: `createAgentRuntime` | — |
 | `packages/shared/src/types/stream-profile.ts` | **Modify (Plan 1 owns it).** Add `export type ProfileId = (typeof STREAM_PROFILES)[number]['id']` beside `StreamProfile`. Five modules here import it by name; without it every `ProfileId` reference in this plan is an unresolved type. | B18, B20, B24, B56, B62 |
 | `packages/webrtc-core/src/url.ts` | **Modify.** Add `rewriteWsScheme` beside `toWsUrl` | B2 |
@@ -3860,7 +3860,7 @@ only to make its two inputs real.
 **R12 first, because R11's import needs the value to exist.** `FilesErrorCode`
 is a type-only union today, so nothing can enumerate the 16 codes at runtime.
 `FILES_ERROR_CODES` is a `Record<FilesErrorCode, true>`: the mapped type makes an
-**an omission** a `TS2741` and a **bogus key** a `TS2353`, which the bare union
+**omission** a `TS2741` and a **bogus key** a `TS2353`, which the bare union
 does not catch (the union guards spellings only). It goes in a **source file**,
 not a `.test.ts`, so it is caught by the gating `typecheck` step
 (`ci-node.yml:86`) rather than by `@ponter/shared`'s own `continue-on-error`
@@ -5437,8 +5437,8 @@ export class FilesSession {
    * **R10(a): the `EEXIST` mapping has to be on THIS path, not merely to exist
    * in the file.** `mkdirSync` over an existing path throws `EEXIST`
    * (errno −17), which is **not** a `SandboxError`; `errnoToCode` does map it
-   * (`:3741`) but its four call sites are `:3776`, `:3786`, `:3797` and
-   * `:4592` — none of them here. So the catch-only path turned a duplicate
+   * (`:3738`) but its call sites are `:3773`, `:3783`, `:3794`, `:4911`,
+   * `:5051` and `:5452` — none of them here. So the catch-only path turned a duplicate
    * mkdir into `IO_ERROR`, and with a bare-code contract that wrong code would
    * be **shipped** rather than swallowed. The Rust checks existence first and
    * returns `FILE_EXISTS` (`files.rs:873-883`); mapping the throw reaches the
@@ -5495,7 +5495,7 @@ export class FilesSession {
    * `EINVAL` → `IO_ERROR` for every UI rename.
    *
    * The root guard is the **second** half and it is not implied by the field
-   * names. `remove` already refuses the root (`:4985-4987`, comparing the
+   * names. `remove` already refuses the root (`:5468-5470`, comparing the
    * canonical *string* so the comparison is not always-false); `rename` has no
    * such check, and the Rust does (`files.rs:964-970` returns
    * `PermissionDenied`, "cannot rename sandbox root"). Under the broken names
@@ -5784,9 +5784,11 @@ with its reason:
 | **total** | | **12 fence / 13 call sites** | **23** |
 
 Per file, on that same fence axis: `protocol.test.ts` **12 `it()` / 22
-`expect()`** (was 9 / 18; R1's three envelope cases), `session.test.ts` **29 /
-60** (was 20 / 41; R5, R6, R7, R8), and `action-result.test.ts` **1 / 2** —
-unchanged, because R13 is already landed and this repair does not touch it. The
+`expect()`** (was 9 / 18; R1's three envelope cases) and `session.test.ts`
+**29 / 60** (was 20 / 41; R5, R6, R7, R8) are the two files of new work, and
+`action-result.test.ts` **1 / 2** is **untouched** — it stays in the table
+only so the per-file tally stays complete; R13 is already landed and this
+repair does not add to it. The
 2 call sites and 16 runtime cases for each of that file's two counters are
 R13's and are carried forward, not re-derived. 12 + 29 + 1 = 42; 22 + 60 + 2 =
 84; naive 22 + 61 + 2 = 85.
@@ -7823,10 +7825,10 @@ An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_
 - Test: `apps/agent/test/session/data-channels.test.ts`
 
 **Interfaces:**
-- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `decodeStreamControl` / `decodeDesktopSelect` (Task 17), `decodeInput` / `InputLimiter` (Task 15); `frameFiles` (Task 11); `MAX_DATA_CHANNEL_FRAME_BYTES` (Task 3).
+- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `clampBitrate` (Task 17), `decodeInput` / `InputLimiter` (Task 15); `frameFiles` (Task 11); `MAX_DATA_CHANNEL_FRAME_BYTES` (Task 3). Task 17's `decodeStreamControl` / `decodeDesktopSelect` are **not** consumed — their vocabulary is not the wire's (see `dispatchDesktop`'s note).
 - Produces:
-  - `const CHANNEL_LABELS = { terminal: 'terminal', input: 'input', files: 'files', desktop: 'desktop', cursor: 'cursor' } as const`
-  - `class DataChannelRouter { constructor(deps); attach(channel): void; detach(label): void }`
+  - `const CHANNEL_LABELS = { terminal: 'terminal', files: 'files', control: 'control' } as const` — the three labels a peer actually opens (`WebRTCChannelType` minus `'desktop'`, which is the capability/RTP media label, not a data channel; and without `input`/`cursor`, which exist nowhere).
+  - `class DataChannelRouter { constructor(deps); attach(channel): void; detach(label): void; send(label, frame): void }`
   - `type RouterDeps` — the five handlers plus `send` and `now`, each injectable.
 
 - [ ] **Step 1: Write the failing test**
@@ -7843,6 +7845,14 @@ function fakeChannel(label: string) {
     readyState: 'open',
     on: (event: string, cb: (arg: never) => void) => {
       (handlers[event] ??= []).push(cb);
+      // The unsubscribe `RouterChannel.on` promises. Removing by identity is
+      // what `detach`'s fix consumes; a fake that returns `undefined` would
+      // make the detach test pass for the wrong reason again.
+      return () => {
+        const list = handlers[event] ?? [];
+        const i = list.indexOf(cb);
+        if (i >= 0) list.splice(i, 1);
+      };
     },
     send: vi.fn(),
     close: vi.fn(),
@@ -7858,13 +7868,16 @@ function router(overrides: Record<string, unknown> = {}) {
     terminal: { write: vi.fn(), resize: vi.fn(), close: vi.fn(), create: vi.fn() },
     files: { handle: vi.fn(() => []), acceptBinaryChunk: vi.fn(() => []) },
     desktop: { onControl: vi.fn(), onSelect: vi.fn() },
-    input: { accept: vi.fn(() => true), decode: vi.fn(() => ({ kind: 'move', x: 1, y: 1 })) },
+    input: { accept: vi.fn(() => true), decode: vi.fn(() => ({ kind: 'move', x: 1, y: 1 })), inject: vi.fn() },
     send: vi.fn(),
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
     now: () => 1_700_000_000_000,
     ...overrides,
   };
-  return { deps, r: new DataChannelRouter(deps as never) };
+  // No `as never`: `deps` is the shape `RouterDeps` asks for, so the test
+  // compiles against the real interface — that is the type-check that would
+  // have caught `send` existing only as mocks (MAJOR-2).
+  return { deps, r: new DataChannelRouter(deps) };
 }
 
 /**
@@ -7878,11 +7891,11 @@ function envelope(channel: string, type: string, payload: Record<string, unknown
 }
 
 describe('the label gate', () => {
-  it('accepts each of the five known labels', () => {
+  it('accepts each of the three served labels', () => {
     for (const label of Object.values(CHANNEL_LABELS)) {
       const { r } = router();
       const channel = fakeChannel(label);
-      expect(() => r.attach(channel as never)).not.toThrow();
+      expect(() => r.attach(channel)).not.toThrow();
       expect(channel.close).not.toHaveBeenCalled();
     }
   });
@@ -7892,7 +7905,7 @@ describe('the label gate', () => {
     // compile against a wider type and do nothing at runtime.
     const { r } = router();
     const channel = fakeChannel('admin');
-    r.attach(channel as never);
+    r.attach(channel);
     expect(channel.close).toHaveBeenCalledWith();
   });
 
@@ -7902,8 +7915,8 @@ describe('the label gate', () => {
     const { r } = router();
     const first = fakeChannel('terminal');
     const second = fakeChannel('terminal');
-    r.attach(first as never);
-    r.attach(second as never);
+    r.attach(first);
+    r.attach(second);
     expect(first.close).not.toHaveBeenCalled();
     expect(second.close).toHaveBeenCalledWith();
   });
@@ -7918,24 +7931,40 @@ describe('the label gate', () => {
       on: vi.fn(),
       send: vi.fn(),
     };
-    expect(() => r.attach(channel as never)).not.toThrow();
+    expect(() => r.attach(channel)).not.toThrow();
     expect(channel.close).not.toHaveBeenCalled();
   });
 });
 
 describe('dispatch', () => {
-  it('routes a terminal frame to the pty', () => {
+  it('routes a terminal-data frame to the pty by terminalId, as bytes', () => {
+    // Ruling 1: the browser's only inbound terminal write is
+    // `sendJson('terminal', 'terminal-data', { terminalId, data: base64 })`
+    // (`terminal-core/src/client.ts:179,189`), and the Rust decodes
+    // STANDARD base64 (`pty.rs:181-198`) before the pty sees it. `bHM=` is
+    // "ls"; the write receives the **bytes**, not the base64 text.
     const { deps, r } = router();
     const channel = fakeChannel('terminal');
-    r.attach(channel as never);
-    channel.emit('message', envelope('terminal', 'terminal-input', { data: 'bHM=' }));
-    expect(deps.terminal.write).toHaveBeenCalledWith('bHM=');
+    r.attach(channel);
+    channel.emit('message', envelope('terminal', 'terminal-data', { terminalId: 't1', data: 'bHM=' }));
+    expect(deps.terminal.write).toHaveBeenCalledWith('t1', new Uint8Array([0x6c, 0x73]));
+  });
+
+  it('drops a terminal-data frame with no terminalId rather than guessing a session', () => {
+    // A terminal channel carries several pty sessions; `write` needs the id.
+    // This is the dropped-frame's positive control for the test above.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit('message', envelope('terminal', 'terminal-data', { data: 'bHM=' }));
+    expect(deps.terminal.write).not.toHaveBeenCalled();
+    expect(deps.logger.warn).not.toHaveBeenCalled();
   });
 
   it('routes a files binary 0x02 frame to the files session', () => {
     const { deps, r } = router();
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     const binary = new Uint8Array(26);
     binary[0] = 0x02;
     channel.emit('message', binary);
@@ -7945,38 +7974,50 @@ describe('dispatch', () => {
   it('routes a files JSON frame to the files session', () => {
     const { deps, r } = router();
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     // R2: the session receives the **unwrapped payload**, not the envelope.
     channel.emit('message', envelope('files', 'files-list', { path: '' }));
     expect(deps.files.handle).toHaveBeenCalledWith({ path: '', type: 'files-list' });
   });
 
-  it('sends whatever the files session returns, wrapped in the envelope', () => {
+  it('sends whatever the files session returns, wrapped in the envelope, through the channel', () => {
     const { deps, r } = router({ files: { handle: () => [{ type: 'files-error', code: 'BAD_FRAME' }], acceptBinaryChunk: () => [] } });
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     channel.emit('message', envelope('files', 'files-list', { path: '' }));
     // R1: a flat frame is what produced the silent hang. The framed shape is
-    // `{ type, channel: 'files', payload, timestamp }`.
-    expect(deps.send).toHaveBeenCalledWith('files', {
-      type: 'files-error',
-      channel: 'files',
-      payload: { type: 'files-error', code: 'BAD_FRAME' },
-      timestamp: 1_700_000_000_000,
-    });
+    // `{ type, channel: 'files', payload, timestamp }`. The wrap happens in
+    // `emit`, the write happens in the router's own `send` — so the observable
+    // is the channel's `send`, not `deps.send` (which is the test seam the
+    // runtime binds; MAJOR-2).
+    expect(deps.send).not.toHaveBeenCalled();
+    expect(channel.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: 'files-error',
+        channel: 'files',
+        payload: { type: 'files-error', code: 'BAD_FRAME' },
+        timestamp: 1_700_000_000_000,
+      }),
+    );
   });
 
   it('leaves a binary chunk frame unwrapped on the way out', () => {
     // `frameFiles` is the JSON path; a chunk frame is `Uint8Array` and the
     // browser's raw handler reads it as bytes. Wrapping it would put a
-    // `Uint8Array` inside a JSON string.
+    // `Uint8Array` inside a JSON string. The **inbound** fixture is the
+    // binary upload chunk itself (`0x02`, `packages/shared/src/types/
+    // files.ts:121`, `BINARY_TYPE_UPLOAD_CHUNK`) — a JSON envelope cannot
+    // reach `acceptBinaryChunk`, so emitting one here would test the wrong
+    // arm; the outbound frame the session returns is the chunk and it must
+    // reach the channel untouched.
     const binary = new Uint8Array(25 + 4);
-    binary[0] = 0x01;
+    binary[0] = 0x02;
     const { deps, r } = router({ files: { handle: () => [], acceptBinaryChunk: () => [binary] } });
     const channel = fakeChannel('files');
-    r.attach(channel as never);
-    channel.emit('message', envelope('files', 'files-list', { path: '' }));
-    expect(deps.send).toHaveBeenCalledWith('files', binary);
+    r.attach(channel);
+    channel.emit('message', binary);
+    expect(deps.send).not.toHaveBeenCalled();
+    expect(channel.send).toHaveBeenCalledWith(binary);
   });
 
   it('drops a frame whose wire channel does not match the label', () => {
@@ -7984,7 +8025,7 @@ describe('dispatch', () => {
     // the plan handled a `files-list` filed under `terminal` as a files frame.
     const { deps, r } = router();
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     channel.emit('message', envelope('terminal', 'files-list', { path: '' }));
     expect(deps.files.handle).not.toHaveBeenCalled();
     expect(deps.logger.warn).toHaveBeenCalled();
@@ -7995,7 +8036,7 @@ describe('dispatch', () => {
     // through `sendJson`, which emits the envelope.
     const { deps, r } = router();
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     channel.emit('message', new TextEncoder().encode('{"type":"files-list","path":""}'));
     expect(deps.files.handle).not.toHaveBeenCalled();
     expect(deps.logger.warn).toHaveBeenCalled();
@@ -8007,7 +8048,7 @@ describe('dispatch', () => {
     // enforces, so a conforming peer could not have sent it.
     const { deps, r } = router();
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     const huge = new Uint8Array(64 * 1024 + 1);
     huge[0] = 0x02;
     channel.emit('message', huge);
@@ -8020,26 +8061,51 @@ describe('dispatch', () => {
     // pass the "drops an oversized frame" case just as well.
     const { deps, r } = router();
     const channel = fakeChannel('files');
-    r.attach(channel as never);
+    r.attach(channel);
     const atCap = new Uint8Array(64 * 1024);
     atCap[0] = 0x02;
     channel.emit('message', atCap);
     expect(deps.files.acceptBinaryChunk).toHaveBeenCalledWith(atCap);
   });
 
-  it('routes desktop control and select frames to their handlers', () => {
+  it('routes desktop-select and desktop-bitrate on the control channel', () => {
+    // BLOCKING-2: the browser sends both on `control` —
+    // `sendJson('control', 'desktop-select', { sourceId })` and
+    // `sendJson('control', 'desktop-bitrate', { bitrateBps })`
+    // (`desktop-core/src/client.ts:423-430`). `sourceId` is the scheme string
+    // the Rust carries verbatim (`desktop.rs:2951-2962`), and the bitrate is
+    // clamped at this boundary with Task 17's clamp (the Rust clamps inside
+    // `decode_control` too, `desktop.rs:2015-2019`).
     const { deps, r } = router();
-    const channel = fakeChannel('desktop');
-    r.attach(channel as never);
-    channel.emit('message', envelope('desktop', 'stream-control', { action: 'pause' }));
-    expect(deps.desktop.onControl).toHaveBeenCalledWith({ kind: 'pause' });
-    channel.emit('message', envelope('desktop', 'desktop-select', { source: { kind: 'test' } }));
-    expect(deps.desktop.onSelect).toHaveBeenCalledWith({ kind: 'test' });
+    const channel = fakeChannel('control');
+    r.attach(channel);
+    channel.emit('message', envelope('control', 'desktop-select', { sourceId: 'window:0x4a00007' }));
+    expect(deps.desktop.onSelect).toHaveBeenCalledWith('window:0x4a00007');
+    channel.emit('message', envelope('control', 'desktop-bitrate', { bitrateBps: 99_000_000 }));
+    expect(deps.desktop.onControl).toHaveBeenCalledWith({ kind: 'bitrate', bitrate: 20_000_000 });
+    channel.emit('message', envelope('control', 'desktop-bitrate', { bitrateBps: 3_000_000 }));
+    expect(deps.desktop.onControl).toHaveBeenCalledWith({ kind: 'bitrate', bitrate: 3_000_000 });
   });
 
-  it('decodes input BEFORE the limiter and the injector', () => {
+  it('closes an unknown label the browser never opens — including a real label from the shared type this port does not serve', () => {
+    // `'desktop'` is the capability string and the RTP media label
+    // (`packages/shared/src/types/webrtc.ts:7` lists it), not a data channel
+    // any peer opens — the browser opens only `terminal`, `control`, `files`
+    // (`terminal.ts:544`, `:937`, `:1128`). If a peer ever offered one, the
+    // Rust would refuse it too (`rtc.rs:663-689` closes any label that is not
+    // the session's accepted one), so closing is the ported behaviour.
+    const { r } = router();
+    const channel = fakeChannel('desktop');
+    r.attach(channel);
+    expect(channel.close).toHaveBeenCalledWith();
+  });
+
+  it('decodes input BEFORE the limiter and the injector, on the control channel', () => {
     // The order is the security property: an undecodable frame never reaches the
-    // limiter's accounting or the injector's FFI call.
+    // limiter's accounting or the injector's FFI call. The channel is `control`
+    // and the type is `desktop-input` — the Rust gates exactly that pair
+    // (`input.rs:189`), the browser sends exactly that pair
+    // (`desktop-core/src/client.ts:452`).
     const order: string[] = [];
     const { r } = router({
       input: {
@@ -8051,29 +8117,65 @@ describe('dispatch', () => {
           order.push('accept');
           return true;
         },
+        inject: () => {
+          order.push('inject');
+        },
       },
     });
-    const channel = fakeChannel('input');
-    r.attach(channel as never);
-    channel.emit('message', envelope('input', 'input-pointer', { kind: 'hover' }));
+    const channel = fakeChannel('control');
+    r.attach(channel);
+    channel.emit('message', envelope('control', 'desktop-input', { kind: 'pointer-move', x: 0.5, y: 0.5 }));
     expect(order).toEqual(['decode']);
   });
 
   it('logs and ignores a corrupt JSON frame on any channel', () => {
     const { deps, r } = router();
-    const channel = fakeChannel('desktop');
-    r.attach(channel as never);
+    const channel = fakeChannel('control');
+    r.attach(channel);
     expect(() => channel.emit('message', new TextEncoder().encode('{oops'))).not.toThrow();
     expect(deps.logger.warn).toHaveBeenCalled();
   });
 
   it('detach removes the handlers so a late message is ignored', () => {
+    // MAJOR-3's restored discriminating fixture. The gate must be **satisfied**
+    // — `type` on the envelope, an object payload — so the frame reaches the
+    // dispatch arm, and the assertion then measures `detach` and nothing else:
+    // with the landed code (which kept the handler), this same fixture produces
+    // writes=1 after detach; with the fix, 0. The type is `terminal-data`
+    // because `terminal-input` has no producer anywhere on the wire.
     const { deps, r } = router();
     const channel = fakeChannel('terminal');
-    r.attach(channel as never);
+    r.attach(channel);
     r.detach('terminal');
-    channel.emit('message', envelope('terminal', 'terminal-input', { data: 'eA==' }));
+    channel.emit('message', envelope('terminal', 'terminal-data', { terminalId: 't1', data: 'eA==' }));
     expect(deps.terminal.write).not.toHaveBeenCalled();
+    expect(channel.handlerCount('message')).toBe(0);
+  });
+
+  it('send() writes through to the attached channel and warns when the channel is absent', () => {
+    // MAJOR-2's production `send`. The positive control for the absent case:
+    // with the channel attached the JSON string reaches `channel.send`
+    // (werift accepts `Buffer | string`); detached, the frame is warned and
+    // dropped rather than thrown into the caller's loop.
+    const { deps, r } = router();
+    const channel = fakeChannel('files');
+    r.attach(channel);
+    r.send('files', { type: 'files-error', code: 'BAD_FRAME' });
+    expect(channel.send).toHaveBeenCalledWith(JSON.stringify({ type: 'files-error', code: 'BAD_FRAME' }));
+    r.detach('files');
+    r.send('files', { type: 'files-error', code: 'BAD_FRAME' });
+    expect(deps.logger.warn).toHaveBeenCalled();
+    expect(channel.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('send() hands a binary frame to the channel untouched', () => {
+    // The binary half of `send`: an upload-chunk frame that comes back out
+    // (download path) must not be JSON-stringified.
+    const { r } = router();
+    const channel = fakeChannel('files');
+    r.attach(channel);
+    r.send('files', new Uint8Array([0x01, 2, 3]));
+    expect(channel.send).toHaveBeenCalledWith(new Uint8Array([0x01, 2, 3]));
   });
 });
 ```
@@ -8088,28 +8190,85 @@ Expected: FAIL — module unresolved.
 import { MAX_DATA_CHANNEL_FRAME_BYTES } from '../signalling/constants.js';
 import { frameFiles } from '../files/protocol.js';
 import type { FilesFrame } from '../files/session.js';
+import { clampBitrate } from '../desktop/control.js';
 
+/**
+ * The three labels this port serves, named after the wire (`WebRTCChannelType`
+ * is `terminal | desktop | files | control`, `packages/shared/src/types/
+ * webrtc.ts:7`).
+ *
+ * **Which channel carries what**, measured from the browser's own openers —
+ * `apps/web/src/stores/terminal.ts` opens exactly `['terminal']` (`:544`),
+ * `['control']` (`:937`) and `['files']` (`:1128`), and `connection.ts:160-165`
+ * creates one data channel per requested label:
+ *
+ * - **`terminal`** — pty create/data/resize/close inbound; `terminal-data` and
+ *   `terminal-exit` outbound (both base64-carried `terminalId`-routed frames).
+ * - **`files`** — the files JSON vocabulary inbound and outbound, plus the
+ *   binary upload-chunk frames (`bytes[0] === 0x02`).
+ * - **`control`** — the desktop session's **only** data channel (the Rust says
+ *   so verbatim at `lib.rs:2511`): `desktop-select`, `desktop-bitrate` and
+ *   `desktop-input` inbound; `desktop-sources`, `desktop-stats`,
+ *   `desktop-cursor` and `desktop-e2ee-ack` outbound.
+ *
+ * `'desktop'` is **not** served and **not** in this map on purpose: on the wire
+ * it is the capability string and the RTP media label (`DESKTOP_LABEL` in the
+ * offer's capabilities, the m-line for the video track) — a name, not a data
+ * channel. No peer opens a `'desktop'` data channel; the Rust registers only
+ * `terminal`, `control`, `desktop`, `files` as label constants and selects
+ * `CONTROL_LABEL` for `SessionMode::Desktop` (`rtc.rs:73`, `lib.rs:1122-1126`).
+ *
+ * `input` and `cursor` **do not exist** on the wire: `grep` for
+ * `createDataChannel('input')` and `createDataChannel('cursor')` returns zero
+ * across the repo, and the Rust registers neither. Input rides `control` as
+ * `desktop-input` (`desktop-core/src/client.ts:452,467`; `input.rs:189` gates
+ * on `channel == "control"` **and** `type == "desktop-input"`). Cursor updates
+ * ride `control` as outbound `desktop-cursor` frames. This map therefore needs
+ * no internal discriminant wider than the wire labels — the wire type is
+ * already the dispatch key.
+ */
 export const CHANNEL_LABELS = {
   terminal: 'terminal',
-  input: 'input',
   files: 'files',
-  desktop: 'desktop',
-  cursor: 'cursor',
+  control: 'control',
 } as const;
 
 export type ChannelLabel = (typeof CHANNEL_LABELS)[keyof typeof CHANNEL_LABELS];
 
 const KNOWN = new Set<string>(Object.values(CHANNEL_LABELS));
 
-/** The slice of a werift data channel this module needs. */
+/**
+ * The slice of a werift data channel this module needs.
+ *
+ * werift's real channel has two message surfaces — the `onMessage` **Event**
+ * (`channel.onMessage.subscribe(fn)` → `{ unSubscribe }`,
+ * `werift/lib/common/src/event.d.ts:14-17`) and the `onmessage` **property**
+ * (`channel.onmessage = fn`, werift's own EventTarget emulation) — and only
+ * the Event's `subscribe` returns an unsubscribe. The adapter (Plan 1,
+ * `packages/webrtc-core/src/adapters/werift.ts:56-66`) wraps `onMessage`
+ * behind `onMessage(handler)` and keeps the handler in a closure, so it cannot
+ * unsubscribe either. `RouterChannel` therefore asks for the unsubscribe
+ * **directly**: the Plan-3 adapter work is expected to expose
+ * `on('message', cb) → () => void` by returning the werift `unSubscribe`
+ * handle (or removing the handler from its own list, exactly as the fake
+ * below does). `detach` is only as real as that return value.
+ */
 export interface RouterChannel {
   readonly label: string;
-  on(event: 'message', cb: (data: ArrayBuffer | Uint8Array | string) => void): void;
+  on(event: 'message', cb: (data: ArrayBuffer | Uint8Array | string) => void): () => void;
   close(): void;
 }
 
 export interface RouterDeps {
-  terminal: { write(data: string): void; resize(cols: number, rows: number): void };
+  /**
+   * The pty seam, shaped as `PtyManager` really is (Task 12): `write` takes
+   * the **terminal id and bytes**, not a bare string — a terminal channel
+   * carries several sessions, and `terminal-data`'s payload routes them.
+   */
+  terminal: {
+    write(terminalId: string, bytes: Uint8Array): void;
+    resize(terminalId: string, cols: number, rows: number): void;
+  };
   files: {
     handle(message: { type: string; [key: string]: unknown }): unknown[];
     acceptBinaryChunk(frame: Uint8Array): unknown[];
@@ -8159,6 +8318,8 @@ function parseJson(bytes: Uint8Array): Record<string, unknown> | null {
  */
 export class DataChannelRouter {
   private readonly attached = new Map<string, RouterChannel>();
+  /** The unsubscribe `attach` registered, keyed by label — `detach`'s teardown. */
+  private readonly unsubscribers = new Map<string, () => void>();
 
   constructor(private readonly deps: RouterDeps) {}
 
@@ -8178,10 +8339,22 @@ export class DataChannelRouter {
       return;
     }
     this.attached.set(label, channel);
-    channel.on('message', (data) => this.handle(label as ChannelLabel, data));
+    // `on` returns the unsubscribe (the test fake's `handlerCount` reads the
+    // same map); keeping it is what makes `detach` real rather than bookkeeping.
+    this.unsubscribers.set(label, channel.on('message', (data) => this.handle(label as ChannelLabel, data)));
   }
 
+  /**
+   * Removes the listener **and** the channel. Deleting the map entry alone
+   * stopped nothing — the handler `attach` registered stayed on the channel and
+   * kept delivering late frames after `detach`, which is the defect this
+   * version fixes (measured: E2 with a gate-satisfying fixture reached
+   * `write` after `detach`). The unsubscribe runs first so a frame already
+   * dispatched on this tick's queue still finds `attached` gone.
+   */
   detach(label: ChannelLabel): void {
+    this.unsubscribers.get(label)?.();
+    this.unsubscribers.delete(label);
     this.attached.delete(label);
   }
 
@@ -8189,16 +8362,24 @@ export class DataChannelRouter {
     const bytes = toBytes(data);
 
     /**
-     * **R4: the inbound cap, on the files path, before any decode.**
+     * **R4: the inbound cap, on every channel, before any decode.**
      *
      * Three caps exist in this plan and none was consulted here.
      * `MAX_INBOUND_FRAME_BYTES` is enforced only on the signalling path (via
      * `guardSize()`; its three call sites are all in `signalling/inbound.ts`),
      * `MAX_DATA_CHANNEL_FRAME_BYTES` is **pinned but unenforced** (asserted at
-     * `:1105`, consumed nowhere), and `MAX_FRAME_BYTES` (`:5460`) has no caller
+     * `:1105`, consumed nowhere), and `MAX_FRAME_BYTES` (`:6133`) has no caller
      * at all. `MAX_DATA_CHANNEL_FRAME_BYTES` is the right one for a data
      * channel: it is the SCTP message cap the browser also enforces, and a
      * frame above it could not have arrived over a conforming channel.
+     *
+     * **Scope: every channel, not only files.** B-12g §1.5 scoped the cap to
+     * the files path; this check runs for `terminal` and `control` too, and
+     * that broadening is deliberate and declared here. An SCTP message cap is
+     * per-channel by construction — a 64 KiB+1 "terminal-data" frame is exactly
+     * as impossible as an oversized chunk — so gating it on `label === 'files'`
+     * would re-arm the same unenforced-cap hole on the other two channels.
+     * Authority did not forbid it; it just did not ask for it.
      *
      * **Drop, do not error.** The Rust's inbound path never answered an
      * oversized frame: the SCTP layer refused it before the handler ran, so
@@ -8223,7 +8404,23 @@ export class DataChannelRouter {
     }
 
     /**
-     * **R2: unwrap the envelope, then check the wire's `channel`.**
+     * **R2: unwrap the envelope, read `type` off the envelope, merge it into
+     * the body.**
+     *
+     * The wire frame is `{ channel, type, payload, timestamp }` with `type` a
+     * **sibling** of `payload`, never a member of it: `webrtc-core`'s
+     * `sendJson` builds exactly that for every channel
+     * (`packages/webrtc-core/src/data-channel.ts:74-88`), and the Rust reads
+     * the same shape (`files.rs:589-596` matches `envelope.r#type`, then
+     * deserialises `envelope.payload` into a struct with no `type` field).
+     * The body the session receives therefore carries `type` first and the
+     * payload's own fields after — `{ type, ...payload }` — which is the shape
+     * Task 11's `list()` reads (`message.path`) and `decodeFilesFrame()`
+     * reads (`message.type`) off the **same object**.
+     *
+     * `type` is spread **first** so a payload that happens to carry its own
+     * `type` cannot shadow the envelope's: the envelope's `type` is the wire
+     * fact, a payload's would be unverified body data.
      *
      * The Rust drops a misfiled frame — `files.rs:590-592`:
      * `if envelope.channel != FILES_CHANNEL { return Ok(None); }`. The plan
@@ -8241,67 +8438,132 @@ export class DataChannelRouter {
      *
      * A frame with **no** `channel` field is treated as misfiled and dropped:
      * every browser-originated frame carries one, so its absence means the
-     * sender is not this contract's sender. That is also what makes the
-     * envelope unwrap load-bearing — before this, `message` was the raw object
-     * and `message.type` was the only field anyone read.
+     * sender is not this contract's sender.
      */
     const envelope = parsed as { type?: unknown; channel?: unknown; payload?: unknown };
     if (envelope.channel !== label) {
       this.deps.logger.warn(`dropped a ${label} frame filed under channel ${String(envelope.channel)}`);
       return;
     }
+    if (typeof envelope.type !== 'string') {
+      this.deps.logger.warn(`dropped a ${label} frame with no envelope type`);
+      return;
+    }
     const message =
       typeof envelope.payload === 'object' && envelope.payload !== null
-        ? (envelope.payload as Record<string, unknown>)
+        ? { type: envelope.type, ...(envelope.payload as Record<string, unknown>) }
         : null;
-    if (message === null || typeof message.type !== 'string') {
-      this.deps.logger.warn(`dropped a ${label} frame with no payload type`);
+    if (message === null) {
+      this.deps.logger.warn(`dropped a ${label} frame with no object payload`);
       return;
     }
 
     switch (label) {
       case CHANNEL_LABELS.terminal: {
-        if (typeof message.data === 'string') this.deps.terminal.write(message.data);
+        // **Ruling 1: the terminal vocabulary is `terminal-data`, not
+        // `terminal-input`.** The browser's only inbound terminal write is
+        // `sendJson('terminal', 'terminal-data', { terminalId, data:
+        // uint8ArrayToBase64(bytes) })` (`terminal-core/src/client.ts:179,189`),
+        // and the Rust's decoder matches exactly that: `decode_pty_input_with_id`
+        // (`pty.rs:181-198`) gates `channel == "terminal" && type ==
+        // "terminal-data"`, then STANDARD-decodes `payload.data` and returns
+        // `(terminal_id, bytes)`. The plan's previous arm read `message.data`
+        // as a plain string and had no terminalId — bytes would have been the
+        // base64 **text**, and one channel's stream would have gone to one
+        // implicit pty. `terminal-input` has **no producer anywhere** — it now
+        // appears in this document only inside comments recording its
+        // retirement (no fence constructs one) — so the
+        // type is retired here rather than kept as a dead alternative.
+        if (message.type !== 'terminal-data') return;
+        const { terminalId, data } = message as { terminalId?: unknown; data?: unknown };
+        if (typeof terminalId !== 'string' || typeof data !== 'string') return;
+        try {
+          this.deps.terminal.write(terminalId, new Uint8Array(Buffer.from(data, 'base64')));
+        } catch {
+          // Non-standard base64 (`Buffer` is lenient where Rust's STANDARD is
+          // strict) or a malformed payload: drop, never throw into the channel.
+        }
         return;
       }
       case CHANNEL_LABELS.files: {
         this.emit(this.deps.files.handle(message));
         return;
       }
-      case CHANNEL_LABELS.input: {
-        const event = this.deps.input.decode(bytes);
-        if (event === null) return;
-        if (!this.deps.input.accept(event)) return;
-        this.deps.input.inject(event);
-        return;
-      }
-      case CHANNEL_LABELS.desktop: {
-        const control = this.deps.desktop.onControl as (value: unknown) => void;
-        void control;
+      case CHANNEL_LABELS.control: {
+        // The control channel carries the desktop session's whole JSON
+        // vocabulary. Input rides **here**, not on a separate channel: the
+        // browser sends `sendJson('control', 'desktop-input', event)`
+        // (`desktop-core/src/client.ts:452,467`) and the Rust gates
+        // `channel == "control" && type == "desktop-input"` (`input.rs:189`).
+        if (message.type === 'desktop-input') {
+          const event = this.deps.input.decode(bytes);
+          if (event === null) return;
+          if (!this.deps.input.accept(event)) return;
+          this.deps.input.inject(event);
+          return;
+        }
         this.dispatchDesktop(message, bytes);
         return;
       }
-      case CHANNEL_LABELS.cursor:
-        return;
       default:
         return;
     }
   }
 
-  private dispatchDesktop(message: Record<string, unknown>, bytes: Uint8Array): void {
-    if (message.type === 'stream-control' || message.type === 'desktop-select') {
-      const { decodeStreamControl, decodeDesktopSelect } = requireDesktopControl();
-      // Handed the **inbound envelope's own bytes**, not a re-serialisation of
-      // the unwrapped payload: the decoders read the top-level frame and a
-      // reconstruction would be a second encoder for a shape the wire already
-      // produced. R2's unwrap is for dispatch, not for the decoders.
-      if (message.type === 'stream-control') {
-        const control = decodeStreamControl(bytes);
-        if (control) this.deps.desktop.onControl(control);
+  /**
+   * Desktop JSON control on the `control` channel, dispatched by the **real
+   * wire types**.
+   *
+   * The browser sends `sendJson('control', 'desktop-select', { sourceId })`
+   * and `sendJson('control', 'desktop-bitrate', { bitrateBps })`
+   * (`desktop-core/src/client.ts:423-430`) — there is no `stream-control` type
+   * on the wire, and `sourceId` is the **scheme string** the Rust carries
+   * verbatim: `desktop.rs:1986-1988` deserialises `{ source_id }` (camelCase)
+   * into `StreamControl::SourceSwap(message.source_id)` and the test at
+   * `:2951-2962` pins `{"sourceId": "window:0x4a00007"}` →
+   * `SourceSwap("window:0x4a00007")`. So `onSelect` receives the raw id
+   * string — `monitor:1` / `window:<id>` / `test:0` — and the scheme split
+   * stays with the consumer (`source_for`, `desktop.rs:922-948`, splits the
+   * same scheme), exactly where the Rust puts it.
+   *
+   * **Byte source, stated: neither the envelope bytes nor a re-serialisation.**
+   * The body is already parsed (`message`); the two real types are decoded
+   * here. The comment this replaces claimed the decoders read the top-level
+   * frame; they never did — and handing them the envelope's bytes made every
+   * decode return `null`, because the envelope's `type` is not a field of the
+   * body they match.
+   *
+   * **Task 17 must follow.** Its `decodeStreamControl` / `decodeDesktopSelect`
+   * port (`:7587-7639`) reads a vocabulary the browser never sends —
+   * `stream-control`/`action` and `source: { kind, id }`. Re-porting those two
+   * decoders to the real vocabulary (`desktop-select { sourceId }`,
+   * `desktop-bitrate { bitrateBps }`) is **Task 17's own change** and is out of
+   * scope here (its fence is untouched). Until it lands, this boundary decodes
+   * the two real types itself and reuses only Task 17's `clampBitrate` — the
+   * one piece that is already right, and the same clamp the Rust runs inside
+   * `decode_control` (`desktop.rs:2016-2019`). `desktop-input` does not come
+   * through here at all: it is decoded by Task 15's `decodeInput` before the
+   * limiter and the injector (the arm above) — the order the Rust established
+   * and the security property this port keeps. `desktop-e2ee-hello` also
+   * arrives on `control` (`desktop-core/src/client.ts:257`); answering it is
+   * the e2ee wiring's job, unfenced here, so an unknown type is dropped the
+   * way the Rust's `_ => Ok(None)` arm drops it.
+   */
+  private dispatchDesktop(message: Record<string, unknown>): void {
+    if (message.type === 'desktop-select') {
+      if (typeof message.sourceId !== 'string') {
+        this.deps.logger.warn('dropped a desktop-select frame with no sourceId');
         return;
       }
-      const source = decodeDesktopSelect(bytes);
-      if (source) this.deps.desktop.onSelect(source);
+      this.deps.desktop.onSelect(message.sourceId);
+      return;
+    }
+    if (message.type === 'desktop-bitrate') {
+      if (typeof message.bitrateBps !== 'number' || !Number.isFinite(message.bitrateBps)) {
+        this.deps.logger.warn('dropped a desktop-bitrate frame with no bitrateBps');
+        return;
+      }
+      this.deps.desktop.onControl({ kind: 'bitrate', bitrate: clampBitrate(message.bitrateBps) });
     }
   }
 
@@ -8319,28 +8581,53 @@ export class DataChannelRouter {
   private emit(frames: unknown[]): void {
     const now = this.deps.now ?? Date.now;
     for (const frame of frames ?? []) {
-      if (frame instanceof Uint8Array || typeof frame === 'string') {
-        this.deps.send(CHANNEL_LABELS.files, frame);
-        continue;
-      }
-      this.deps.send(CHANNEL_LABELS.files, frameFiles(frame as FilesFrame, now()));
+      this.send(CHANNEL_LABELS.files, frame instanceof Uint8Array || typeof frame === 'string' ? frame : frameFiles(frame as FilesFrame, now()));
     }
+  }
+
+  /**
+   * **R1's `send` half: the production implementation `deps.send` never had.**
+   *
+   * **The router owns the channel lookup** — `attached` is the map `attach`
+   * maintains, so a send goes to the one open channel for that label without a
+   * second registry anywhere. `deps.send` exists for the **tests** (and for
+   * whatever process wiring finally owns the transport): it is the seam, this
+   * method is the real producer, and Task 19's runtime binds the two by
+   * constructing the router over deps whose `send` is `router.send`.
+   *
+   * **An absent channel is warned and dropped, never thrown.** The sending
+   * side has no request to answer — a frame queued for a channel that has
+   * closed (the browser tab navigating away, the peer connection failing) has
+   * no consumer left, and throwing out of a channel callback would kill the
+   * pump loop the frame came from. The Rust agrees by construction: its send
+   * site (`lib.rs:1839-1848`) logs `files frame send failed` at debug and
+   * breaks the pump, it does not propagate into the session.
+   */
+  send(label: ChannelLabel, frame: unknown): void {
+    const channel = this.attached.get(label);
+    if (!channel) {
+      this.deps.logger.warn(`dropped a ${label} frame with no open channel`);
+      return;
+    }
+    if (frame instanceof Uint8Array) {
+      channel.send(frame);
+      return;
+    }
+    channel.send(JSON.stringify(frame));
   }
 }
 
 /**
- * Imported lazily so this module has no static dependency on the desktop control
- * decoder — the router is attached to every peer, including peers that never
- * open a desktop channel, and the decoder is only reachable through that one
- * branch.
+ * `clampBitrate` comes from Task 17's module (`../desktop/control.js`). The
+ * plan's earlier draft deferred the import behind a CommonJS `require()` —
+ * apps/agent is `"type": "module"`, so that `require` never existed at
+ * runtime. A static import is the honest shape: the router is attached to
+ * every peer, including peers that never open a control channel, but an
+ * import is not a branch — the module loads with everything else, and its
+ * `clampBitrate` is the one piece of Task 17 this boundary reuses as-is. The
+ * two wire decoders it ships are not on the wire the browser speaks (see
+ * `dispatchDesktop`'s note) and are not used here.
  */
-function requireDesktopControl(): {
-  decodeStreamControl: (b: Uint8Array) => unknown;
-  decodeDesktopSelect: (b: Uint8Array) => unknown;
-} {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  return require('../desktop/control.js') as never;
-}
 ```
 
 - [ ] **Step 3: Run green, format, commit**
@@ -8352,28 +8639,55 @@ git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): route peer data channels behind the label gate"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **17 new `it()` / 25 new `expect()`**
-(was **12 / 17** before the B-12g repair; the deltas below carry that figure
-forward rather than re-deriving it). All seventeen are **new**, none ported. An earlier draft claimed six of them as ports (`rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`). None of those six names exists in `apps/agent/src`, and neither behaviour they describe has a Rust test: the label gate (`on_data_channel`, `rtc.rs:663-689`) has no test at all, and the only inbound router (`route_inbound`, `lib.rs:2739`) has none either. This is the reason the counts matter — a declaration that claims six ports under-reports new coverage and over-reports parity in the direction that survives review.
+**TEST-INTEGRITY declaration:** one new file, **21 new `it()` / 36 new `expect()`** —
+**17 / 25** as the B-12g repair landed it, **21 / 36** after this R1–R12
+follow-up (was **12 / 17** before B-12g; the deltas below carry that figure
+forward rather than re-deriving it). All twenty-one are **new**, none ported. An earlier draft claimed six of them as ports (`rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`). None of those six names exists in `apps/agent/src`, and neither behaviour they describe has a Rust test: the label gate (`on_data_channel`, `rtc.rs:663-689`) has no test at all, and the only inbound router (`route_inbound`, `lib.rs:2739`) has none either. This is the reason the counts matter — a declaration that claims six ports under-reports new coverage and over-reports parity in the direction that survives review.
 
-**The B-12g repair adds five `it()` and eight `expect()`:**
+On the six-number axes: fence **21 `it()`** / call sites **21** (no `it.each(` in this file — the recipe is not blind to anything here) / runtime **21**; `expect()` fence **36** / call sites **36** / runtime **36**. Every `expect(` in the fence is a single literal occurrence, so all three axes coincide.
+
+**The B-12g repair added five `it()` and eight `expect()`, carried unchanged:**
 
 | test | covers | `it()` | `expect()` |
 |---|---|---|---|
-| `leaves a binary chunk frame unwrapped on the way out` | R1's outbound half (the JSON path only) | 1 | 1 |
+| `leaves a binary chunk frame unwrapped on the way out` | R1's outbound half (the JSON path only) | 1 | 2 |
 | `drops a frame whose wire channel does not match the label` | R2 inbound | 1 | 2 |
 | `drops a frame that carries no envelope at all` | R2's absence case | 1 | 2 |
 | `drops an inbound frame over the data-channel cap without decoding it` | R4 | 1 | 2 |
 | `accepts an inbound frame exactly at the cap` | R4's **positive control** | 1 | 1 |
-| **total** | | **5** | **8** |
+| **total** | | **5** | **8** (`leaves…` gained 1: it now also asserts `deps.send` was **not** called) |
 
-Two existing cases change their fixture rather than their count: `routes a files JSON frame to the files session` now emits an envelope and asserts the **unwrapped** payload (R2), and `sends whatever the files session returns` becomes `… wrapped in the envelope` and asserts the framed shape (R1). Neither moves a number, and both would **fail** against the pre-repair code — the first because the old `handle` read `message.type` off the raw frame, the second because `emit` passed frames through unwrapped.
+**This follow-up adds four `it()` and changes the fence's object set — the deltas:**
+
+| test | covers | status | `expect()` movement |
+|---|---|---|---|
+| `routes a terminal-data frame to the pty by terminalId, as bytes` | Ruling 1 | **replaces** `routes a frame to the pty` (fixture changed: type, payload, asserted argument) | 1 → 1 |
+| `drops a terminal-data frame with no terminalId rather than guessing a session` | Ruling 1's **positive control for the drop** | **new** | +2 |
+| `routes desktop-select and desktop-bitrate on the control channel` | BLOCKING-2 + Ruling 2/3 | **replaces** `routes desktop control and select frames to their handlers` (label `desktop`→`control`, types `stream-control`→`desktop-bitrate`, payload shape, asserted values; now 3 asserts) | 2 → 3 |
+| `closes an unknown label the browser never opens — including a real label from the shared type this port does not serve` | BLOCKING-2's `'desktop'` ruling | **replaces** membership in the five-label loop (the loop now walks three labels; this pins `'desktop'` is closed, the inverse of the loop) | +1 (new test) |
+| `decodes input BEFORE the limiter and the injector, on the control channel` | BLOCKING-2's input routing | **same count**, fixture moved (`input`/`input-pointer` → `control`/`desktop-input`), and the override now supplies `inject` so the three-stage order is real | 1 → 1 |
+| `detach removes the handlers so a late message is ignored` | MAJOR-3 | **same `it()` count**, fixture restored to a **gate-satisfying** frame (`terminal-data` with `terminalId`), and a second assertion added (`handlerCount` = 0) | 1 → 2 |
+| `send() writes through to the attached channel and warns when the channel is absent` | MAJOR-2 | **new** | +3 |
+| `send() hands a binary frame to the channel untouched` | MAJOR-2's binary half | **new** | +1 |
+| `sends whatever the files session returns…` and `leaves a binary chunk frame…` | MAJOR-2's consequence | observable moved from `deps.send` to **`channel.send`** (the write is the router's own `send` now); each gained the `deps.send` not-called assertion | 1→2 each |
+
+**MAJOR-3 declared:** the `detach` fixture in the landed repair emitted a payload with no `type`, so the (inverted) gate dropped the frame before `detach` was consulted — the test passed for a reason unrelated to `detach` (measured by the probe: E2 with a gate-satisfying fixture reached `write` after `detach`; E3 without `detach` also reached it, so the gate was the only thing making E1 pass). The pre-existing `detach` — `this.attached.delete(label)` with the listener left registered — is fixed here because **this commit's fixture change is what hid it**: `attach` now stores the unsubscribe `on` returns and `detach` calls it before deleting the entry. The fixture is an envelope that satisfies the gate **and** reaches the arm (`terminal-data` with `terminalId` and base64 `data`), not the flat frame, which is no longer this contract's shape. Before → after for that file's fixture: 0 writes after `detach` (for the wrong reason) → 0 writes after `detach` (because the listener is gone — `handlerCount('message')` is now asserted to be 0), and the mutant control (a router that keeps the handler) fails both assertions.
+
+**MAJOR-2 declared:** `send` is now a **public method of the router** — the channel lookup is `attached` (the map `attach` maintains), an absent channel is **warned and dropped, never thrown**, and `emit` routes through it. `deps.send` remains in `RouterDeps` as the seam (the test fake and any future transport owner implement it), and the construction site in the test fence builds `new DataChannelRouter(deps)` **without `as never`** — the type system now sees a complete `RouterDeps`. Whole-document `as never`: **61 → 42** counted outside this paragraph, of which **56 → 36** are real casts — the rest is four English past-tense phrases (one test name, one string literal inside an assertion, two prose sentences) and two fence comments (Task 12's "No `as never` casts", Task 18's "No `as never`"). This paragraph mentions it four times more, so the file total is 46. Twenty casts went and none were added, all in Task 18's two fences: the router construction site, eighteen `attach`-site occurrences (sixteen plain calls and two inside an assertion callback), and the `requireDesktopClamp` return. Task 8/12/14/15/19's casts (12/1/6/5/11) are other tasks' seams, untouched.
+
+**BLOCKING-2 declared:** `CHANNEL_LABELS` is now `{ terminal, files, control }`. `'desktop'` is the capability string and the RTP media label — no peer opens it as a data channel, and the shared type's membership does not make it one; `input`/`cursor` never existed anywhere on the wire. The loop test walks **three** labels, and the new `'desktop'` case pins that a channel with that label is closed — the Rust's `refusing unexpected channel` behaviour (`rtc.rs:663-689`), not silently-routed traffic.
+
+**Ruling 1 declared:** the terminal arm's type is `terminal-data` with a base64 `data` field and a `terminalId` router; `terminal-input` has no producer — before this repair its only two occurrences in the document were the two `envelope('terminal', 'terminal-input', …)` fixtures in the test fence, and both are now `terminal-data` fixtures (the remaining `terminal-input` strings are comments recording the retirement). `RouterDeps.terminal` is shaped as `PtyManager` really is (`write(terminalId, bytes)`, Task 12), not the plan's old string write.
+
+**Ruling 2/3 declared:** `dispatchDesktop` dispatches by the real wire types (`desktop-select` `{ sourceId }`, `desktop-bitrate` `{ bitrateBps }`), reuses only Task 17's `clampBitrate`, and **Task 17's own fence is untouched** — its `decodeStreamControl`/`decodeDesktopSelect` port the wrong vocabulary (`stream-control`/`action`, `source: { kind, id }`) and that re-port is Task 17's change, noted here so the plan carries the obligation.
 
 The `accepts an inbound frame exactly at the cap` case is not padding: the drop test alone passes against a cap of `0`, so without the boundary case the cap test measures only that *something* was dropped.
 
-**And none of these five is gated**, which the declaration must say because it is a gap rather than a covered behaviour. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so this file is green locally and invisible in CI. The Plan-3 handoff is the same as Task 19's: the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
+**R4's cap scope declared (MINOR 8):** the cap check runs for **every** channel, not only files — an SCTP message cap is per-channel by construction, and B-12g §1.5 scoped it to files because that was the path that asked; gating it on `label === 'files'` would re-arm the same unenforced-cap hole on `terminal` and `control`. The two cap tests use a `files` channel because that is the path with an observable consumer; the cap itself is before any label-specific dispatch.
 
-What the other twelve cover, stated as new work: the four label-gate cases (each of the five known labels accepted; an unknown label closed with no code argument; a second channel on an already-registered label closed; a channel whose label throws dropped without being closed), and the eight dispatcher cases as they stood (terminal input routed to the pty; files binary `0x02` routed to the files session; files JSON routed to the files session; the files session's output sent back; desktop control and select routed to their handlers; input decoded BEFORE the limiter and injector; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers).
+**And none of this file is gated**, which the declaration must say because it is a gap rather than a covered behaviour. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so every test above is green locally and invisible in CI. The Plan-3 handoff is the same as Task 19's: the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
+
+The count reconciles as **4 + 5 + 12 = 21**: the four label-gate cases above the table, the five B-12g cases in the table, and twelve dispatcher/lifecycle cases that are neither. What those twelve cover, stated as new work: terminal-data routed to the pty by id and as bytes; the no-terminalId drop; files binary `0x02` routed to the files session; files JSON routed to the files session unwrapped; the files session's output sent back wrapped, through the channel; desktop-select and desktop-bitrate on `control`; the `'desktop'` label closed; input decoded BEFORE the limiter and injector on `control`; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers; `send()` writing through to the attached channel and warning when it is absent; `send()` handing a binary frame through untouched.
 
 The Rust's gate is the specification for the first four — `rtc.rs:663-689` accepts one label, refuses an unexpected one by closing it, drops an unlabelled channel, and closes a second `terminal` channel. That is parity of *behaviour* being ported without parity of *test* being ported, and the declaration now says so instead of implying the second.
 
@@ -8388,11 +8702,11 @@ The Rust's gate is the specification for the first four — `rtc.rs:663-689` acc
 - Test: `apps/agent/test/runtime.test.ts`, `apps/agent/test/desktop/session.test.ts`
 
 **Interfaces:**
-- Consumes: every prior task, and — load-bearing — **`packetizeAnnexB`** (Plan 1 Task 3) and the **`RTCRtpSenderLike`** seam (Plan 1 Task 2).
+- Consumes: every prior task, and — load-bearing — **`packetizeAnnexB`** (Plan 1 Task 3) and the **`RTCRtpSenderLike`** seam (Plan 1 Task 2). For MAJOR-1 the runtime consumes `FilesSession` (Task 11), `FilesRoot` (Task 10), `FilesTicker`, `IDLE_TICK_MS`, `ACK_TICK_MS` (its own file), and `FILES_IDLE_TIMEOUT_MS` (Task 11) in the wiring test.
 - Produces:
   - `class DesktopSession { constructor(deps); start(source, profile, bitrate): Promise<void>; control(control: StreamControl): void; select(source: DesktopSource): Promise<void>; stop(): Promise<void> }`
   - `function resolveDefaultSource(config, sources): DesktopSource`
-  - `class AgentRuntime { static async start(config): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }`
+  - `class AgentRuntime { static async start(config, deps?): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }` — `deps` carries `send(label, frame)` (the seam Task 18's router exposes — the runtime→router binding is `send: router.send`), an optional `now`, and an optional `filesSession` factory (MAJOR-1's test seam; the default constructs the real `FilesRoot.open` + `FilesSession` and owns the two tick intervals)
   - `function createAgentRuntime(config): Promise<AgentRuntime>`
 
 **⚠️ The video path, stated once because an earlier draft of this task got it
@@ -8402,11 +8716,15 @@ sender (Plan 1 Task 2), after `packetizeAnnexB` (Plan 1 Task 3) turns the
 encoder's Annex-B access unit into RFC 6184 mode-1 packets. That is what the
 Rust did — `apps/agent/src/desktop.rs:1767-1776` hands the buffer to
 `TrackLocalStaticSample.sample_writer(ssrc, payload_type).write_sample(&sample)`
-and the `rtc-rtp` crate packetizes it. `deps.send('desktop', …)` in this task
+and the `rtc-rtp` crate packetizes it. `deps.send('control', …)` in this task
 is **not** the video path: it is for the JSON control/status frames
 (`desktop-stats`, `desktop-cursor`, `desktop-sources` — B56/B58/B61) which do
-travel on the `desktop` data channel. An earlier draft routed `encoded.data`
-straight to `deps.send('desktop', …)`, which would have put raw Annex-B bytes
+travel on the **`control`** data channel — the label the browser opens
+(`desktop-core/src/client.ts:503`) and the Rust selects for `SessionMode::Desktop`
+(`rtc.rs:73` at `lib.rs:1124`), not `'desktop'`, which is the capability string
+and the RTP media label only (Task 18's BLOCKING-2). An earlier draft routed
+`encoded.data` straight to `deps.send('control', …)`, which would have put raw
+Annex-B bytes
 on a data channel and produced a black video with no error anywhere.
 
 - [ ] **Step 1: Write the failing default-source test**
@@ -8414,7 +8732,9 @@ on a data channel and produced a black video with no error anywhere.
 ```ts
 // apps/agent/test/runtime.test.ts
 import { describe, expect, it, vi } from 'vitest';
-import { FilesTicker, resolveDefaultSource } from '../src/runtime.js';
+import { AgentRuntime, FilesTicker, IDLE_TICK_MS, resolveDefaultSource } from '../src/runtime.js';
+import { FILES_IDLE_TIMEOUT_MS } from '../src/files/protocol.js';
+import type { AgentConfig } from '../src/config.js';
 
 const sources = {
   monitors: [
@@ -8455,12 +8775,14 @@ describe('resolveDefaultSource', () => {
 describe('FilesTicker', () => {
   /**
    * **R3: the production tick owner.** `checkIdle()` and `flushAcks()` were
-   * defined and never called outside the fences — measured: `setInterval`
-   * appears **0** times in the whole document, and `checkIdle`'s only callers
-   * are two assertions inside Task 11's session fence. A state machine with an
-   * idle deadline and a 20 ms ack flush, driven by nobody, never fires either
-   * one: a stalled transfer is never reaped and a low-rate upload never
-   * acknowledges.
+   * defined and never called outside the fences — measured at B-12g's commit:
+   * `setInterval` appeared **0** times in the whole document, and `checkIdle`'s
+   * only callers were two assertions inside Task 11's session fence. A state
+   * machine with an idle deadline and a 20 ms ack flush, driven by nobody,
+   * never fires either one: a stalled transfer is never reaped and a low-rate
+   * upload never acknowledges. This follow-up wires the driver (MAJOR-1) — the
+   * `AgentRuntime` wiring tests at the end of this file own the intervals; the
+   * class here keeps the injected clock so no test sleeps.
    *
    * The Rust drove both from `lib.rs:1852-1858`, ticked at `:1890` and
    * `:1898-1899` — 1 s for idle, 20 ms for acks. The port keeps the injected
@@ -8549,6 +8871,88 @@ describe('FilesTicker', () => {
     expect(session.flushAcks).not.toHaveBeenCalled();
   });
 });
+
+describe('AgentRuntime — the production tick wiring (MAJOR-1)', () => {
+  /**
+   * **MAJOR-1: the driver must be wired, not merely defined.** The ticker tests
+   * above prove the state machine; these prove the runtime actually constructs
+   * it and clears its intervals on `stop()`. They use the real
+   * `setInterval`/`clearInterval` under `vi.useFakeTimers()`, so the handles
+   * are the production ones — a wiring test that mocked the timer would prove
+   * nothing about `setInterval` ownership. The session is injected through the
+   * `filesSession` seam so the emitted frame is observable without a real
+   * `FilesSession` root; the production values of that seam are themselves
+   * covered by Task 11's `FilesSession` fence.
+   */
+  function wiring(overrides: Partial<AgentConfig> = {}) {
+    const config = {
+      filesRoot: '/data',
+      desktopProfile: { id: '720p30' },
+      ...overrides,
+    } as unknown as AgentConfig;
+    const sent: { label: string; frame: unknown }[] = [];
+    const session = {
+      checkIdle: vi.fn(() => [] as unknown[]),
+      flushAcks: vi.fn(() => [] as unknown[]),
+    };
+    const deps = {
+      send: (label: string, frame: unknown) => sent.push({ label, frame }),
+      now: () => 1_000_000,
+      filesSession: () => session,
+    };
+    return { config, deps, sent, session };
+  }
+
+  it('drives the files session from real intervals and emits idle frames through send', async () => {
+    vi.useFakeTimers();
+    try {
+      const { config, deps, sent, session } = wiring();
+      session.checkIdle = vi.fn(() => [{ type: 'files-error', code: 'TRANSFER_TIMEOUT' }]);
+      const runtime = await AgentRuntime.start(config, deps);
+      expect(sent).toEqual([]);
+      // One idle period: `checkIdle` runs once and its frame goes out on the
+      // `files` channel — the label Task 18's router serves.
+      await vi.advanceTimersByTimeAsync(IDLE_TICK_MS);
+      expect(session.checkIdle).toHaveBeenCalledTimes(1);
+      expect(sent).toEqual([{ label: 'files', frame: { type: 'files-error', code: 'TRANSFER_TIMEOUT' } }]);
+      await runtime.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stop() clears the tick intervals so no late tick fires', async () => {
+    vi.useFakeTimers();
+    try {
+      const { config, deps, sent, session } = wiring();
+      session.checkIdle = vi.fn(() => [{ type: 'files-error', code: 'TRANSFER_TIMEOUT' }]);
+      const runtime = await AgentRuntime.start(config, deps);
+      await runtime.stop();
+      // Well past several idle periods: nothing fires, because the handles are
+      // cleared. Without the clearing this emits one frame per elapsed period.
+      await vi.advanceTimersByTimeAsync(FILES_IDLE_TIMEOUT_MS * 3);
+      expect(session.checkIdle).not.toHaveBeenCalled();
+      expect(sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips the ticker entirely when the config has no files root', async () => {
+    // The Rust's files manager is `Option<FilesManager>`; a config without a
+    // root must not open one, and must not tick a session that does not exist.
+    vi.useFakeTimers();
+    try {
+      const { config, deps, sent } = wiring({ filesRoot: null });
+      const runtime = await AgentRuntime.start(config, deps);
+      await vi.advanceTimersByTimeAsync(FILES_IDLE_TIMEOUT_MS * 2);
+      expect(sent).toEqual([]);
+      await runtime.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 ```
 
 - [ ] **Step 2: Run it and watch it fail, then implement `runtime.ts`**
@@ -8560,6 +8964,8 @@ Expected: FAIL — module unresolved.
 // apps/agent/src/runtime.ts
 import type { ProfileId } from '@ponter/shared';
 import type { AgentConfig } from './config.js';
+import { FilesRoot } from './files/sandbox.js';
+import { FilesSession } from './files/session.js';
 import type { DesktopSource } from './desktop/control.js';
 
 export interface DesktopSourceList {
@@ -8697,14 +9103,60 @@ export interface RuntimeStatus {
  *
  * `createAgentRuntime` is the only public entry point; `AgentRuntime.start` is
  * exported for tests that want a handle without the process-level wiring.
+ *
+ * **MAJOR-1: the tick driver lives here.** `FilesSession` carries the idle
+ * deadline and the 20 ms ack flush, but it is a state machine — something must
+ * call `checkIdle()`/`flushAcks()` or neither ever fires. The Rust drove both
+ * from one `tokio::select!` loop (`lib.rs:1845-1910`: `idle_tick` at 1 s,
+ * `ack_tick` at 20 ms). The port's equivalent is two `setInterval` handles the
+ * runtime owns: `IDLE_TICK_MS` and `ACK_TICK_MS`, both firing `ticker.tick()`,
+ * whose catch-up arithmetic turns elapsed wall time into the right number of
+ * calls. A config with no `filesRoot` has no `FilesSession` and no ticker,
+ * matching the Rust's `Option<FilesManager>` handling, and `stop()` clears both
+ * handles before anything else so a late tick cannot fire against a torn-down
+ * session.
  */
 export class AgentRuntime {
   private stopped = false;
+  private readonly tickers: NodeJS.Timeout[] = [];
 
-  private constructor(private readonly config: AgentConfig) {}
-
-  static async start(config: AgentConfig): Promise<AgentRuntime> {
-    return new AgentRuntime(config);
+  /**
+   * **MAJOR-1's test seam, and the honest shape of Plan 2's wiring.** The
+   * production values construct the real session (`FilesRoot.open` +
+   * `FilesSession`) and emit through `send`; a test overrides `filesSession`
+   * with a fake state machine and observes the tick through its emit. The
+   * `send` seam is the one Task 18's router exposes (`router.send`), so the
+   * runtime→router binding is `send: router.send` once Task 18 lands in the
+   * same binary.
+   */
+  static async start(
+    config: AgentConfig,
+    deps: {
+      send: (label: string, frame: unknown) => void;
+      now?: () => number;
+      filesSession?: (root: string, now: () => number) => { checkIdle(): unknown[]; flushAcks(): unknown[] };
+    } = {
+      send: () => {
+        throw new Error('no transport is wired yet');
+      },
+    },
+  ): Promise<AgentRuntime> {
+    const runtime = new AgentRuntime(deps);
+    if (config.filesRoot) {
+      const now = deps.now ?? Date.now;
+      const session = deps.filesSession
+        ? deps.filesSession(config.filesRoot, now)
+        : new FilesSession(FilesRoot.open(config.filesRoot), now);
+      const ticker = new FilesTicker(session, {
+        now,
+        emit: (frame) => deps.send('files', frame),
+      });
+      runtime.tickers.push(
+        setInterval(() => ticker.tick(), IDLE_TICK_MS),
+        setInterval(() => ticker.tick(), ACK_TICK_MS),
+      );
+    }
+    return runtime;
   }
 
   status(): RuntimeStatus {
@@ -8721,6 +9173,7 @@ export class AgentRuntime {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    for (const handle of this.tickers.splice(0)) clearInterval(handle);
   }
 }
 
@@ -8840,7 +9293,8 @@ describe('DesktopSession', () => {
 
   it('encodes a changed frame on pump and writes it to RTP, not to a data channel', async () => {
     // The bug this pins: an earlier draft of this task sent the encoder's
-    // Annex-B buffer to `deps.send('desktop', …)`, i.e. down a data channel.
+    // The bug this pins: an earlier draft of this task sent the encoder's
+    // Annex-B buffer to `deps.send('control', …)`, i.e. down a data channel.
     // That produces no error and a black video, because a data channel does not
     // carry RTP. The assertion that matters is therefore NOT "a frame was
     // delivered somewhere" — it is that the bytes reached `writeRtp` after
@@ -8981,11 +9435,15 @@ export interface DesktopSessionDeps {
     payloadType(): number | null;
   };
   /**
-   * JSON control/status frames on the `desktop` **data channel** — B56/B58/B61.
+   * JSON control/status frames on the `control` **data channel** — B56/B58/B61.
    * Never the video. Confusing this with the RTP sink above is the bug an
-   * earlier draft of this task contained.
+   * earlier draft of this task contained. The label is `control`, not
+   * `desktop`: the browser opens `channelLabels: ['control']`
+   * (`apps/web/src/stores/terminal.ts:937`) and the Rust's `frame_desktop_sources`
+   * stamps `channel: "control"` (`desktop.rs:2062-2085`); `'desktop'` is the
+   * capability string and the RTP media label (Task 18's BLOCKING-2).
    */
-  send(label: 'desktop', frame: unknown): void;
+  send(label: 'control', frame: unknown): void;
   logger: { info(m: string): void; warn(m: string): void; error(m: string): void; debug(m: string): void };
   now?: () => number;
   /** Injectable clock for the 90 kHz RTP timestamp. Defaults to `Date.now`. */
@@ -9116,7 +9574,7 @@ export class DesktopSession {
   /**
    * One iteration of the loop: capture → skip → encode → send.
    *
-   * The caller drives this at the profile's frame interval (Task 18's runtime
+   * The caller drives this at the profile's frame interval (Task 19's runtime
    * ticker does). Splitting the single iteration out rather than owning a timer
    * here is what makes the loop testable without a capture device and what lets
    * the runtime rebuild the interval when the profile changes — the Rust built
@@ -9269,33 +9727,48 @@ git add apps/agent
 git commit -m "feat(agent): wire the runtime lifecycle and the desktop session"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **22 new `it()` / 43 new `expect()`**
-(was **17 / 33** before the B-12g repair; per file below). `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is the **only** port here — it re-homes from Task 8. Everything else is **new**, and an earlier draft named eight Rust tests that do not exist anywhere in `apps/agent/src`: `resolve_default_source_prefers_primary` / `…honours_an_explicit_id` / `…resolves_test` / `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture` / `…stops_capture_before_the_encoder` / `…reconfigures_on_a_quality_change`. The functions they name do exist — `default_source_id` (`desktop.rs:1004`) and `run_desktop_session` (`lib.rs:2002`/`2698`) — and neither has a test. The only in-tree use of `default_source_id` is the `#[ignore]`d live-display smoke (`desktop.rs:2707`), which asserts a frame, not a resolution rule.
+**TEST-INTEGRITY declaration:** two new files, **25 new `it()` / 49 new `expect()`**
+(was **17 / 33** before the B-12g repair, **22 / 43** as that repair landed; per
+file below). `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is the **only** port here — it re-homes from Task 8. Everything else is **new**, and an earlier draft named eight Rust tests that do not exist anywhere in `apps/agent/src`: `resolve_default_source_prefers_primary` / `…honours_an_explicit_id` / `…resolves_test` / `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture` / `…stops_capture_before_the_encoder` / `…reconfigures_on_a_quality_change`. The functions they name do exist — `default_source_id` (`desktop.rs:1004`) and `run_desktop_session` (`lib.rs:2002`/`2698`) — and neither has a test. The only in-tree use of `default_source_id` is the `#[ignore]`d live-display smoke (`desktop.rs:2707`), which asserts a frame, not a resolution rule.
 
-Per file, on the same fence axis: `runtime.test.ts` **11 `it()` / 16 `expect()`**,
-`desktop/session.test.ts` **11 / 27**. 11 + 11 = 22; 16 + 27 = 43.
+Per file, on the same fence axis: `runtime.test.ts` **14 `it()` / 22 `expect()`**,
+`desktop/session.test.ts` **11 / 27**. 14 + 11 = 25; 22 + 27 = 49.
 
-**The B-12g repair adds five `it()` and ten `expect()` to `runtime.test.ts`** —
+**The B-12g repair added five `it()` and ten `expect()` to `runtime.test.ts`** —
 `runtime.test.ts` was **6 / 6** and is now **11 / 16**. All five are R3's
 (`FilesTicker`): one `checkIdle` per second; one `flushAcks` per 20 ms; the
 catch-up count when a tick arrives late; that both ticks' frames are emitted;
 and that `stop()` ends ticking. `desktop/session.test.ts` is **unchanged at
 11 / 27** — R3 owns a tick over `FilesSession`, not over the desktop loop.
 
+**This R1–R12 follow-up adds three `it()` and six `expect()` to
+`runtime.test.ts`, all under MAJOR-1** — the production tick wiring the
+landed repair's `FilesTicker` never had: a runtime-constructed ticker driven by
+**real** `setInterval` handles under `vi.useFakeTimers()` (a mocked timer would
+prove nothing about `setInterval` ownership), emitting through the `send` seam;
+`stop()` clearing those handles so no late tick fires; and the no-files-root
+config skipping the ticker entirely (the Rust's `Option<FilesManager>`). The
+session is injected through a `filesSession` seam so the emitted frame is
+observable without a real root; the production construction
+(`FilesRoot.open` + `FilesSession`) is that seam's default.
+
 `FilesTicker` is the production owner R3 requires, and the declaration says so
-as a **capability**, not a test name: `setInterval` appeared **0** times in
-this document before the repair and `checkIdle()`'s only callers were two
+as a **capability**, not a test name. The pre-repair count was: `setInterval`
+appeared **0** times in this document and `checkIdle()`'s only callers were two
 assertions inside Task 11's fence, so the idle deadline and the 20 ms ack flush
-had no driver. The tick is driven from the runtime's own interval, and
-`FilesTicker` itself takes the injected clock so no test sleeps.
+had no driver. **The post-repair count is: `setInterval` appears twice as real
+code in this document** — the two handles `AgentRuntime.start` owns
+(`IDLE_TICK_MS` and `ACK_TICK_MS`, both firing `ticker.tick()`) — and the
+wiring has its own three tests above. The ticker itself keeps the injected
+clock so no test sleeps.
 
-So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the seventeen cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
+So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the twenty-five cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), five `FilesTicker` cases (the 1 s idle period; the 20 ms ack period; the catch-up count when a tick arrives late; that both ticks' frames are emitted; `stop()` ending ticking), three `AgentRuntime` wiring cases (real intervals driving the session and emitting on `files`; `stop()` clearing the handles; a no-files-root config skipping the ticker), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
 
-**And one R3 consequence the declaration must state, because it is a gap rather than a covered behaviour:** `FilesTicker` is **not** gated. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so its tests are green locally and invisible in CI — the same status Task 11's crossing test carries. The Plan-3 handoff is the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
+**And one R3 consequence the declaration must state, because it is a gap rather than a covered behaviour:** `runtime.test.ts` — ticker and wiring alike — is **not** gated. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so its tests are green locally and invisible in CI — the same status Task 11's crossing test carries. The Plan-3 handoff is the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
 
 The `expect()` count is larger than the `it()` count by more than usual because the RTP test is one `it()` with ten assertions: it is checking a serialized packet byte by byte, and a packet is not one property.
 
-**New, and the most important two in this task:** the RTP-path test and the no-sender drop. An earlier draft of this task wired the encoder's Annex-B output to `deps.send('desktop', …)` — a data channel — which would have shipped a black video with no error anywhere. Both are **new**, not ports: the Rust never tested the write path in isolation because `write_sample` did the packetizing for it. The RTP test asserts the header's payload type, SSRC, RTP version, that the Annex-B start code is **absent** from the payload, and that `deps.send` was **not** called.
+**New, and the most important two in this task:** the RTP-path test and the no-sender drop. An earlier draft of this task wired the encoder's Annex-B output to `deps.send('control', …)` — a data channel — which would have shipped a black video with no error anywhere. Both are **new**, not ports: the Rust never tested the write path in isolation because `write_sample` did the packetizing for it. The RTP test asserts the header's payload type, SSRC, RTP version, that the Annex-B start code is **absent** from the payload, and that `deps.send` was **not** called.
 
 ---
 
@@ -9390,7 +9863,7 @@ Before this plan's work can be called done, the coverage matrix must record:
 this plan had **no consumer at all** for `packetizeAnnexB` (Plan 1 Task 3) and
 **no reference at all** to `RTCRtpSenderLike` (Plan 1 Task 2) — two artifacts
 Plan 1's own Interfaces block says "Task 3 and Plan 2 consume". Task 19's
-`encodeAndSend` sent the encoder's Annex-B buffer to `deps.send('desktop', …)`,
+`encodeAndSend` sent the encoder's Annex-B buffer to `deps.send('control', …)`,
 i.e. down a **data channel**, where it would have produced no error and a black
 video. The Rust never did that: `apps/agent/src/desktop.rs:1767-1776` hands the
 buffer to `sample_writer(ssrc, payload_type).write_sample(&sample)` and the
@@ -9401,7 +9874,7 @@ one line, but two halves of a plan each internally consistent and jointly
 broken, joined by an interface nobody checked was consumed. Fixed by: naming
 both dependencies in Task 19's Interfaces, adding the `rtp` dep and
 `sendRtp()` to `DesktopSession`, splitting `deps.send` (JSON control frames on
-the data channel) from `deps.rtp` (video over RTP) by comment and by type, and
+the `control` data channel) from `deps.rtp` (video over RTP) by comment and by type, and
 adding the two tests that fail if the wire path regresses to a data channel.
 The general lesson, written down so the next planner applies it: **for every
 artifact a plan declares it "produces for a later plan", grep the later plan for
