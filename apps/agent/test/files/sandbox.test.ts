@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -117,6 +123,30 @@ describe('FilesRoot.resolveExisting', () => {
     const dir = root();
     expect(code(() => FilesRoot.open(dir).resolveExisting('nope'))).toBe(
       'NOT_FOUND',
+    );
+  });
+
+  it('accepts a path under a root of "/" (defect 8)', () => {
+    // `this.root + sep` is `'//'` when the root is `/`, and no absolute path
+    // but `//` starts with that — so `AGENT_FILES_ROOT=/` rejected every path
+    // with `PATH_OUTSIDE_ROOT`. Fail-closed, so not an escape, but the whole
+    // files feature was dead under that root.
+    //
+    // The wire path must be relative, so the probe strips the leading `/` from
+    // a real file's canonical path: under a root of `/` that IS the wire path,
+    // and it reaches `ensureContained` with a canonical target that is not the
+    // root itself.
+    const real = realpathSync(join(root(), 'docs', 'a.txt'));
+    const slashRoot = FilesRoot.open('/');
+    expect(slashRoot.resolveExisting(real.replace(/^\/+/, ''))).toBe(real);
+    // Positive control in the same invocation: the same root still refuses a
+    // path that genuinely escapes it is impossible (`/` contains everything),
+    // so the control is that a path CANNOT be resolved from a root that does
+    // not contain it — measured against a nested root, the shape the check was
+    // written for.
+    const nested = FilesRoot.open(join(real, '..'));
+    expect(code(() => nested.resolveExisting('../../../etc/passwd'))).toBe(
+      'PATH_OUTSIDE_ROOT',
     );
   });
 });

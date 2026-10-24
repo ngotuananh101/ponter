@@ -150,7 +150,14 @@ export class FilesRoot {
 
   private ensureContained(canonical: string, wirePath: string): void {
     if (canonical === this.root) return;
-    if (!canonical.startsWith(this.root + sep)) {
+    // The separator is appended **only when the root does not already end in
+    // one**. `AGENT_FILES_ROOT=/` canonicalises to `/`, and `/` + `/` is `//`,
+    // which no path but `//` itself starts with — so the prefix check rejected
+    // everything under a root of `/` with `PATH_OUTSIDE_ROOT` (fail-closed, a
+    // usability bug, not an escape). Appending unconditionally is the same
+    // trap for any root that names a filesystem root.
+    const prefix = this.root.endsWith(sep) ? this.root : this.root + sep;
+    if (!canonical.startsWith(prefix)) {
       throw new SandboxError(
         'PATH_OUTSIDE_ROOT',
         `${wirePath} resolves outside the files root`,

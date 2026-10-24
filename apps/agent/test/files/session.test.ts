@@ -306,6 +306,62 @@ describe('upload', () => {
     });
     expect(JSON.stringify(out)).toContain('FILE_EXISTS');
   });
+
+  it('answers the begin with the initial cumulative ack (defect 2)', () => {
+    // `files.rs:1623-1627`: "The begin is answered with the first cumulative
+    // ack (spec §6.1)". The port returned `[]`, and the browser's transfer pump
+    // is driven from `onAck` alone (`packages/file-core/src/transfer.ts:164-177`),
+    // so no chunk was ever sent and every upload hung to the idle timeout.
+    const { s } = session();
+    const out = s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      name: 'ack.bin',
+      size: 65_536,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      type: 'files-upload-ack',
+      transferId: ID,
+      nextChunkIndex: 0,
+    });
+  });
+
+  it('carries the wire-relative destination on files-upload-complete (defect 4)', () => {
+    // `FilesUploadComplete.path` is a `FilesPath` — sandbox-relative
+    // (`packages/shared/src/types/files.ts:82`) — and the Rust emits
+    // `state.dest_rel` (`files.rs:2281`). The port sent the absolute host path,
+    // which leaks the host layout and breaks any consumer that resolves it
+    // against the root again.
+    const size = 32_768;
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-complete-'));
+    mkdirSync(join(dir, 'sub'));
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+    s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: 'sub',
+      name: 'file.bin',
+      size,
+    });
+    s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 0,
+      totalChunks: 1,
+      data: Buffer.alloc(size, 1).toString('base64'),
+    });
+    const out = s.handle({ type: 'files-upload-end', transferId: ID });
+    const complete = out.find((f) => frameType(f) === 'files-upload-complete');
+    expect(complete).toMatchObject({
+      name: 'file.bin',
+      path: 'sub/file.bin',
+    });
+    // The absolute path is the bug; assert its absence, not just the presence
+    // of a relative-looking string.
+    expect(JSON.stringify(complete)).not.toContain(dir);
+  });
 });
 
 describe('resume', () => {
@@ -382,6 +438,40 @@ describe('resume', () => {
     now = 30_000;
     expect(JSON.stringify(s.checkIdle())).toContain('TRANSFER_TIMEOUT');
   });
+
+  it('carries the transferId on an upload timeout frame (defect 3)', () => {
+    // The download branch always set it; the upload branch did not, and the
+    // browser only settles a transfer whose frame carries the id it waits on
+    // (`packages/file-core/src/client.ts:637-641`). Rust sets it on both
+    // (`files.rs:1259-1270`, `timeout_frame(direction, transfer_id)`).
+    let now = 0;
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+    const s = new FilesSession(FilesRoot.open(dir), () => now);
+    s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      name: 'stall.bin',
+      size: 65_536,
+    });
+    now = 30_000;
+    const out = s.checkIdle();
+    expect(out[0]).toMatchObject({
+      type: 'files-error',
+      transferId: ID,
+      code: 'TRANSFER_TIMEOUT',
+    });
+    // And the slot is released, so the client can start over.
+    expect(
+      s.handle({
+        type: 'files-upload-begin',
+        transferId: ID2,
+        path: '',
+        name: 'again.bin',
+        size: 10,
+      })[0],
+    ).toMatchObject({ type: 'files-upload-ack', transferId: ID2 });
+  });
 });
 
 describe('cancel', () => {
@@ -401,6 +491,88 @@ describe('cancel', () => {
   it('is idempotent for an unknown id and emits no error', () => {
     const { s } = session();
     expect(s.handle({ type: 'files-cancel', transferId: ID2 })).toEqual([]);
+  });
+});
+
+describe('delete honours recursive (defect 1)', () => {
+  // The Rust's `FilesRoot::delete` (`files.rs:918-943`) branches on
+  // `recursive`: `remove_dir_all` for the tree, and a non-recursive call on a
+  // non-empty directory is `DIR_NOT_EMPTY`. The port always took the
+  // non-recursive arm, so every folder delete in the web UI — which sends
+  // `recursive: true` for directories (`FilesView.vue:145`) — failed.
+  function withTree() {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-delete-'));
+    mkdirSync(join(dir, 'folder'));
+    writeFileSync(join(dir, 'folder', 'inner.txt'), 'content');
+    return { dir, s: new FilesSession(FilesRoot.open(dir), () => 0) };
+  }
+
+  it('removes a non-empty directory when recursive is set', () => {
+    const { dir, s } = withTree();
+    const out = s.handle({
+      type: 'files-delete',
+      requestId: 'r-del-1',
+      path: 'folder',
+      recursive: true,
+    });
+    expect(out[0]).toMatchObject({
+      type: 'files-action-result',
+      success: true,
+    });
+    expect(() => statSync(join(dir, 'folder'))).toThrow();
+  });
+
+  it('refuses a non-empty directory when recursive is absent or false', () => {
+    for (const recursive of [undefined, false]) {
+      const { dir, s } = withTree();
+      const out = s.handle({
+        type: 'files-delete',
+        requestId: 'r-del-2',
+        path: 'folder',
+        recursive,
+      });
+      expect(out[0]).toMatchObject({
+        type: 'files-action-result',
+        success: false,
+        error: 'DIR_NOT_EMPTY',
+      });
+      // The refusal must not be a half-delete.
+      expect(statSync(join(dir, 'folder', 'inner.txt')).isFile()).toBe(true);
+    }
+  });
+
+  it('removes an empty directory without recursive (the non-recursive arm still works)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ponter-delete-'));
+    mkdirSync(join(dir, 'empty'));
+    const s = new FilesSession(FilesRoot.open(dir), () => 0);
+    const out = s.handle({
+      type: 'files-delete',
+      requestId: 'r-del-3',
+      path: 'empty',
+    });
+    expect(out[0]).toMatchObject({
+      type: 'files-action-result',
+      success: true,
+    });
+    expect(() => statSync(join(dir, 'empty'))).toThrow();
+  });
+
+  it('refuses the sandbox root even with recursive set', () => {
+    // `rmSync(root, {recursive: true})` would delete the whole sandbox in one
+    // message; the Rust refuses the root above the recursive branch too.
+    const { dir, s } = withTree();
+    const out = s.handle({
+      type: 'files-delete',
+      requestId: 'r-del-4',
+      path: '',
+      recursive: true,
+    });
+    expect(out[0]).toMatchObject({
+      type: 'files-action-result',
+      success: false,
+      error: 'PERMISSION_DENIED',
+    });
+    expect(statSync(join(dir, 'folder', 'inner.txt')).isFile()).toBe(true);
   });
 });
 

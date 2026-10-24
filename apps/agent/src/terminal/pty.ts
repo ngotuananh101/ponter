@@ -124,9 +124,19 @@ export class PtyManager {
         'the agent already has 10 terminal sessions',
       );
     }
+    // **The allowlist is consulted before a process exists**, as the Rust does
+    // (`lib.rs:1372-1400`): a peer-supplied shell is untrusted input, and
+    // checking it after `spawn` would already have executed it. The policy
+    // throws `ShellRefusedError` with the Rust's own wording; it is re-thrown
+    // as `pty-spawn-failed`, which is the frame the Rust sends for a refused
+    // shell too ("reuse the pinned spawn-failure frame … a third wire code
+    // would change a contract for no reader's benefit").
+    const shell = options.policy
+      ? this.resolveShell(options.policy, options.shell)
+      : options.shell;
     let process_: PtyProcess;
     try {
-      process_ = this.host.spawn(options.shell, [], {
+      process_ = this.host.spawn(shell, [], {
         name: 'xterm-256color',
         cols: options.cols,
         rows: options.rows,
@@ -141,7 +151,6 @@ export class PtyManager {
     } catch (error) {
       throw new PtyError('pty-spawn-failed', (error as Error).message);
     }
-    this.sessions.set(options.terminalId, { process: process_ });
     // With `encoding: null` a real `node-pty` emits Buffers. The `string` half
     // is tolerated only so a fake host cannot smuggle in a lossy decode
     // silently: `Buffer.from(string)` is the utf8 round trip this code exists
@@ -154,18 +163,60 @@ export class PtyManager {
     // EventEmitter-shaped handler reading `event?.exitCode` gets `undefined`
     // on every real exit and reports `null` — a defect the plan's own fence
     // observed as `[-1]` and its `as never` cast hid from `tsc`.
-    process_.onData((chunk: string | Buffer) => {
-      this.emitChunks(
-        options.terminalId,
-        Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk),
-      );
-    });
-    process_.onExit((event: { exitCode?: number }) => {
-      this.sessions.delete(options.terminalId);
-      this.exitHandler?.({
-        terminalId: options.terminalId,
-        exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
+    //
+    // **Subscribe before registering the slot.** Registering first leaks a slot
+    // forever if a subscription throws: the map keeps an entry nothing will
+    // ever delete, so the agent silently offers 9 sessions instead of 10 for
+    // the rest of its life. On a throw, kill the spawned process and report
+    // the same `pty-spawn-failed` an unwireable spawn reports.
+    try {
+      process_.onData((chunk: string | Buffer) => {
+        this.emitChunks(
+          options.terminalId,
+          Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk),
+        );
       });
+      process_.onExit((event: { exitCode?: number }) => {
+        this.emitExit(options.terminalId, process_, event);
+      });
+    } catch (error) {
+      try {
+        process_.kill();
+      } catch {
+        // The process is already unusable; a failing kill changes nothing.
+      }
+      throw new PtyError('pty-spawn-failed', (error as Error).message);
+    }
+    this.sessions.set(options.terminalId, { process: process_ });
+  }
+
+  private resolveShell(policy: ShellPolicy, requested: string): string {
+    try {
+      return policy.resolveClientShell(requested);
+    } catch (error) {
+      throw new PtyError(
+        'pty-spawn-failed',
+        `shell refused: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  private emitExit(
+    terminalId: string,
+    process_: PtyProcess,
+    event: { exitCode?: number },
+  ): void {
+    // **Only this process may free the slot.** `close()` drops the map entry
+    // but cannot unsubscribe, so an old process's exit handler outlives it; a
+    // reused id would then be deleted by a stranger's death, silencing a live
+    // terminal the browser still shows and emitting an exit nobody asked for.
+    // The exit is still reported either way — Rust reports the exit and only
+    // guards the eviction.
+    if (this.sessions.get(terminalId)?.process === process_)
+      this.sessions.delete(terminalId);
+    this.exitHandler?.({
+      terminalId,
+      exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
     });
   }
 

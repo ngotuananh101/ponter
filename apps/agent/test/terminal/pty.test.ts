@@ -1,7 +1,11 @@
 // apps/agent/test/terminal/pty.test.ts
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_SESSIONS, PtyManager } from '../../src/terminal/pty.js';
+import { ShellPolicy } from '../../src/terminal/shell-policy.js';
 
 function fakeHost() {
   const spawned: {
@@ -226,5 +230,150 @@ describe('PtyManager.write', () => {
     manager.resize('t1', 120, 40);
     expect(procs[0]!.resize).toHaveBeenCalledWith(120, 40);
     expect(() => manager.resize('nope', 1, 1)).not.toThrow();
+  });
+});
+
+/** A host whose first spawn returns a process that cannot be subscribed to. */
+function brokenFirstHost() {
+  const procs: (EventEmitter & {
+    write: ReturnType<typeof vi.fn>;
+    resize: ReturnType<typeof vi.fn>;
+    kill: ReturnType<typeof vi.fn>;
+  })[] = [];
+  const host = {
+    spawn: () => {
+      const emitter = new EventEmitter();
+      const broken = procs.length === 0;
+      // The first process's subscription surface throws — what a host adapter
+      // written against `on` instead of the declared `onData`/`onExit` does at
+      // runtime. Throwing rather than omitting keeps the fake statically a
+      // `PtyProcess`, so the seam needs no cast; the failure is real at run
+      // time, which is where the manager must survive it.
+      const p = Object.assign(emitter, {
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        onData: (cb: (chunk: string | Buffer) => void) => {
+          if (broken) throw new TypeError('process_.onData is not a function');
+          emitter.on('data', cb);
+        },
+        onExit: (cb: (event: { exitCode?: number }) => void) => {
+          if (broken) throw new TypeError('process_.onExit is not a function');
+          emitter.on('exit', cb);
+        },
+      });
+      procs.push(p);
+      return p;
+    },
+  };
+  return { host, procs };
+}
+
+describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
+  it('does not leak a slot when a subscription throws (defect 5)', async () => {
+    // Registering the slot before subscribing leaves an entry no exit event
+    // will ever remove, so the agent silently offers 9 sessions for the rest of
+    // its life and refuses the 10th to a peer that opened nothing.
+    const { host, procs } = brokenFirstHost();
+    const manager = new PtyManager(host);
+    await expect(
+      manager.create({
+        terminalId: 'broken',
+        shell: '/bin/sh',
+        cols: 80,
+        rows: 24,
+      }),
+    ).rejects.toMatchObject({ code: 'pty-spawn-failed' });
+    // The unusable process is killed rather than left running unobserved.
+    expect(procs[0]!.kill).toHaveBeenCalled();
+
+    let accepted = 0;
+    for (let i = 0; i < MAX_SESSIONS; i += 1) {
+      await manager.create({
+        terminalId: `s${i}`,
+        shell: '/bin/sh',
+        cols: 80,
+        rows: 24,
+      });
+      accepted += 1;
+    }
+    expect(accepted).toBe(MAX_SESSIONS);
+  });
+
+  it('does not let a closed process evict the live session reusing its id (defect 6)', async () => {
+    // `close()` drops the map entry but cannot unsubscribe, so the old
+    // process's exit handler outlives it. Without an identity check it deletes
+    // whatever now lives under the id: the re-created terminal goes silent
+    // while the browser still shows it open.
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    const exits: { terminalId: string; exitCode: number | null }[] = [];
+    manager.onExit((e) => exits.push(e));
+
+    await manager.create({
+      terminalId: 't1',
+      shell: '/bin/sh',
+      cols: 80,
+      rows: 24,
+    });
+    await manager.close('t1');
+    await manager.create({
+      terminalId: 't1',
+      shell: '/bin/sh',
+      cols: 80,
+      rows: 24,
+    });
+    expect(procs).toHaveLength(2);
+
+    procs[0]!.emit('exit', { exitCode: 0 });
+
+    // The stale exit is still REPORTED — Rust reports the exit and only guards
+    // the eviction — but the live session survives and still receives input.
+    expect(exits).toEqual([{ terminalId: 't1', exitCode: 0 }]);
+    manager.write('t1', Buffer.from('still-alive'));
+    expect(procs[1]!.write).toHaveBeenCalledTimes(1);
+  });
+
+  function policyFor(configured: string) {
+    return new ShellPolicy({ configured });
+  }
+
+  it('refuses a shell the policy disallows, before any spawn (defect 7)', async () => {
+    // Task 9's allowlist had no caller in `src/`, so any client-supplied shell
+    // spawned. The Rust consults it in the dispatcher before `spawn_session`
+    // and answers with the pinned spawn-failure frame (`lib.rs:1372-1400`).
+    //
+    // The refused candidate is a **real, executable, resolvable** file that is
+    // simply not on the allowlist — not `/etc/passwd`, which fails the earlier
+    // executable-bit arm and would pass this test even with the allowlist
+    // membership check deleted.
+    const outside = mkdtempSync(join(tmpdir(), 'ponter-shell-'));
+    const candidate = join(outside, 'evil.sh');
+    writeFileSync(candidate, '#!/bin/sh\n', { mode: 0o755 });
+    const { host, spawned } = fakeHost();
+    const manager = new PtyManager(host);
+    await expect(
+      manager.create({
+        terminalId: 't1',
+        shell: candidate,
+        cols: 80,
+        rows: 24,
+        policy: policyFor(realpathSync('/bin/sh')),
+      }),
+    ).rejects.toMatchObject({ code: 'pty-spawn-failed' });
+    expect(spawned).toHaveLength(0);
+  });
+
+  it('spawns the canonical path the policy resolved (defect 7)', async () => {
+    const { host, spawned } = fakeHost();
+    const manager = new PtyManager(host);
+    await manager.create({
+      terminalId: 't1',
+      shell: '/bin/sh',
+      cols: 80,
+      rows: 24,
+      policy: policyFor(realpathSync('/bin/sh')),
+    });
+    expect(spawned[0]!.file).toBe(realpathSync('/bin/sh'));
   });
 });

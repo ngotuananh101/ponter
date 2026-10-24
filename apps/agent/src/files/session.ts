@@ -9,6 +9,7 @@ import {
   readdirSync,
   renameSync,
   rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -150,6 +151,13 @@ interface UploadState {
   size: number;
   partPath: string;
   destPath: string;
+  /**
+   * The destination as the **wire** spells it, sandbox-relative and
+   * `''`-joined — the Rust's `UploadState::dest_rel` (`files.rs:1095-1096`,
+   * built by `join_rel`). `files-upload-complete.path` carries this one; the
+   * absolute `destPath` stays host-side.
+   */
+  destRel: string;
   lastAcked: number;
   pendingAck: number | null;
   lastAckAt: number;
@@ -223,10 +231,16 @@ export class FilesSession {
       this.download = null;
     }
     if (this.upload && !this.upload.paused && this.upload.deadline <= now) {
+      const { transferId } = this.upload;
       this.discardUpload(this.upload);
       this.upload = null;
+      // `timeout_frame("upload", &state.transfer_id)` in the Rust
+      // (`files.rs:1259-1270`) sets the id on both directions. Without it the
+      // browser's transfer promise never settles: `packages/file-core` only
+      // clears a transfer when the frame carries the id it is waiting on.
       out.push({
         type: 'files-error',
+        transferId,
         code: 'TRANSFER_TIMEOUT',
         message: 'transfer timed out',
       });
@@ -494,10 +508,9 @@ export class FilesSession {
       throw new SandboxError('FILE_TOO_LARGE', 'file too large');
     if (this.upload)
       throw new SandboxError('TRANSFER_BUSY', 'an upload is already in flight');
-    const dest = this.root.resolveParentForCreate(
-      String(message.path ?? ''),
-      String(message.name),
-    );
+    const name = String(message.name);
+    const dirWire = String(message.path ?? '');
+    const dest = this.root.resolveParentForCreate(dirWire, name);
     try {
       statSync(dest);
       throw new SandboxError('FILE_EXISTS', 'destination already exists');
@@ -512,25 +525,29 @@ export class FilesSession {
       unlinkSync(partPath);
       closeSync(openSync(partPath, 'wx', 0o600));
     }
+    const transferId = String(message.transferId);
     this.upload = {
-      transferId: String(message.transferId),
+      transferId,
       nextChunk: 0,
       written: 0,
       total: totalChunks(size),
       size,
       partPath,
       destPath: dest,
+      // `join_rel` (`files.rs:2069-2075`): the wire path, not the host path.
+      destRel: dirWire === '' ? name : `${dirWire}/${name}`,
       lastAcked: 0,
       pendingAck: null,
       lastAckAt: this.now(),
       paused: false,
       deadline: this.now() + FILES_IDLE_TIMEOUT_MS,
     };
-    // Nothing has been received yet, so nothing is pending: `pendingAck` is
-    // `null` and `takePendingAck()` would return `[]` anyway. Stated as `[]`
-    // rather than routed through the ack path so the begin frame cannot start
-    // emitting acks if that path changes.
-    return [];
+    // **The begin is answered with the first cumulative ack** (`files.rs:1623-1627`,
+    // spec §6.1). Not an optimisation: the browser's transfer pump is driven from
+    // `onAck` alone (`packages/file-core/src/transfer.ts:164-177`), so a begin
+    // that answers nothing means no chunk is ever sent and every upload hangs
+    // until the 30 s idle timeout.
+    return [{ type: 'files-upload-ack', transferId, nextChunkIndex: 0 }];
   }
 
   /**
@@ -658,8 +675,12 @@ export class FilesSession {
       {
         type: 'files-upload-complete',
         transferId: state.transferId,
-        name: state.destPath.split('/').pop(),
-        path: state.destPath,
+        name: state.destRel.split('/').pop(),
+        // The wire path, not the host path: `FilesUploadComplete.path` is a
+        // `FilesPath` — sandbox-relative (`packages/shared/src/types/files.ts:82`),
+        // matching `files.rs:2281`. An absolute path here leaks the host layout
+        // and breaks every consumer that resolves it against the root again.
+        path: state.destRel,
         size: state.size,
       },
     ];
@@ -829,10 +850,15 @@ export class FilesSession {
   }
 
   /**
-   * `rm -r` is **not** offered: a peer that can recursively delete a directory
-   * inside the sandbox can destroy a document tree with one message and no undo.
-   * A non-empty directory is refused with `DIR_NOT_EMPTY` and the user removes
-   * its contents explicitly.
+   * `files-delete` honours `recursive`, as the Rust does (ADR-40,
+   * `files.rs:918-943`): `recursive: true` removes the tree, and a
+   * non-recursive call on a non-empty directory is refused with
+   * `DIR_NOT_EMPTY` so the caller must say what it means. The web UI sends
+   * `recursive: true` for every folder delete, so a port that always took the
+   * non-recursive arm failed every folder delete outright.
+   *
+   * The root refusal sits above both arms: `rmSync(target, {recursive: true})`
+   * on the root would delete the whole sandbox in one message.
    */
   private remove(message: { [key: string]: unknown }): FilesFrame[] {
     const target = this.root.resolveExisting(String(message.path ?? ''));
@@ -847,13 +873,20 @@ export class FilesSession {
     }
     const stat = statSync(target);
     if (stat.isDirectory()) {
-      try {
-        rmdirSync(target);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
-          throw new SandboxError('DIR_NOT_EMPTY', 'the directory is not empty');
+      if (Boolean(message.recursive)) {
+        rmSync(target, { recursive: true });
+      } else {
+        try {
+          rmdirSync(target);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
+            throw new SandboxError(
+              'DIR_NOT_EMPTY',
+              'the directory is not empty',
+            );
+          }
+          throw error;
         }
-        throw error;
       }
     } else {
       unlinkSync(target);
