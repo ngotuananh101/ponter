@@ -1,5 +1,9 @@
 // apps/agent/src/config.ts
-import { STREAM_PROFILES, type StreamProfile } from '@ponter/shared';
+import {
+  STREAM_PROFILES,
+  type ProfileId,
+  type StreamProfile,
+} from '@ponter/shared';
 import { existsSync } from 'node:fs';
 
 export type AgentConfigErrorCode =
@@ -25,7 +29,7 @@ export interface AgentConfig {
   readonly rows: number;
   readonly allowInput: boolean;
   readonly filesRoot: string | null;
-  readonly desktopProfile: StreamProfile;
+  readonly desktopProfile: StreamProfile & { readonly id: ProfileId };
   readonly desktopDefaultSource: string;
   /** `AGENT_DESKTOP_SOURCE` (`main.rs:64`): which frame source the agent captures. */
   readonly desktopSource: 'screen' | 'test';
