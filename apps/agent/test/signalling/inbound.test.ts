@@ -67,7 +67,9 @@ describe('parseIdentityChallenge', () => {
 
   it('returns null for a non-challenge frame', () => {
     expect(
-      parseIdentityChallenge('{"type":"offer","data":{"sessionId":"s"}}'),
+      parseIdentityChallenge(
+        '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s"}}}',
+      ),
     ).toBeNull();
     expect(
       parseIdentityChallenge('{"type":"ice-servers","data":{"iceServers":[]}}'),
