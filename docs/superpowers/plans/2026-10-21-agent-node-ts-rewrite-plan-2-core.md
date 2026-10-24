@@ -6956,19 +6956,51 @@ git commit -m "feat(agent): verify the offer identity proof before answering"
 - Consumes: `AGENT_ALLOW_INPUT` via Task 1's config.
 - Produces:
   - `const INPUT_RATE_LIMIT_HZ = 120`
+  - `type InputEvent` — the wire union, mirroring `DesktopInput` (`@ponter/shared`, `desktop.ts:68-87`): five `kind`s, **normalized** pointer coordinates, `seq?` on the three pointer kinds.
+  - `interface InputSource` — `{ x, y, width, height }`, the rect `desktop-sources` publishes (`DesktopSourceInfo`, `desktop.ts:11-27`).
+  - `interface InputInjector` — the port of the Rust's `InputInjector` trait (`input.rs:62-68`): `pointerMove`, `pointerButton`, `wheel`, `key`, `text`.
   - `function clamp01(value: number): number`
-  - `function decodeInput(bytes: ArrayBuffer | Uint8Array, width: number, height: number): InputEvent | null`
-  - `class InputLimiter { constructor(allow: boolean, now?: () => number); accept(event): boolean; dropped(): number }`
+  - `function decodeInput(bytes: ArrayBuffer | Uint8Array): InputEvent | null`
+  - `function toAbsolute(nx: number, ny: number, source: InputSource): { x: number; y: number }`
+  - `function applyInput(event: InputEvent, source: InputSource, injector: InputInjector, now: number): number | null` — the port of `apply_if_allowed`; returns the applied event's `seq ?? null`.
+  - `function bindInputApply(deps): (event: InputEvent, now: number) => number | null` — the shape Task 18's `deps.input.apply` asks for, with the live source rect and injector bound at construction.
+  - `class InputLimiter { constructor(allow: boolean); admit(now: number): boolean; dropped(): number }` — the port of `InputRateLimiter::allow` (`input.rs:141-152`); the window is `floor(now / 1000)`, and a closed gate refuses **without** any rate accounting. `dropped()` is a declared agent-side addition (the Rust has no counter) and counts rate-limit refusals only.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // apps/agent/test/input/decode.test.ts
-import { describe, expect, it } from 'vitest';
-import { InputLimiter, clamp01, decodeInput } from '../../src/input/decode.js';
+import { describe, expect, it, vi } from 'vitest';
+import { InputLimiter, applyInput, bindInputApply, clamp01, decodeInput, toAbsolute } from '../../src/input/decode.js';
+import type { InputEvent, InputInjector, InputSource } from '../../src/input/decode.js';
 
 const frame = (payload: unknown) => new TextEncoder().encode(JSON.stringify(payload));
 
+/** A counting double, the Rust test's `CountingInjector` (`input.rs:756-770`). */
+function double(fail?: keyof InputInjector): InputInjector & { calls: string[] } {
+  const calls: string[] = [];
+  const ok = (name: string) => () => {
+    calls.push(name);
+    if (name === fail) throw new Error('injected failure');
+  };
+  return {
+    calls,
+    pointerMove: ok('pointerMove'),
+    pointerButton: ok('pointerButton'),
+    wheel: ok('wheel'),
+    key: ok('key'),
+    text: ok('text'),
+  };
+}
+
+/** The 1080p monitor rect `desktop-sources` publishes (`DesktopSourceInfo.x/y`). */
+const source: InputSource = { x: 100, y: 50, width: 1920, height: 1080 };
+
+/**
+ * Fixtures are the payload `sendControl('desktop-input', event)` sends
+ * (`desktop-core/src/client.ts:452,467`): the `kind`-tagged `DesktopInput`
+ * itself, never a `type`-tagged flat frame.
+ */
 describe('clamp01', () => {
   it('clamps into [0,1]', () => {
     expect(clamp01(0.5)).toBe(0.5);
@@ -6990,80 +7022,200 @@ describe('clamp01', () => {
 });
 
 describe('decodeInput', () => {
-  it('decodes pointer-move to absolute pixels', () => {
-    const event = decodeInput(frame({ type: 'input-pointer', kind: 'move', x: 0.5, y: 0.25 }), 1920, 1080);
-    expect(event).toEqual({ kind: 'move', x: 960, y: 270 });
-  });
-
-  it('rounds a coordinate that lands exactly on the far edge inside the frame', () => {
-    // x = 1.0 on a 1920-wide frame is 1920, which is one past the last column.
-    // The Rust's `to_absolute` clamps to width-1, and the injector refuses an
-    // out-of-bounds coordinate outright, so without this the bottom-right
-    // corner of the screen would be unreachable.
-    expect(decodeInput(frame({ type: 'input-pointer', kind: 'move', x: 1, y: 1 }), 1920, 1080)).toEqual({
-      kind: 'move',
-      x: 1919,
-      y: 1079,
+  it('decodes pointer-move with normalized coordinates', () => {
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.25 }))).toEqual({
+      kind: 'pointer-move',
+      x: 0.5,
+      y: 0.25,
     });
   });
 
-  it('decodes pointer-button down and up', () => {
-    expect(
-      decodeInput(frame({ type: 'input-pointer', kind: 'down', button: 'left', x: 0.1, y: 0.1 }), 100, 100),
-    ).toEqual({ kind: 'down', button: 'left', x: 10, y: 10 });
-    expect(decodeInput(frame({ type: 'input-pointer', kind: 'up', button: 'right', x: 0, y: 0 }), 100, 100)).toEqual({
-      kind: 'up',
+  it('carries the browser-assigned seq through untouched', () => {
+    // The decoder decodes; it does not own seq. `applyInput` echoes it back
+    // (ADR-47), so it must arrive here intact.
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5, seq: 42 }))).toEqual({
+      kind: 'pointer-move',
+      x: 0.5,
+      y: 0.5,
+      seq: 42,
+    });
+    // And it is absent when the wire omitted it — `Key`/`Text` never carry one.
+    expect(decodeInput(frame({ kind: 'wheel', dx: 1, dy: -1, x: 0.5, y: 0.5 }))).toEqual({
+      kind: 'wheel',
+      dx: 1,
+      dy: -1,
+      x: 0.5,
+      y: 0.5,
+    });
+  });
+
+  it('decodes pointer-button with pressed as a boolean, not a kind split', () => {
+    expect(decodeInput(frame({ kind: 'pointer-button', button: 'left', pressed: true, x: 0.1, y: 0.1 }))).toEqual({
+      kind: 'pointer-button',
+      button: 'left',
+      pressed: true,
+      x: 0.1,
+      y: 0.1,
+    });
+    expect(decodeInput(frame({ kind: 'pointer-button', button: 'right', pressed: false, x: 0, y: 0 }))).toEqual({
+      kind: 'pointer-button',
       button: 'right',
+      pressed: false,
       x: 0,
       y: 0,
     });
   });
 
-  it('decodes wheel with the delta preserved', () => {
-    expect(
-      decodeInput(frame({ type: 'input-wheel', deltaX: -1, deltaY: 3, x: 0.5, y: 0.5 }), 200, 200),
-    ).toEqual({ kind: 'wheel', deltaX: -1, deltaY: 3, x: 100, y: 100 });
+  it('decodes wheel with the real dx/dy fields', () => {
+    // `deltaX`/`deltaY` are the plan's invention; the wire is `dx`/`dy`
+    // (`desktop.ts:78-85`, `input.rs:90-97`).
+    expect(decodeInput(frame({ kind: 'wheel', dx: -1, dy: 3, x: 0.5, y: 0.5 }))).toEqual({
+      kind: 'wheel',
+      dx: -1,
+      dy: 3,
+      x: 0.5,
+      y: 0.5,
+    });
   });
 
-  it('decodes key down and up', () => {
-    expect(decodeInput(frame({ type: 'input-key', kind: 'down', key: 'A', code: 'KeyA' }), 100, 100)).toEqual({
+  it('decodes key with code, pressed and modifiers — no key name, no down/up kind', () => {
+    expect(
+      decodeInput(frame({ kind: 'key', code: 'KeyA', pressed: true, modifiers: { ctrl: true, alt: false, shift: false, meta: false } })),
+    ).toEqual({
       kind: 'key',
+      code: 'KeyA',
       pressed: true,
-      key: 'A',
-      code: 'KeyA',
+      modifiers: { ctrl: true, alt: false, shift: false, meta: false },
     });
-    expect(decodeInput(frame({ type: 'input-key', kind: 'up', key: 'A', code: 'KeyA' }), 100, 100)).toEqual({
-      kind: 'key',
-      pressed: false,
-      key: 'A',
-      code: 'KeyA',
-    });
+  });
+
+  it('decodes the text kind the earlier draft lacked entirely', () => {
+    // Multi-byte on purpose: the `text` kind carries a JS string through
+    // `TextDecoder`, and a fixture with only ASCII would not catch a decoder
+    // that dropped or mangled continuation bytes.
+    const multiByte = '\u65e5\u672c\u8a9e'; // 3 chars, 9 UTF-8 bytes
+    expect(decodeInput(frame({ kind: 'text', text: multiByte }))).toEqual({ kind: 'text', text: multiByte });
   });
 
   it('returns null for an unknown kind instead of throwing', () => {
-    expect(decodeInput(frame({ type: 'input-pointer', kind: 'hover' }), 100, 100)).toBeNull();
-    expect(decodeInput(frame({ type: 'something-else' }), 100, 100)).toBeNull();
+    expect(decodeInput(frame({ kind: 'hover' }))).toBeNull();
+    expect(decodeInput(frame({ type: 'something-else' }))).toBeNull();
+  });
+
+  it('rejects a crypted `{ data }` payload deterministically, not accidentally', () => {
+    // When the desktop E2EE session is armed, the browser sends the payload
+    // `{ data: <base64> }` (`desktop-core/src/client.ts:484-494`). A crypted
+    // frame must not half-parse as an event: the fields it does carry
+    // (`data`) match nothing, and the drop is a `null` either way — but the
+    // test pins that it stays a null after the shape settles, so the
+    // decrypt-before-decode owner (the follow-up register) cannot be
+    // replaced by a silent partial decode.
+    expect(decodeInput(frame({ data: 'AQID' }))).toBeNull();
   });
 
   it('returns null for malformed JSON', () => {
-    expect(decodeInput(new TextEncoder().encode('{not json'), 100, 100)).toBeNull();
+    expect(decodeInput(new TextEncoder().encode('{not json'))).toBeNull();
   });
 
   it('returns null for an unknown mouse button', () => {
-    expect(decodeInput(frame({ type: 'input-pointer', kind: 'down', button: 'thumb', x: 0, y: 0 }), 100, 100)).toBeNull();
+    expect(decodeInput(frame({ kind: 'pointer-button', button: 'thumb', pressed: true, x: 0, y: 0 }))).toBeNull();
   });
 
-  it('returns null when the geometry is zero', () => {
-    expect(decodeInput(frame({ type: 'input-pointer', kind: 'move', x: 0.5, y: 0.5 }), 0, 0)).toBeNull();
+  it('does not validate geometry at decode — that moved to applyInput', () => {
+    // The Rust decodes at `input.rs:180-245` with no rect in sight; the rect
+    // enters at the application site (`apply_if_allowed`, `input.rs:267`).
+    // A zero/absent rect is `applyInput`'s concern.
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }))).not.toBeNull();
+  });
+});
+
+describe('toAbsolute', () => {
+  const source: InputSource = { x: 100, y: 50, width: 1920, height: 1080 };
+
+  it('maps the endpoints to source.x + round(n * width) — x + width, NOT width-1', () => {
+    // `input.rs:745-751` pins this exactly: `to_absolute(0.0,0.0)` is the
+    // origin and `to_absolute(1.0,1.0)` is `x + width / y + height`. The
+    // earlier draft clamped to `extent - 1` and justified it with a comment
+    // that misquoted both the Rust (which does not clamp to width-1) and the
+    // injector (which clamps to [0, display_width] at
+    // `portal/injector.rs:37-42` — it never refuses).
+    expect(toAbsolute(0, 0, source)).toEqual({ x: 100, y: 50 });
+    expect(toAbsolute(1, 1, source)).toEqual({ x: 100 + 1920, y: 50 + 1080 });
+  });
+
+  it('maps a mid-frame point with the nonzero origin the Rust test pins', () => {
+    // `input.rs:745-751`: source.x=100, width=1920 -> 0.5 lands at 1060.
+    expect(toAbsolute(0.5, 0.5, source)).toEqual({ x: 100 + 960, y: 50 + 540 });
+  });
+});
+
+describe('applyInput', () => {
+  it('maps through the source rect and injects a pointer move', () => {
+    const injector = double();
+    const seq = applyInput({ kind: 'pointer-move', x: 0.5, y: 0.5, seq: 7 }, source, injector, 0);
+    expect(injector.calls).toEqual(['pointerMove']);
+    expect(seq).toBe(7);
+  });
+
+  it('moves before button/wheel so the click lands on the intended point', () => {
+    // The Rust's `apply_if_allowed` does `pointer_move` then
+    // `pointer_button`/`wheel` for the anchored kinds (`input.rs:291-308`).
+    const injector = double();
+    applyInput({ kind: 'pointer-button', button: 'left', pressed: true, x: 0.1, y: 0.1, seq: 9 }, source, injector, 0);
+    expect(injector.calls).toEqual(['pointerMove', 'pointerButton']);
+    applyInput({ kind: 'wheel', dx: 1, dy: 0, x: 0.1, y: 0.1 }, source, injector, 0);
+    expect(injector.calls).toEqual(['pointerMove', 'pointerButton', 'pointerMove', 'wheel']);
+  });
+
+  it('injects key and text with no move and no seq', () => {
+    const injector = double();
+    expect(applyInput({ kind: 'key', code: 'KeyA', pressed: true, modifiers: { ctrl: false, alt: false, shift: false, meta: false } }, source, injector, 0)).toBeNull();
+    expect(injector.calls).toEqual(['key']);
+    expect(applyInput({ kind: 'text', text: 'x' }, source, injector, 0)).toBeNull();
+    expect(injector.calls).toEqual(['key', 'text']);
+  });
+
+  it('returns null — not a throw — when the injector fails, after any partial move', () => {
+    // Fail-soft (`input.rs:316-331`): an injector error drops the frame and
+    // the session continues. For pointer-button the move has already happened;
+    // the button is the step that fails.
+    const injector = double('pointerButton');
+    expect(applyInput({ kind: 'pointer-button', button: 'left', pressed: true, x: 0.1, y: 0.1, seq: 3 }, source, injector, 0)).toBeNull();
+    expect(injector.calls).toEqual(['pointerMove', 'pointerButton']);
+  });
+});
+
+describe('bindInputApply — the seam Task 18 consumes', () => {
+  it('closes over source and injector at construction; apply takes only (event, now)', () => {
+    // The router holds no geometry, so the implementation must carry it. This
+    // is the Rust's `apply_if_allowed(allow_input, raw, &current_source,
+    // injector, now_ms)` with the rect and injector bound at construction
+    // (`input.rs:267-273`). `now` is the envelope-timestamp seam ADR-44 logs.
+    const injector = double();
+    const apply = bindInputApply({ allow: true, source, injector });
+    const seq = apply({ kind: 'pointer-move', x: 0.5, y: 0.5, seq: 11 } as InputEvent, 1234);
+    expect(seq).toBe(11);
+    expect(injector.calls).toEqual(['pointerMove']);
+  });
+
+  it('drops everything when the gate is closed, and the limiter never sees the budget spent', () => {
+    const injector = double();
+    const apply = bindInputApply({ allow: false, source, injector });
+    expect(apply({ kind: 'pointer-move', x: 0.5, y: 0.5 } as InputEvent, 1)).toBeNull();
+    expect(injector.calls).toEqual([]);
   });
 });
 
 describe('InputLimiter', () => {
-  it('passes everything when input is enabled and under 120 Hz', () => {
-    let now = 0;
-    const limiter = new InputLimiter(true, () => now);
+  it('admits everything when input is enabled and under 120 Hz', () => {
+    // The fixture starts mid-window and crosses a wall-clock second (990 ms
+    // steps into window 1 at the third call). Starting at t=0 — the original
+    // fixture — is the single instant where a wrong window anchoring is
+    // invisible, so it must not be the only phase the fence exercises.
+    let now = 990;
+    const limiter = new InputLimiter(true);
     for (let i = 0; i < 10; i += 1) {
-      expect(limiter.accept({} as never)).toBe(true);
+      expect(limiter.admit(now)).toBe(true);
       now += 9;
     }
   });
@@ -7073,26 +7225,51 @@ describe('InputLimiter', () => {
     // 120 events are allowed in [0,1000) and another 120 in [1000,2000),
     // regardless of how they cluster. A sliding window would smooth this and is
     // a different policy; do not "improve" it.
-    let now = 0;
-    const limiter = new InputLimiter(true, () => now);
-    let accepted = 0;
-    for (let i = 0; i < 200; i += 1) if (limiter.accept({} as never)) accepted += 1;
-    expect(accepted).toBe(120);
+    const limiter = new InputLimiter(true);
+    let admitted = 0;
+    for (let i = 0; i < 200; i += 1) if (limiter.admit(0)) admitted += 1;
+    expect(admitted).toBe(120);
     expect(limiter.dropped()).toBe(80);
-    now = 1000;
-    expect(limiter.accept({} as never)).toBe(true);
+    expect(limiter.admit(1000)).toBe(true);
   });
 
-  it('drops everything when input is not allowed', () => {
-    const limiter = new InputLimiter(false);
-    expect(limiter.accept({} as never)).toBe(false);
-    expect(limiter.dropped()).toBe(1);
+  it('admits a fresh burst at every wall-clock second, not every 1000 ms since the first call', () => {
+    // The discriminating anchor fixture (measurement case C): 120 frames at
+    // t=5500 fill window 5; t=6000 is window 6 — a new wall-clock second — so
+    // the count resets and two more frames are admitted although only 500 ms
+    // have elapsed. An elapsed-since-first-call anchoring (windowStart=5500)
+    // still has a full window at t=6000 and refuses both. `floor(now/1000)` is
+    // the Rust's euclidean window index (`input.rs:142`).
+    const limiter = new InputLimiter(true);
+    let admitted = 0;
+    for (let i = 0; i < 120; i += 1) if (limiter.admit(5_500)) admitted += 1;
+    expect(admitted).toBe(120);
+    expect(limiter.admit(6_000)).toBe(true);
+    expect(limiter.admit(6_001)).toBe(true);
   });
 
-  it('does not count a refusal as a rate-limit drop when input is disabled', () => {
+  it('refuses every frame when the gate is closed, and does no rate accounting', () => {
+    // The Rust never consults the limiter when allow_input is false
+    // (`lib.rs:2430` sits inside `if allow_input`; the else branch just logs
+    // and continues, `:2471-2473`), so a refusal while disabled is not a
+    // rate-limit event: nothing is counted and the window never moves. The
+    // landed fence asserted the opposite twice — one test named "does not
+    // count a refusal" whose assertion was `dropped() === 1` — a
+    // self-contradicting pair whose two halves both passed. `dropped()` counts
+    // rate-limit refusals only, and is a declared agent-side addition, not a
+    // port: `InputRateLimiter` has no drop counter.
     const limiter = new InputLimiter(false);
-    limiter.accept({} as never);
-    expect(limiter.dropped()).toBe(1);
+    expect(limiter.admit(0)).toBe(false);
+    expect(limiter.admit(5_000)).toBe(false);
+    expect(limiter.dropped()).toBe(0);
+  });
+
+  it('admits without decoding — it takes a timestamp, not an event', () => {
+    // The ordering property, at the type level: `admit(now)` cannot depend on
+    // a decoded event because it never receives one. The Rust runs this cap
+    // before `decode_desktop_input` (`lib.rs:2428-2434`).
+    const limiter = new InputLimiter(true);
+    expect(limiter.admit(0)).toBe(true);
   });
 });
 ```
@@ -7106,11 +7283,79 @@ Expected: FAIL — module unresolved.
 // apps/agent/src/input/decode.ts
 export const INPUT_RATE_LIMIT_HZ = 120;
 
+/**
+ * One input event, **the wire's own union** (`DesktopInput`,
+ * `packages/shared/src/types/desktop.ts:68-87`, mirrored by the Rust's
+ * `DesktopInputWire`, `input.rs:75-107`).
+ *
+ * The discriminator is the payload's `kind` tag, **kebab-case** — not a
+ * `type` field on an envelope-wrapped frame. The browser sends the event
+ * itself as the `desktop-input` payload
+ * (`desktop-core/src/client.ts:452,467`), so the first thing the decoder
+ * sees is this object.
+ *
+ * Coordinates are **normalized 0..1 within the streamed source** and stay
+ * that way: the Rust's decoder clamps them (`clamp01`, `input.rs:197-222`)
+ * and the normalized→absolute mapping happens at the **application site**
+ * with the live rect (`to_absolute`, `input.rs:247-257`, called from
+ * `apply_if_allowed`). Mapping here would need a rect the decoder does not
+ * have, and the previous version's guess (`extent - 1`) contradicted the
+ * pinned endpoint test at `input.rs:745-751`.
+ *
+ * `seq` is carried through **untouched** where the wire carries it — the
+ * pointer kinds only (`Key`/`Text` have none, `input.rs:98-106`). The decoder
+ * does not own it; `applyInput` echoes it back for the cursor latency meter
+ * (ADR-47).
+ */
 export type InputEvent =
-  | { kind: 'move'; x: number; y: number }
-  | { kind: 'down' | 'up'; button: 'left' | 'middle' | 'right'; x: number; y: number }
-  | { kind: 'wheel'; deltaX: number; deltaY: number; x: number; y: number }
-  | { kind: 'key'; pressed: boolean; key: string; code: string };
+  | { kind: 'pointer-move'; x: number; y: number; seq?: number }
+  | {
+      kind: 'pointer-button';
+      button: 'left' | 'middle' | 'right';
+      pressed: boolean;
+      x: number;
+      y: number;
+      seq?: number;
+    }
+  | { kind: 'wheel'; dx: number; dy: number; x: number; y: number; seq?: number }
+  | { kind: 'key'; code: string; pressed: boolean; modifiers: KeyModifiers }
+  | { kind: 'text'; text: string };
+
+/** The keyboard modifier state the `key` kind carries (`desktop.ts:55-60`). */
+export interface KeyModifiers {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+}
+
+/**
+ * The capture rect the mapping needs: the `x`/`y` origin and the `width`/
+ * `height` of the streamed source. This is the geometry `desktop-sources`
+ * publishes (`DesktopSourceInfo`, `desktop.ts:11-27`) and the only place the
+ * real wiring can get it — which is why `applyInput` takes it as a parameter
+ * rather than `decodeInput` guessing one.
+ */
+export interface InputSource {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The platform seam, the port of the Rust's `InputInjector` trait
+ * (`input.rs:62-68`). One platform implementation sits behind it; tests use a
+ * counting double. Each call returns nothing and throws on failure, which is
+ * the fail-soft signal `applyInput` turns into a `null`.
+ */
+export interface InputInjector {
+  pointerMove(x: number, y: number): void;
+  pointerButton(button: 'left' | 'middle' | 'right', pressed: boolean): void;
+  wheel(dx: number, dy: number): void;
+  key(code: string, pressed: boolean, modifiers: KeyModifiers): void;
+  text(text: string): void;
+}
 
 /**
  * `Math.min(Math.max(v, 0), 1)` with NaN forced to 0.
@@ -7118,8 +7363,9 @@ export type InputEvent =
  * Written out rather than using a helper so the NaN rule is visible: `NaN`
  * compared with `>` and `<` is false on both sides, so a naive clamp silently
  * returns `NaN` and the injector receives it. Rust's `f64::clamp` *panics* on
- * NaN, which the agent turned into a dropped frame via `catch_unwind`; the
- * explicit branch reproduces the drop without the unwind.
+ * NaN, which the agent turned into a dropped frame via `catch_unwind`
+ * (`input.rs:155-161`); the explicit branch reproduces the drop without the
+ * unwind.
  */
 export function clamp01(value: number): number {
   if (Number.isNaN(value)) return 0;
@@ -7128,30 +7374,60 @@ export function clamp01(value: number): number {
   return value;
 }
 
-/** Absolute pixel, clamped to the last addressable column/row (see the test). */
-function toAbsolute(fraction: number, extent: number): number {
-  const scaled = Math.round(clamp01(fraction) * extent);
-  return Math.min(Math.max(scaled, 0), extent - 1);
+/**
+ * Map a normalized point to absolute source pixels — the Rust's `to_absolute`
+ * (`input.rs:247-257`): `abs = source.x + round(n * dimension)`.
+ *
+ * **`x + width`, not `width - 1`.** The pinned endpoint test
+ * (`input.rs:745-751`) asserts `to_absolute(1.0, 1.0) == (source.x + 1920,
+ * source.y + 1080)` for a 1920×1080 source at origin (100, 50). The earlier
+ * draft clamped to `extent - 1` and justified it with a comment claiming the
+ * Rust clamped to `width-1` and the injector refused out-of-bounds outright —
+ * **both halves false**: the Rust does not clamp to `width-1`, and the portal
+ * injector *clamps* to `[0, display_width]` rather than refusing
+ * (`portal/injector.rs:37-42`). The right edge is reachable because the source
+ * rectangle is half-open, and the injector is what bounds it.
+ *
+ * `clamp01` is applied to the fraction first, so an out-of-range or NaN input
+ * cannot overflow the rect even though the decoder already clamped it — this
+ * function is pure and must not depend on its caller for that.
+ */
+export function toAbsolute(nx: number, ny: number, source: InputSource): { x: number; y: number } {
+  return {
+    x: source.x + Math.round(clamp01(nx) * source.width),
+    y: source.y + Math.round(clamp01(ny) * source.height),
+  };
 }
 
 const BUTTONS = new Set(['left', 'middle', 'right']);
 
 /**
- * Decodes one input frame (B28–B30).
+ * Decodes one `desktop-input` payload (B28–B30) — the port of
+ * `decode_desktop_input` (`input.rs:180-245`).
  *
  * **Decode before inject, always.** The Rust decoded the JSON first and only
  * then called into the platform injector, so an unknown message could never
  * reach an FFI boundary with unvalidated fields. Every rejection here is a
  * `null` — an input frame that does not parse is dropped, never surfaced as an
- * error, because a hostile peer must not be able to elicit a response by sending
- * garbage.
+ * error, because a hostile peer must not be able to elicit a response by
+ * sending garbage.
+ *
+ * **The discriminator is `kind`,** exactly as serde's internally-tagged enum
+ * works (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
+ * `input.rs:73-74`): an unknown `kind` is a decode error, which is this
+ * function's `null`. The plan's previous vocabulary (`input-pointer` etc. on a
+ * `type` field) has **zero producers anywhere** on either side of the wire.
+ *
+ * **A crypted payload is rejected deterministically.** With the desktop E2EE
+ * session armed the browser sends `{ data: <base64> }` instead of the event
+ * (`desktop-core/src/client.ts:484-494`), and the Rust decrypts **before**
+ * decode (`lib.rs:2413-2427`, fail-closed). Nothing in this plan owns that
+ * decryption yet, so a crypted frame must not be able to half-parse into an
+ * event: it has no `kind`, so it falls out of the `switch` as `null`. The
+ * `{ data }` shape is named in the test so the drop is pinned rather than
+ * incidental, and the missing owner is recorded in the follow-up register.
  */
-export function decodeInput(
-  bytes: ArrayBuffer | Uint8Array,
-  width: number,
-  height: number,
-): InputEvent | null {
-  if (width <= 0 || height <= 0) return null;
+export function decodeInput(bytes: ArrayBuffer | Uint8Array): InputEvent | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(
@@ -7165,73 +7441,226 @@ export function decodeInput(
   if (typeof parsed !== 'object' || parsed === null) return null;
   const message = parsed as Record<string, unknown>;
 
-  if (message.type === 'input-key') {
-    if (typeof message.key !== 'string' || typeof message.code !== 'string') return null;
-    if (message.kind !== 'down' && message.kind !== 'up') return null;
-    return { kind: 'key', pressed: message.kind === 'down', key: message.key, code: message.code };
+  switch (message.kind) {
+    case 'pointer-move': {
+      if (typeof message.x !== 'number' || typeof message.y !== 'number') return null;
+      return { kind: 'pointer-move', x: clamp01(message.x), y: clamp01(message.y), ...seqOf(message) };
+    }
+    case 'pointer-button': {
+      if (typeof message.button !== 'string' || !BUTTONS.has(message.button)) return null;
+      if (typeof message.pressed !== 'boolean') return null;
+      if (typeof message.x !== 'number' || typeof message.y !== 'number') return null;
+      return {
+        kind: 'pointer-button',
+        button: message.button as 'left' | 'middle' | 'right',
+        pressed: message.pressed,
+        x: clamp01(message.x),
+        y: clamp01(message.y),
+        ...seqOf(message),
+      };
+    }
+    case 'wheel': {
+      // The real field names: `dx`/`dy` (`desktop.ts:78-85`, `input.rs:90-97`).
+      if (typeof message.dx !== 'number' || typeof message.dy !== 'number') return null;
+      if (typeof message.x !== 'number' || typeof message.y !== 'number') return null;
+      return {
+        kind: 'wheel',
+        dx: message.dx,
+        dy: message.dy,
+        x: clamp01(message.x),
+        y: clamp01(message.y),
+        ...seqOf(message),
+      };
+    }
+    case 'key': {
+      // `code` + `pressed` + `modifiers`; there is no `key` name and no
+      // down/up `kind` split on this wire (`desktop.ts:86`, `input.rs:98-103`).
+      if (typeof message.code !== 'string' || typeof message.pressed !== 'boolean') return null;
+      return {
+        kind: 'key',
+        code: message.code,
+        pressed: message.pressed,
+        modifiers: modifiersOf(message.modifiers),
+      };
+    }
+    case 'text': {
+      if (typeof message.text !== 'string') return null;
+      return { kind: 'text', text: message.text };
+    }
+    default:
+      return null;
   }
+}
 
-  if (message.type === 'input-wheel') {
-    if (typeof message.deltaX !== 'number' || typeof message.deltaY !== 'number') return null;
-    return {
-      kind: 'wheel',
-      deltaX: message.deltaX,
-      deltaY: message.deltaY,
-      x: toAbsolute(message.x as number, width),
-      y: toAbsolute(message.y as number, height),
-    };
-  }
+/** `{ seq }` when the wire carried one, `{}` otherwise — `skip_serializing_if`'s inverse. */
+function seqOf(message: Record<string, unknown>): { seq?: number } {
+  return typeof message.seq === 'number' ? { seq: message.seq } : {};
+}
 
-  if (message.type !== 'input-pointer') return null;
-  const x = toAbsolute(message.x as number, width);
-  const y = toAbsolute(message.y as number, height);
-  if (message.kind === 'move') return { kind: 'move', x, y };
-  if (message.kind === 'down' || message.kind === 'up') {
-    if (typeof message.button !== 'string' || !BUTTONS.has(message.button)) return null;
-    return {
-      kind: message.kind,
-      button: message.button as 'left' | 'middle' | 'right',
-      x,
-      y,
-    };
-  }
-  return null;
+/** The modifier struct, defaulting every field the wire omitted (`KeyModifiers: Default`). */
+function modifiersOf(raw: unknown): KeyModifiers {
+  const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  return {
+    ctrl: m.ctrl === true,
+    alt: m.alt === true,
+    shift: m.shift === true,
+    meta: m.meta === true,
+  };
 }
 
 /**
- * The agent-local input gate plus the 120 Hz limiter (B34).
+ * Apply one event to the injector — the port of `apply_if_allowed`
+ * (`input.rs:267-333`).
  *
- * Two separate reasons to drop, counted together: `allowInput` is the operator's
- * `AGENT_ALLOW_INPUT` decision and applies to every event; the rate limit is the
- * fixed one-second window. **The gate runs first**, so a host with input
- * disabled does no rate accounting at all and its drop counter is a true count
- * of what the peer sent.
+ * This is where the normalized→absolute mapping lives, because this is where
+ * the geometry is: the Rust passes `&current_source` in and calls
+ * `to_absolute` per event (`input.rs:287-308`). Returns the applied event's
+ * `seq` when the wire carried one, `null` when the event was not applied
+ * (injector error) — the Rust's `Ok(()) => Some(seq)` / `Err => None`
+ * (`input.rs:316-331`). The caller continues the session either way; an
+ * injector failure is never fatal.
+ *
+ * **The gate is not here.** `apply_if_allowed`'s `allow_input` first argument
+ * and its rate cap are the caller's, because the Rust runs both **before**
+ * decoding (`lib.rs:2427-2434`) — see `bindInputApply` and the router arm.
+ *
+ * **Move before click.** `pointer-button` and `wheel` issue a `pointerMove`
+ * first so the click or scroll lands on the intended point, exactly as the
+ * Rust does (`input.rs:291-308`).
+ *
+ * `now` is the ADR-44 logging seam (`delta_ms = now_ms - envelope_timestamp`,
+ * `input.rs:320-325`). The plan's decoder does not yet return the envelope
+ * timestamp, so it is accepted and unused; it is in the signature so the seam
+ * does not have to change when the timestamp is threaded through.
+ */
+export function applyInput(
+  event: InputEvent,
+  source: InputSource,
+  injector: InputInjector,
+  _now: number,
+): number | null {
+  try {
+    switch (event.kind) {
+      case 'pointer-move': {
+        const p = toAbsolute(event.x, event.y, source);
+        injector.pointerMove(p.x, p.y);
+        return event.seq ?? null;
+      }
+      case 'pointer-button': {
+        const p = toAbsolute(event.x, event.y, source);
+        injector.pointerMove(p.x, p.y);
+        injector.pointerButton(event.button, event.pressed);
+        return event.seq ?? null;
+      }
+      case 'wheel': {
+        const p = toAbsolute(event.x, event.y, source);
+        injector.pointerMove(p.x, p.y);
+        injector.wheel(event.dx, event.dy);
+        return event.seq ?? null;
+      }
+      case 'key':
+        injector.key(event.code, event.pressed, event.modifiers);
+        return null;
+      case 'text':
+        injector.text(event.text);
+        return null;
+    }
+  } catch {
+    // Fail-soft: an injector error drops the frame and the session continues
+    // (`input.rs:328-331`). The partial walk above is deliberate — a click
+    // whose move succeeded and whose button failed has still moved.
+    return null;
+  }
+}
+
+/**
+ * Bind `applyInput` to the live source rect and injector, producing the
+ * `(event, now) => number | null` seam Task 18's router consumes.
+ *
+ * The router holds **no geometry** — it should not, it is a wire dispatcher —
+ * so the implementation that closes over the rect and the injector is built
+ * where they exist. This is the Rust's shape with the two arguments bound at
+ * construction instead of per call (`apply_if_allowed(allow_input, raw,
+ * &current_source, injector, now_ms)`, `input.rs:267-273`), and it is how
+ * `current_source` and the lazily created `injector` are hoisted in
+ * `lib.rs:2435-2462`.
+ *
+ * `allow` is the operator's gate, folded in here rather than as a separate
+ * seam: a closed gate means every event is not-applied, which is what `null`
+ * already means. The rate cap is **not** here — it runs before decode (see
+ * `InputLimiter`), so by the time an event reaches this function it has
+ * already been admitted.
+ *
+ * `now` is the ADR-44 logging seam: the Rust logs `delta_ms = now_ms -
+ * envelope_timestamp` on the success path (`input.rs:320-325`). The envelope
+ * timestamp is not decoded yet (the plan's decoder returns the event alone),
+ * so it is carried through unused; it is in the signature because the seam must
+ * not drift when the timestamp is threaded through.
+ */
+export function bindInputApply(deps: {
+  allow: boolean;
+  source: InputSource;
+  injector: InputInjector;
+}): (event: InputEvent, now: number) => number | null {
+  return (event, now) => {
+    if (!deps.allow) return null;
+    return applyInput(event, deps.source, deps.injector, now);
+  };
+}
+
+/**
+ * The 120 Hz admission cap (B34), the port of `InputRateLimiter::allow`
+ * (`input.rs:124-152`).
+ *
+ * **The gate and the cap run BEFORE decode, not after.** The Rust's inbound
+ * arm (`lib.rs:2427-2434`) checks `allow_input`, then `input_limiter.allow(now)`,
+ * and only then calls `apply_if_allowed` — which is what decodes and injects.
+ * Its own comment says so: *"cap AFTER decrypt and the Gate-A check, **BEFORE
+ * decode/inject**"* (`lib.rs:2428-2430`). The reason is the point: this is a
+ * DoS control, so it must sit in front of the JSON parser, not behind it. The
+ * plan's earlier version put `accept(decode(bytes))` first, which spent the
+ * parse on work the cap existed to refuse, and its `accept(_event)` signature
+ * could not express the gate-before-decode order at all. Hence `admit(now)`:
+ * no event, no bytes, just the decision.
+ *
+ * **The closed gate is a refusal with no rate accounting.** The Rust never
+ * consults the limiter when `allow_input` is false — `lib.rs:2430` sits inside
+ * `if allow_input { … } else { log; continue }` (`:2471-2473`) — so a host with
+ * input disabled does **no rate accounting at all**: no window movement, no
+ * count, no drop. The landed version checked `allow` here and incremented its
+ * drop counter on the refusal, which its own doc said was wrong; that inverted
+ * the Rust and pinned a self-contradicting pair of tests (one named "does not
+ * count a refusal" whose assertion was `dropped() === 1`). So: `allow` is
+ * carried and checked, but a closed-gate refusal returns before any counting —
+ * `dropped()` therefore counts **rate-limit** refusals only, and is a declared
+ * agent-side addition, not a port (`InputRateLimiter` has no drop counter).
+ *
+ * The window is **fixed**, reset per whole second (`window = floor(now/1000)`,
+ * the euclidean division at `input.rs:142`), not sliding: 120 events are
+ * admitted in `[0, 1000)` and another 120 in `[1000, 2000)` regardless of
+ * clustering. A sliding window would smooth this and is a different policy;
+ * do not "improve" it.
  */
 export class InputLimiter {
-  private windowStart = 0;
-  private accepted = 0;
+  private windowIndex = Number.NaN;
+  private count = 0;
   private droppedCount = 0;
 
-  constructor(
-    private readonly allow: boolean,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
+  constructor(private readonly allow: boolean) {}
 
-  accept(_event: InputEvent): boolean {
-    if (!this.allow) {
+  /** `allow(now_ms)` from `input.rs:141`. `true` iff the frame may be parsed. */
+  admit(now: number): boolean {
+    if (!this.allow) return false;
+    const window = Math.floor(now / 1000);
+    if (window !== this.windowIndex) {
+      this.windowIndex = window;
+      this.count = 0;
+    }
+    if (this.count >= INPUT_RATE_LIMIT_HZ) {
       this.droppedCount += 1;
       return false;
     }
-    const now = this.now();
-    if (now - this.windowStart >= 1000) {
-      this.windowStart = now;
-      this.accepted = 0;
-    }
-    if (this.accepted >= INPUT_RATE_LIMIT_HZ) {
-      this.droppedCount += 1;
-      return false;
-    }
-    this.accepted += 1;
+    this.count += 1;
     return true;
   }
 
@@ -7250,7 +7679,27 @@ git add apps/agent/src/input apps/agent/test/input
 git commit -m "feat(agent): decode, clamp and rate-limit peer input"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **16 new `it()` / 25 new `expect()`**. Ports the five input-kind round trips, the unknown-kind and malformed-JSON drops, the 120 Hz fixed-window limiter, the disabled-gate drop, and the NaN clamp. **New:** the `to_absolute` one-pixel-overflow case (the Rust had the clamp but only tested mid-frame coordinates) and the zero-geometry guard.
+**TEST-INTEGRITY declaration — revised by the MAJOR-2 repair (2026-10-24), re-counted by the MAJOR-5 item 5 repair:** the
+first landed version declared **16 new `it()` / 25 new `expect()`** for a file
+whose vocabulary (`input-pointer`/`input-key`/`input-wheel` on a `type` field,
+`deltaX`/`deltaY`, `kind: 'down'/'up'`, `key: 'A'`) has **zero producers
+anywhere** on the wire. The fence was rewritten to the real `kind`-tagged
+union (`desktop.ts:68-87`) and re-counted: **27 `it()` / 48 `expect()`** (was
+16 / 25; +11 `it()`, +23 `expect()`). All `it(` and `expect(` occurrences are
+literal; no `it.each(` in the file, so all three axes coincide (27/27/27,
+48/48/48). What the rewrite adds beyond the ported behaviours: the `text`
+kind (the earlier `InputEvent` lacked it entirely), the `seq`-carried /
+`seq`-absent pair, the `{ data }` crypted-payload rejection (the E2EE owner
+gap — see the follow-up register), the zero-geometry guard's **removal** from
+decode (geometry belongs to `applyInput`), `toAbsolute`'s endpoint pins
+(`0.0 → x`, `1.0 → x + width` — the earlier draft clamped to `extent - 1`,
+which the Rust's own test at `input.rs:745-751` contradicts), `applyInput`'s
+move-before-click order and its fail-soft injector-error path, and
+`bindInputApply`'s closure over the live rect. `InputLimiter` no longer takes
+a clock (`admit(now)` — the cap runs **before** decode, so it takes a
+timestamp, not an event; see its own comment and MAJOR-5's ruling).
+
+**`InputLimiter`'s own `describe` block: 4 `it()` / 9 `expect()` before → 5 `it()` / 11 `expect()` after (MAJOR-5 item 5).** The three axes it was wrong on, each now asserted: (a) the window anchor — `floor(now/1000)`, pinned by a fixture that crosses a wall-clock boundary at a non-zero phase (120 frames at `t=5500`, then admissions at `t=6000`; an elapsed-since-first-call anchoring refuses them); (b) a closed gate performs **no rate accounting** — the landed fence pinned the opposite **twice**, in a self-contradicting pair (`drops everything when input is not allowed` asserted `dropped() === 1`, and `does not count a refusal as a rate-limit drop when input is disabled` asserted `dropped() === 1` as well; the second's name and assertion cannot both be right). They are now one test asserting `dropped() === 0`, which is what `lib.rs:2430`'s `if allow_input` guard means; (c) the signature — `admit(now)` takes no event, so the cap can run before the parser. `dropped()` itself has no Rust counterpart (`InputRateLimiter` has no counter) and is declared here as an **agent-side addition** whose count is rate-limit refusals only, not a port.
 
 ---
 
@@ -7716,6 +8165,23 @@ describe('buildCursorFrame', () => {
     const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
     expect(frame.data).toEqual({ x: 0, y: 0, visible: false, shape: null });
   });
+
+  it('stamps lastInputSeq on the wire when one is set', () => {
+    // ADR-47's echo: the browser's latency meter reads this field. The Rust
+    // pins `lastInputSeq: 3` on the payload (`desktop.rs:3758`).
+    const frame = parse(
+      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default', lastInputSeq: 3 }),
+    );
+    expect(frame.data).toMatchObject({ lastInputSeq: 3 });
+  });
+
+  it('omits lastInputSeq from the wire when none is set', () => {
+    // Mirrors `frame_desktop_cursor_omits_last_input_seq_when_none`
+    // (`desktop.rs:3766-3786`): `skip_serializing_if` on `None` — the field is
+    // absent from the JSON, not null.
+    const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
+    expect('lastInputSeq' in frame.data).toBe(false);
+  });
 });
 
 describe('buildSourcesFrame', () => {
@@ -7757,6 +8223,21 @@ export interface CursorInput {
   y: number;
   visible: boolean;
   shape: string | null;
+  /**
+   * ADR-47's echo: the `seq` of the last input frame the agent **applied**,
+   * stamped on every `desktop-cursor` payload as `lastInputSeq` and read by the
+   * browser's latency meter. The Rust carries it as `last_input_seq:
+   * Option<u64>` with `skip_serializing_if = "Option::is_none"`
+   * (`desktop.rs:2176-2177`), so the field is **omitted from the wire when
+   * unset** — the builder below spreads it conditionally, never writing
+   * `lastInputSeq: undefined` (which would survive `JSON.stringify` as an
+   * absent key but would not survive a typed consumer that inspects
+   * `Object.keys`). The **runtime owns the single mutable holder** for this
+   * value — the Rust's hoisted `Arc<AtomicU64>`
+   * (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor
+   * loop reads it, and Task 19's desktop session loop owns that wiring.
+   */
+  lastInputSeq?: number;
 }
 
 export interface SourcesInput {
@@ -7787,11 +8268,24 @@ export function buildStatsFrame(input: StatsInput): string {
  * `shape: null` when the cursor is hidden is deliberate rather than omitting the
  * key: the web cursor layer reads `data.shape` unconditionally and would draw
  * the previous shape at the new position.
+ *
+ * `lastInputSeq` is the inverse: it is **omitted when unset**, mirroring the
+ * Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176`) — the
+ * browser treats an absent field and a `null` differently here (a stale echo
+ * from an earlier input must not be re-sent forever; the holder resets to
+ * null between applications). The conditional spread keeps the field off the
+ * object rather than writing `undefined`.
  */
 export function buildCursorFrame(input: CursorInput): string {
   return JSON.stringify({
     type: 'desktop-cursor',
-    data: { x: input.x, y: input.y, visible: input.visible, shape: input.shape },
+    data: {
+      x: input.x,
+      y: input.y,
+      visible: input.visible,
+      shape: input.shape,
+      ...(input.lastInputSeq === undefined ? {} : { lastInputSeq: input.lastInputSeq }),
+    },
   });
 }
 
@@ -7812,7 +8306,9 @@ git add apps/agent/src/desktop apps/agent/test/desktop
 git commit -m "feat(agent): decode stream control and build the desktop frames"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **15 new `it()` / 27 new `expect()`**. Ports `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
+**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 29 new `expect()`** — **15 / 27** as the previous revision landed it, **17 / 29** after the ADR-47 seq-echo repair (+2 `it()`, +2 `expect()`, both in `frames.test.ts`: the `lastInputSeq` set case and the `lastInputSeq` omitted case; `control.test.ts` is unchanged at 10 / 19, `frames.test.ts` goes 5 / 8 → 7 / 10). Ports `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
+
+**ADR-47's echo declared (MAJOR-2/2d).** `buildCursorFrame` now carries `lastInputSeq?: number` and stamps it on the wire as `lastInputSeq` — the browser's latency meter reads that field, so without it the one-way-latency display is dead on arrival. **Omitted when absent**, mirroring the Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176-2177`) and its two cursor-frame tests (`desktop.rs:3730-3763` asserts `p["lastInputSeq"] == 3`; `desktop.rs:3766-3786` asserts the field is **absent** when `None`) — the two new tests are those two, and the absent case asserts the key is **not in** the payload rather than that it is `null`, because "absent" and "null" are different on this wire. The **runtime owns the single mutable holder** for the echoed value, the way the Rust's hoisted `Arc<AtomicU64>` does (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor loop reads it, and that wiring stays with Task 19's desktop session loop, which this commit does not touch.
 
 An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_control_variants`, `decodes_desktop_select_variants`, `rejects_an_unknown_profile`, `gop_is_two_seconds_of_frames`, `stats_frame_field_names` and `cursor_frame_includes_shape_when_hidden` — seven names that appear nowhere in `apps/agent/src`. They were plausible re-spellings of the ported behaviours, which is why they read as a parity claim while describing no test that exists.
 
@@ -7825,11 +8321,11 @@ An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_
 - Test: `apps/agent/test/session/data-channels.test.ts`
 
 **Interfaces:**
-- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `clampBitrate` (Task 17), `decodeInput` / `InputLimiter` (Task 15); `frameFiles` (Task 11); `MAX_DATA_CHANNEL_FRAME_BYTES` (Task 3). Task 17's `decodeStreamControl` / `decodeDesktopSelect` are **not** consumed — their vocabulary is not the wire's (see `dispatchDesktop`'s note).
+- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `clampBitrate` (Task 17), `decodeInput` / `InputLimiter` / `bindInputApply` / `InputEvent` (Task 15); `frameFiles` (Task 11); `MAX_DATA_CHANNEL_FRAME_BYTES` (Task 3). Task 17's `decodeStreamControl` / `decodeDesktopSelect` are **not** consumed — their vocabulary is not the wire's (see `dispatchDesktop`'s note, and the follow-up register entry it names).
 - Produces:
   - `const CHANNEL_LABELS = { terminal: 'terminal', files: 'files', control: 'control' } as const` — the three labels a peer actually opens (`WebRTCChannelType` minus `'desktop'`, which is the capability/RTP media label, not a data channel; and without `input`/`cursor`, which exist nowhere).
   - `class DataChannelRouter { constructor(deps); attach(channel): void; detach(label): void; send(label, frame): void }`
-  - `type RouterDeps` — the five handlers plus `send` and `now`, each injectable.
+  - `type RouterDeps` — the five handlers plus `send` and `now`, each injectable. `deps.input` is `{ admit, decode, apply }` (MAJOR-5).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -7837,6 +8333,7 @@ An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_
 // apps/agent/test/session/data-channels.test.ts
 import { describe, expect, it, vi } from 'vitest';
 import { CHANNEL_LABELS, DataChannelRouter } from '../../src/session/data-channels.js';
+import type { InputEvent } from '../../src/input/decode.js';
 
 function fakeChannel(label: string) {
   const handlers: Record<string, ((arg: never) => void)[]> = {};
@@ -7868,7 +8365,14 @@ function router(overrides: Record<string, unknown> = {}) {
     terminal: { write: vi.fn(), resize: vi.fn(), close: vi.fn(), create: vi.fn() },
     files: { handle: vi.fn(() => []), acceptBinaryChunk: vi.fn(() => []) },
     desktop: { onControl: vi.fn(), onSelect: vi.fn() },
-    input: { accept: vi.fn(() => true), decode: vi.fn(() => ({ kind: 'move', x: 1, y: 1 })), inject: vi.fn() },
+    input: {
+      // The Rust's three-stage input path, in its real order (`lib.rs:2427-2469`):
+      // admit (gate + rate cap) → decode → apply. `admit` takes a timestamp and
+      // never sees an event, which is what makes the order enforceable.
+      admit: vi.fn(() => true),
+      decode: vi.fn((): InputEvent | null => ({ kind: 'pointer-move', x: 0.5, y: 0.5 })),
+      apply: vi.fn(() => null),
+    },
     send: vi.fn(),
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
     now: () => 1_700_000_000_000,
@@ -7924,7 +8428,9 @@ describe('the label gate', () => {
   it('drops a channel whose label throws, without closing it', () => {
     const { r } = router();
     const channel = {
-      get label() {
+      // The annotation is required: a getter whose body always throws infers
+      // `void`, which is not assignable to `RouterChannel.label: string`.
+      get label(): string {
         throw new Error('not ready');
       },
       close: vi.fn(),
@@ -8100,32 +8606,64 @@ describe('dispatch', () => {
     expect(channel.close).toHaveBeenCalledWith();
   });
 
-  it('decodes input BEFORE the limiter and the injector, on the control channel', () => {
-    // The order is the security property: an undecodable frame never reaches the
-    // limiter's accounting or the injector's FFI call. The channel is `control`
-    // and the type is `desktop-input` — the Rust gates exactly that pair
-    // (`input.rs:189`), the browser sends exactly that pair
-    // (`desktop-core/src/client.ts:452`).
+  it('runs admit before decode before apply, on the control channel', () => {
+    // MAJOR-5: the order is the DoS property and it is the Rust's. The gate and
+    // the rate cap run BEFORE the JSON parser (`lib.rs:2428-2430` — *"cap
+    // AFTER decrypt and the Gate-A check, BEFORE decode/inject"*), then
+    // `apply_if_allowed` decodes and injects (`input.rs:277-286`). The earlier
+    // version of this test asserted `['decode']` and called that "the order
+    // the Rust established" — backwards on both counts. `decode` returns a real
+    // event here so the third stage is reached: a `null` decode would stop the
+    // chain and the assertion could not tell "apply runs third" from "apply
+    // never runs".
     const order: string[] = [];
     const { r } = router({
       input: {
-        decode: () => {
-          order.push('decode');
-          return null;
-        },
-        accept: () => {
-          order.push('accept');
+        admit: () => {
+          order.push('admit');
           return true;
         },
-        inject: () => {
-          order.push('inject');
+        decode: () => {
+          order.push('decode');
+          return { kind: 'pointer-move', x: 0.5, y: 0.5 };
+        },
+        apply: () => {
+          order.push('apply');
+          return 7;
         },
       },
     });
     const channel = fakeChannel('control');
     r.attach(channel);
     channel.emit('message', envelope('control', 'desktop-input', { kind: 'pointer-move', x: 0.5, y: 0.5 }));
-    expect(order).toEqual(['decode']);
+    expect(order).toEqual(['admit', 'decode', 'apply']);
+  });
+
+  it('never decodes a frame the cap refused — admit alone is the only witness', () => {
+    // The discriminating half. A test that only runs admit-true cannot tell
+    // "admit is first" from "admit is called at all"; with `admit` refusing,
+    // decode and apply must not run — the frame is dropped before the parser.
+    const order: string[] = [];
+    const { r } = router({
+      input: {
+        admit: () => {
+          order.push('admit');
+          return false;
+        },
+        decode: () => {
+          order.push('decode');
+          return null;
+        },
+        apply: () => {
+          order.push('apply');
+          return null;
+        },
+      },
+    });
+    const channel = fakeChannel('control');
+    r.attach(channel);
+    channel.emit('message', envelope('control', 'desktop-input', { kind: 'pointer-move', x: 0.5, y: 0.5 }));
+    expect(order).toEqual(['admit']);
   });
 
   it('logs and ignores a corrupt JSON frame on any channel', () => {
@@ -8177,6 +8715,28 @@ describe('dispatch', () => {
     r.send('files', new Uint8Array([0x01, 2, 3]));
     expect(channel.send).toHaveBeenCalledWith(new Uint8Array([0x01, 2, 3]));
   });
+
+  it('send() does not double-encode an already-serialised frame (MAJOR-3)', () => {
+    // Task 17's builders return `JSON.stringify(…)`, so this is the shape that
+    // actually reaches `send()` on the control channel. The assertion is the
+    // reader's operation, not "was called": the browser parses exactly once
+    // (`webrtc-core/src/data-channel.ts:36`) and gates on
+    // `typeof parsed.type === 'string'`. Double-encoding makes `parsed` the
+    // *string* of the JSON, so `parsed.type` is `undefined` and every
+    // `desktop-*` frame is dropped by the browser with no error at either end.
+    // `parsed` must be an object, and its `type` must survive.
+    const { r } = router();
+    const channel = fakeChannel('control');
+    r.attach(channel);
+    const frame = JSON.stringify({ type: 'desktop-stats', data: { fps: 30 } });
+    r.send('control', frame);
+    const wire = channel.send.mock.calls[0]?.[0] as string;
+    const parsed: unknown = JSON.parse(wire);
+    expect(typeof parsed).toBe('object');
+    expect((parsed as Record<string, unknown>).type).toBe('desktop-stats');
+    // And the string is on the wire unmodified, not re-wrapped.
+    expect(wire).toBe(frame);
+  });
 });
 ```
 
@@ -8191,6 +8751,12 @@ import { MAX_DATA_CHANNEL_FRAME_BYTES } from '../signalling/constants.js';
 import { frameFiles } from '../files/protocol.js';
 import type { FilesFrame } from '../files/session.js';
 import { clampBitrate } from '../desktop/control.js';
+// Task 15's wire union. The import is **load-bearing, not cosmetic**: without
+// it, `InputEvent` below resolves to the DOM global of the same name (`lib`
+// includes `DOM`), and `RouterDeps.input` silently declares the browser's
+// event type instead of the agent's. The typecheck caught this only because
+// the test fence imported the real one and the two disagreed.
+import type { InputEvent } from '../input/decode.js';
 
 /**
  * The three labels this port serves, named after the wire (`WebRTCChannelType`
@@ -8257,6 +8823,16 @@ export interface RouterChannel {
   readonly label: string;
   on(event: 'message', cb: (data: ArrayBuffer | Uint8Array | string) => void): () => void;
   close(): void;
+  /**
+   * The outbound half of the same channel. The real adapters already declare
+   * exactly this signature — `packages/webrtc-core/src/adapters/werift.ts:42`
+   * and `browser.ts:21` both have `send(data: string | ArrayBuffer |
+   * Uint8Array): void` — so declaring it here is stating the contract the
+   * transport already satisfies, not inventing a shape. It was missing from
+   * this interface, which is why the fence did not compile: `send()` called
+   * `channel.send(...)` on a type that had no such member.
+   */
+  send(data: string | ArrayBuffer | Uint8Array): void;
 }
 
 export interface RouterDeps {
@@ -8277,7 +8853,33 @@ export interface RouterDeps {
     onControl(control: unknown): void;
     onSelect(source: unknown): void;
   };
-  input: { decode(bytes: Uint8Array): unknown; accept(event: unknown): boolean; inject(event: unknown): void };
+  /**
+   * The input seam, in the order the Rust runs it: **admit → decode → apply**
+   * (`lib.rs:2427-2469`).
+   *
+   * - `admit(now)` is the port of `InputRateLimiter::allow` (`input.rs:141`),
+   *   with the operator gate folded in the way `apply_if_allowed`'s first
+   *   parameter is. It takes a **timestamp**, not an event — it must run
+   *   before decode, so it cannot depend on a decoded event. A closed gate is
+   *   a refusal with **no rate accounting** (MAJOR-5 item 5b: the Rust never
+   *   reaches the limiter when `allow_input` is false, `lib.rs:2430`), and the
+   *   window is the Rust's `floor(now / 1000)` wall-clock index, not elapsed
+   *   time since the first call (item 5a).
+   * - `decode(bytes)` is Task 15's `decodeInput`; it returns a normalized
+   *   `InputEvent` or `null`.
+   * - `apply(event, now)` is the bound `applyInput` (`bindInputApply`): it
+   *   closes over the live source rect and injector, maps normalized →
+   *   absolute, injects, and returns the applied event's `seq ?? null`.
+   *
+   * The router holds **no geometry**: the rect is the one `desktop-sources`
+   * publishes (`DesktopSourceInfo.x/y/width/height`, `desktop.ts:11-27`) and
+   * it belongs to the desktop session, not to a wire dispatcher.
+   */
+  input: {
+    admit(now: number): boolean;
+    decode(bytes: Uint8Array): InputEvent | null;
+    apply(event: InputEvent, now: number): number | null;
+  };
   send(label: ChannelLabel, frame: unknown): void;
   logger: { warn(message: string): void };
   /** Injected so the envelope's `timestamp` is pinnable. Defaults to `Date.now`. */
@@ -8495,14 +9097,28 @@ export class DataChannelRouter {
         // browser sends `sendJson('control', 'desktop-input', event)`
         // (`desktop-core/src/client.ts:452,467`) and the Rust gates
         // `channel == "control" && type == "desktop-input"` (`input.rs:189`).
+        //
+        // **The order is `admit → decode → apply`, and it is the Rust's**
+        // (`lib.rs:2427-2469`). Gate-A (`allow_input`) and the rate cap are
+        // checked **before** `apply_if_allowed`, and `apply_if_allowed` is
+        // what calls `decode_desktop_input` (`input.rs:277-286`) and then
+        // injects. The Rust says so at `lib.rs:2428-2430`: *"cap AFTER
+        // decrypt and the Gate-A check, BEFORE decode/inject"*. The rate cap
+        // is a DoS control; putting the JSON parser in front of it would
+        // spend the parse on exactly the frames it exists to refuse. The
+        // earlier version of this arm ran `decode → accept → inject` and
+        // attributed that order to the Rust — it was backwards.
         if (message.type === 'desktop-input') {
+          if (!this.deps.input.admit((this.deps.now ?? Date.now)())) return;
           const event = this.deps.input.decode(bytes);
           if (event === null) return;
-          if (!this.deps.input.accept(event)) return;
-          this.deps.input.inject(event);
+          // The return value is the applied event's `seq` (ADR-47) or `null`
+          // when the injector refused it; the runtime stores it in the holder
+          // `buildCursorFrame` reads. This arm does not own that holder.
+          this.deps.input.apply(event, (this.deps.now ?? Date.now)());
           return;
         }
-        this.dispatchDesktop(message, bytes);
+        this.dispatchDesktop(message);
         return;
       }
       default:
@@ -8542,9 +9158,14 @@ export class DataChannelRouter {
    * the two real types itself and reuses only Task 17's `clampBitrate` — the
    * one piece that is already right, and the same clamp the Rust runs inside
    * `decode_control` (`desktop.rs:2016-2019`). `desktop-input` does not come
-   * through here at all: it is decoded by Task 15's `decodeInput` before the
-   * limiter and the injector (the arm above) — the order the Rust established
-   * and the security property this port keeps. `desktop-e2ee-hello` also
+   * through here at all: the router's own arm runs **admit → decode → apply**
+   * before any dispatch, which is the Rust's real order — the operator gate,
+   * then the 120 Hz cap, then `apply_if_allowed` (which is what calls
+   * `decode_desktop_input` and injects), `lib.rs:2413-2469`. The landed
+   * comment said "decoded before the limiter and the injector — the order the
+   * Rust established", which inverted the Rust and put the JSON parse in front
+   * of the DoS control that exists to bound it (MAJOR-5). `desktop-e2ee-hello`
+   * also
    * arrives on `control` (`desktop-core/src/client.ts:257`); answering it is
    * the e2ee wiring's job, unfenced here, so an unknown type is dropped the
    * way the Rust's `_ => Ok(None)` arm drops it.
@@ -8613,6 +9234,18 @@ export class DataChannelRouter {
       channel.send(frame);
       return;
     }
+    // An already-serialised frame goes to the wire as-is. `emit()` above
+    // passes strings through untouched (`typeof frame === 'string' ? frame :
+    // frameFiles(…)`), and Task 17's builders all return `JSON.stringify(…)`,
+    // so without this branch every `desktop-stats` / `desktop-cursor` /
+    // `desktop-sources` frame is encoded a second time: the browser's typed
+    // listener parses once (`webrtc-core/src/data-channel.ts:34-41`), gets a
+    // string, gates on `typeof parsed.type === 'string'`, and never fires —
+    // a silent drop on both ends (MAJOR-3).
+    if (typeof frame === 'string') {
+      channel.send(frame);
+      return;
+    }
     channel.send(JSON.stringify(frame));
   }
 }
@@ -8639,12 +9272,13 @@ git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): route peer data channels behind the label gate"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **21 new `it()` / 36 new `expect()`** —
-**17 / 25** as the B-12g repair landed it, **21 / 36** after this R1–R12
-follow-up (was **12 / 17** before B-12g; the deltas below carry that figure
-forward rather than re-deriving it). All twenty-one are **new**, none ported. An earlier draft claimed six of them as ports (`rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`). None of those six names exists in `apps/agent/src`, and neither behaviour they describe has a Rust test: the label gate (`on_data_channel`, `rtc.rs:663-689`) has no test at all, and the only inbound router (`route_inbound`, `lib.rs:2739`) has none either. This is the reason the counts matter — a declaration that claims six ports under-reports new coverage and over-reports parity in the direction that survives review.
+**TEST-INTEGRITY declaration:** one new file, **23 new `it()` / 40 new `expect()`** —
+**17 / 25** as the B-12g repair landed it, **21 / 36** after the R1–R12
+follow-up, **23 / 40** after the MAJOR-3 + MAJOR-5 repair (was **12 / 17**
+before B-12g; the deltas below carry that figure forward rather than
+re-deriving it). All twenty-three are **new**, none ported. An earlier draft claimed six of them as ports (`rejects_an_unknown_channel_label`, `rejects_a_second_channel_with_the_same_label`, `drops_a_channel_whose_label_errors`, `dispatches_terminal_input`, `dispatches_files_frames`, `dispatches_desktop_control`). None of those six names exists in `apps/agent/src`, and neither behaviour they describe has a Rust test: the label gate (`on_data_channel`, `rtc.rs:663-689`) has no test at all, and the only inbound router (`route_inbound`, `lib.rs:2739`) has none either. This is the reason the counts matter — a declaration that claims six ports under-reports new coverage and over-reports parity in the direction that survives review.
 
-On the six-number axes: fence **21 `it()`** / call sites **21** (no `it.each(` in this file — the recipe is not blind to anything here) / runtime **21**; `expect()` fence **36** / call sites **36** / runtime **36**. Every `expect(` in the fence is a single literal occurrence, so all three axes coincide.
+On the six-number axes: fence **23 `it()`** / call sites **23** (no `it.each(` in this file — the recipe is not blind to anything here) / runtime **23**; `expect()` fence **40** / call sites **40** / runtime **40**. Every `expect(` in the fence is a single literal occurrence, so all three axes coincide.
 
 **The B-12g repair added five `it()` and eight `expect()`, carried unchanged:**
 
@@ -8665,11 +9299,14 @@ On the six-number axes: fence **21 `it()`** / call sites **21** (no `it.each(` i
 | `drops a terminal-data frame with no terminalId rather than guessing a session` | Ruling 1's **positive control for the drop** | **new** | +2 |
 | `routes desktop-select and desktop-bitrate on the control channel` | BLOCKING-2 + Ruling 2/3 | **replaces** `routes desktop control and select frames to their handlers` (label `desktop`→`control`, types `stream-control`→`desktop-bitrate`, payload shape, asserted values; now 3 asserts) | 2 → 3 |
 | `closes an unknown label the browser never opens — including a real label from the shared type this port does not serve` | BLOCKING-2's `'desktop'` ruling | **replaces** membership in the five-label loop (the loop now walks three labels; this pins `'desktop'` is closed, the inverse of the loop) | +1 (new test) |
-| `decodes input BEFORE the limiter and the injector, on the control channel` | BLOCKING-2's input routing | **same count**, fixture moved (`input`/`input-pointer` → `control`/`desktop-input`), and the override now supplies `inject` so the three-stage order is real | 1 → 1 |
+| `decodes input BEFORE the limiter and the injector, on the control channel` | BLOCKING-2's input routing | **replaced by this repair** — see the MAJOR-5 rows below; the landed fixture moved (`input`/`input-pointer` → `control`/`desktop-input`) but kept the wrong order | 1 → 1 |
 | `detach removes the handlers so a late message is ignored` | MAJOR-3 | **same `it()` count**, fixture restored to a **gate-satisfying** frame (`terminal-data` with `terminalId`), and a second assertion added (`handlerCount` = 0) | 1 → 2 |
 | `send() writes through to the attached channel and warns when the channel is absent` | MAJOR-2 | **new** | +3 |
 | `send() hands a binary frame to the channel untouched` | MAJOR-2's binary half | **new** | +1 |
 | `sends whatever the files session returns…` and `leaves a binary chunk frame…` | MAJOR-2's consequence | observable moved from `deps.send` to **`channel.send`** (the write is the router's own `send` now); each gained the `deps.send` not-called assertion | 1→2 each |
+| `send() does not double-encode an already-serialised frame (MAJOR-3)` | MAJOR-3 | **new** — reads what the browser's single `JSON.parse` yields (an object), not "`channel.send` was called" | +3 |
+| `runs admit before decode before apply, on the control channel` | MAJOR-5 items 1-2 | **replaces** `decodes input BEFORE the limiter and the injector…` — the order is the Rust's real one (`lib.rs:2413-2465`), and `decode` returns a real event so `apply` is reached | 1 → 1 |
+| `never decodes a frame the cap refused — admit alone is the only witness` | MAJOR-5 item 2's **discriminating** half | **new** — without it the first test cannot tell "admit is first" from "admit ran" | +1 |
 
 **MAJOR-3 declared:** the `detach` fixture in the landed repair emitted a payload with no `type`, so the (inverted) gate dropped the frame before `detach` was consulted — the test passed for a reason unrelated to `detach` (measured by the probe: E2 with a gate-satisfying fixture reached `write` after `detach`; E3 without `detach` also reached it, so the gate was the only thing making E1 pass). The pre-existing `detach` — `this.attached.delete(label)` with the listener left registered — is fixed here because **this commit's fixture change is what hid it**: `attach` now stores the unsubscribe `on` returns and `detach` calls it before deleting the entry. The fixture is an envelope that satisfies the gate **and** reaches the arm (`terminal-data` with `terminalId` and base64 `data`), not the flat frame, which is no longer this contract's shape. Before → after for that file's fixture: 0 writes after `detach` (for the wrong reason) → 0 writes after `detach` (because the listener is gone — `handlerCount('message')` is now asserted to be 0), and the mutant control (a router that keeps the handler) fails both assertions.
 
@@ -8681,13 +9318,34 @@ On the six-number axes: fence **21 `it()`** / call sites **21** (no `it.each(` i
 
 **Ruling 2/3 declared:** `dispatchDesktop` dispatches by the real wire types (`desktop-select` `{ sourceId }`, `desktop-bitrate` `{ bitrateBps }`), reuses only Task 17's `clampBitrate`, and **Task 17's own fence is untouched** — its `decodeStreamControl`/`decodeDesktopSelect` port the wrong vocabulary (`stream-control`/`action`, `source: { kind, id }`) and that re-port is Task 17's change, noted here so the plan carries the obligation.
 
+**Desktop outbound frames — the follow-up register entry (MAJOR-2 addendum, extended 2026-10-24).** Task 17's fence is untouched by this repair, so the obligations below are carried here rather than fixed. They are one class: **Task 17's builders, their own fence, and the browser disagree, and only the browser is the authority.** The probe `.superpowers/probes/b12g-send-stringify-pm/` (`test/frame-shape.test.ts`, `test/payload-fields.test.ts`) measures all of it; Task 17's fence passes 5/5 against its own builders, which is the point — they agree with each other and not with the reader.
+
+1. **The builders produce no envelope.** `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` return `{ type, data }`. The Rust builds a full `DataChannelMessage` — `{ type, channel, payload, timestamp }` (`desktop.rs:2048-2085`, `:2093-2101`) — and the browser reads `msg.payload` (`desktop-core/src/client.ts:268-330`). The re-port must emit the envelope; `send()`'s string branch (MAJOR-3, landed in this commit) only stops the *double-encoding*, it does not wrap the frame.
+2. **The payload vocabularies are a third vocabulary.** Measured gates:
+
+   | frame | the plan sends | the browser requires | source |
+   |---|---|---|---|
+   | `desktop-stats` | `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` | `width`, `height`, `fps`, `targetBitrateBps` — `parseStats` returns `null` without all four | `client.ts:356-368` |
+   | `desktop-cursor` | `shape: string` | `shape: DesktopShape` = `{ png, hotspotX, hotspotY, serial }`; `seq` required; `lastInputSeq?` (landed this commit on the sender side, 2d) | `desktop.ts:107-114` |
+   | `desktop-sources` | `{ monitors, windows }` | `{ sources: DesktopSourceInfo[], inputEnabled, peerVerified, cursorInFrame }` | `desktop.ts:11-27`, `:123-139` |
+
+   `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-27`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
+3. **Nothing calls `deps.send` for these frames.** Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. The `deps.send` seam exists and the router serves `control`; the producer does not.
+4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `AgentE2ee` has only the terminal arm (`beginTerminalE2ee/acceptHello/isArmed`), and the `desktop-e2ee-ack` outbound type exists with no producer (`:8212`). Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
+
+Start the re-port from the reader, not the builder: every field above was already being sent by the Rust before the plan existed, and the browser's parse is the acceptance test.
+
 The `accepts an inbound frame exactly at the cap` case is not padding: the drop test alone passes against a cap of `0`, so without the boundary case the cap test measures only that *something* was dropped.
 
 **R4's cap scope declared (MINOR 8):** the cap check runs for **every** channel, not only files — an SCTP message cap is per-channel by construction, and B-12g §1.5 scoped it to files because that was the path that asked; gating it on `label === 'files'` would re-arm the same unenforced-cap hole on `terminal` and `control`. The two cap tests use a `files` channel because that is the path with an observable consumer; the cap itself is before any label-specific dispatch.
 
 **And none of this file is gated**, which the declaration must say because it is a gap rather than a covered behaviour. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so every test above is green locally and invisible in CI. The Plan-3 handoff is the same as Task 19's: the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
 
-The count reconciles as **4 + 5 + 12 = 21**: the four label-gate cases above the table, the five B-12g cases in the table, and twelve dispatcher/lifecycle cases that are neither. What those twelve cover, stated as new work: terminal-data routed to the pty by id and as bytes; the no-terminalId drop; files binary `0x02` routed to the files session; files JSON routed to the files session unwrapped; the files session's output sent back wrapped, through the channel; desktop-select and desktop-bitrate on `control`; the `'desktop'` label closed; input decoded BEFORE the limiter and injector on `control`; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers; `send()` writing through to the attached channel and warning when it is absent; `send()` handing a binary frame through untouched.
+The count reconciles as **4 + 5 + 14 = 23**: the four label-gate cases above the table, the five B-12g cases in the table, and fourteen dispatcher/lifecycle cases that are neither. What those fourteen cover, stated as new work: terminal-data routed to the pty by id and as bytes; the no-terminalId drop; files binary `0x02` routed to the files session; files JSON routed to the files session unwrapped; the files session's output sent back wrapped, through the channel; desktop-select and desktop-bitrate on `control`; the `'desktop'` label closed; input running admit → decode → apply on `control`; a refused frame never reaching the decoder; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers; `send()` writing through to the attached channel and warning when it is absent; `send()` handing a binary frame through untouched; `send()` not double-encoding an already-serialised frame.
+
+**MAJOR-4 declared (typecheck):** the landed Task 18 fences did **not** compile — 4 errors, all in this task's two fences: `this.dispatchDesktop(message, bytes)` against a one-argument declaration (2 errors at the `RouterChannel.send` sites were the same class one level down, `Property 'send' does not exist on type 'RouterChannel'`), and the always-throwing `get label()` fixture inferring `void`. Fixed by declaring the real adapter contract on `RouterChannel` (`send(data: string | ArrayBuffer | Uint8Array): void` — `webrtc-core/src/adapters/werift.ts:42` and `browser.ts:21` both have exactly this), dropping the dead second argument, and annotating the getter `get label(): string`. Measured 4 → 0; the fork is `.superpowers/probes/b12g-fence-typecheck-fix/`.
+
+**MAJOR-5 declared (order):** `deps.input` is `{ admit, decode, apply }` and the arm runs them in that order. The landed version ran `decode → accept → inject` and its comment claimed that was "the order the Rust established"; the Rust runs **gate → limiter → decode → apply** (`lib.rs:2413-2469`), with its own comment reading *"cap AFTER decrypt and the Gate-A check, BEFORE decode/inject"* (`:2428-2430`). The security property is the point: the 120 Hz cap exists to bound the JSON parser, so it must sit in front of it. `admit(now)` takes a **timestamp**, not an event — the landed `accept(_event: InputEvent)` signature could not express the order at all, which is why reordering alone would not have fixed it.
 
 The Rust's gate is the specification for the first four — `rtc.rs:663-689` accepts one label, refuses an unexpected one by closing it, drops an unlabelled channel, and closes a second `terminal` channel. That is parity of *behaviour* being ported without parity of *test* being ported, and the declaration now says so instead of implying the second.
 
@@ -8706,7 +9364,7 @@ The Rust's gate is the specification for the first four — `rtc.rs:663-689` acc
 - Produces:
   - `class DesktopSession { constructor(deps); start(source, profile, bitrate): Promise<void>; control(control: StreamControl): void; select(source: DesktopSource): Promise<void>; stop(): Promise<void> }`
   - `function resolveDefaultSource(config, sources): DesktopSource`
-  - `class AgentRuntime { static async start(config, deps?): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }` — `deps` carries `send(label, frame)` (the seam Task 18's router exposes — the runtime→router binding is `send: router.send`), an optional `now`, and an optional `filesSession` factory (MAJOR-1's test seam; the default constructs the real `FilesRoot.open` + `FilesSession` and owns the two tick intervals)
+  - `class AgentRuntime { constructor(config, deps); static async start(config, deps?): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }` — `deps` is the named `RuntimeDeps`, shared verbatim by the constructor and `static start` so the two cannot drift (MAJOR-6). It carries `send(label, frame)` (the seam Task 18's router exposes — the runtime→router binding is `send: router.send`), an optional `now`, and an optional `filesSession` factory (MAJOR-1's test seam; the default constructs the real `FilesRoot.open` + `FilesSession` and owns the two tick intervals)
   - `function createAgentRuntime(config): Promise<AgentRuntime>`
 
 **⚠️ The video path, stated once because an earlier draft of this task got it
@@ -8792,11 +9450,16 @@ describe('FilesTicker', () => {
   function ticker() {
     const calls: string[] = [];
     const session = {
-      checkIdle: vi.fn(() => {
+      // `(): unknown[] => …`, not a bare `() => []`: the bare arrow infers
+      // `never[]`, so `mockReturnValue([idleFrame])` in the emit test is
+      // unassignable and the mock can only ever return `[]` — a type-level
+      // vacuity (MAJOR-6 item 3: the annotation is the fix; the type was
+      // hiding it).
+      checkIdle: vi.fn((): unknown[] => {
         calls.push('idle');
         return [];
       }),
-      flushAcks: vi.fn(() => {
+      flushAcks: vi.fn((): unknown[] => {
         calls.push('acks');
         return [];
       }),
@@ -8892,12 +9555,22 @@ describe('AgentRuntime — the production tick wiring (MAJOR-1)', () => {
     } as unknown as AgentConfig;
     const sent: { label: string; frame: unknown }[] = [];
     const session = {
-      checkIdle: vi.fn(() => [] as unknown[]),
+      // One frame, not an empty list: test 3 asserts the guard by absence, and
+      // a session whose `checkIdle` never emits makes the empty-array assertion
+      // pass even with the guard deleted (the fixture-vacuity class). The
+      // shape is test 1's frame so the assertion has a real violation to
+      // forbid.
+      checkIdle: vi.fn(() => [{ type: 'files-error', code: 'TRANSFER_TIMEOUT' }] as unknown[]),
       flushAcks: vi.fn(() => [] as unknown[]),
     };
     const deps = {
       send: (label: string, frame: unknown) => sent.push({ label, frame }),
-      now: () => 1_000_000,
+      // Real clock, not a constant: `FilesTicker.tick()` computes
+      // `now - lastIdleAt`, so a constant closure freezes that at 0 forever
+      // and no tick ever runs (the frozen-clock defect this fence shipped
+      // with). `vi.useFakeTimers()` mocks `Date.now`, so the closure must
+      // actually call it for `advanceTimersByTimeAsync` to move it.
+      now: () => Date.now(),
       filesSession: () => session,
     };
     return { config, deps, sent, session };
@@ -8941,6 +9614,15 @@ describe('AgentRuntime — the production tick wiring (MAJOR-1)', () => {
   it('skips the ticker entirely when the config has no files root', async () => {
     // The Rust's files manager is `Option<FilesManager>`; a config without a
     // root must not open one, and must not tick a session that does not exist.
+    // The fixture emits (checkIdle returns a frame, exactly like test 1's) so
+    // the `[]` assertion has something to be violated by: a session whose
+    // checkIdle never emits would pass with the guard deleted, the same
+    // vacuous-fixture class as the detach case (PM probe forkE — 59 leaked
+    // frames when the guard is gone). `Date.now()` in `wiring()` is
+    // load-bearing too: a constant closure (`now: () => 1_000_000`) freezes
+    // the ticker's catch-up arithmetic at `now - lastIdleAt = 0` forever —
+    // fake timers mock `Date.now` and cannot move a closure that never calls
+    // it.
     vi.useFakeTimers();
     try {
       const { config, deps, sent } = wiring({ filesRoot: null });
@@ -8950,6 +9632,36 @@ describe('AgentRuntime — the production tick wiring (MAJOR-1)', () => {
       await runtime.stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('status() reports the config it was started with', async () => {
+    // MAJOR-6 item 4: `status()` is the only runtime member with no caller
+    // anywhere in the fence — its five config fields are exactly what the
+    // constructor wiring exists to produce, and the landed class (no
+    // constructor) could not have compiled this call. `start` with no
+    // `filesSession` and no `filesRoot` keeps the interval wiring out of the
+    // assertion; the assertion reads what the wiring produced, not the
+    // process.
+    const config = {
+      agentId: 'agent-1',
+      server: 'wss://host/x',
+      filesRoot: null,
+      allowInput: true,
+      desktopProfile: { id: '720p30' },
+    } as unknown as AgentConfig;
+    const runtime = await AgentRuntime.start(config);
+    try {
+      expect(runtime.status()).toEqual({
+        agentId: 'agent-1',
+        connected: false,
+        server: 'wss://host/x',
+        filesRoot: null,
+        allowInput: true,
+        desktopProfile: '720p30',
+      });
+    } finally {
+      await runtime.stop();
     }
   });
 });
@@ -9116,9 +9828,29 @@ export interface RuntimeStatus {
  * handles before anything else so a late tick cannot fire against a torn-down
  * session.
  */
+export interface RuntimeDeps {
+  send: (label: string, frame: unknown) => void;
+  now?: () => number;
+  filesSession?: (root: string, now: () => number) => { checkIdle(): unknown[]; flushAcks(): unknown[] };
+}
+
 export class AgentRuntime {
   private stopped = false;
   private readonly tickers: NodeJS.Timeout[] = [];
+
+  /**
+   * MAJOR-6: the class declared **no constructor** while `static start` called
+   * `new AgentRuntime(deps)` and `status()` read five `this.config.*` fields —
+   * so the class could not implement its own `RuntimeStatus` interface and the
+   * fence did not typecheck (8 errors, 6 of them here). `config` and `deps` are
+   * parameter properties: the class holds exactly what `status()` and `stop()`
+   * read, and `RuntimeDeps` is the **one** declaration both this constructor
+   * and `static start` use, so the two cannot drift.
+   */
+  constructor(
+    private readonly config: AgentConfig,
+    private readonly deps: RuntimeDeps,
+  ) {}
 
   /**
    * **MAJOR-1's test seam, and the honest shape of Plan 2's wiring.** The
@@ -9131,17 +9863,13 @@ export class AgentRuntime {
    */
   static async start(
     config: AgentConfig,
-    deps: {
-      send: (label: string, frame: unknown) => void;
-      now?: () => number;
-      filesSession?: (root: string, now: () => number) => { checkIdle(): unknown[]; flushAcks(): unknown[] };
-    } = {
+    deps: RuntimeDeps = {
       send: () => {
         throw new Error('no transport is wired yet');
       },
     },
   ): Promise<AgentRuntime> {
-    const runtime = new AgentRuntime(deps);
+    const runtime = new AgentRuntime(config, deps);
     if (config.filesRoot) {
       const now = deps.now ?? Date.now;
       const session = deps.filesSession
@@ -9727,12 +10455,12 @@ git add apps/agent
 git commit -m "feat(agent): wire the runtime lifecycle and the desktop session"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **25 new `it()` / 49 new `expect()`**
-(was **17 / 33** before the B-12g repair, **22 / 43** as that repair landed; per
-file below). `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is the **only** port here — it re-homes from Task 8. Everything else is **new**, and an earlier draft named eight Rust tests that do not exist anywhere in `apps/agent/src`: `resolve_default_source_prefers_primary` / `…honours_an_explicit_id` / `…resolves_test` / `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture` / `…stops_capture_before_the_encoder` / `…reconfigures_on_a_quality_change`. The functions they name do exist — `default_source_id` (`desktop.rs:1004`) and `run_desktop_session` (`lib.rs:2002`/`2698`) — and neither has a test. The only in-tree use of `default_source_id` is the `#[ignore]`d live-display smoke (`desktop.rs:2707`), which asserts a frame, not a resolution rule.
+**TEST-INTEGRITY declaration:** two new files, **26 new `it()` / 50 new `expect()`**
+(was **17 / 33** before the B-12g repair, **22 / 43** as that repair landed,
+**25 / 49** after the R1–R12 follow-up; per file below). `reporting_estimator_publishes_its_initial_target` (`rtc.rs:1179`) is the **only** port here — it re-homes from Task 8. Everything else is **new**, and an earlier draft named eight Rust tests that do not exist anywhere in `apps/agent/src`: `resolve_default_source_prefers_primary` / `…honours_an_explicit_id` / `…resolves_test` / `…throws_without_monitors`, `runtime_stops_idempotently`, `desktop_session_configures_before_capture` / `…stops_capture_before_the_encoder` / `…reconfigures_on_a_quality_change`. The functions they name do exist — `default_source_id` (`desktop.rs:1004`) and `run_desktop_session` (`lib.rs:2002`/`2698`) — and neither has a test. The only in-tree use of `default_source_id` is the `#[ignore]`d live-display smoke (`desktop.rs:2707`), which asserts a frame, not a resolution rule.
 
-Per file, on the same fence axis: `runtime.test.ts` **14 `it()` / 22 `expect()`**,
-`desktop/session.test.ts` **11 / 27**. 14 + 11 = 25; 22 + 27 = 49.
+Per file, on the same fence axis: `runtime.test.ts` **15 `it()` / 23 `expect()`**,
+`desktop/session.test.ts` **11 / 27**. 15 + 11 = 26; 23 + 27 = 50.
 
 **The B-12g repair added five `it()` and ten `expect()` to `runtime.test.ts`** —
 `runtime.test.ts` was **6 / 6** and is now **11 / 16**. All five are R3's
@@ -9752,6 +10480,47 @@ session is injected through a `filesSession` seam so the emitted frame is
 observable without a real root; the production construction
 (`FilesRoot.open` + `FilesSession`) is that seam's default.
 
+**MAJOR-1's post-QA repair changed those three tests' fixtures without changing
+either count: `runtime.test.ts` stays 14 / 22 on that pass (it is 15 / 23
+only because MAJOR-6 adds `status()` below).** Two defects, both in the fence,
+neither in the production source:
+
+1. **The frozen clock.** `wiring()` set `now: () => 1_000_000` — a constant
+   closure. `FilesTicker.tick()` computes `now − lastIdleAt`, so the closure
+   froze that at `0` forever and **no tick ever ran**: the fence read
+   `1 failed | 13 passed (14)` at `adc162a5`, failing on `checkIdle` called 0
+   times after `advanceTimersByTimeAsync(IDLE_TICK_MS)`. `vi.useFakeTimers()`
+   mocks `Date.now` but cannot move a closure that never calls it, so the fix
+   is `now: () => Date.now()` and `Date.now()` is **load-bearing** here — a
+   reader who "simplifies" it back to a constant re-breaks the fence with no
+   change to the code under test. The runtime wiring itself was correct and is
+   untouched.
+2. **Test 3's vacuous fixture.** `skips the ticker entirely when the config has
+   no files root` passed **with the `filesRoot` guard deleted** (measured:
+   `14 passed (14)`), because the injected fake session's `checkIdle` returned
+   `[]` and `expect(sent).toEqual([])` then held for the wrong reason. The
+   fixture now returns one `files-error` frame — the same shape test 1 asserts
+   — while the `[]` assertion stays: with the guard gone the leak is 59 frames,
+   so the test discriminates. This is the same fixture-vacuity class as the
+   `detach` case above, and it is the third instance in this task of an
+   assertion encoding the defect rather than the behaviour.
+
+**MAJOR-6 declared (typecheck + a missing caller).** The landed `AgentRuntime`
+declared **no constructor** while `static start` called `new AgentRuntime(deps)`
+and `status()` read five `this.config.*` fields — 8 typecheck errors, **6 of
+them in the production class** (`Property 'config' does not exist`,
+`Expected 0 arguments, but got 1`). `status()` was never called by any test, so
+the class could not implement its own declared `RuntimeStatus` interface and
+nothing noticed: `new AgentRuntime(deps)` is legal JavaScript, and vitest does
+not typecheck. Fixed by a real constructor taking `(config, deps)` — with the
+deps type hoisted to a named `RuntimeDeps` used by **both** the constructor and
+`static start`, so they cannot drift — and by `ticker()`'s mocks gaining
+`(): unknown[]`, which the bare arrow had inferred as `never[]` (a type-level
+vacuity: a `never[]` mock can only ever return `[]`, so
+`mockReturnValue([idleFrame])` was unassignable and the emit test was pinned to
+the empty case). The new `status()` test is the +1 `it()` / +1 `expect()`
+above; it is the only member with no caller anywhere in the fence.
+
 `FilesTicker` is the production owner R3 requires, and the declaration says so
 as a **capability**, not a test name. The pre-repair count was: `setInterval`
 appeared **0** times in this document and `checkIdle()`'s only callers were two
@@ -9762,7 +10531,7 @@ code in this document** — the two handles `AgentRuntime.start` owns
 wiring has its own three tests above. The ticker itself keeps the injected
 clock so no test sleeps.
 
-So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the twenty-five cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), five `FilesTicker` cases (the 1 s idle period; the 20 ms ack period; the catch-up count when a tick arrives late; that both ticks' frames are emitted; `stop()` ending ticking), three `AgentRuntime` wiring cases (real intervals driving the session and emitting on `files`; `stop()` clearing the handles; a no-files-root config skipping the ticker), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
+So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the twenty-six cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), five `FilesTicker` cases (the 1 s idle period; the 20 ms ack period; the catch-up count when a tick arrives late; that both ticks' frames are emitted; `stop()` ending ticking), four `AgentRuntime` cases (real intervals driving the session and emitting on `files`; `stop()` clearing the handles; a no-files-root config skipping the ticker; `status()` reporting the config it was started with), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
 
 **And one R3 consequence the declaration must state, because it is a gap rather than a covered behaviour:** `runtime.test.ts` — ticker and wiring alike — is **not** gated. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so its tests are green locally and invisible in CI — the same status Task 11's crossing test carries. The Plan-3 handoff is the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
 
@@ -9890,6 +10659,16 @@ code they need.
 and `ProfileId` are declared once and consumed by name in every later task.
 `clampBitrate` is exported from `control.ts` and imported by `session.ts` — not
 re-declared. `nextBackoff` is pure and takes milliseconds in every caller.
+`RuntimeDeps` is declared once in `runtime.ts` and used by both
+`AgentRuntime`'s constructor and `static start`.
+
+**One shadowing hazard, because it cost this repair a round (MAJOR-4).**
+`InputEvent` is also a **DOM global** (`lib` includes `DOM`), so any module that
+names the type without importing it silently declares the browser's event
+instead of the agent's — and only a consumer that imported the real one
+disagrees, which is how Task 18's source fence was caught. Import it
+type-only (`import type { InputEvent } from '../input/decode.js'`); never rely
+on it being "obviously" in scope.
 
 **Review Focus coverage.** Each of the five named lines has its test:
 reconnect-reset → Task 5's `run()` test; unclassifiable-frame cascade → Task 4's
