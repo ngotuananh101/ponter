@@ -1,5 +1,6 @@
 // apps/agent/test/files/session.test.ts
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,6 +12,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FilesRoot } from '../../src/files/sandbox.js';
 import {
+  FILE_MAX_BYTES,
   FILE_WINDOW_CHUNKS,
   FILES_IDLE_TIMEOUT_MS,
 } from '../../src/files/protocol.js';
@@ -18,7 +20,9 @@ import type { FilesFrame } from '../../src/files/session.js';
 import {
   FILES_INBOUND_TYPES,
   FilesSession,
+  INBOUND_FIELDS,
   decodeFilesFrame,
+  inboundShapeValid,
   resumeOffsetMatches,
   type RemoteFileWire,
 } from '../../src/files/session.js';
@@ -613,6 +617,361 @@ describe('decode — all twelve inbound shapes (R6)', () => {
     const { s } = session();
     expect(decodeFilesFrame({ type: 'files-explode' })).toBeNull();
     expect(s.handle({ type: 'files-explode' })).toEqual([]);
+  });
+});
+
+describe('inbound decode boundary — payload shape validation (Task 22)', () => {
+  // A value of the kind the schema names, so cell 6 can synthesise a frame from
+  // an entry's OWN declarations rather than hand-writing expectations that
+  // would restate the table instead of measuring it.
+  function sampleFor(kind: string): unknown {
+    switch (kind) {
+      case 'string':
+        return 'x';
+      case 'u64':
+        return 0;
+      case 'bool':
+        return false;
+      case 'direction':
+        return 'download';
+      default:
+        throw new Error(`schema declares an unknown kind: ${kind}`);
+    }
+  }
+
+  // Brief cell 1: files-delete / recursive
+  it('files-delete rejects non-boolean recursive with BAD_FRAME and preserves tree', () => {
+    // S-1 class: non-boolean recursive values must be rejected at decode as BAD_FRAME
+    // without deleting the directory tree.
+    for (const bad of ['false', '0', 'true', 1, [], {}] as unknown[]) {
+      const { dir, s } = session();
+      mkdirSync(join(dir, 'tree'));
+      writeFileSync(join(dir, 'tree', 'inner.txt'), 'x');
+      const out = s.handle({
+        type: 'files-delete',
+        requestId: 'r-del',
+        path: 'tree',
+        recursive: bad,
+      });
+      expect(out[0]).toMatchObject({
+        type: 'files-action-result',
+        action: 'delete',
+        success: false,
+        error: 'BAD_FRAME',
+      });
+      expect(statSync(join(dir, 'tree', 'inner.txt')).isFile()).toBe(true);
+    }
+
+    // Controls: recursive: true deletes; recursive: false and omitted answer DIR_NOT_EMPTY
+    {
+      const { dir, s } = session();
+      mkdirSync(join(dir, 'tree'));
+      writeFileSync(join(dir, 'tree', 'inner.txt'), 'x');
+      const out = s.handle({
+        type: 'files-delete',
+        requestId: 'r-del-true',
+        path: 'tree',
+        recursive: true,
+      });
+      expect(out[0]).toMatchObject({
+        type: 'files-action-result',
+        action: 'delete',
+        success: true,
+      });
+      expect(existsSync(join(dir, 'tree'))).toBe(false);
+    }
+
+    {
+      const { dir, s } = session();
+      mkdirSync(join(dir, 'tree'));
+      writeFileSync(join(dir, 'tree', 'inner.txt'), 'x');
+      const outFalse = s.handle({
+        type: 'files-delete',
+        requestId: 'r-del-false',
+        path: 'tree',
+        recursive: false,
+      });
+      expect(outFalse[0]).toMatchObject({
+        type: 'files-action-result',
+        action: 'delete',
+        success: false,
+        error: 'DIR_NOT_EMPTY',
+      });
+      expect(statSync(join(dir, 'tree', 'inner.txt')).isFile()).toBe(true);
+
+      const outOmitted = s.handle({
+        type: 'files-delete',
+        requestId: 'r-del-omit',
+        path: 'tree',
+      });
+      expect(outOmitted[0]).toMatchObject({
+        type: 'files-action-result',
+        action: 'delete',
+        success: false,
+        error: 'DIR_NOT_EMPTY',
+      });
+      expect(statSync(join(dir, 'tree', 'inner.txt')).isFile()).toBe(true);
+    }
+  });
+
+  // Brief cell 2: files-upload-begin / size
+  it('files-upload-begin rejects non-u64 size with BAD_FRAME without creating .part file', () => {
+    // Non-u64 sizes (NaN, float, negative, string, null, Infinity) must be rejected
+    // at decode as BAD_FRAME and must NOT walk past the size cap to create a .part file.
+    for (const bad of ['abc', {}, null, -1, 1.5, '10', Infinity] as unknown[]) {
+      const { dir, s } = session();
+      const out = s.handle({
+        type: 'files-upload-begin',
+        transferId: ID,
+        path: '',
+        name: 'test.bin',
+        size: bad,
+      });
+      expect(out[0]).toMatchObject({
+        type: 'files-error',
+        code: 'BAD_FRAME',
+      });
+      expect(existsSync(join(dir, 'test.bin.ponter-part'))).toBe(false);
+    }
+
+    // Control 1: valid size (10) is accepted and acknowledged
+    {
+      const { dir, s } = session();
+      const out = s.handle({
+        type: 'files-upload-begin',
+        transferId: ID,
+        path: '',
+        name: 'test.bin',
+        size: 10,
+      });
+      expect(out[0]).toMatchObject({
+        type: 'files-upload-ack',
+        transferId: ID,
+        nextChunkIndex: 0,
+      });
+      expect(existsSync(join(dir, 'test.bin.ponter-part'))).toBe(true);
+    }
+
+    // Control 2: size exceeding FILE_MAX_BYTES is rejected downstream with FILE_TOO_LARGE
+    {
+      const { dir, s } = session();
+      const out = s.handle({
+        type: 'files-upload-begin',
+        transferId: ID2,
+        path: '',
+        name: 'too-big.bin',
+        size: FILE_MAX_BYTES + 1,
+      });
+      expect(out[0]).toMatchObject({
+        type: 'files-error',
+        code: 'FILE_TOO_LARGE',
+      });
+      expect(existsSync(join(dir, 'too-big.bin.ponter-part'))).toBe(false);
+    }
+  });
+
+  // Brief cell 3: a missing required field
+  it('rejects missing required field with BAD_FRAME and does not coerce to undefined string', () => {
+    // A missing required field must fail decode rather than being coerced via String(undefined).
+    const { dir, s } = session();
+    const outMissing = s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      size: 10,
+    });
+    expect(outMissing[0]).toMatchObject({
+      type: 'files-error',
+      code: 'BAD_FRAME',
+    });
+    expect(existsSync(join(dir, 'undefined.ponter-part'))).toBe(false);
+
+    // Control: the literal string "undefined" is a legal string and must be accepted
+    const outValid = s.handle({
+      type: 'files-upload-begin',
+      transferId: ID2,
+      path: '',
+      name: 'undefined',
+      size: 10,
+    });
+    expect(outValid[0]).toMatchObject({
+      type: 'files-upload-ack',
+      transferId: ID2,
+      nextChunkIndex: 0,
+    });
+    expect(existsSync(join(dir, 'undefined.ponter-part'))).toBe(true);
+  });
+
+  // Brief cell 4: files-list
+  it('files-list rejects non-string path and requestId with BAD_FRAME', () => {
+    const { s } = session();
+    const outPath = s.handle({
+      type: 'files-list',
+      requestId: 'r-1',
+      path: 12,
+    });
+    expect(outPath[0]).toMatchObject({
+      type: 'files-error',
+      code: 'BAD_FRAME',
+    });
+
+    const outReq = s.handle({
+      type: 'files-list',
+      requestId: 5,
+      path: '',
+    });
+    expect(outReq[0]).toMatchObject({
+      type: 'files-error',
+      code: 'BAD_FRAME',
+    });
+
+    // Control: valid string types succeed
+    const outOk = s.handle({
+      type: 'files-list',
+      requestId: 'r-ok',
+      path: '',
+    });
+    expect(outOk[0]).toMatchObject({
+      type: 'files-list-result',
+      requestId: 'r-ok',
+      path: '',
+    });
+  });
+
+  // Brief cell 5: files-pause
+  it('files-pause rejects invalid direction with BAD_FRAME before transfer lookup (code assertion)', () => {
+    // Code assertion: invalid direction must be rejected at decode with BAD_FRAME,
+    // not downstream during transfer lookup as TRANSFER_UNKNOWN.
+    const { s } = session();
+    const outSideways = s.handle({
+      type: 'files-pause',
+      transferId: ID,
+      direction: 'sideways',
+    });
+    expect(outSideways[0]).toMatchObject({
+      type: 'files-error',
+      code: 'BAD_FRAME',
+    });
+
+    const outNumber = s.handle({
+      type: 'files-pause',
+      transferId: ID,
+      direction: 1,
+    });
+    expect(outNumber[0]).toMatchObject({
+      type: 'files-error',
+      code: 'BAD_FRAME',
+    });
+
+    // Control: valid direction ("upload") passes decode and reaches transfer lookup (TRANSFER_UNKNOWN)
+    const outValid = s.handle({
+      type: 'files-pause',
+      transferId: ID,
+      direction: 'upload',
+    });
+    expect(outValid[0]).toMatchObject({
+      type: 'files-error',
+      code: 'TRANSFER_UNKNOWN',
+    });
+  });
+
+  // Brief cell 6: the schema table is complete
+  it('INBOUND_FIELDS schema table has an entry for every declared inbound type', () => {
+    // Enumeration assertion: runtime fence guarantees no type in FILES_INBOUND_TYPES skips validation.
+    // A key-existence check alone would be satisfied by an entry with empty
+    // rule sets, so each entry is driven through `inboundShapeValid` with a
+    // synthesised frame built from that entry's OWN kinds: an entry that is
+    // missing, or that declares no field, cannot make its frame pass.
+    for (const type of FILES_INBOUND_TYPES) {
+      expect(INBOUND_FIELDS).toHaveProperty(type);
+      expect(INBOUND_FIELDS[type]).toBeDefined();
+
+      const shape = INBOUND_FIELDS[type];
+      const frame: { type: string; [key: string]: unknown } = { type };
+      for (const [field, kind] of Object.entries(shape.required)) {
+        frame[field] = sampleFor(kind);
+      }
+      for (const [field, kind] of Object.entries(shape.optional)) {
+        frame[field] = sampleFor(kind);
+      }
+      expect(inboundShapeValid(frame)).toBe(true);
+
+      // ... and any one of them of the wrong kind fails the frame.
+      const first = Object.keys(shape.required)[0];
+      if (first !== undefined) {
+        expect(inboundShapeValid({ ...frame, [first]: undefined })).toBe(false);
+      }
+    }
+
+    // Anti-vacuity: the table declares exactly the 32 fields the Rust structs
+    // type (`files.rs:279-600`), so emptying an entry reds this instead of
+    // quietly shrinking what is validated.
+    const declared = FILES_INBOUND_TYPES.reduce((n, type) => {
+      const shape = INBOUND_FIELDS[type];
+      return (
+        n +
+        Object.keys(shape.required).length +
+        Object.keys(shape.optional).length
+      );
+    }, 0);
+    expect(declared).toBe(32);
+  });
+
+  // Note: Brief cell 7 is the positive control 'drops a type outside the twelve instead of reaching an arm' above.
+
+  // Brief cell 8: an extra key is tolerated
+  it('tolerates extra unknown keys without rejecting the frame (serde parity)', () => {
+    // serde does NOT deny unknown fields; extra keys must be ignored rather than rejected.
+    const { s } = session();
+    const out = s.handle({
+      type: 'files-list',
+      requestId: 'r-junk',
+      path: '',
+      junk: 1,
+      extraField: 'allowed',
+    });
+    expect(out[0]).toMatchObject({
+      type: 'files-list-result',
+      requestId: 'r-junk',
+      path: '',
+    });
+  });
+
+  // Brief cell 9: an optional field accepts an explicit null
+  it('optional field accepts explicit null while rejecting non-boolean string', () => {
+    // Option<bool> accepts explicit null (defaulting to false / DIR_NOT_EMPTY)
+    // while non-boolean strings like "false" are rejected at decode as BAD_FRAME.
+    const { dir, s } = session();
+    mkdirSync(join(dir, 'tree'));
+    writeFileSync(join(dir, 'tree', 'inner.txt'), 'x');
+
+    const outNull = s.handle({
+      type: 'files-delete',
+      requestId: 'r-del-null',
+      path: 'tree',
+      recursive: null,
+    });
+    expect(outNull[0]).toMatchObject({
+      type: 'files-action-result',
+      action: 'delete',
+      success: false,
+      error: 'DIR_NOT_EMPTY',
+    });
+    expect(statSync(join(dir, 'tree', 'inner.txt')).isFile()).toBe(true);
+
+    const outBad = s.handle({
+      type: 'files-delete',
+      requestId: 'r-del-bad',
+      path: 'tree',
+      recursive: 'false',
+    });
+    expect(outBad[0]).toMatchObject({
+      type: 'files-action-result',
+      action: 'delete',
+      success: false,
+      error: 'BAD_FRAME',
+    });
+    expect(statSync(join(dir, 'tree', 'inner.txt')).isFile()).toBe(true);
   });
 });
 

@@ -91,6 +91,172 @@ export type FilesInboundType = (typeof FILES_INBOUND_TYPES)[number];
 const INBOUND = new Set<string>(FILES_INBOUND_TYPES);
 
 /**
+ * The JSON kind the Rust requires for one inbound field (`files.rs:279-600`).
+ *
+ * `u64` is `serde_json`'s unsigned 64-bit integer; `direction` is the
+ * `FilesDirection` enum, which deserializes from the strings `"download"` and
+ * `"upload"` and nothing else (`files.rs:347-373`).
+ */
+type FieldKind = 'string' | 'u64' | 'bool' | 'direction';
+
+interface InboundShape {
+  readonly required: Readonly<Record<string, FieldKind>>;
+  readonly optional: Readonly<Record<string, FieldKind>>;
+}
+
+/**
+ * **The wire type system the Rust had, and this port did not.**
+ *
+ * The Rust decodes every inbound payload with `serde_json::from_value` into a
+ * struct of typed fields (`files.rs:582-600`). A field of the wrong JSON kind —
+ * or a missing required field — fails the **whole frame**, which
+ * `lib.rs:1969-1975` answers as `BAD_FRAME`. The port's decode checked only that
+ * `type` was one of twelve names, and each handler then coerced
+ * (`String(...)`, `Number(...)`, `Boolean(...)`), so the type system was gone.
+ * What that cost, measured rather than argued:
+ *
+ * - `Boolean("false")` is `true`, so `files-delete` with `recursive: "false"`
+ *   selected `rmSync(..., { recursive: true })` and **deleted the tree**.
+ * - `Number("abc")` is `NaN`, and `NaN > FILE_MAX_BYTES` is false, so a
+ *   non-numeric `size` walked past the only limit on upload size — a `u64`
+ *   cannot hold `NaN`, so the Rust has no equivalent.
+ * - `String(undefined)` is `"undefined"`, so a `files-upload-begin` with no
+ *   `name` created a file called `undefined.ponter-part`.
+ *
+ * This table is that contract, and it is why `dispatch` never sees a coerced
+ * value. It is keyed by `FilesInboundType`, so a type added to
+ * `FILES_INBOUND_TYPES` tomorrow without a shape here is a `tsc` error rather
+ * than an arm that skips validation.
+ *
+ * **Two oracle properties the check must respect**, both measured against the
+ * Rust (`ORACLE.txt` in the Task 22 probe):
+ *
+ * 1. `serde` does **not** deny unknown fields — `deny_unknown_fields` has 0
+ *    occurrences in `files.rs`. An extra key is ignored, so this validator
+ *    checks the named fields and ignores everything else. Rejecting unknown
+ *    keys would refuse frames the Rust accepts: a new divergence introduced by
+ *    the fix.
+ * 2. `Option<T>` accepts an explicit `null` — the oracle measures
+ *    `recursive = null` as ACCEPTED (then `unwrap_or(false)` takes the
+ *    non-recursive arm). So for an **optional** field, absent and `null` are
+ *    both fine, and a present non-null value must still be the right kind.
+ *    `recursive: "false"` is `BAD_FRAME`; `recursive: null` is not.
+ */
+export const INBOUND_FIELDS: Record<FilesInboundType, InboundShape> = {
+  'files-list': {
+    required: { requestId: 'string', path: 'string' },
+    optional: {},
+  },
+  'files-download': {
+    required: { transferId: 'string', path: 'string' },
+    optional: {},
+  },
+  'files-download-ack': {
+    required: { transferId: 'string', nextChunkIndex: 'u64' },
+    optional: {},
+  },
+  'files-upload-begin': {
+    required: {
+      transferId: 'string',
+      path: 'string',
+      name: 'string',
+      size: 'u64',
+    },
+    optional: {},
+  },
+  'files-upload-chunk': {
+    required: {
+      transferId: 'string',
+      chunkIndex: 'u64',
+      totalChunks: 'u64',
+      data: 'string',
+    },
+    optional: {},
+  },
+  'files-upload-end': {
+    required: { transferId: 'string' },
+    optional: {},
+  },
+  'files-pause': {
+    required: { transferId: 'string', direction: 'direction' },
+    optional: {},
+  },
+  'files-resume': {
+    required: {
+      transferId: 'string',
+      path: 'string',
+      direction: 'direction',
+      fromChunkIndex: 'u64',
+    },
+    optional: {},
+  },
+  'files-cancel': {
+    required: {},
+    optional: { requestId: 'string', transferId: 'string' },
+  },
+  'files-mkdir': {
+    required: { requestId: 'string', dir: 'string', name: 'string' },
+    optional: {},
+  },
+  'files-delete': {
+    required: { requestId: 'string', path: 'string' },
+    optional: { recursive: 'bool' },
+  },
+  'files-rename': {
+    required: { requestId: 'string', oldPath: 'string', newPath: 'string' },
+    optional: {},
+  },
+};
+
+const DIRECTIONS = new Set<string>(['download', 'upload']);
+
+function matchesKind(value: unknown, kind: FieldKind): boolean {
+  switch (kind) {
+    case 'string':
+      return typeof value === 'string';
+    case 'bool':
+      return typeof value === 'boolean';
+    case 'direction':
+      return typeof value === 'string' && DIRECTIONS.has(value);
+    // `u64` rejects a string, a non-integral number, a negative number, `NaN`,
+    // `Infinity`, `null`, an array and an object. `Number.isSafeInteger` is the
+    // honest bound: `serde_json`'s `u64` is 64-bit, `MAX_SAFE_INTEGER` is the
+    // closest a double gets, and the browser never declares a size above
+    // `FILE_MAX_BYTES`, so no real payload meets the narrower limit.
+    case 'u64':
+      return (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        Number.isSafeInteger(value) &&
+        value >= 0
+      );
+  }
+}
+
+/**
+ * The per-type field-shape check, answering what `serde_json::from_value`
+ * would: every required field present and of its declared kind, every optional
+ * field absent / `null` / of its declared kind, extra keys ignored.
+ */
+export function inboundShapeValid(message: {
+  type: string;
+  [key: string]: unknown;
+}): boolean {
+  const shape = INBOUND_FIELDS[message.type as FilesInboundType];
+  if (shape === undefined) return false;
+  for (const [field, kind] of Object.entries(shape.required)) {
+    if (!matchesKind(message[field], kind)) return false;
+  }
+  for (const [field, kind] of Object.entries(shape.optional)) {
+    const value = message[field];
+    // `Option<T>`: absent or explicit `null` are both ACCEPTED by the oracle.
+    if (value === undefined || value === null) continue;
+    if (!matchesKind(value, kind)) return false;
+  }
+  return true;
+}
+
+/**
  * The three arms whose failures answer on `files-action-result`. Kept beside
  * the decode list because both are claims about the same twelve names, and a
  * reader checking one should not have to hunt for the other.
@@ -197,6 +363,9 @@ export class FilesSession {
     const decoded = decodeFilesFrame(message);
     if (decoded === null) return [];
     try {
+      if (!inboundShapeValid(decoded)) {
+        throw new SandboxError('BAD_FRAME', 'the frame could not be decoded');
+      }
       return this.dispatch(decoded);
     } catch (error) {
       const code =
