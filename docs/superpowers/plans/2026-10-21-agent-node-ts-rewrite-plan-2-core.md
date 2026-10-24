@@ -1656,9 +1656,11 @@ function harness() {
   const logLines: string[] = [];
   let socketHandle = fakeSocket();
   let connects = 0;
+  const calls: { url: string; headers: Record<string, string> }[] = [];
   const deps: SignallingDeps = {
-    connect: () => {
+    connect: (url: string, headers: Record<string, string>) => {
       connects += 1;
+      calls.push({ url, headers });
       return socketHandle.socket;
     },
     logger: createLogger({ RUST_LOG: 'debug' }, (l) => logLines.push(l)),
@@ -1681,6 +1683,7 @@ function harness() {
     emit: (...a: [string, ...unknown[]]) => socketHandle.emit(...a),
     logLines,
     connects: () => connects,
+    calls: () => calls,
     advance,
     reset: () => {
       socketHandle = fakeSocket();
@@ -1713,17 +1716,12 @@ function makeClient(h: ReturnType<typeof harness>, overrides = {}) {
 describe('SignallingClient.runOnce', () => {
   it('connects to the configured URL with a Bearer header', async () => {
     const h = harness();
-    const seen: { url: string; headers: Record<string, string> }[] = [];
-    h.deps.connect = (url, headers) => {
-      seen.push({ url, headers });
-      return fakeSocket().socket;
-    };
     const { client } = makeClient(h);
     const done = client.runOnce();
     h.emit('open');
     h.emit('close', 4409);
     await done;
-    expect(seen[0]).toEqual({
+    expect(h.calls()[0]).toEqual({
       url: 'ws://h:8787/api/ws/agent',
       headers: { Authorization: 'Bearer ag_secret' },
     });
@@ -1749,7 +1747,7 @@ describe('SignallingClient.runOnce', () => {
     h.emit('close', 4409);
     await done;
     expect(handlers.onChallenge).not.toHaveBeenCalled();
-    const reply = JSON.parse(h.sent()[0]);
+    const reply = JSON.parse(h.sent()[0] as string);
     expect(reply.type).toBe('agent-identity');
     expect(reply.data.nonce).toBe('n1');
     expect(reply.data.publicKey).toBe('cGs=');
@@ -1868,11 +1866,11 @@ describe('SignallingClient.run', () => {
     const done = client.run();
     h.emit('open');
     h.emit('close', 1006);
+    h.reset(); // the NEXT connect() must capture the fresh socket
     await vi.advanceTimersByTimeAsync(199);
     expect(h.connects()).toBe(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(h.connects()).toBe(2);
-    h.reset();
     h.emit('open');
     h.emit('close', 4409);
     await done;
@@ -1886,16 +1884,16 @@ describe('SignallingClient.run', () => {
     const done = client.run();
     // First death without ever connecting: 200 ms.
     h.emit('close', 1006);
+    h.reset(); // the NEXT connect() must capture the fresh socket
     await vi.advanceTimersByTimeAsync(200);
     // Second attempt connects, then dies: the ladder must be back at 200.
-    h.reset();
     h.emit('open');
     h.emit('close', 1006);
+    h.reset();
     await vi.advanceTimersByTimeAsync(199);
     expect(h.connects()).toBe(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(h.connects()).toBe(3);
-    h.reset();
     h.emit('open');
     h.emit('close', 4409);
     await done;
@@ -1917,8 +1915,8 @@ import type { AgentIdentity } from '../identity/store.js';
 import { buildAgentIdentityFrame } from '../identity/frame.js';
 import { rewriteWsScheme } from '@ponter/webrtc-core';
 import { isAuthFatal } from './auth.js';
-import { BACKOFF_INITIAL_MS, IDLE_TIMEOUT_MS, PING_INTERVAL_MS } from './constants.js';
-import { nextBackoff } from './backoff.js';
+import { IDLE_TIMEOUT_MS, PING_INTERVAL_MS } from './constants.js';
+import { BACKOFF_INITIAL_MS, nextBackoff } from './backoff.js';
 import { classifyClose, type RunEnd } from './close.js';
 import { dispatchInbound } from './inbound.js';
 import { buildUpgradeHeaders } from './upgrade.js';
@@ -1926,7 +1924,7 @@ import { buildUpgradeHeaders } from './upgrade.js';
 export interface SignallingSocket {
   send(data: string): void;
   close(code?: number): void;
-  on(event: 'open' | 'message' | 'close' | 'error', cb: (...args: never[]) => void): void;
+  on(event: 'open' | 'message' | 'close' | 'error', cb: (...args: unknown[]) => void): void;
 }
 
 export interface SignallingDeps {
@@ -1944,12 +1942,12 @@ export interface SignallingHandlers {
   onAnswer(message: unknown): void;
   onCandidate(message: unknown): void;
   onIceServers(servers: unknown): void;
-  onChallenge?(nonce: string): void;
 }
 
 export class SignallingClient {
   private readonly url: string;
   private readonly headers: Record<string, string>;
+  private lastRunOpened = false;
 
   constructor(
     private readonly deps: SignallingDeps,
@@ -1978,6 +1976,7 @@ export class SignallingClient {
       };
 
       socket.on('open', () => {
+        this.lastRunOpened = true;
         this.deps.logger.info({ url: this.url }, 'signalling connected');
         lastActivityAt = this.deps.now();
         cancelPing = this.deps.every(PING_INTERVAL_MS, () => {
@@ -1997,7 +1996,6 @@ export class SignallingClient {
           const event = dispatchInbound(raw, this.deps.logger);
           if (event.kind === 'challenge') {
             socket.send(buildAgentIdentityFrame(event.nonce, this.identity));
-            this.handlers.onChallenge?.(event.nonce);
             return;
           }
           if (event.kind === 'ice') {
@@ -2034,8 +2032,6 @@ export class SignallingClient {
       // fatality must still end the run rather than fall through to a retry, so
       // it is classified here from the raw bytes — the only place that still
       // has them.
-      const originalMessage = socket.on;
-      void originalMessage;
       const checkAuth = (raw: unknown): void => {
         if (typeof raw !== 'string' || !raw.includes('UNAUTHORIZED')) return;
         try {
@@ -2063,11 +2059,16 @@ export class SignallingClient {
   async run(): Promise<void> {
     let wait = BACKOFF_INITIAL_MS;
     for (;;) {
+      this.lastRunOpened = false;
       const end = await this.runOnce();
       if (end.kind === 'terminal') {
         this.deps.logger.info({ code: end.code }, 'signalling ended terminally; not reconnecting');
         return;
       }
+      // Reset on a successful CONNECT, not on a successful run: a server that
+      // accepts the socket and immediately drops it is still a server in
+      // trouble, and resetting on every attempt would hammer it at 200 ms.
+      if (this.lastRunOpened) wait = BACKOFF_INITIAL_MS;
       this.deps.logger.info({ waitMs: wait }, 'signalling dropped; reconnecting');
       await sleep(this.deps, wait);
       wait = nextBackoff(wait);
@@ -2082,6 +2083,8 @@ function sleep(deps: SignallingDeps, ms: number): Promise<void> {
 ```
 
 > The `checkAuth` listener above is deliberately a **second** `message` listener rather than a branch inside the first: `dispatchInbound` owns logging and returns `ignored` for error frames, so the fatality decision needs the raw bytes before they are swallowed. Both listeners run on the same event; `finish()` is idempotent via `settled`.
+>
+> `lastRunOpened` is a class field rather than a richer `RunEnd` because `RunEnd` is landed in `close.ts` (`be9dfdc`) as `transient | terminal` and that shape is shared with the callers of `runOnce()`; the "did this attempt ever open?" bit is a private concern of the reconnect loop, so it stays on the loop's own object.
 
 - [ ] **Step 5: Run green, format, commit**
 
@@ -2092,7 +2095,7 @@ git add apps/agent/src/signalling apps/agent/test/signalling
 git commit -m "feat(agent): add the signalling client, run loop and auth-fatality classifier"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 29 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own.
+**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 29 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own. The spec repair above (ladder-reset signal, harness `calls` hook, reset ordering, `onChallenge` removal) adds and removes **zero** assertions: both counts are unchanged from the pre-repair fence.
 
 ---
 
@@ -2116,6 +2119,7 @@ git commit -m "feat(agent): add the signalling client, run loop and auth-fatalit
 ```ts
 // apps/agent/test/identity/store.test.ts
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { webcrypto } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -2151,17 +2155,26 @@ describe('loadOrCreateIdentity', () => {
     expect(readFileSync(path, 'utf8')).toBe('not a pkcs8 key');
   });
 
-  it('signs and verifies a round trip', async () => {
-    const { createVerify, createPublicKey } = await import('node:crypto');
+  it('signs and verifies a round trip through the raw key the server imports', async () => {
+    // The published key must be the RAW 32-byte form: the server imports it with
+    // `subtle.importKey('raw', ...)` (`apps/server/src/routes/ws.ts:960`), and an
+    // SPKI DER key (44 bytes) throws `DataError: Invalid keyData` there. This
+    // assertion therefore goes through the server's own import path.
     const path = join(tempDir(), 'agent-identity.pkcs8');
     const identity = loadOrCreateIdentity(path);
     const message = Buffer.from('hello');
     const signature = identity.sign(message);
-    const der = Buffer.from(identity.publicKeyBase64, 'base64');
-    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
-    const verifier = createVerify('ed25519');
-    verifier.update(message);
-    expect(verifier.verify(key, signature)).toBe(true);
+    const raw = Buffer.from(identity.publicKeyBase64, 'base64');
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      raw,
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+    expect(
+      await webcrypto.subtle.verify('Ed25519', key, signature, message),
+    ).toBe(true);
   });
 });
 ```
@@ -2204,17 +2217,25 @@ export interface AgentIdentity {
   sign(bytes: Uint8Array): Uint8Array;
 }
 
-const PUBLIC_KEY_TYPE = 'spki';
-
-function encodeBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
+/**
+ * Derive the **raw 32-byte** Ed25519 public key.
+ *
+ * The wire form is raw, not SPKI DER: `apps/server/src/routes/ws.ts:960` imports
+ * it with `subtle.importKey('raw', ...)`, and the Rust's `public_key_base64`
+ * (`identity.rs:46`) encodes `public_key_raw()`. An SPKI DER key (44 bytes) is
+ * rejected there with `DataError: Invalid keyData`, which the server turns into
+ * a 4401 'Identity proof failed' — an agent that can never authenticate.
+ */
+function rawPublicKeyBase64(privateKey: KeyObject): string {
+  const jwk = createPublicKey(privateKey).export({ format: 'jwk' });
+  return Buffer.from(jwk.x as string, 'base64url').toString('base64');
 }
 
 function toIdentity(privateKey: KeyObject): AgentIdentity {
-  const publicDer = createPublicKey(privateKey).export({ type: PUBLIC_KEY_TYPE, format: 'der' });
   return {
-    publicKeyBase64: encodeBase64(publicDer as Buffer),
-    sign: (bytes) => new Uint8Array(nodeSign(null, Buffer.from(bytes), privateKey)),
+    publicKeyBase64: rawPublicKeyBase64(privateKey),
+    sign: (bytes) =>
+      new Uint8Array(nodeSign(null, Buffer.from(bytes), privateKey)),
   };
 }
 
@@ -2226,11 +2247,18 @@ function readPrivateKey(path: string): KeyObject {
       format: 'der',
     });
   } catch (error) {
-    throw new Error(
+    const wrapped = new Error(
       `identity file is not a valid PKCS#8 Ed25519 key (${path}): ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
+    // The errno `code` must survive the wrap: `loadOrCreateIdentity` uses it to
+    // tell "no file yet" (ENOENT — a first run) from "the file is there and
+    // unusable" (everything else — a hard error).
+    (wrapped as NodeJS.ErrnoException).code = (
+      error as NodeJS.ErrnoException
+    ).code;
+    throw wrapped;
   }
 }
 
@@ -2340,7 +2368,7 @@ git add apps/agent/src/identity apps/agent/test/identity
 git commit -m "feat(agent): add the Ed25519 identity store and the WS2 identity frame"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 11 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested.
+**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 11 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested. The Task 6 spec repair (errno `code` preservation across the error wrap, raw 32-byte public key derivation via JWK `x`, server-path subtle import verification) preserves the count exactly: 9 new `it()` / 11 new `expect()` (store 5/6 + frame 4/5), with zero assertions added or removed.
 
 ---
 
