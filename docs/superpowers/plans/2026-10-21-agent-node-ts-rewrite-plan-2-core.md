@@ -1182,7 +1182,7 @@ git commit -m "feat(agent): add the reconnect ladder, close classification and k
 - Consumes: `SignalMessage`, `SignalOffer`, `SignalAnswer`, `IceCandidateSignal`, `IdentityProof`, `IceServerConfig` from `@ponter/shared`; `MAX_INBOUND_FRAME_BYTES` from `./constants.js`.
 - Produces:
   - `function parseInbound(raw: string): SignalMessage | null` — throws `InboundParseError` on malformed JSON or an unknown envelope `type`; returns `null` for a `pong`, and `null` for an `error` frame **after** logging via the injected logger.
-  - `function parseIceServers(raw: string): IceServerConfig[] | null`
+  - `function parseIceServers(raw: string): IceServerEntry[] | null` — the local `IceServerEntry`, not shared's `IceServerConfig`: the Rust has its own `IceServerEntry` with `urls: Vec<String>`, while shared's `urls` is `string | string[]`, so the port keeps the list-only shape the server actually pushes.
   - `function parseIdentityChallenge(raw: string): string | null`
   - `function dispatchInbound(raw: string, logger: Logger): InboundEvent` where `type InboundEvent = { kind: 'signal'; message } | { kind: 'ice'; servers } | { kind: 'challenge'; nonce } | { kind: 'ignored' }` — the cascade in the one order that works.
 
@@ -1196,7 +1196,7 @@ import { parseInbound } from '../../src/signalling/inbound.js';
 describe('the signal envelope', () => {
   it('round-trips an offer with its capabilities and camelCase payload', () => {
     const raw =
-      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"]}}';
+      '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"]}}}';
     const parsed = parseInbound(raw);
     expect(parsed).toMatchObject({ type: 'offer', data: { sessionId: 's1', sdp: 'v=0' } });
     expect(JSON.stringify(parsed)).toContain('"sessionId"');
@@ -1205,20 +1205,20 @@ describe('the signal envelope', () => {
 
   it('carries an identity proof', () => {
     const raw =
-      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","proof":{"signature":"c2ln","fingerprint":"AB"}}}';
+      '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","proof":{"signature":"c2ln","fingerprint":"AB"}}}}';
     expect(parseInbound(raw)).toMatchObject({
       data: { proof: { signature: 'c2ln', fingerprint: 'AB' } },
     });
   });
 
   it('treats the proof as optional for older peers', () => {
-    const raw = '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0"}}';
+    const raw = '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0"}}}';
     expect((parseInbound(raw) as { data: Record<string, unknown> }).data.proof).toBeUndefined();
   });
 
   it('round-trips the user signing key in camelCase', () => {
     const raw =
-      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","userSigningPublicKey":"cGs="}}';
+      '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","userSigningPublicKey":"cGs="}}}';
     expect(parseInbound(raw)).toMatchObject({ data: { userSigningPublicKey: 'cGs=' } });
   });
 
@@ -1227,7 +1227,7 @@ describe('the signal envelope', () => {
     // capitalised because the WebRTC spec capitalises it. Both the browser and
     // the server emit this spelling, so the type must model it literally.
     const raw =
-      '{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMid":"0","sdpMLineIndex":0}}';
+      '{"type":"signal","data":{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMid":"0","sdpMLineIndex":0}}}';
     expect(parseInbound(raw)).toMatchObject({ data: { sdpMLineIndex: 0 } });
   });
 
@@ -1236,7 +1236,7 @@ describe('the signal envelope', () => {
     // boundary, which turns them into a typed rejection rather than a generic
     // "malformed frame".
     for (const bad of [-1, 70000]) {
-      const raw = `{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMLineIndex":${bad}}}`;
+      const raw = `{"type":"signal","data":{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMLineIndex":${bad}}}}`;
       expect(parseInbound(raw)).toMatchObject({ data: { sdpMLineIndex: bad } });
     }
   });
@@ -1411,7 +1411,7 @@ export function dispatchInbound(raw: string, logger: Logger): InboundEvent {
 
 ```ts
 // apps/agent/test/signalling/inbound.test.ts
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createLogger } from '../../src/logging/index.js';
 import {
   dispatchInbound,
@@ -1477,7 +1477,11 @@ describe('parseIdentityChallenge', () => {
   });
 
   it('returns null for a non-challenge frame', () => {
-    expect(parseIdentityChallenge('{"type":"offer","data":{"sessionId":"s"}}')).toBeNull();
+    // Fixture fidelity only: the unwrapped offer also returns null, so this is
+    // not a semantic change — it just feeds the shape the wire really carries.
+    expect(
+      parseIdentityChallenge('{"type":"signal","data":{"type":"offer","data":{"sessionId":"s"}}}'),
+    ).toBeNull();
     expect(parseIdentityChallenge('{"type":"ice-servers","data":{"iceServers":[]}}')).toBeNull();
   });
 });
@@ -1533,6 +1537,8 @@ git commit -m "feat(agent): parse the inbound cascade in challenge, ICE, signal 
 ```
 
 **TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 28 new `expect()`**. The Rust counterparts are `signal.rs`'s `offer_round_trip`, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes`, `offer_with_user_signing_key_round_trips`, `parses_the_pushed_ice_servers_frame`, `parses_a_stun_only_ice_servers_frame`, `parse_identity_challenge_returns_none_for_non_challenge`, `an_ice_servers_frame_is_not_taken_as_one`, `rejects_malformed` and `oversize_frame_is_rejected_before_parsing` — 10 Rust tests become 18 TS tests. Two of them (`the cascade order produces zero warnings`, `dispatchInbound ignores a pong without a warning`) are **new**: the Rust had no test for the cascade order, which is precisely the ordering that a porter is most likely to invert.
+
+**The fences' signal frames carry the transport envelope** — `{"type":"signal","data":{"type":"offer",…}}`, matching `signal.rs`'s internally-tagged `InboundFrame::Signal { data }` (`:131-143`) and the server's own send (`ws.ts:72`). The `messages.test.ts` fence previously fed unwrapped `{"type":"offer",…}` literals, which `parseInbound` rejects as an unknown envelope type; the fixtures are now the shape the wire carries. `pong`, `error` and `hello` stay top-level, because those **are** top-level envelope variants.
 
 ---
 
