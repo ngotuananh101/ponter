@@ -113,6 +113,34 @@ export type FilesErrorCode =
   | 'PERMISSION_DENIED'
   | 'QUEUE_FULL';
 
+/**
+ * The exhaustiveness guard the Rust's 12-case literal table could not be.
+ *
+ * Exported as a **value**, not a type: Task 11's crossing test enumerates it
+ * with `Object.keys(FILES_ERROR_CODES)`, and a type-only record has no runtime
+ * shape to enumerate. One artefact, two duties — completeness guard and
+ * enumeration source — which is why R12 is a precondition of that test rather
+ * than a parallel item.
+ */
+export const FILES_ERROR_CODES: Record<FilesErrorCode, true> = {
+  PATH_OUTSIDE_ROOT: true,
+  INVALID_PATH: true,
+  NOT_FOUND: true,
+  NOT_A_FILE: true,
+  NOT_A_DIRECTORY: true,
+  FILE_EXISTS: true,
+  FILE_TOO_LARGE: true,
+  TRANSFER_BUSY: true,
+  TRANSFER_UNKNOWN: true,
+  TRANSFER_TIMEOUT: true,
+  IO_ERROR: true,
+  BAD_FRAME: true,
+  RESUME_INVALID: true,
+  DIR_NOT_EMPTY: true,
+  PERMISSION_DENIED: true,
+  QUEUE_FULL: true,
+};
+
 // --- Binary frame constants (ADR-36) ---
 
 /** Binary frame type for a download chunk (Agent -> Browser). */

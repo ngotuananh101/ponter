@@ -34,6 +34,7 @@ export {
   BINARY_TYPE_DOWNLOAD_CHUNK,
   BINARY_TYPE_UPLOAD_CHUNK,
   BINARY_HEADER_LEN,
+  FILES_ERROR_CODES,
 } from './files.js';
 export type {
   TransferDirection,
