@@ -193,6 +193,9 @@ importers:
 
   apps/agent:
     dependencies:
+      '@ponter/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@ponter/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -200,6 +203,9 @@ importers:
       '@playwright/test':
         specifier: ^1.63.0
         version: 1.63.0
+      '@ponter/terminal-core':
+        specifier: workspace:*
+        version: link:../../packages/terminal-core
       '@ponter/webrtc-core':
         specifier: workspace:*
         version: link:../../packages/webrtc-core
