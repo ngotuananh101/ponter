@@ -6974,7 +6974,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { InputLimiter, applyInput, bindInputApply, clamp01, decodeInput, toAbsolute } from '../../src/input/decode.js';
 import type { InputEvent, InputInjector, InputSource } from '../../src/input/decode.js';
 
-const frame = (payload: unknown) => new TextEncoder().encode(JSON.stringify(payload));
+/**
+ * Fixtures carry the `DataChannelMessage` envelope
+ * (`packages/webrtc-core/src/data-channel.ts:74-88`), exactly as the browser sends
+ * via `sendJson('control', 'desktop-input', event)`.
+ */
+const frame = (payload: unknown, channel = 'control', type = 'desktop-input') =>
+  new TextEncoder().encode(JSON.stringify({ channel, type, payload, timestamp: 0 }));
 
 /** A counting double, the Rust test's `CountingInjector` (`input.rs:756-770`). */
 function double(fail?: keyof InputInjector): InputInjector & { calls: string[] } {
@@ -7126,6 +7132,19 @@ describe('decodeInput', () => {
     // enters at the application site (`apply_if_allowed`, `input.rs:267`).
     // A zero/absent rect is `applyInput`'s concern.
     expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }))).not.toBeNull();
+  });
+
+  it('rejects a payload-level frame lacking the envelope wrapper (must-fail control)', () => {
+    // Port fidelity: the wire contract is the DataChannelMessage envelope, exactly as
+    // `decode_desktop_input` (`input.rs:180-198`) expects. A bare payload frame must
+    // fail decode deterministically so the router-decoder seam cannot silently drift.
+    const flatPayload = new TextEncoder().encode(JSON.stringify({ kind: 'pointer-move', x: 0.5, y: 0.5 }));
+    expect(decodeInput(flatPayload)).toBeNull();
+  });
+
+  it('rejects an envelope with wrong channel or wrong type', () => {
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }, 'terminal', 'desktop-input'))).toBeNull();
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }, 'control', 'desktop-select'))).toBeNull();
   });
 });
 
@@ -7288,11 +7307,14 @@ export const INPUT_RATE_LIMIT_HZ = 120;
  * `packages/shared/src/types/desktop.ts:68-87`, mirrored by the Rust's
  * `DesktopInputWire`, `input.rs:75-107`).
  *
- * The discriminator is the payload's `kind` tag, **kebab-case** — not a
- * `type` field on an envelope-wrapped frame. The browser sends the event
- * itself as the `desktop-input` payload
- * (`desktop-core/src/client.ts:452,467`), so the first thing the decoder
- * sees is this object.
+ * The wire frame arrives as the `DataChannelMessage` envelope
+ * (`{ channel: 'control', type: 'desktop-input', payload, timestamp }`),
+ * exactly as `decode_desktop_input` (`input.rs:180-198`) expects. The decoder
+ * receives the raw frame bytes, verifies `channel === 'control'` and
+ * `type === 'desktop-input'`, and unwraps `envelope.payload`. Inside the
+ * payload, the discriminator is the `kind` tag, **kebab-case** — matching
+ * serde's internally-tagged enum (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
+ * `input.rs:73-74`).
  *
  * Coordinates are **normalized 0..1 within the streamed source** and stay
  * that way: the Rust's decoder clamps them (`clamp01`, `input.rs:197-222`)
@@ -7405,6 +7427,12 @@ const BUTTONS = new Set(['left', 'middle', 'right']);
  * Decodes one `desktop-input` payload (B28–B30) — the port of
  * `decode_desktop_input` (`input.rs:180-245`).
  *
+ * **The wire frame is an envelope:** `DataChannelMessage`
+ * (`{ channel: 'control', type: 'desktop-input', payload, timestamp }`),
+ * exactly as `decode_desktop_input` (`input.rs:187-191`) validates. The decoder
+ * receives the raw frame bytes, verifies `channel === 'control'` and
+ * `type === 'desktop-input'`, unwraps `envelope.payload`, and decodes the event.
+ *
  * **Decode before inject, always.** The Rust decoded the JSON first and only
  * then called into the platform injector, so an unknown message could never
  * reach an FFI boundary with unvalidated fields. Every rejection here is a
@@ -7412,19 +7440,19 @@ const BUTTONS = new Set(['left', 'middle', 'right']);
  * error, because a hostile peer must not be able to elicit a response by
  * sending garbage.
  *
- * **The discriminator is `kind`,** exactly as serde's internally-tagged enum
- * works (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
+ * **Inside the payload, the discriminator is `kind`,** exactly as serde's
+ * internally-tagged enum works (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
  * `input.rs:73-74`): an unknown `kind` is a decode error, which is this
  * function's `null`. The plan's previous vocabulary (`input-pointer` etc. on a
  * `type` field) has **zero producers anywhere** on either side of the wire.
  *
  * **A crypted payload is rejected deterministically.** With the desktop E2EE
- * session armed the browser sends `{ data: <base64> }` instead of the event
- * (`desktop-core/src/client.ts:484-494`), and the Rust decrypts **before**
- * decode (`lib.rs:2413-2427`, fail-closed). Nothing in this plan owns that
- * decryption yet, so a crypted frame must not be able to half-parse into an
- * event: it has no `kind`, so it falls out of the `switch` as `null`. The
- * `{ data }` shape is named in the test so the drop is pinned rather than
+ * session armed the browser sends `{ data: <base64> }` as `payload` instead of
+ * the event (`desktop-core/src/client.ts:484-494`), and the Rust decrypts
+ * **before** decode (`lib.rs:2413-2427`, fail-closed). Nothing in this plan
+ * owns that decryption yet, so a crypted frame must not be able to half-parse
+ * into an event: it has no `kind`, so it falls out of the `switch` as `null`.
+ * The `{ data }` shape is named in the test so the drop is pinned rather than
  * incidental, and the missing owner is recorded in the follow-up register.
  */
 export function decodeInput(bytes: ArrayBuffer | Uint8Array): InputEvent | null {
@@ -7439,7 +7467,10 @@ export function decodeInput(bytes: ArrayBuffer | Uint8Array): InputEvent | null 
     return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
-  const message = parsed as Record<string, unknown>;
+  const envelope = parsed as Record<string, unknown>;
+  if (envelope.channel !== 'control' || envelope.type !== 'desktop-input') return null;
+  if (typeof envelope.payload !== 'object' || envelope.payload === null) return null;
+  const message = envelope.payload as Record<string, unknown>;
 
   switch (message.kind) {
     case 'pointer-move': {
@@ -7679,15 +7710,15 @@ git add apps/agent/src/input apps/agent/test/input
 git commit -m "feat(agent): decode, clamp and rate-limit peer input"
 ```
 
-**TEST-INTEGRITY declaration — revised by the MAJOR-2 repair (2026-10-24), re-counted by the MAJOR-5 item 5 repair:** the
+**TEST-INTEGRITY declaration — revised by the MAJOR-2 repair (2026-10-24), re-counted by the MAJOR-5 item 5 repair, and updated for the envelope seam repair:** the
 first landed version declared **16 new `it()` / 25 new `expect()`** for a file
 whose vocabulary (`input-pointer`/`input-key`/`input-wheel` on a `type` field,
 `deltaX`/`deltaY`, `kind: 'down'/'up'`, `key: 'A'`) has **zero producers
 anywhere** on the wire. The fence was rewritten to the real `kind`-tagged
-union (`desktop.ts:68-87`) and re-counted: **27 `it()` / 48 `expect()`** (was
-16 / 25; +11 `it()`, +23 `expect()`). All `it(` and `expect(` occurrences are
-literal; no `it.each(` in the file, so all three axes coincide (27/27/27,
-48/48/48). What the rewrite adds beyond the ported behaviours: the `text`
+union (`desktop.ts:68-87`), and updated to decode the `DataChannelMessage` envelope with a must-fail bare payload control and channel/type rejection tests: **29 `it()` / 51 `expect()`** (was
+27 / 48 before the seam repair; was 16 / 25 originally; +13 `it()`, +26 `expect()`). All `it(` and `expect(` occurrences are
+literal; no `it.each(` in the file, so all three axes coincide (29/29/29,
+51/51/51). What the rewrite adds beyond the ported behaviours: the `text`
 kind (the earlier `InputEvent` lacked it entirely), the `seq`-carried /
 `seq`-absent pair, the `{ data }` crypted-payload rejection (the E2EE owner
 gap — see the follow-up register), the zero-geometry guard's **removal** from
@@ -8999,6 +9030,35 @@ export class DataChannelRouter {
       return;
     }
 
+    /**
+     * **Input on the control channel: substring guard + admit BEFORE decode.**
+     *
+     * Input rides the control channel (ADR-26, input.rs:189, lib.rs:2411).
+     * In Rust (`lib.rs:2406-2469`), inbound bytes receive a substring check
+     * `text.contains("\"desktop-input\"")` before the gate (`allow_input`) and
+     * the rate cap (`input_limiter.allow()`), and only then calls `apply_if_allowed`
+     * which calls `decode_desktop_input` (the single full JSON parse).
+     *
+     * Gating on the substring pre-filter here preserves the DoS protection
+     * without double-parsing: `admit()` runs BEFORE `decode(bytes)`, so a frame
+     * refused by the limiter or closed gate never spends a JSON parse, and
+     * non-input control frames bypass this block entirely.
+     *
+     * The return value of `apply` is the applied event's `seq` (ADR-47) or `null`
+     * when the injector refused it; the runtime stores it in the holder
+     * `buildCursorFrame` reads. This router does not own that holder.
+     */
+    if (label === CHANNEL_LABELS.control) {
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
+      if (text.includes('"desktop-input"')) {
+        if (!this.deps.input.admit((this.deps.now ?? Date.now)())) return;
+        const event = this.deps.input.decode(bytes);
+        if (event === null) return;
+        this.deps.input.apply(event, (this.deps.now ?? Date.now)());
+        return;
+      }
+    }
+
     const parsed = parseJson(bytes);
     if (parsed === null) {
       this.deps.logger.warn(`dropped a malformed ${label} frame`);
@@ -9092,32 +9152,6 @@ export class DataChannelRouter {
         return;
       }
       case CHANNEL_LABELS.control: {
-        // The control channel carries the desktop session's whole JSON
-        // vocabulary. Input rides **here**, not on a separate channel: the
-        // browser sends `sendJson('control', 'desktop-input', event)`
-        // (`desktop-core/src/client.ts:452,467`) and the Rust gates
-        // `channel == "control" && type == "desktop-input"` (`input.rs:189`).
-        //
-        // **The order is `admit → decode → apply`, and it is the Rust's**
-        // (`lib.rs:2427-2469`). Gate-A (`allow_input`) and the rate cap are
-        // checked **before** `apply_if_allowed`, and `apply_if_allowed` is
-        // what calls `decode_desktop_input` (`input.rs:277-286`) and then
-        // injects. The Rust says so at `lib.rs:2428-2430`: *"cap AFTER
-        // decrypt and the Gate-A check, BEFORE decode/inject"*. The rate cap
-        // is a DoS control; putting the JSON parser in front of it would
-        // spend the parse on exactly the frames it exists to refuse. The
-        // earlier version of this arm ran `decode → accept → inject` and
-        // attributed that order to the Rust — it was backwards.
-        if (message.type === 'desktop-input') {
-          if (!this.deps.input.admit((this.deps.now ?? Date.now)())) return;
-          const event = this.deps.input.decode(bytes);
-          if (event === null) return;
-          // The return value is the applied event's `seq` (ADR-47) or `null`
-          // when the injector refused it; the runtime stores it in the holder
-          // `buildCursorFrame` reads. This arm does not own that holder.
-          this.deps.input.apply(event, (this.deps.now ?? Date.now)());
-          return;
-        }
         this.dispatchDesktop(message);
         return;
       }
@@ -9332,6 +9366,7 @@ On the six-number axes: fence **23 `it()`** / call sites **23** (no `it.each(` i
    `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-27`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
 3. **Nothing calls `deps.send` for these frames.** Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. The `deps.send` seam exists and the router serves `control`; the producer does not.
 4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `AgentE2ee` has only the terminal arm (`beginTerminalE2ee/acceptHello/isArmed`), and the `desktop-e2ee-ack` outbound type exists with no producer (`:8212`). Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
+5. **`verifyOfferIdentity` and `advertisesE2ee` have no production caller in Plan 2.** The Rust admission gate (`lib.rs:1162` in `run_one_session`) is not fenced; Task 19 runtime does not wire `onOffer`. Handed off to Plan 3 alongside the other unfenced session-loop wirings.
 
 Start the re-port from the reader, not the builder: every field above was already being sent by the Rust before the plan existed, and the browser's parse is the acceptance test.
 
