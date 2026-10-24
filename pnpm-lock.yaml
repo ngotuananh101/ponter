@@ -203,6 +203,9 @@ importers:
       '@playwright/test':
         specifier: ^1.63.0
         version: 1.63.0
+      '@ponter/file-core':
+        specifier: workspace:*
+        version: link:../../packages/file-core
       '@ponter/terminal-core':
         specifier: workspace:*
         version: link:../../packages/terminal-core

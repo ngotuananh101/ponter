@@ -11,6 +11,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "@ponter/file-core": "workspace:*",
     "@ponter/terminal-core": "workspace:*",
     "@ponter/webrtc-core": "workspace:*",
     "@types/node": "24.19.0",
