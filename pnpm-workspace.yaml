@@ -15,6 +15,10 @@ allowBuilds:
   # which fails in network-restricted Docker builds. Deny the build so pnpm
   # skips the script entirely; the shipped prebuilt is used at runtime.
   better-sqlite3: false
+  # node-pty runs `node scripts/prebuild.js || node-gyp rebuild` on install.
+  # Allow the build: on Windows the prebuilt binary is the only way to get a
+  # working ConPTY, and there is no prebuild at all for some targets.
+  node-pty: true
   electron: true
 
 minimumReleaseAgeExclude:
