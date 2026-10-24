@@ -6898,8 +6898,9 @@ git commit -m "feat(agent): add the static-frame skip and the frame timing ring"
 - Test: `apps/agent/test/session/identity-proof.test.ts`
 
 **Interfaces:**
-- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), and `canonicalProofMessage` for the message string. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s, wrapped in this module, over the **raw 32-byte** key the offer carries: `createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x }, format: 'jwk' })` over the raw bytes, then `verify(null, message, key, signature)`. **Not** `{ format: 'der', type: 'spki' }` — that shape is 44 bytes and the wire value is 32, so an SPKI import throws `Failed to read asymmetric key` on every genuine offer and the module's own `catch` would report it as `BAD_SIGNATURE`. The OKP-JWK form is chosen over `webcrypto.subtle.importKey('raw', …)` for one reason: the latter is async and would re-type `verifyOfferIdentity`, which the Rust has sync (`verify_offer_identity -> Result<()>`, `lib.rs:989`; `verify_proof` over `UnparsedPublicKey`, `identity.rs:105`). Measured both ways in `.superpowers/probes/t14-ba-repair/`.
+- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), `canonicalProofMessage` for the message string, and `type SignalMessage` for the offer shape it validates — narrowed to the `offer` arm rather than re-declared, so a drift in the shared union is a `tsc` error here. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s, wrapped in this module, over the **raw 32-byte** key the offer carries: `createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x }, format: 'jwk' })` over the raw bytes, then `verify(null, message, key, signature)`. **Not** `{ format: 'der', type: 'spki' }` — that shape is 44 bytes and the wire value is 32, so an SPKI import throws `Failed to read asymmetric key` on every genuine offer and the module's own `catch` would report it as `BAD_SIGNATURE`. The OKP-JWK form is chosen over `webcrypto.subtle.importKey('raw', …)` for one reason: the latter is async and would re-type `verifyOfferIdentity`, which the Rust has sync (`verify_offer_identity -> Result<()>`, `lib.rs:989`; `verify_proof` over `UnparsedPublicKey`, `identity.rs:105`). Measured both ways in `.superpowers/probes/t14-ba-repair/`.
 - Produces:
+  - `type OfferMessage = Extract<SignalMessage, { type: 'offer' }>` — the local name for the arm this module validates. **Defined here, not imported**: the plan has no `OfferMessage` anywhere else, and `@ponter/shared` does not export one (its type is `SignalOffer`, carried inside `SignalMessage`'s offer arm at `packages/shared/src/types/signaling.ts:44`). An earlier draft imported it from `./messages.js`, a module this plan never creates — `src/session/messages.ts` does not exist, and `vitest` erases `import type` so the fence stayed green over it. Task 4's `signalling/messages.ts` is a different directory and does not re-export that name either.
   - `class OfferIdentityError extends Error { code: 'NO_PROOF' | 'NO_SIGNING_KEY' | 'MALFORMED_FINGERPRINT' | 'FINGERPRINT_MISMATCH' | 'BAD_SIGNATURE' }`
   - `function verifyOfferIdentity(offer: OfferMessage, sessionId: string): void`
   - `function advertisesE2ee(offer: OfferMessage): boolean`
@@ -7040,8 +7041,16 @@ Expected: FAIL — module unresolved.
 ```ts
 // apps/agent/src/session/identity-proof.ts
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { canonicalProofMessage, parseSdpFingerprint } from '@ponter/shared';
-import type { OfferMessage } from './messages.js';
+import { canonicalProofMessage, parseSdpFingerprint, type SignalMessage } from '@ponter/shared';
+
+/**
+ * The arm of the shared signal union this module validates. Defined by
+ * narrowing — `verbatimModuleSyntax` keeps the type import erased, and a change
+ * to the shared `offer` shape becomes a `tsc` error here rather than a silent
+ * widening. There is no `OfferMessage` in `@ponter/shared` and none in this
+ * plan's Task 4 `signalling/messages.ts`; the name is local by design.
+ */
+export type OfferMessage = Extract<SignalMessage, { type: 'offer' }>;
 
 export type OfferIdentityFailure =
   | 'NO_PROOF'
@@ -7169,14 +7178,25 @@ export function advertisesE2ee(offer: OfferMessage): boolean {
 
 ```bash
 ./apps/agent/node_modules/.bin/vitest run test/session/identity-proof.test.ts
+./node_modules/.bin/tsc --noEmit -p apps/agent/tsconfig.json
 ./node_modules/.bin/prettier --write apps/agent/src/session/identity-proof.ts apps/agent/test/session/identity-proof.test.ts
 git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): verify the offer identity proof before answering"
 ```
 
+`tsc` is **not** redundant with `vitest` here and its absence is why this task shipped a
+fence that did not compile. `vitest` transpiles without typechecking: it erases every
+`import type` at run time, so an unresolvable type import runs green. This task's earlier
+draft imported `OfferMessage` from `./messages.js` — a module the plan never creates —
+and stayed 11/11 because nothing ever typechecked it. The fence axis is four-way (runs /
+counts / **typechecks** / non-vacuous control); this line is the third. `apps/agent` is
+excluded from CI's typecheck jobs, so a missing `tsc` here is not caught later either.
+
 **TEST-INTEGRITY declaration:** one new file, **11 new `it()` / 11 new `expect()`**. Ports `verify_offer_identity`'s five failure modes as five tests plus the happy path, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes` and `parses_and_normalizes_sdp_fingerprint`'s assertion (as a *consumer* of `@ponter/shared`, per B9's reuse ruling — the normalisation itself is already tested there and is not duplicated). **New:** the code-level distinction between `FINGERPRINT_MISMATCH` and `BAD_SIGNATURE` (the Rust had one error type and lost that distinction at the boundary), and the `advertisesE2ee` absent-capabilities case.
 
 The raw-32 repair (fixture key shape, `verifyMessage`'s import path, and the Interfaces prescription) is **count-neutral by construction**: **11 / 11 before → 11 / 11 after, zero assertions added, removed, moved or rewritten**. No test name, no `expect()` line and no assertion kind changed — `keypair()` returns a different *shape* under the same property name, and `verifyMessage` imports that shape. Measured four ways on the extracted fence in `.superpowers/probes/t14-ba-repair/`: 11/11 vitest green, `tsc` exit 0, counts 11/11 by anchor regex, and the **must-error control** — the repaired fence run against the pre-repair SPKI implementation — goes **red on the happy path** (`expected [Function] to not throw an error but 'OfferIdentityError: the offer identity signature is invalid' was thrown`), 1 failed / 10 passed. That last axis is what makes the count meaningful: a count-preserving repair that the old bug still passes would have been a no-op.
+
+The `OfferMessage` repair (import line, the `offer`-arm narrowing, and the `tsc` gate) is **also count-neutral**: **11 / 11 before → 11 / 11 after**, measured on the same extracted fence with **no stub module supplied** — the earlier measurements at `.superpowers/probes/t14-ba-repair/fence/` passed only because that probe created a `messages.ts` the plan does not define, which is why it could not see this defect. Re-measured without one: `tsc -p tsconfig.json` exit 0 and vitest 11/11, and the **positive control** — the same invocation over the pre-repair import — exits 2 with `TS2307: Cannot find module './messages.js'`. Zero test names, zero `expect()` lines, zero assertion kinds moved. Evidence: `.superpowers/probes/t14-ba-repair/no-stub/`.
 
 ---
 
