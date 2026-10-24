@@ -78,7 +78,7 @@ Locked so implementers cannot disagree about what creates what.
 | `apps/agent/src/terminal/pty.ts` | `node-pty` wrapper, base64 16 KiB chunking, exit reaping, 10-session limit | B39, B40, B41 |
 | `apps/agent/src/files/sandbox.ts` | The 7-step containment algorithm | B44 |
 | `apps/agent/src/files/protocol.ts` | The 25-byte binary header, chunk arithmetic, the constants | B42, B43 |
-| `apps/agent/src/files/session.ts` | Transfer state machine: window, ack batching, resume, pause | B42, B43, B45, B46 |
+| `apps/agent/src/files/session.ts` | Transfer state machine: window, ack batching, resume, pause. **Modified after Task 11** by Task 20's four transfer repairs (`0a3f900`) and Task 22's decode-boundary validation (`2e3f763`) | B42, B43, B45, B46 |
 | `apps/agent/src/input/decode.ts` | Input JSON decode, 0..1 clamp, 120 Hz limiter, agent-local gate | B28, B29, B30, B34 |
 | `apps/agent/src/desktop/static-skip.ts` | Frame signature + skip counters | B22 |
 | `apps/agent/src/desktop/timing-ring.ts` | The 32-frame timing ring and its two medians | B24 |
@@ -4207,6 +4207,7 @@ or follow-up suite to own and pin against `EACCES`.
   - `function partName(name: string): string`
   - `function frameFiles(payload: FilesFrame, timestamp: number): DataChannelMessage<FilesFrame>` — **R1**, the outbound envelope
   - `const FILES_INBOUND_TYPES` (12 entries), `type FilesInboundType`, `function decodeFilesFrame(message): … | null` — **R6**, the inbound decode gate
+  - `type FieldKind`, `interface InboundShape`, `const INBOUND_FIELDS: Record<FilesInboundType, InboundShape>` (12 types / **32 fields**), `function matchesKind(value, kind)`, `function inboundShapeValid(message): boolean` — **the wire type contract**, added by Task 22 (landed `2e3f763`). `INBOUND_FIELDS` is a `Record` whose key is `FilesInboundType`, so a thirteenth type joins the enumeration and fails `tsc` until it has a shape; that is the property the comment cannot enforce.
   - `class FilesSession { handle(message); checkIdle(); flushAcks(); acceptBinaryChunk(frame); dispose() }` — `noteChunk()` and `takePendingAck()` are **private** and split per **R7**
 
 - [ ] **Step 1: Write the failing protocol test**
@@ -5045,6 +5046,172 @@ export type FilesInboundType = (typeof FILES_INBOUND_TYPES)[number];
 const INBOUND = new Set<string>(FILES_INBOUND_TYPES);
 
 /**
+ * The JSON kind the Rust requires for one inbound field (`files.rs:279-600`).
+ *
+ * `u64` is `serde_json`'s unsigned 64-bit integer; `direction` is the
+ * `FilesDirection` enum, which deserializes from the strings `"download"` and
+ * `"upload"` and nothing else (`files.rs:347-373`).
+ */
+type FieldKind = 'string' | 'u64' | 'bool' | 'direction';
+
+interface InboundShape {
+  readonly required: Readonly<Record<string, FieldKind>>;
+  readonly optional: Readonly<Record<string, FieldKind>>;
+}
+
+/**
+ * **The wire type system the Rust had, and this port did not.**
+ *
+ * The Rust decodes every inbound payload with `serde_json::from_value` into a
+ * struct of typed fields (`files.rs:582-600`). A field of the wrong JSON kind —
+ * or a missing required field — fails the **whole frame**, which
+ * `lib.rs:1969-1975` answers as `BAD_FRAME`. The port's decode checked only that
+ * `type` was one of twelve names, and each handler then coerced
+ * (`String(...)`, `Number(...)`, `Boolean(...)`), so the type system was gone.
+ * What that cost, measured rather than argued:
+ *
+ * - `Boolean("false")` is `true`, so `files-delete` with `recursive: "false"`
+ *   selected `rmSync(..., { recursive: true })` and **deleted the tree**.
+ * - `Number("abc")` is `NaN`, and `NaN > FILE_MAX_BYTES` is false, so a
+ *   non-numeric `size` walked past the only limit on upload size — a `u64`
+ *   cannot hold `NaN`, so the Rust has no equivalent.
+ * - `String(undefined)` is `"undefined"`, so a `files-upload-begin` with no
+ *   `name` created a file called `undefined.ponter-part`.
+ *
+ * This table is that contract, and it is why `dispatch` never sees a coerced
+ * value. It is keyed by `FilesInboundType`, so a type added to
+ * `FILES_INBOUND_TYPES` tomorrow without a shape here is a `tsc` error rather
+ * than an arm that skips validation.
+ *
+ * **Two oracle properties the check must respect**, both measured against the
+ * Rust (`ORACLE.txt` in the Task 22 probe):
+ *
+ * 1. `serde` does **not** deny unknown fields — `deny_unknown_fields` has 0
+ *    occurrences in `files.rs`. An extra key is ignored, so this validator
+ *    checks the named fields and ignores everything else. Rejecting unknown
+ *    keys would refuse frames the Rust accepts: a new divergence introduced by
+ *    the fix.
+ * 2. `Option<T>` accepts an explicit `null` — the oracle measures
+ *    `recursive = null` as ACCEPTED (then `unwrap_or(false)` takes the
+ *    non-recursive arm). So for an **optional** field, absent and `null` are
+ *    both fine, and a present non-null value must still be the right kind.
+ *    `recursive: "false"` is `BAD_FRAME`; `recursive: null` is not.
+ */
+export const INBOUND_FIELDS: Record<FilesInboundType, InboundShape> = {
+  'files-list': {
+    required: { requestId: 'string', path: 'string' },
+    optional: {},
+  },
+  'files-download': {
+    required: { transferId: 'string', path: 'string' },
+    optional: {},
+  },
+  'files-download-ack': {
+    required: { transferId: 'string', nextChunkIndex: 'u64' },
+    optional: {},
+  },
+  'files-upload-begin': {
+    required: {
+      transferId: 'string',
+      path: 'string',
+      name: 'string',
+      size: 'u64',
+    },
+    optional: {},
+  },
+  'files-upload-chunk': {
+    required: {
+      transferId: 'string',
+      chunkIndex: 'u64',
+      totalChunks: 'u64',
+      data: 'string',
+    },
+    optional: {},
+  },
+  'files-upload-end': {
+    required: { transferId: 'string' },
+    optional: {},
+  },
+  'files-pause': {
+    required: { transferId: 'string', direction: 'direction' },
+    optional: {},
+  },
+  'files-resume': {
+    required: {
+      transferId: 'string',
+      path: 'string',
+      direction: 'direction',
+      fromChunkIndex: 'u64',
+    },
+    optional: {},
+  },
+  'files-cancel': {
+    required: {},
+    optional: { requestId: 'string', transferId: 'string' },
+  },
+  'files-mkdir': {
+    required: { requestId: 'string', dir: 'string', name: 'string' },
+    optional: {},
+  },
+  'files-delete': {
+    required: { requestId: 'string', path: 'string' },
+    optional: { recursive: 'bool' },
+  },
+  'files-rename': {
+    required: { requestId: 'string', oldPath: 'string', newPath: 'string' },
+    optional: {},
+  },
+};
+
+const DIRECTIONS = new Set<string>(['download', 'upload']);
+
+function matchesKind(value: unknown, kind: FieldKind): boolean {
+  switch (kind) {
+    case 'string':
+      return typeof value === 'string';
+    case 'bool':
+      return typeof value === 'boolean';
+    case 'direction':
+      return typeof value === 'string' && DIRECTIONS.has(value);
+    // `u64` rejects a string, a non-integral number, a negative number, `NaN`,
+    // `Infinity`, `null`, an array and an object. `Number.isSafeInteger` is the
+    // honest bound: `serde_json`'s `u64` is 64-bit, `MAX_SAFE_INTEGER` is the
+    // closest a double gets, and the browser never declares a size above
+    // `FILE_MAX_BYTES`, so no real payload meets the narrower limit.
+    case 'u64':
+      return (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        Number.isSafeInteger(value) &&
+        value >= 0
+      );
+  }
+}
+
+/**
+ * The per-type field-shape check, answering what `serde_json::from_value`
+ * would: every required field present and of its declared kind, every optional
+ * field absent / `null` / of its declared kind, extra keys ignored.
+ */
+export function inboundShapeValid(message: {
+  type: string;
+  [key: string]: unknown;
+}): boolean {
+  const shape = INBOUND_FIELDS[message.type as FilesInboundType];
+  if (shape === undefined) return false;
+  for (const [field, kind] of Object.entries(shape.required)) {
+    if (!matchesKind(message[field], kind)) return false;
+  }
+  for (const [field, kind] of Object.entries(shape.optional)) {
+    const value = message[field];
+    // `Option<T>`: absent or explicit `null` are both ACCEPTED by the oracle.
+    if (value === undefined || value === null) continue;
+    if (!matchesKind(value, kind)) return false;
+  }
+  return true;
+}
+
+/**
  * The three arms whose failures answer on `files-action-result`. Kept beside
  * the decode list because both are claims about the same twelve names, and a
  * reader checking one should not have to hunt for the other.
@@ -5054,12 +5221,21 @@ const ACTION_TYPES = new Set<string>(['files-mkdir', 'files-delete', 'files-rena
 /**
  * The inbound decode step, and the only way into `dispatch`.
  *
- * Returning `null` for an unrecognised `type` is the whole contract: `dispatch`
- * switches on the *decoded* discriminant, so a type this function rejects
- * cannot reach an arm. Routing dispatch through the decoder rather than
- * testing them separately is what makes the decode test evidence about
- * dispatch — a test that called a decoder nothing used would prove the decoder
- * knows twelve names and nothing else.
+ * Returning `null` for an unrecognised `type` is **half** the contract, and the
+ * half that is not about payloads: `dispatch` switches on the *decoded*
+ * discriminant, so a type this function rejects cannot reach an arm. Routing
+ * dispatch through the decoder rather than testing them separately is what
+ * makes the decode test evidence about dispatch — a test that called a decoder
+ * nothing used would prove the decoder knows twelve names and nothing else.
+ *
+ * **This function is a name check, not a shape check.** It answers "is this one
+ * of the twelve?"; `inboundShapeValid` answers "is the payload the shape that
+ * name promises?" — that is the other half. They stay separate because their
+ * failure modes differ and the Rust keeps them separate: an unknown `type` is
+ * warn-and-ignore (`decode_files_frame` → `Ok(None)` → `[]`), while a known
+ * `type` with a bad payload is `BAD_FRAME` (`Err` → the error frame). Merging
+ * them would turn a frame this agent does not understand into an error the peer
+ * must handle.
  */
 export function decodeFilesFrame(
   message: { type: string; [key: string]: unknown },
@@ -5139,6 +5315,16 @@ export class FilesSession {
     const decoded = decodeFilesFrame(message);
     if (decoded === null) return [];
     try {
+      // The name is legal; now the payload must be the shape that name
+      // promises. Thrown **inside this try** on purpose: the catch below is
+      // what routes an action frame to `files-action-result` and everything
+      // else to `files-error`, using the *original* `message` for the id
+      // extraction. A check placed above the `try` would have to re-implement
+      // that routing — and would get it wrong for exactly the three action
+      // frames, which are the ones a bad payload is most likely to name.
+      if (!inboundShapeValid(decoded)) {
+        throw new SandboxError('BAD_FRAME', 'the frame could not be decoded');
+      }
       return this.dispatch(decoded);
     } catch (error) {
       const code = error instanceof SandboxError ? error.code : errnoToCode(error);
@@ -5234,6 +5420,33 @@ export class FilesSession {
     return this.takePendingAck();
   }
 
+  /**
+   * **The handlers below coerce (`String(...)`, `Number(...)`,
+   * `Boolean(...)`), and that is correct — read this before "fixing" one.**
+   *
+   * Every value reaching an arm has already passed `inboundShapeValid`, so
+   * `message.size` is a `u64`-shaped number, `message.recursive` a boolean or
+   * `null`, `message.name` a string. The coercion is the *narrowing* between
+   * `unknown` and the handler's own parameter type, not a validation. Two
+   * consequences worth knowing:
+   *
+   * - `String(message.path ?? '')` on a field the table declares required: the
+   *   `?? ''` is now unreachable for a missing key (the boundary refuses) but
+   *   still meaningful for a legal empty string, which is the wire's "root".
+   * - `Boolean(message.recursive)` after the boundary sees `true`, `false`,
+   *   `null` or absent — all four of which it maps correctly. Removing the
+   *   boundary would make every one of these lines a bug again at once, which
+   *   is why the table is keyed by `FilesInboundType` and checked by `tsc`.
+   *
+   * `acceptBinaryChunk` is outside this: binary frames never enter `handle()`
+   * and never see this table (`data-channels.ts:263` routes them straight to
+   * `acceptBinaryChunk`). Their boundary is `decodeUploadChunk`
+   * (`protocol.ts:86`), which has its own `BAD_FRAME` throws for a truncated
+   * header and an over-cap payload. "The decode boundary is validated" is a
+   * claim about the **JSON** path only; stating it without this paragraph is
+   * the kind of over-read that makes a later reader trust the binary path for
+   * a check it does not perform.
+   */
   private dispatch(message: { type: FilesInboundType; [key: string]: unknown }): FilesFrame[] {
     switch (message.type) {
       case 'files-list':
@@ -5739,6 +5952,18 @@ export class FilesSession {
    * `recursive` is honoured exactly as Rust's `remove_dir_all` honours it. It
    * was a security-shaped reason to keep a defect, and it is recorded here so
    * the next reader does not re-derive it as a design choice.
+   *
+   * **`Boolean(message.recursive)` below is a coercion, and it stays — but it
+   * is no longer reachable with a non-boolean.** Task 22 (`2e3f763`) put
+   * `inboundShapeValid` between `decodeFilesFrame` and `dispatch`, and its
+   * `'files-delete'` entry declares `recursive` as an optional `bool`. So
+   * `recursive: "false"` is refused at the boundary as `BAD_FRAME` and never
+   * arrives here; only a real boolean or an absent/`null` value does. The
+   * idiom is deliberately not "fixed" to `message.recursive === true`: doing
+   * so would restore the fail-open behaviour that the boundary now prevents,
+   * for the sake of a validation the boundary already performed. Two guards,
+   * one contract — the boundary rejects the wrong kind, this line picks the
+   * arm for the right one.
    */
   private remove(message: { [key: string]: unknown }): FilesFrame[] {
     const target = this.root.resolveExisting(String(message.path ?? ''));
@@ -11003,7 +11228,7 @@ That is four + two + one + one = eight. All were validated against an independen
 
 **The eight repairs, each against the Rust it cites:**
 
-1. **`remove()` honours `recursive` (CRITICAL)** — Rust `files.rs:911-951`: the root refusal is checked first, then `if recursive { remove_dir_all }` else the directory must be empty (`DirNotEmpty`). The port had omitted the recursive arm, refusing every non-empty folder delete. Landed: `Boolean(message.recursive)` selects `rmSync(target, { recursive: true })`; the non-recursive arm keeps `rmdirSync` + `ENOTEMPTY → DIR_NOT_EMPTY`; the root refusal sits above both.
+1. **`remove()` honours `recursive` (CRITICAL)** — Rust `files.rs:911-951`: the root refusal is checked first, then `if recursive { remove_dir_all }` else the directory must be empty (`DirNotEmpty`). The port had omitted the recursive arm, refusing every non-empty folder delete. Landed: `Boolean(message.recursive)` selects `rmSync(target, { recursive: true })`; the non-recursive arm keeps `rmdirSync` + `ENOTEMPTY → DIR_NOT_EMPTY`; the root refusal sits above both. **This repair made `recursive` work; it did not make a non-boolean `recursive` safe — Task 22 did that**, by refusing the frame at the decode boundary before `remove()` is reached (see Task 22 below).
 2. **`beginUpload()` sends the initial cumulative ack (CRITICAL)** — Rust `files.rs:1623-1627` returns `vec![UploadAck { next_chunk_index: 0 }]` ("the begin is answered with the first cumulative ack, spec §6.1"). The port had returned `[]`. In `packages/file-core/src/client.ts:328-336`, `upload()` only arms the idle timer before sending `files-upload-begin`; the chunk pump is driven entirely from `onAck` (`:610`). Without the initial ack, no chunk is ever sent and uploads stall until the 30 s idle timeout. Landed: `return [{ type: 'files-upload-ack', transferId, nextChunkIndex: 0 }]`.
 3. **Upload idle-timeout frame carries `transferId`** — Rust `timeout_frame(direction, transfer_id)` (`files.rs:1259-1270`) sets the id on timeout frames in both directions. The download arm already did; the upload arm dropped it. **Measured consequence, not the obvious one:** the client does *not* hang — its own 30 s timer (`client.ts:328`) rejects the handle with a locally minted `TRANSFER_TIMEOUT`. What actually breaks is that the `files-error` arm only routes an error to a transfer when the frame carries its id (`client.ts:637-641`), so `client.transfers` never drops the entry: one dead entry per timed-out upload, for the life of the connection. The caller also gets the client's own message instead of the agent's frame, and the id-less error falls through to `onError` as an unsolicited error belonging to no request. Landed: `const { transferId } = this.upload;` read before `discardUpload`, emitted on `files-error`.
 4. **`files-upload-complete.path` is wire-relative** — Rust `files.rs:2281` emits `state.dest_rel`, constructed via `join_rel` (`:2069-2075`): `''` + name for root, `dir/name` otherwise. The port put `destPath` (the host absolute path) on the wire, leaking the sandbox root location. Landed: `UploadState` stores `destRel`; both `name` and `path` derive from it.
@@ -11116,6 +11341,96 @@ Package total `packages/api-client`: **2 failed | 39 passed (41) → 45 passed (
 
 **Gating requirement, measured:** the turbo job
 `pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always` → **9/9**. `tsc --noEmit` and `prettier --check` (on the committed blob, with `--ignore-path /dev/null --config`) clean. Both polarities measured: three offenders planted in a scratch tree under `/tmp` (none in the repo) → **3 failed | 5 passed**, 8/8 after removal; and 6 in-file mutants **6 killed, 0 survivors** — including one that weakens the liveness cell to `toBeLessThanOrEqual` and shows the strict comparison is what gives that cell teeth. Report: `task-21-report.md`.
+
+---
+
+### Task 22: Validate the inbound files frame at the decode boundary
+
+**Landed at:** `2e3f7636ee75fbc0d059b600e7de57add488baab`
+**Files:**
+- Modify: `apps/agent/src/files/session.ts` (**+169 / −0**, two hunks, zero deletions)
+- Test: `apps/agent/test/files/session.test.ts` (**+359 / −0**, zero deletions)
+
+**Origin: the class, not one spelling.**
+QA's Task 20 verdict found **one** member — `remove()` selects the destructive arm with `Boolean(message.recursive)`, so a peer sending the **string** `"false"` deletes the tree. PM then measured the whole class: every field of every one of the twelve inbound types against a Rust oracle, in one run. The defect is not twelve bugs; it is **the absence of a validator**. The Rust decodes each payload with `serde_json::from_value` into typed fields (`files.rs:582-600`), so a wrong JSON kind or a missing required field fails the whole frame, which `lib.rs:1969-1975` answers as `BAD_FRAME`. The port's `decodeFilesFrame` checked only that `type` was one of twelve names, and each handler then coerced. Measured consequences, each a payload the Rust refuses and the port accepted:
+
+| payload | port's action before the repair | disk |
+|---|---|---|
+| `files-delete`, `recursive: "false"` / `"0"` / `"true"` / `1` / `[]` / `{}` | **deleted the tree** | tree gone |
+| `files-upload-begin`, `size: "abc"` / `{}` (NaN) | created `.part` | **past the size cap** |
+| `files-upload-begin`, `size: null` / `-1` / `1.5` | created `.part` | wrong size recorded |
+| `files-upload-begin`, `name` **missing** | created `undefined.ponter-part` | a file named `undefined` |
+| `files-list`, `path: 12` / `requestId: 5` | accepted | — |
+| `files-pause`, `direction: "sideways"` | refused downstream as `TRANSFER_UNKNOWN` | — |
+
+The size-cap row is the one to read twice. `beginUpload` guards with `if (size > FILE_MAX_BYTES)` — a **comparison**, and `NaN` is false against every comparison, so `Number()` yielding `NaN` walks straight past the only limit on upload size. The Rust has no equivalent because `u64` cannot hold `NaN`.
+
+Severity, honestly: the shipped browser client types every field correctly (`packages/file-core/src/client.ts` — `delete(path, recursive: boolean = false)`), so none of this is reachable from the product today. It is reachable from a hand-written peer, it is **fail-open on a destructive operation and on a size limit**, and it diverges from the Rust's contract — which is why it was fixed before merge rather than carried.
+
+**The landed shape**, all in `apps/agent/src/files/session.ts` beside `FILES_INBOUND_TYPES`:
+
+- `type FieldKind = 'string' | 'u64' | 'bool' | 'direction'` and `interface InboundShape { required; optional }`.
+- `INBOUND_FIELDS: Record<FilesInboundType, InboundShape>` — **12 types / 32 fields** (29 required, 3 optional). The `Record` keyed by `FilesInboundType` is load-bearing: a thirteenth type added to the enumeration is a `tsc` error (TS2741) until it has a shape, so the contract cannot be skipped by a new arm.
+- `matchesKind(value, kind)`. The `u64` arm is `typeof v === 'number' && Number.isInteger(v) && Number.isSafeInteger(v) && v >= 0` — rejecting a string, a non-integral number, a negative number, `NaN`, `Infinity`, `null`, an array and an object. `Number.isSafeInteger` is the honest bound: `serde_json`'s `u64` is 64-bit and `MAX_SAFE_INTEGER` is the closest a double gets, while the browser never declares a size above `FILE_MAX_BYTES`.
+- `inboundShapeValid(message)` — required fields present and of kind; optional fields absent, `null`, or of kind; extra keys ignored.
+- **Wiring:** `handle()` already owned a `try/catch` at BASE (`session.ts:199`), so the guard was inserted **into** it, not wrapped around `dispatch`:
+
+  ```ts
+  const decoded = decodeFilesFrame(message);
+  if (decoded === null) return [];
+  try {
+    if (!inboundShapeValid(decoded)) {
+      throw new SandboxError('BAD_FRAME', 'the frame could not be decoded');
+    }
+    return this.dispatch(decoded);
+  } catch (error) { /* unchanged: ACTION_TYPES → files-action-result, else files-error */ }
+  ```
+
+  Throwing **inside** that `try` is what keeps the failure routing intact: the three action types answer on `files-action-result` with `success: false, error: 'BAD_FRAME'`, everything else on `files-error` with `code: 'BAD_FRAME'`, and `requestId` / `transferId` extraction is the same code path a bad *path* already took. The message string is the Rust's own — `"the frame could not be decoded"` (`lib.rs:1972`) — so the two ports answer identically. The check is **above** the `try` in zero implementations: placing it there would require re-implementing the action/transfer routing, and the three action frames are exactly the ones a bad payload is most likely to name.
+
+**Two oracle properties the check must respect**, both measured against Rust rather than assumed:
+
+1. **`serde` does not deny unknown fields.** `deny_unknown_fields` occurs **0** times in `files.rs`. An extra key is ignored, so the validator checks the named fields and ignores everything else. A stricter "no key outside the table" rule would refuse frames the Rust accepts — a new divergence introduced by a fix for divergence.
+2. **`Option<T>` accepts an explicit `null`.** The oracle measures `recursive = null` as **ACCEPTED** (then `unwrap_or(false)` takes the non-recursive arm). So absent and `null` are both fine for an optional field, and a present non-null value must still be of the right kind. `recursive: "false"` is `BAD_FRAME`; `recursive: null` is not. Only `files-delete` (`recursive: bool`) and `files-cancel` (`requestId`, `transferId`: both strings) declare optional fields.
+
+**What the boundary does *not* cover, stated so the claim is not over-read.**
+`acceptBinaryChunk` is a second public entry into the same state machine and never passes through `handle()`: `session/data-channels.ts:263` routes a `0x02`-prefixed binary frame straight to it. Its boundary is `decodeUploadChunk` (`files/protocol.ts:86`), which has its own `BAD_FRAME` throws for a truncated header and an over-cap payload — a separate instrument for a separate encoding. "The decode boundary is validated" is a claim about the **JSON** path. Also unchanged by design: `String(message.type).replace('files-', '')` in `actionFailure` / `actionResult` stays correct — `type` is the discriminant the decode already validated.
+
+**Why the coercions stay.** `String(...)`, `Number(...)` and `Boolean(...)` are all still in the handlers after this commit, and the plan's own fences still show them. That is correct, and the class comment above `dispatch` says why: every value reaching an arm has passed the boundary, so the coercion is the *narrowing* from `unknown` to the handler's parameter type — not a validation. `Boolean(message.recursive)` sees only `true`, `false`, `null` or absent, and maps all four correctly. Rewriting it to `message.recursive === true` would restore fail-open behaviour for the case the boundary now refuses; leaving the boundary out would make every one of those lines a bug again at once.
+
+**TEST-INTEGRITY declaration:**
+
+Blob counts on the committed blobs (`git show e171f88:…` vs `git show 2e3f763:…`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+
+| scope | before (BASE `e171f88`) | after (`2e3f763`) | net |
+|---|---|---|---|
+| `test/files/session.test.ts` | **37 `it()` / 76 `expect()`** | **45 / 110** | **+8 / +34** |
+| `apps/agent/test/` (33 files) | **388 / 643** | **396 / 677** | **+8 / +34** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Removed lines in both files: **0** — the commit is 528 insertions and **zero deletions** (`git diff --numstat e171f88 2e3f763` → `169 0` and `359 0`; `git show --stat 2e3f763` → `2 files changed, 528 insertions(+)`). The plan states blob counts and not a runner total on purpose: the runner reports 56 cells for this file at HEAD against 45 `it()` because `it.each` expands, so a runner count is task-local and cannot be compared across revisions.
+
+The `apps/agent` suite total (excluding `apps/agent/spike/spike.test.ts`, which sits outside `test/` and is unchanged at 9 `it()`): **430 passed / 34 files**, up from 422.
+
+The 8 new cells, quoted verbatim, with the brief cell each fences and what it proves:
+
+| # | `it()` title (verbatim) | fences |
+|---|---|---|
+| 1 | `files-delete rejects non-boolean recursive with BAD_FRAME and preserves tree` | brief cell 1 — **S-1 itself**: six non-boolean values each answer `BAD_FRAME` *and* the tree survives (a fix that deleted first and refused after would pass a frame-shape assertion); controls: `true` deletes, `false` and omitted answer `DIR_NOT_EMPTY` |
+| 2 | `files-upload-begin rejects non-u64 size with BAD_FRAME without creating .part file` | cell 2 — seven invalid sizes, each with **no `.part` on disk**; control `size: 10` acks, `MAX + 1` answers `FILE_TOO_LARGE` |
+| 3 | `rejects missing required field with BAD_FRAME and does not coerce to undefined string` | cell 3 — missing `name` refused and no `undefined.ponter-part`; control `name: "undefined"` (a legal string) **is** accepted, so the cell cannot pass by banning the word |
+| 4 | `files-list rejects non-string path and requestId with BAD_FRAME` | cell 4 — plus a string control that still lists |
+| 5 | `files-pause rejects invalid direction with BAD_FRAME before transfer lookup (code assertion)` | cell 5 — a **code** assertion by design: `BAD_FRAME`, not the downstream `TRANSFER_UNKNOWN`; control `"upload"` reaches the lookup and answers `TRANSFER_UNKNOWN` |
+| 6 | `INBOUND_FIELDS schema table has an entry for every declared inbound type` | cell 6 — and it is not a key-existence check: each entry's **own** declared kinds synthesise a frame that must pass, then one required field is broken and must fail. Anti-vacuity: the table must declare exactly **32** fields, so emptying an entry reds it instead of quietly shrinking what is validated |
+| 7 | `tolerates extra unknown keys without rejecting the frame (serde parity)` | cell 8 — junk keys on a legal `files-list` still list |
+| 8 | `optional field accepts explicit null while rejecting non-boolean string` | cell 9 — **same fixture, two outcomes**: `recursive: null` → `DIR_NOT_EMPTY`, `recursive: "false"` → `BAD_FRAME`. This pair is the proof the check is per-kind, not "reject anything that is not `true`" |
+
+Brief cell 7 (the unknown-`type` arm still drops) required no new cell: the pre-existing `drops a type outside the twelve instead of reaching an arm` (asserting `files-explode` → `[]`) is its positive control, and it keeps passing — the boundary did not swallow warn-and-ignore.
+
+**Both polarities, measured independently by BA and by QA.** BA's reachability probe (3 cells, written against the landed source) is **2 failed at BASE `e171f88`, 3 passed at HEAD**, with the accept-control green at both — so the probe can see the defect it claims is fixed. QA's matrix (`.superpowers/probes/t22-landing-qa/`) runs 56 cells in one pass: at BASE exactly the **7** demonstrator cells red, all 56 green at HEAD; and **9/9 mutants killed** (M1 `u64` → cell 2; M2 `bool` → cells 1, 9; M3 required-fields → cells 2–6; M4b table entry removed → cell 6 + `tsc` TS2741; M5 `direction` → cell 5; M6 `string` → cells 3, 4, 6; M7 unknown-keys-rejected → cell 7; M8 `null`-rejected → cell 8; M9 boundary bypassed → cells 1–5, 8). M4 (making the table `Partial`) survives vitest because it is a type-only change and is killed by `tsc --noEmit` (TS18048) — which is the fourth axis doing the work vitest cannot.
+
+**A correction to the audit artifacts, recorded because the plan must not inherit it.** `qa-verdict-task-22.md` states the `session.ts` diff three ways and two of them are wrong: its §1 scope row says `+72 / −1` and its §7 block says `431 insertions(+), 1 deletion(-)`, with a §2 narrative that names a "removed line 1". The commit has **zero deletions** on both files, as measured above three ways (`--numstat`, `show --stat`, and `diff -u` between the two blobs). The verdict's counts are stale; this section carries the measured ones. QA has been given the measurement to correct its own artifact.
+
+Two non-blocking observations from QA's audit, carried rather than closed: **O-1** `this.actionFailure` does not string-coerce `message.requestId`, so a non-string id on an action frame is echoed as-is — pre-existing at BASE and now **unreachable through `handle()`** for the same reason the coercions are (the boundary refuses a non-string `requestId` on every action type); **O-2** the Rust drops a malformed frame that carries no extractable string id (`lib.rs:1966` → `Vec::new()`), while the port answers `files-error` without an id. O-2 is a real behavioural difference with no protocol impact (the browser has nothing to match it to) and is recorded as a divergence, not repaired.
 
 ---
 
