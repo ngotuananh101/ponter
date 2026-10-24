@@ -33,7 +33,7 @@ export interface StreamProfile {
  * `42c0` prefix — baseline profile 66 with constraint byte `0xC0` — because
  * that is the SPS the encoder emits.
  */
-export const STREAM_PROFILES: readonly StreamProfile[] = [
+export const STREAM_PROFILES = [
   {
     id: '1080p30',
     label: '1080p · 30 fps',
@@ -70,7 +70,9 @@ export const STREAM_PROFILES: readonly StreamProfile[] = [
     bitrateBps: 5_000_000,
     profileLevelId: '42c020', // level 3.2
   },
-];
+] as const satisfies readonly StreamProfile[];
+
+export type ProfileId = (typeof STREAM_PROFILES)[number]['id'];
 
 /** Look a preset up by its id. Throws when the id is unknown. */
 export function streamProfileById(id: string): StreamProfile {
