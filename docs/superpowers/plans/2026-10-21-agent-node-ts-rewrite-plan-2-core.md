@@ -2377,70 +2377,119 @@ git commit -m "feat(agent): add the Ed25519 identity store and the WS2 identity 
 **Files:**
 - Create: `apps/agent/src/e2ee/manager.ts`
 - Test: `apps/agent/test/e2ee/manager.test.ts`
+- Modify: `apps/agent/package.json`, `pnpm-lock.yaml` (the dependencies in Step 0)
 
 **Interfaces:**
-- Consumes: `@ponter/crypto`'s `EncryptionManager` and key helpers (B49–B51, already gating per D4); `AgentIdentity` (Task 6).
+- Consumes: `@ponter/crypto`'s `buildSessionKey`, `generateUserKeyPair`, `importSigningPublicKeyRaw`, `EncryptionManager` (B49–B51, already gating per D4); `@ponter/shared`'s `canonicalKeyBinding` and `WS1_TERMINAL_INFO`; `AgentIdentity` (Task 6). The test consumes `@ponter/terminal-core`'s `TerminalE2ee` — **the browser is the peer**, so the seam test uses the real class rather than a second hand-rolled one.
 - Produces:
-  - `class AgentE2ee { beginTerminalE2ee(terminalId): Promise<{ ecdhPublicKey: string; signature: string }>; acceptHello(msg): boolean; isArmed(terminalId): boolean }`
-  - `const WS1_TERMINAL_INFO = 'ponter-ws1-terminal-v1'`
+  - `class E2eeSession { static acceptHello(identity: AgentIdentity, sessionId: string, hello: E2eeHello, peerSigningPublicKeyRawBase64: string): Promise<{ session: E2eeSession; ack: E2eeAck } | null>; encrypt(plaintext: Uint8Array): Promise<Uint8Array>; decrypt(framed: Uint8Array): Promise<Uint8Array> }`
+  - `interface E2eeHello { terminalId: string; ecdhPublicKey: string; signature: string }`
+  - `interface E2eeAck { terminalId: string; ecdhPublicKey: string; signature: string }`
+  - `export { WS1_TERMINAL_INFO }` — re-exported from `@ponter/shared`, never redeclared here.
+
+- [ ] **Step 0: Add the dependencies, and install them**
+
+`apps/agent` declares neither `@ponter/crypto` nor `@ponter/terminal-core` today, so
+the module below does not resolve and the fence cannot run. Measured on the same
+resolution matrix as the Task 11 gap
+(`.superpowers/probes/b12g-task11-staging-gap-v2/`, state **S3**): a manifest edit
+alone resolves nothing, because nothing links `apps/agent/node_modules/@ponter/*`
+until an install runs. `@ponter/terminal-core` is a **devDependency** — a test-only
+consumer of a browser package, the same dependency direction Task 11 established
+for `@ponter/file-core` — while `@ponter/crypto` is a runtime dependency.
+
+```bash
+pnpm --filter @ponter/agent-node add --workspace @ponter/crypto
+pnpm --filter @ponter/agent-node add -D --workspace @ponter/terminal-core
+```
+
+Both commands write `apps/agent/package.json` **and** regenerate `pnpm-lock.yaml`.
+CI installs with `--frozen-lockfile` (`ci-node.yml:78`) and its `paths:` includes
+`pnpm-lock.yaml`, so the lockfile half is gating: it must be staged with the commit.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // apps/agent/test/e2ee/manager.test.ts
 import { describe, expect, it } from 'vitest';
-import { generateKeyPairSync, sign as nodeSign, verify as nodeVerify } from 'node:crypto';
-import { AgentE2ee } from '../../src/e2ee/manager.js';
+import { createPublicKey, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
+import { canonicalKeyBinding } from '@ponter/shared';
+import { TerminalE2ee } from '@ponter/terminal-core';
+import { E2eeSession } from '../../src/e2ee/manager.js';
 
+const SESSION_ID = 'sess-abc';
+
+// The agent's own WS2 identity: Ed25519, published as the RAW 32-byte form.
+const { privateKey: agentPrivate, publicKey: agentPublic } = generateKeyPairSync('ed25519');
+const agentPublicRaw = Buffer.from(
+  (agentPublic.export({ format: 'jwk' }) as { x: string }).x,
+  'base64url',
+).toString('base64');
 const agentIdentity = {
-  publicKeyBase64: 'cGs=',
+  publicKeyBase64: agentPublicRaw,
   sign: (bytes: Uint8Array) => new Uint8Array(nodeSign(null, Buffer.from(bytes), agentPrivate)),
 };
 
-const { privateKey: agentPrivate } = generateKeyPairSync('ed25519');
+// The peer's identity (the browser's). DELIBERATELY a different key from the
+// agent's: the agent verifies the peer's hello, it never signs it. A fixture that
+// reuses `agentPrivate` for both sides passes even when the verifier accepts its
+// own signatures, which is the failure mode this whole task is about.
+const { privateKey: peerPrivate, publicKey: peerPublic } = generateKeyPairSync('ed25519');
+const peerPublicRaw = Buffer.from(
+  (peerPublic.export({ format: 'jwk' }) as { x: string }).x,
+  'base64url',
+).toString('base64');
 
-function peerHello(binding: string) {
-  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+// A third key, for the wrong-signer must-error control.
+const { privateKey: otherPrivate } = generateKeyPairSync('ed25519');
+
+function peerHello(bindingFor?: (ecdhPublicKey: string) => string, signer = peerPrivate) {
+  const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const ecdhPublicKey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString(
     'base64',
   );
-  const signature = nodeSign(null, Buffer.from(binding), agentPrivate).toString('base64');
-  return { ecdhPublicKey, signature };
+  const message = bindingFor ? bindingFor(ecdhPublicKey) : canonicalKeyBinding(ecdhPublicKey);
+  const signature = nodeSign(null, Buffer.from(message), signer).toString('base64');
+  return { terminalId: 't1', ecdhPublicKey, signature };
 }
 
-describe('AgentE2ee', () => {
+describe('E2eeSession', () => {
   it('produces an ack carrying its ephemeral ECDH key and a signature', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    const ack = await e2ee.beginTerminalE2ee('t1');
-    expect(Buffer.from(ack.ecdhPublicKey, 'base64').length).toBeGreaterThan(0);
-    expect(ack.signature.length).toBeGreaterThan(0);
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw);
+    expect(Buffer.from(result!.ack.ecdhPublicKey, 'base64').length).toBeGreaterThan(0);
+    expect(result!.ack.signature.length).toBeGreaterThan(0);
   });
 
-  it('arms no session before a peer hello arrives', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    expect(e2ee.isArmed('t1')).toBe(false);
+  it('returns null when the peer signing key is not 32 raw bytes', async () => {
+    // `peer_signing_public_key_raw: &[u8; 32]` (e2ee.rs:203) is a length check the
+    // type system cannot make in TS. An SPKI DER key is 44 bytes; letting one
+    // through would import as the wrong key shape and reject every real hello.
+    const result = await E2eeSession.acceptHello(
+      agentIdentity,
+      SESSION_ID,
+      peerHello(),
+      Buffer.from('short').toString('base64'),
+    );
+    expect(result).toBeNull();
   });
 
-  it('arms the session after a valid hello and round-trips a frame', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    const hello = peerHello('ponter-ws1-terminal-v1\nterminalId=t1');
-    expect(e2ee.acceptHello({ terminalId: 't1', ...hello })).toBe(true);
-    expect(e2ee.isArmed('t1')).toBe(true);
+  it('derives a session on a valid hello and round-trips a frame', async () => {
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw);
+    expect(result).not.toBeNull();
+    const sealed = await result!.session.encrypt(Buffer.from('payload'));
+    expect(Buffer.from(await result!.session.decrypt(sealed)).toString()).toBe('payload');
   });
 
   it('rejects a mis-signed hello and yields no session', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    const hello = peerHello('a different binding');
-    expect(e2ee.acceptHello({ terminalId: 't1', ...hello })).toBe(false);
-    expect(e2ee.isArmed('t1')).toBe(false);
+    const hello = peerHello(() => 'a different binding');
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, hello, peerPublicRaw);
+    expect(result).toBeNull();
   });
 
-  it('rejects a hello for a terminal that was never begun', () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    expect(e2ee.acceptHello({ terminalId: 'nope', ...peerHello('x') })).toBe(false);
+  it('rejects a hello signed by the wrong peer key', async () => {
+    const hello = peerHello(undefined, otherPrivate);
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, hello, peerPublicRaw);
+    expect(result).toBeNull();
   });
 
   it('round-trips an EMPTY plaintext frame', async () => {
@@ -2448,21 +2497,62 @@ describe('AgentE2ee', () => {
     // encrypt produced exactly that for []. @ponter/crypto accepts it and returns
     // an empty buffer; that is the behaviour this port keeps, because it is the
     // one that round-trips.
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    e2ee.acceptHello({ terminalId: 't1', ...peerHello('ponter-ws1-terminal-v1\nterminalId=t1') });
-    const sealed = e2ee.seal('t1', new Uint8Array(0));
+    const result = (await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw))!;
+    const sealed = await result.session.encrypt(new Uint8Array(0));
     expect(sealed).toHaveLength(28);
-    expect(e2ee.open('t1', sealed)).toEqual(new Uint8Array(0));
+    expect(await result.session.decrypt(sealed)).toEqual(new Uint8Array(0));
   });
 
   it('rejects a tampered frame', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    e2ee.acceptHello({ terminalId: 't1', ...peerHello('ponter-ws1-terminal-v1\nterminalId=t1') });
-    const sealed = e2ee.seal('t1', Buffer.from('secret'));
-    sealed[sealed.length - 1] ^= 0xff;
-    expect(() => e2ee.open('t1', sealed)).toThrow();
+    const result = (await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw))!;
+    const sealed = await result.session.encrypt(Buffer.from('secret'));
+    const tampered = Uint8Array.from(sealed);
+    tampered[tampered.length - 1]! ^= 0xff;
+    await expect(result.session.decrypt(tampered)).rejects.toThrow();
+  });
+
+  it('cross-side: decrypts frames encrypted by the browser under the same sessionId', async () => {
+    // The ONLY assertion that can catch a wrong HKDF salt. A self-round-trip
+    // encrypts and decrypts through one EncryptionManager derived from one salt,
+    // so it is a mirror: it stays green under ANY salt, including a wrong one.
+    // Here two independent parties derive the key from their own private half,
+    // so `sessionId` is the only value that can make the GCM tag authenticate.
+    const ecdh = (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const browserSigningKey = await crypto.subtle.importKey(
+      'pkcs8',
+      Buffer.from(peerPrivate.export({ type: 'pkcs8', format: 'der' }) as Buffer),
+      'Ed25519',
+      false,
+      ['sign'],
+    );
+    const agentSigningKey = await crypto.subtle.importKey(
+      'raw',
+      Buffer.from(agentPublicRaw, 'base64'),
+      'Ed25519',
+      true,
+      ['verify'],
+    );
+    const browser = new TerminalE2ee({
+      ecdhPrivateKey: ecdh.privateKey,
+      ecdhPublicKey: ecdh.publicKey,
+      signingPrivateKey: browserSigningKey,
+      peerSigningPublicKey: agentSigningKey,
+      sessionId: SESSION_ID,
+    });
+
+    const hello = await browser.buildHello('t1');
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, hello, peerPublicRaw);
+    expect(result).not.toBeNull();
+    await browser.handleAck(result!.ack);
+
+    const encryptedByBrowser = await browser.encrypt(Buffer.from('terminal keystroke'));
+    expect(Buffer.from(await result!.session.decrypt(encryptedByBrowser)).toString()).toBe(
+      'terminal keystroke',
+    );
   });
 });
 ```
@@ -2474,12 +2564,16 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/e2ee/manager.ts
-import { randomBytes } from 'node:crypto';
-import { EncryptionManager } from '@ponter/crypto';
+import {
+  buildSessionKey,
+  generateUserKeyPair,
+  importSigningPublicKeyRaw,
+  type EncryptionManager,
+} from '@ponter/crypto';
+import { canonicalKeyBinding, WS1_TERMINAL_INFO } from '@ponter/shared';
 import type { AgentIdentity } from '../identity/store.js';
 
-/** The HKDF `info` string. Shared with the browser; changing it breaks every peer. */
-export const WS1_TERMINAL_INFO = 'ponter-ws1-terminal-v1';
+export { WS1_TERMINAL_INFO };
 
 export interface E2eeHello {
   terminalId: string;
@@ -2487,83 +2581,107 @@ export interface E2eeHello {
   signature: string;
 }
 
-interface PendingSession {
-  manager: EncryptionManager;
-  armed: boolean;
-}
-
-function bindingMessage(terminalId: string): string {
-  return `${WS1_TERMINAL_INFO}\nterminalId=${terminalId}`;
+export interface E2eeAck {
+  terminalId: string;
+  ecdhPublicKey: string;
+  signature: string;
 }
 
 /**
- * The WS1 terminal E2EE handshake (B52).
+ * Answerer-side WS1 terminal E2EE, porting `E2eeSession` from `apps/agent/src/e2ee.rs`.
  *
- * Fail-closed by construction: a session is created **unarmed**, and only
- * `acceptHello` — after verifying the peer's signature over the binding string
- * — arms it. An unarmed session refuses to seal. The Rust had the same shape and
- * the same reason: arming on the ack alone would let a peer that never proved
- * key possession receive plaintext.
+ * **There is no `begin` step, and that is deliberate.** The agent is the
+ * answerer: the browser sends `terminal-e2ee-hello` first, and the Rust's
+ * `accept_hello` (`e2ee.rs:198-220`) generates our ephemeral key *inside* the
+ * call, after verifying the peer, returning the session and the signed ack
+ * together. An `AgentE2ee` that pre-allocated a pending session in one call and
+ * armed it in another carried three states nothing could distinguish (never
+ * begun / begun-unarmed / armed) and an ordering nobody enforced.
  *
- * The primitives (ECDH, HKDF, AES-GCM, the frame layout, the shared vectors) are
- * `@ponter/crypto`'s and are already gating; this class is only the wiring.
+ * **The signature is verified before the session key is derived, and the session
+ * object does not exist until it verifies** — the Rust's doc comment states the
+ * reason: "a session that exists is always a session that may encrypt".
  */
-export class AgentE2ee {
-  private readonly sessions = new Map<string, PendingSession>();
+export class E2eeSession {
+  private constructor(private readonly manager: EncryptionManager) {}
 
-  constructor(private readonly identity: AgentIdentity) {}
-
-  async beginTerminalE2ee(
-    terminalId: string,
-  ): Promise<{ ecdhPublicKey: string; signature: string }> {
-    const manager = await EncryptionManager.create({ info: WS1_TERMINAL_INFO, salt: terminalId });
-    this.sessions.set(terminalId, { manager, armed: false });
-    const ecdhPublicKey = manager.exportPublicKeySpki();
-    const signature = Buffer.from(
-      this.identity.sign(new TextEncoder().encode(bindingMessage(terminalId))),
-    ).toString('base64');
-    return { ecdhPublicKey, signature };
-  }
-
-  acceptHello(hello: E2eeHello): boolean {
-    const session = this.sessions.get(hello.terminalId);
-    if (!session) return false;
-    let ok = false;
+  /**
+   * Verify the peer's hello, derive the session key, and return our signed ack.
+   *
+   * `sessionId` is a **parameter, with no default**: it comes off the wire with
+   * the session being negotiated and is the HKDF salt (`@ponter/crypto`'s
+   * `buildSessionKey`; Rust `e2ee.rs:220`). A defaulted salt is a silent seam
+   * break — the agent arms, reports success, and then fails every GCM tag
+   * because the browser derived under its real session id. Required is the only
+   * safe shape.
+   *
+   * `peerSigningPublicKeyRawBase64` is the **raw 32-byte** Ed25519 key the offer
+   * carried (Rust `&[u8; 32]`, `lib.rs:1250-1258`), not SPKI DER.
+   *
+   * Fail-closed: a bad signature, a malformed key or a failed import returns
+   * `null`. The caller then stays plaintext and sends no ack.
+   */
+  static async acceptHello(
+    identity: AgentIdentity,
+    sessionId: string,
+    hello: E2eeHello,
+    peerSigningPublicKeyRawBase64: string,
+  ): Promise<{ session: E2eeSession; ack: E2eeAck } | null> {
     try {
-      ok = session.manager.acceptPeerHello({
-        ecdhPublicKey: hello.ecdhPublicKey,
-        signature: hello.signature,
-        message: bindingMessage(hello.terminalId),
-        nonce: randomBytes(0),
+      const raw = Buffer.from(peerSigningPublicKeyRawBase64, 'base64');
+      if (raw.length !== 32) return null;
+
+      // 1. Our ephemeral keypair, generated ONCE: the private half derives the
+      //    session key and the public half goes out in the ack, and those must be
+      //    the same key or the browser derives a different secret.
+      //
+      //    This sits *before* the verify because `buildSessionKey` needs our
+      //    private half as an input — the Rust verifies first and generates
+      //    second (`e2ee.rs:210-216`). The divergence is safe and deliberate: an
+      //    ephemeral keypair is a throwaway that touches no state and escapes
+      //    nothing until an ack is returned, and the property the Rust's ordering
+      //    protects — "a session that exists is always a session that may
+      //    encrypt" — is kept because `E2eeSession` is constructed only after
+      //    `buildSessionKey` resolves, and `buildSessionKey` throws when the
+      //    binding does not verify.
+      //
+      //    Nothing about the binding is built locally: the verified string is
+      //    `canonicalKeyBinding(ecdhPublicKey)` and the HKDF salt is
+      //    `sessionId`, the two values the browser and the Rust also use.
+      const keyPair = await generateUserKeyPair();
+      const manager = await buildSessionKey({
+        myEcdhPrivateKey: keyPair.privateKey,
+        peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,
+        peerBindingSignature: hello.signature,
+        peerSigningPublicKey: await importSigningPublicKeyRaw(peerSigningPublicKeyRawBase64),
+        sessionId,
       });
+
+      // 2. Build our signed ack so the browser can derive the identical key.
+      const ackSignature = identity.sign(
+        new TextEncoder().encode(canonicalKeyBinding(keyPair.publicKeySpkiBase64)),
+      );
+      const ack: E2eeAck = {
+        terminalId: hello.terminalId,
+        ecdhPublicKey: keyPair.publicKeySpkiBase64,
+        signature: Buffer.from(ackSignature).toString('base64'),
+      };
+
+      return { session: new E2eeSession(manager), ack };
     } catch {
-      ok = false;
+      return null;
     }
-    session.armed = ok;
-    return ok;
   }
 
-  isArmed(terminalId: string): boolean {
-    return this.sessions.get(terminalId)?.armed === true;
+  async encrypt(plaintext: Uint8Array): Promise<Uint8Array> {
+    return this.manager.encrypt(plaintext);
   }
 
-  seal(terminalId: string, plaintext: Uint8Array): Uint8Array {
-    return this.requireArmed(terminalId).encrypt(plaintext);
-  }
-
-  open(terminalId: string, framed: Uint8Array): Uint8Array {
-    return this.requireArmed(terminalId).decrypt(framed);
-  }
-
-  private requireArmed(terminalId: string): EncryptionManager {
-    const session = this.sessions.get(terminalId);
-    if (!session?.armed) throw new Error(`no armed e2ee session for terminal ${terminalId}`);
-    return session.manager;
+  async decrypt(framed: Uint8Array): Promise<Uint8Array> {
+    return this.manager.decrypt(framed);
   }
 }
 ```
-
-> **Implementation note for the executor:** `EncryptionManager`'s exact option names (`salt`, `info`, `exportPublicKeySpki`, `acceptPeerHello`) must be read from `packages/crypto/src/` before implementing — the plan names the behaviours, the package names the symbols. If `acceptPeerHello` does not exist, the verification half is `packages/crypto`'s existing `verifyKeyBinding`, and that is what this class calls. **Do not re-implement ECDH or HKDF here**; that is what makes B49–B51 already proven.
 
 - [ ] **Step 3: Run green, format, commit**
 
@@ -2571,11 +2689,65 @@ export class AgentE2ee {
 ./apps/agent/node_modules/.bin/vitest run test/e2ee
 ./packages/crypto/node_modules/.bin/vitest run
 ./node_modules/.bin/prettier --write apps/agent/src/e2ee apps/agent/test/e2ee
-git add apps/agent/src/e2ee apps/agent/test/e2ee
-git commit -m "feat(agent): wire the WS1 terminal E2EE handshake fail-closed"
+git add apps/agent/src/e2ee apps/agent/test/e2ee apps/agent/package.json pnpm-lock.yaml
+git commit -m "feat(agent): port the WS1 terminal E2EE answerer handshake"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **7 new `it()` / 11 new `expect()`**. Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and `a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do **not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the empty-plaintext round trip (the divergence ruling) and hello-for-an-unbegun-terminal.
+**TEST-INTEGRITY declaration:** one new file, **8 new `it()` / 12 new `expect()`**.
+
+The before→after is **not** a +1/+1 net. Enumerated by name, because a net figure
+is what hides a removal:
+
+| test | pre | post |
+|---|---|---|
+| `produces an ack carrying its ephemeral ECDH key and a signature` | 2 | 2 |
+| `arms no session before a peer hello arrives` | 1 | — **removed** |
+| `arms the session after a valid hello and round-trips a frame` | 2 | 2, **renamed** to `derives a session on a valid hello and round-trips a frame` |
+| `rejects a mis-signed hello and yields no session` | 2 | **1** — lost its `isArmed(false)` assertion |
+| `rejects a hello for a terminal that was never begun` | 1 | — **removed** |
+| `round-trips an EMPTY plaintext frame` | 2 | 2 |
+| `rejects a tampered frame` | 1 | 1 |
+| `returns null when the peer signing key is not 32 raw bytes` | — | 1 **added** |
+| `rejects a hello signed by the wrong peer key` | — | 1 **added** |
+| `cross-side: decrypts frames encrypted by the browser under the same sessionId` | — | 2 **added** |
+
+So **`it()`: −2 / +3, and `expect()`: −3 / +4** — a net +1/+1 that arrives from
+unequal movements, not from one addition. `11 − 3 + 4 = 12` and `7 − 2 + 3 = 8`.
+
+The three removals are all the same class, and each is named with its reason:
+
+- **Two whole tests go: `arms no session before a peer hello arrives` and
+  `rejects a hello for a terminal that was never begun`.** Both pinned states the
+  Rust cannot have. `isArmed` does not exist on `E2eeSession` — the Rust's
+  `accept_hello` is a static constructor returning `(Self, E2eeAck)`
+  (`e2ee.rs:198-203`), so "created but not armed" is not a representable state and
+  asserting `isArmed === false` asserted the *retired shape*, not the contract.
+  The second pinned terminal-id-begun validation that the Rust never performs:
+  `accept_hello` never inspects `hello.terminal_id` for validity, it only echoes it
+  into the ack (`e2ee.rs:222`). These are the test-asserts-the-bug class, not
+  coverage given up.
+- **One assertion goes from a surviving test:
+  `expect(e2ee.isArmed('t1')).toBe(false)` in `rejects a mis-signed hello`.**
+  Same reason, one level down — with no arming state, `result === null` *is* the
+  fail-closed assertion, and it is still there.
+
+What replaces them is stronger on the two properties those tests could never
+prove. **Added and worth raising:** the 32-byte key-shape rejection (the Rust's
+`&[u8; 32]` is a type-level guarantee TS does not have), and the wrong-peer-key
+must-error control — the pre-repair fixture signed with the **agent's own** key,
+so its "mis-signed hello" test varied only the message string and could never show
+signature verification works. The third addition is the cross-side `TerminalE2ee`
+round trip, the only assertion that can distinguish the correct HKDF salt from any
+other: the pre-repair fence's round trips went through a single
+`EncryptionManager`, so it stayed green when the salt was replaced with
+`'WRONG-SALT'` (measured: 7/7 passing).
+
+Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and
+`a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do
+**not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the
+empty-plaintext round trip (the divergence ruling) and the 32-byte key-shape
+rejection. Two more are must-error controls a fail-closed port needs: the
+wrong-signer hello, and the cross-side salt seam.
 
 ---
 
@@ -6726,7 +6898,7 @@ git commit -m "feat(agent): add the static-frame skip and the frame timing ring"
 - Test: `apps/agent/test/session/identity-proof.test.ts`
 
 **Interfaces:**
-- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), and `canonicalProofMessage` for the message string. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s (`createPublicKey` + `verify`), wrapped in this module.
+- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), and `canonicalProofMessage` for the message string. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s, wrapped in this module, over the **raw 32-byte** key the offer carries: `createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x }, format: 'jwk' })` over the raw bytes, then `verify(null, message, key, signature)`. **Not** `{ format: 'der', type: 'spki' }` — that shape is 44 bytes and the wire value is 32, so an SPKI import throws `Failed to read asymmetric key` on every genuine offer and the module's own `catch` would report it as `BAD_SIGNATURE`. The OKP-JWK form is chosen over `webcrypto.subtle.importKey('raw', …)` for one reason: the latter is async and would re-type `verifyOfferIdentity`, which the Rust has sync (`verify_offer_identity -> Result<()>`, `lib.rs:989`; `verify_proof` over `UnparsedPublicKey`, `identity.rs:105`). Measured both ways in `.superpowers/probes/t14-ba-repair/`.
 - Produces:
   - `class OfferIdentityError extends Error { code: 'NO_PROOF' | 'NO_SIGNING_KEY' | 'MALFORMED_FINGERPRINT' | 'FINGERPRINT_MISMATCH' | 'BAD_SIGNATURE' }`
   - `function verifyOfferIdentity(offer: OfferMessage, sessionId: string): void`
@@ -6752,11 +6924,18 @@ const FINGERPRINT = 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01
 const SDP_SHA256 = createHash('sha256').update(SDP, 'utf8').digest('hex');
 
 function keypair() {
+  // The wire form is the browser's `publicKeyRawBase64` — **raw 32 bytes**
+  // (`apps/web/src/stores/auth.ts:226,296`, set from `exportSigningPublicKeyRaw`,
+  // `packages/crypto/src/index.ts:307`), relayed verbatim by the server
+  // (`apps/server/src/routes/signal.ts:106-117`) and decoded into `[u8; 32]` by
+  // the Rust (`apps/agent/src/lib.rs:1250-1258`). Deriving it the SPKI way
+  // (`export({ type: 'spki', format: 'der' })`, 44 bytes) is what made this
+  // fence certify its own bug: it exercised a shape no peer ever sends.
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+  const raw = Buffer.from((publicKey.export({ format: 'jwk' }) as { x: string }).x, 'base64url');
   return {
     privateKey,
-    userSigningPublicKey: spki.toString('base64'),
+    userSigningPublicKey: raw.toString('base64'),
   };
 }
 
@@ -6935,7 +7114,21 @@ export function verifyOfferIdentity(offer: OfferMessage, sessionId: string): voi
 }
 
 /**
- * Ed25519 verify over a base64 SPKI public key and a base64 signature.
+ * Ed25519 verify over a base64 **raw 32-byte** public key and a base64 signature.
+ *
+ * `data.userSigningPublicKey` is the browser's `publicKeyRawBase64`
+ * (`apps/web/src/stores/auth.ts:226,296`), relayed verbatim by the server
+ * (`apps/server/src/routes/signal.ts:106-117`) and decoded into `[u8; 32]` by the
+ * Rust (`apps/agent/src/lib.rs:1250-1258`). It is **not** SPKI DER: an SPKI key is
+ * 44 bytes, and `createPublicKey({ format: 'der', type: 'spki' })` over 32 raw
+ * bytes throws `Failed to read asymmetric key` — which the `catch` below would
+ * turn into `BAD_SIGNATURE`, rejecting every genuine offer.
+ *
+ * Stays **synchronous** so `verifyOfferIdentity` stays a sync function, matching
+ * the Rust (`verify_offer_identity -> Result<()>`, `lib.rs:989`): `createPublicKey`
+ * accepts an OKP JWK whose `x` is exactly the raw key in base64url. The 32-byte
+ * length check is explicit because a 44-byte SPKI value would otherwise reach the
+ * JWK path and fail there with a less legible error.
  *
  * `@ponter/shared` exports the **message builder**, not a verifier — it is
  * platform-neutral and both peers build the string themselves. Verification is
@@ -6943,12 +7136,17 @@ export function verifyOfferIdentity(offer: OfferMessage, sessionId: string): voi
  * and a hostile offer is exactly where that would happen. **A throw is a failed
  * signature**, never an escaping exception.
  */
-function verifyMessage(publicKeySpkiBase64: string, signatureBase64: string, message: string): boolean {
+function verifyMessage(
+  publicKeyRawBase64: string,
+  signatureBase64: string,
+  message: string,
+): boolean {
   try {
+    const raw = Buffer.from(publicKeyRawBase64, 'base64');
+    if (raw.length !== 32) return false;
     const key = createPublicKey({
-      key: Buffer.from(publicKeySpkiBase64, 'base64'),
-      format: 'der',
-      type: 'spki',
+      key: { kty: 'OKP', crv: 'Ed25519', x: raw.toString('base64url') },
+      format: 'jwk',
     });
     return verify(null, Buffer.from(message, 'utf8'), key, Buffer.from(signatureBase64, 'base64'));
   } catch {
@@ -6977,6 +7175,8 @@ git commit -m "feat(agent): verify the offer identity proof before answering"
 ```
 
 **TEST-INTEGRITY declaration:** one new file, **11 new `it()` / 11 new `expect()`**. Ports `verify_offer_identity`'s five failure modes as five tests plus the happy path, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes` and `parses_and_normalizes_sdp_fingerprint`'s assertion (as a *consumer* of `@ponter/shared`, per B9's reuse ruling — the normalisation itself is already tested there and is not duplicated). **New:** the code-level distinction between `FINGERPRINT_MISMATCH` and `BAD_SIGNATURE` (the Rust had one error type and lost that distinction at the boundary), and the `advertisesE2ee` absent-capabilities case.
+
+The raw-32 repair (fixture key shape, `verifyMessage`'s import path, and the Interfaces prescription) is **count-neutral by construction**: **11 / 11 before → 11 / 11 after, zero assertions added, removed, moved or rewritten**. No test name, no `expect()` line and no assertion kind changed — `keypair()` returns a different *shape* under the same property name, and `verifyMessage` imports that shape. Measured four ways on the extracted fence in `.superpowers/probes/t14-ba-repair/`: 11/11 vitest green, `tsc` exit 0, counts 11/11 by anchor regex, and the **must-error control** — the repaired fence run against the pre-repair SPKI implementation — goes **red on the happy path** (`expected [Function] to not throw an error but 'OfferIdentityError: the offer identity signature is invalid' was thrown`), 1 failed / 10 passed. That last axis is what makes the count meaningful: a count-preserving repair that the old bug still passes would have been a no-op.
 
 ---
 
@@ -9399,8 +9599,9 @@ On the six-number axes: fence **23 `it()`** / call sites **23** (no `it.each(` i
 
    `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-27`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
 3. **Nothing calls `deps.send` for these frames.** Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. The `deps.send` seam exists and the router serves `control`; the producer does not.
-4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `AgentE2ee` has only the terminal arm (`beginTerminalE2ee/acceptHello/isArmed`), and the `desktop-e2ee-ack` outbound type exists with no producer (`:8212`). Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
+4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `E2eeSession` (`acceptHello` / `encrypt` / `decrypt`) is a WS1 answerer and has no desktop path at all — the old `AgentE2ee`, with its `beginTerminalE2ee`/`isArmed` shape, named a class this plan no longer has — and the `desktop-e2ee-ack` outbound type is named with nothing that builds it: no Produces entry, no builder, no producer. Grep the plan for `desktop-e2ee-ack`. Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
 5. **`verifyOfferIdentity` and `advertisesE2ee` have no production caller in Plan 2.** The Rust admission gate (`lib.rs:1162` in `run_one_session`) is not fenced; Task 19 runtime does not wire `onOffer`. Handed off to Plan 3 alongside the other unfenced session-loop wirings.
+6. **The one-session-at-a-time invariant is now a *caller* obligation, and nothing owns it.** The Rust refuses a second hello while a session is live, and it does so at the two dispatch sites rather than in `accept_hello`: the terminal path reads `let already_active = e2ee_guard.is_some();` and negotiates only `if !already_active` (`lib.rs:1313-1316`), the desktop path gates on `if negotiated && e2ee_session.is_none()` (`lib.rs:2364`). **Task 7's `E2eeSession.acceptHello` is a pure static constructor** — it takes no registry, sees no existing session, and cannot refuse anything; a second call simply derives a second key from the same `sessionId` and returns a second ack. So the invariant lives entirely with whoever calls it, and this plan currently has **no such caller at all**: Task 18's router drops an unknown `control` type and Task 19 wires no E2EE dispatch, both recorded above. Whoever lands the wiring must hold the session and check it before calling, or a peer's second hello silently re-keys a live terminal. **The Rust does not test this either**, stated plainly so the gap is not mistaken for a ported guarantee: `already_active` occurs only at those two production lines, `e2ee_session` occurs at seven production sites (`lib.rs:1267,1286,1630,2351,2364,2394,2416`) and **zero** times inside `#[cfg(test)]` (the test module starts at `lib.rs:3045`), and the two tests that drive `accept_hello` (`lib.rs:3548`, `:3691`) call it directly and bypass the gate entirely. This is therefore **not a regression against the authority** — it is an unfenced obligation the port inherits, and the first caller is where it must be pinned.
 
 Start the re-port from the reader, not the builder: every field above was already being sent by the Rust before the plan existed, and the browser's parse is the acceptance test.
 
