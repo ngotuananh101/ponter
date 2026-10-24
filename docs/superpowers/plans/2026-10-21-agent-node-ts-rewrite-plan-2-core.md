@@ -91,7 +91,7 @@ Locked so implementers cannot disagree about what creates what.
 | `packages/shared/src/types/stream-profile.ts` | **Modify (Plan 1 owns it).** Add `export type ProfileId = (typeof STREAM_PROFILES)[number]['id']` beside `StreamProfile`. Five modules here import it by name; without it every `ProfileId` reference in this plan is an unresolved type. | B18, B20, B24, B56, B62 |
 | `packages/webrtc-core/src/url.ts` | **Modify.** Add `rewriteWsScheme` beside `toWsUrl` | B2 |
 | `packages/webrtc-core/test/url.test.ts` | **Modify.** Add the `rewriteWsScheme` describe block (12 cases) | B2 |
-| `packages/api-client/test/agent-api-access-gate.test.ts` | **Modify.** Re-point at the TS agent tree | R3, R6 |
+| `packages/api-client/test/agent-api-access-gate.test.ts` | **Modify.** Re-point at the TS agent tree — **landed as Task 21** (`0b471e0`) | R3, R6 |
 | `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md` | **Modify.** Flip Plan 2's rows to "Covered" with their test file | §9.4 gate |
 
 **Not created here:** `apps/agent/src/session/packetizer.ts` (Plan 1 Task 3), `apps/agent/native/**` (Plan 1 Task 4), `apps/agent/spike/**` (Plan 1 Task 1), `apps/desktop/**` supervisor rewiring (Plan 3), `.github/workflows/**` (Plan 3).
@@ -4041,7 +4041,14 @@ export class FilesRoot {
 
   private ensureContained(canonical: string, wirePath: string): void {
     if (canonical === this.root) return;
-    if (!canonical.startsWith(this.root + sep)) {
+    // The separator is appended **only when the root does not already end in
+    // one**. `AGENT_FILES_ROOT=/` canonicalises to `/`, and `/` + `/` is `//`,
+    // which no path but `//` itself starts with — so the unconditional form
+    // rejects everything under a root of `/` with `PATH_OUTSIDE_ROOT`
+    // (fail-closed: a usability bug, not an escape). Appending unconditionally
+    // is the same trap for any root that names a filesystem root.
+    const prefix = this.root.endsWith(sep) ? this.root : this.root + sep;
+    if (!canonical.startsWith(prefix)) {
       throw new SandboxError('PATH_OUTSIDE_ROOT', `${wirePath} resolves outside the files root`);
     }
   }
@@ -4960,6 +4967,7 @@ import {
   readdirSync,
   renameSync,
   rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -5088,7 +5096,10 @@ interface UploadState {
   total: number;
   size: number;
   partPath: string;
+  /** The host path. Filesystem calls only — **never** put this on the wire. */
   destPath: string;
+  /** The wire-relative destination, from `join_rel` (`files.rs:2069-2075`). */
+  destRel: string;
   lastAcked: number;
   pendingAck: number | null;
   lastAckAt: number;
@@ -5151,9 +5162,27 @@ export class FilesSession {
       this.download = null;
     }
     if (this.upload && !this.upload.paused && this.upload.deadline <= now) {
+      // `timeout_frame(direction, transfer_id)` (`files.rs:1259-1270`) sets the
+      // id in **both** directions. The download arm above is naturally correct
+      // because its state is still in hand; the upload arm has to read the id
+      // *before* `discardUpload` clears it.
+      //
+      // An id-less frame is **not** a hang — measured: the handle stays pending,
+      // then the client's own 30 s timer (`client.ts:328`) rejects it with a
+      // locally minted `TRANSFER_TIMEOUT`. The damage is two other things. The
+      // `files-error` arm only routes to a transfer when the frame carries its
+      // id (`client.ts:637-641`), so the entry is never deleted from
+      // `client.transfers`: measured, the map still holds it after the local
+      // timeout, one dead entry per timed-out upload, for the life of the
+      // connection. And the rejection the caller sees is the client's own
+      // message rather than the agent's frame, so any other agent-side code is
+      // lost. An id-less error also falls through to the `requestId` arms and
+      // the `onError` listeners (`:643-660`), reporting an unsolicited error
+      // that belongs to no request.
+      const { transferId } = this.upload;
       this.discardUpload(this.upload);
       this.upload = null;
-      out.push({ type: 'files-error', code: 'TRANSFER_TIMEOUT', message: 'transfer timed out' });
+      out.push({ type: 'files-error', transferId, code: 'TRANSFER_TIMEOUT', message: 'transfer timed out' });
     }
     return out;
   }
@@ -5385,7 +5414,9 @@ export class FilesSession {
     const size = Number(message.size);
     if (size > FILE_MAX_BYTES) throw new SandboxError('FILE_TOO_LARGE', 'file too large');
     if (this.upload) throw new SandboxError('TRANSFER_BUSY', 'an upload is already in flight');
-    const dest = this.root.resolveParentForCreate(String(message.path ?? ''), String(message.name));
+    const name = String(message.name);
+    const dirWire = String(message.path ?? '');
+    const dest = this.root.resolveParentForCreate(dirWire, name);
     try {
       statSync(dest);
       throw new SandboxError('FILE_EXISTS', 'destination already exists');
@@ -5400,25 +5431,31 @@ export class FilesSession {
       unlinkSync(partPath);
       closeSync(openSync(partPath, 'wx', 0o600));
     }
+    const transferId = String(message.transferId);
     this.upload = {
-      transferId: String(message.transferId),
+      transferId,
       nextChunk: 0,
       written: 0,
       total: totalChunks(size),
       size,
       partPath,
       destPath: dest,
+      // `join_rel` (`files.rs:2069-2075`): the **wire** path, not the host path.
+      // `''` + name for the root, `dir/name` otherwise. `destPath` stays for the
+      // filesystem calls; only these two wire values may leave the agent.
+      destRel: dirWire === '' ? name : `${dirWire}/${name}`,
       lastAcked: 0,
       pendingAck: null,
       lastAckAt: this.now(),
       paused: false,
       deadline: this.now() + FILES_IDLE_TIMEOUT_MS,
     };
-    // Nothing has been received yet, so nothing is pending: `pendingAck` is
-    // `null` and `takePendingAck()` would return `[]` anyway. Stated as `[]`
-    // rather than routed through the ack path so the begin frame cannot start
-    // emitting acks if that path changes.
-    return [];
+    // **The begin is answered with the first cumulative ack** (`files.rs:1623-1627`,
+    // spec §6.1). Not an optimisation: the browser's transfer pump is driven from
+    // `onAck` alone (`packages/file-core/src/transfer.ts:164-177`), so a begin
+    // that answers nothing means no chunk is ever sent and every upload hangs
+    // until the 30 s idle timeout.
+    return [{ type: 'files-upload-ack', transferId, nextChunkIndex: 0 }];
   }
 
   /**
@@ -5540,8 +5577,14 @@ export class FilesSession {
       {
         type: 'files-upload-complete',
         transferId: state.transferId,
-        name: state.destPath.split('/').pop(),
-        path: state.destPath,
+        // **Both derive from `destRel`.** `files.rs:2281` emits `state.dest_rel`
+        // and nothing else; an earlier draft put `state.destPath` on the wire,
+        // which sends the agent host's absolute path to the browser — the
+        // sandbox root's location, in every upload-complete frame. `name` is
+        // the last wire component, not the host basename, so the two agree even
+        // when the sandbox root is a symlinked path.
+        name: state.destRel.split('/').pop(),
+        path: state.destRel,
         size: state.size,
       },
     ];
@@ -5677,28 +5720,44 @@ export class FilesSession {
   }
 
   /**
-   * `rm -r` is **not** offered: a peer that can recursively delete a directory
-   * inside the sandbox can destroy a document tree with one message and no undo.
-   * A non-empty directory is refused with `DIR_NOT_EMPTY` and the user removes
-   * its contents explicitly.
+   * `files-delete` honours `recursive`, as the Rust does (ADR-40,
+   * `files.rs:911-951`): the root refusal comes first, then
+   * `if recursive { remove_dir_all }`, else the read-dir-and-`DirNotEmpty` arm.
+   * A non-recursive call on a non-empty directory is refused with
+   * `DIR_NOT_EMPTY` so the caller must say what it means. The web UI sends
+   * `recursive: true` for every folder delete, so a port that always took the
+   * non-recursive arm fails every folder delete outright.
+   *
+   * **The root refusal sits above both arms**, and it is not implied by the
+   * field names: `rmSync(root, { recursive: true })` would delete the whole
+   * sandbox in one message. `remove` and `rename` both compare the canonical
+   * *string* against `this.root.root` — comparing against the `FilesRoot`
+   * object would be always-false and would let a peer delete the root itself.
+   *
+   * An earlier draft of this plan argued the opposite ("`rm -r` is **not**
+   * offered"), which contradicted the owner's 2026-10-22 ruling that
+   * `recursive` is honoured exactly as Rust's `remove_dir_all` honours it. It
+   * was a security-shaped reason to keep a defect, and it is recorded here so
+   * the next reader does not re-derive it as a design choice.
    */
   private remove(message: { [key: string]: unknown }): FilesFrame[] {
     const target = this.root.resolveExisting(String(message.path ?? ''));
-    // `resolveExisting('')` returns the canonical root, so this compares two
-    // canonical strings. Comparing against `this.root` (the object) would be
-    // always-false and would let a peer delete the root itself.
     if (target === this.root.root) {
       throw new SandboxError('PERMISSION_DENIED', 'the files root itself cannot be deleted');
     }
     const stat = statSync(target);
     if (stat.isDirectory()) {
-      try {
-        rmdirSync(target);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
-          throw new SandboxError('DIR_NOT_EMPTY', 'the directory is not empty');
+      if (Boolean(message.recursive)) {
+        rmSync(target, { recursive: true });
+      } else {
+        try {
+          rmdirSync(target);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
+            throw new SandboxError('DIR_NOT_EMPTY', 'the directory is not empty');
+          }
+          throw error;
         }
-        throw error;
       }
     } else {
       unlinkSync(target);
@@ -6202,11 +6261,19 @@ function fakeHost() {
   const host = {
     spawn: (file: string, args: string[], opts: Record<string, unknown>) => {
       spawned.push({ file, args, opts });
-      const p = Object.assign(new EventEmitter(), {
+      const emitter = new EventEmitter();
+      // The fake stands in for `IPty`, so it exposes the **same two members**
+      // the real host does — `onData` / `onExit` — and routes them through
+      // `emit` so the fence can fire an event. A fake that exposed `on`
+      // instead would typecheck against the seam it no longer matches, and
+      // the mismatch would only surface against a real `node-pty`.
+      const p = Object.assign(emitter, {
         write: vi.fn(),
         resize: vi.fn(),
         kill: vi.fn(),
         pid: 1000 + procs.length,
+        onData: (cb: (chunk: string | Buffer) => void) => { emitter.on('data', cb); },
+        onExit: (cb: (event: { exitCode?: number }) => void) => { emitter.on('exit', cb); },
       });
       procs.push(p);
       return p;
@@ -6354,16 +6421,32 @@ export const MAX_PTY_CHUNK = 16 * 1024;
 export const MAX_SESSIONS = 10;
 export const MAX_FRAME_BYTES = 64 * 1024;
 
+/**
+ * The `node-pty` seam, written against the surface `IPty` actually declares
+ * (`typings/node-pty.d.ts:117-190`): `onData` / `onExit`, not EventEmitter's
+ * `on`.
+ *
+ * **This is not a style choice and an earlier draft of this plan had it
+ * wrong.** `Terminal.prototype.on` delegates to a private `_socket` and is
+ * **absent from `IPty`'s declared type**, so a seam built on `on` cannot be
+ * satisfied by the real host at all — it needs a cast to typecheck, and that
+ * cast hides a runtime defect. `Terminal.prototype.emit` passes the event's
+ * payload as **positional argument 0** (`lib/terminal.js:147-156`), while the
+ * `_onExit` wrapper is what turns the positional args into
+ * `{ exitCode, signal }` (`:93`). An EventEmitter-shaped handler reading
+ * `event?.exitCode` therefore gets `undefined` on every real exit and reports
+ * `null`. That is precisely what the plan's own fence observed as `[-1]` and
+ * its `as never` cast kept out of `tsc`'s reach.
+ *
+ * `IEvent<T>` is `(listener: (e: T) => any): IDisposable` (`:212-214`), so the
+ * callback shapes below are the host's own, not invented here.
+ */
 export interface PtyProcess {
   write(data: Buffer): void;
   resize(cols: number, rows: number): void;
   kill(): void;
-  // Two overloads, not `(arg: never) => void`. `never` as a *parameter* type
-  // means "no argument can be passed", which no real host — and not even
-  // `EventEmitter` — is assignable to, so the fake in the test below would not
-  // typecheck against the seam it stands in for.
-  on(event: 'data', cb: (chunk: string | Buffer) => void): void;
-  on(event: 'exit', cb: (event: { exitCode?: number }) => void): void;
+  onData(cb: (chunk: string | Buffer) => void): void;
+  onExit(cb: (event: { exitCode?: number }) => void): void;
 }
 
 /** The `node-pty` seam. Tests supply a fake so no shell is ever spawned. */
@@ -6457,9 +6540,24 @@ export class PtyManager {
     if (this.sessions.size >= MAX_SESSIONS) {
       throw new PtyError('session-limit-reached', 'the agent already has 10 terminal sessions');
     }
+    // **The allowlist is consulted before a process exists**, as the Rust does
+    // (`lib.rs:1372-1400`): a peer-supplied shell is untrusted input, and
+    // checking it after `spawn` would already have executed it. The policy
+    // throws `ShellRefusedError` with the Rust's own wording; it is re-thrown
+    // as `pty-spawn-failed`, which is the frame the Rust sends for a refused
+    // shell too ("reuse the pinned spawn-failure frame … a third wire code
+    // would change a contract for no reader's benefit").
+    //
+    // An earlier draft declared `policy?: ShellPolicy` on the options and never
+    // read it, so any client-supplied shell spawned. `policy` is **optional at
+    // the seam and mandatory in production**: `runtime.ts` is where a manager is
+    // constructed, and it must always pass one. The two test cells below pin
+    // both halves — that a refused shell never reaches `spawn`, and that the
+    // **canonical path the policy resolved** is what spawns.
+    const shell = options.policy ? this.resolveShell(options.policy, options.shell) : options.shell;
     let process_: PtyProcess;
     try {
-      process_ = this.host.spawn(options.shell, [], {
+      process_ = this.host.spawn(shell, [], {
         name: 'xterm-256color',
         cols: options.cols,
         rows: options.rows,
@@ -6470,22 +6568,59 @@ export class PtyManager {
     } catch (error) {
       throw new PtyError('pty-spawn-failed', (error as Error).message);
     }
-    this.sessions.set(options.terminalId, { process: process_ });
     // With `encoding: null` a real `node-pty` emits Buffers. The `string` half
     // is tolerated only so a fake host cannot smuggle in a lossy decode
     // silently: `Buffer.from(string)` is the utf8 round trip this code exists
     // to avoid, so the string branch is a bug in the host adapter, not a
     // supported input — which is why the real host must pass `encoding: null`.
-    // No `as never` casts: the seam's overloads are what make this typecheck.
-    process_.on('data', (chunk: string | Buffer) => {
-      this.emitChunks(options.terminalId, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    process_.on('exit', (event: { exitCode?: number }) => {
-      this.sessions.delete(options.terminalId);
-      this.exitHandler?.({
-        terminalId: options.terminalId,
-        exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
+    //
+    // **Subscribe before registering the slot.** Registering first leaks a slot
+    // forever if a subscription throws: the map keeps an entry nothing will
+    // ever delete, so the agent silently offers 9 sessions instead of 10 for
+    // the rest of its life. On a throw, kill the spawned process — leaving it
+    // running unobserved is the second half of the same defect — and report the
+    // same `pty-spawn-failed` an unwireable spawn reports.
+    try {
+      process_.onData((chunk: string | Buffer) => {
+        this.emitChunks(options.terminalId, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
+      process_.onExit((event: { exitCode?: number }) => {
+        this.emitExit(options.terminalId, process_, event);
+      });
+    } catch (error) {
+      try {
+        process_.kill();
+      } catch {
+        // The process is already unusable; a failing kill changes nothing.
+      }
+      throw new PtyError('pty-spawn-failed', (error as Error).message);
+    }
+    this.sessions.set(options.terminalId, { process: process_ });
+  }
+
+  private resolveShell(policy: ShellPolicy, requested: string): string {
+    try {
+      return policy.resolveClientShell(requested);
+    } catch (error) {
+      throw new PtyError('pty-spawn-failed', `shell refused: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * **Only this process may free the slot.** `close()` drops the map entry but
+   * cannot unsubscribe, so an old process's exit handler outlives it; a reused
+   * id would then be deleted by a stranger's death, silencing a live terminal
+   * the browser still shows.
+   *
+   * The exit is still **reported** either way. Rust reports the exit and only
+   * guards the eviction; a port that also swallowed the event would hide a real
+   * terminal death from the browser, which is the worse half of the defect.
+   */
+  private emitExit(terminalId: string, process_: PtyProcess, event: { exitCode?: number }): void {
+    if (this.sessions.get(terminalId)?.process === process_) this.sessions.delete(terminalId);
+    this.exitHandler?.({
+      terminalId,
+      exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
     });
   }
 
@@ -10845,6 +10980,142 @@ So this task is the largest single block of **new** coverage in Plan 2, and the 
 The `expect()` count is larger than the `it()` count by more than usual because the RTP test is one `it()` with ten assertions: it is checking a serialized packet byte by byte, and a packet is not one property.
 
 **New, and the most important two in this task:** the RTP-path test and the no-sender drop. An earlier draft of this task wired the encoder's Annex-B output to `deps.send('control', …)` — a data channel — which would have shipped a black video with no error anywhere. Both are **new**, not ports: the Rust never tested the write path in isolation because `write_sample` did the packetizing for it. The RTP test asserts the header's payload type, SSRC, RTP version, that the Annex-B start code is **absent** from the payload, and that `deps.send` was **not** called.
+
+---
+
+### Task 20: Defect repairs from the binding audits
+
+**Landed at:** `0a3f900db07238d3b6f92f7d57510ca23cae5d77`
+**Files:**
+- Modify: `apps/agent/src/files/session.ts` (defects 1, 2, 3, 4)
+- Modify: `apps/agent/src/terminal/pty.ts` (defects 5, 6, 7)
+- Modify: `apps/agent/src/files/sandbox.ts` (defect 8)
+- Test: `apps/agent/test/files/session.test.ts`, `apps/agent/test/terminal/pty.test.ts`, `apps/agent/test/files/sandbox.test.ts`
+
+**Origin and rationale:**
+Independent QA binding audits found eight concrete contract defects, all repaired in one commit:
+- **three** in the files transfer state machine, from QA's NOT-BOUND verdict on Task 11 (`52af996`): `remove()` ignored `recursive`, `beginUpload()` never sent the initial ack, the upload idle-timeout frame dropped `transferId` — plus a fourth, the wire-relative path check, which the same state machine owns;
+- **two** lifecycle leaks in the terminal PTY manager, from QA's NOT-BOUND verdict on Task 12 (`50dcc9e`): a phantom slot leak when a subscription throws, and a stale exit evicting a live session that reused the id;
+- **one** un-wired security allowlist (Task 12's `ShellPolicy` accepted but never read);
+- **one** containment case missing under a root of `/` (Task 10's `ensureContained`).
+
+That is four + two + one + one = eight. All were validated against an independent 45-cell QA probe matrix (`.superpowers/probes/t20-landing-qa/`) and verified clean across 14 mutants with zero gaps (QA BOUND PASS, `qa-verdict-task-20.md`).
+
+**The eight repairs, each against the Rust it cites:**
+
+1. **`remove()` honours `recursive` (CRITICAL)** — Rust `files.rs:911-951`: the root refusal is checked first, then `if recursive { remove_dir_all }` else the directory must be empty (`DirNotEmpty`). The port had omitted the recursive arm, refusing every non-empty folder delete. Landed: `Boolean(message.recursive)` selects `rmSync(target, { recursive: true })`; the non-recursive arm keeps `rmdirSync` + `ENOTEMPTY → DIR_NOT_EMPTY`; the root refusal sits above both.
+2. **`beginUpload()` sends the initial cumulative ack (CRITICAL)** — Rust `files.rs:1623-1627` returns `vec![UploadAck { next_chunk_index: 0 }]` ("the begin is answered with the first cumulative ack, spec §6.1"). The port had returned `[]`. In `packages/file-core/src/client.ts:328-336`, `upload()` only arms the idle timer before sending `files-upload-begin`; the chunk pump is driven entirely from `onAck` (`:610`). Without the initial ack, no chunk is ever sent and uploads stall until the 30 s idle timeout. Landed: `return [{ type: 'files-upload-ack', transferId, nextChunkIndex: 0 }]`.
+3. **Upload idle-timeout frame carries `transferId`** — Rust `timeout_frame(direction, transfer_id)` (`files.rs:1259-1270`) sets the id on timeout frames in both directions. The download arm already did; the upload arm dropped it. **Measured consequence, not the obvious one:** the client does *not* hang — its own 30 s timer (`client.ts:328`) rejects the handle with a locally minted `TRANSFER_TIMEOUT`. What actually breaks is that the `files-error` arm only routes an error to a transfer when the frame carries its id (`client.ts:637-641`), so `client.transfers` never drops the entry: one dead entry per timed-out upload, for the life of the connection. The caller also gets the client's own message instead of the agent's frame, and the id-less error falls through to `onError` as an unsolicited error belonging to no request. Landed: `const { transferId } = this.upload;` read before `discardUpload`, emitted on `files-error`.
+4. **`files-upload-complete.path` is wire-relative** — Rust `files.rs:2281` emits `state.dest_rel`, constructed via `join_rel` (`:2069-2075`): `''` + name for root, `dir/name` otherwise. The port put `destPath` (the host absolute path) on the wire, leaking the sandbox root location. Landed: `UploadState` stores `destRel`; both `name` and `path` derive from it.
+5. **PTY registers slot after subscribing (phantom slot leak)** — The port called `sessions.set()` before subscribing `onData`/`onExit`. If subscription threw (e.g. invalid stream), the slot was registered but dead, leaking one of the 10 slots forever. Landed: subscribe first, register second. On throw, the child process is killed and `PtyError('pty-spawn-failed', ...)` is thrown.
+6. **Stale `onExit` cannot evict a live session** — In Node PTY, `close()` deletes the map entry but cannot unsubscribe native handlers. If a terminal ID was reused, an old process's exit handler would evict the new, live session. Landed: `emitExit` guards with `if (this.sessions.get(terminalId)?.process === process_) this.sessions.delete(terminalId)`. The exit event itself is still reported either way, matching Rust.
+7. **`ShellPolicy` consulted before process spawn** — Rust `lib.rs:1372-1400` resolves client-supplied shells against the allowlist in the dispatcher *before* `spawn_session`, answering refusals with the pinned spawn-failure frame. The port accepted `policy?: ShellPolicy` in `PtyCreateOptions` but never read it. Landed: `options.policy ? this.resolveShell(options.policy, options.shell) : options.shell`; a `ShellRefusedError` maps to `PtyError('pty-spawn-failed', 'shell refused: ...')`.
+8. **Containment check under a root of `/`** — Rust `ensure_contained` uses `Path::starts_with` (component-wise). In TS, `this.root + sep` when `root === '/'` produced `//`, which no normal path starts with, rejecting all valid files under root `/` with `PATH_OUTSIDE_ROOT`. Landed: `const prefix = this.root.endsWith(sep) ? this.root : this.root + sep;`.
+
+**TEST-INTEGRITY declaration:**
+
+Counts on committed blobs across `apps/agent/test/` at commit `0a3f900`:
+- **Before (at `d640a9d`):** 33 test files, **376 `it()` / 618 `expect()`**
+- **After (at `0a3f900`):** 33 test files, **388 `it()` / 643 `expect()`**
+- **Net change:** **+12 `it()` / +25 `expect()`**
+
+The suite run reports **34 files**, not 33, because `apps/agent/spike/spike.test.ts`
+sits outside `test/`; it holds 9 `it()` at both revisions and is not counted above,
+which is why the file count in this declaration (33) and in the suite result (34)
+differ by exactly that file.
+
+File-by-file breakdown:
+| Test File | Before `it()` | After `it()` | Before `expect()` | After `expect()` | Net Δ |
+|---|---|---|---|---|---|
+| `test/files/session.test.ts` | 30 | **37** | 62 | **76** | +7 / +14 |
+| `test/terminal/pty.test.ts` | 11 | **15** | 15 | **24** | +4 / +9 |
+| `test/files/sandbox.test.ts` | 18 | **19** | 19 | **21** | +1 / +2 |
+| **Total, the three touched files** | **59** | **71** | **96** | **121** | **+12 / +25** |
+
+The other 30 test files are untouched, which is why the three-file total above
+(59 → 71) differs from the suite total (376 → 388): every added `it()` is in one
+of the three files this task repaired.
+
+The 12 new test cases, quoted verbatim from the landed blobs, with the defect each fences:
+
+| # | `it()` title (verbatim) | File |
+|---|---|---|
+| 1 | `removes a non-empty directory when recursive is set` | `files/session.test.ts` |
+| 2 | `removes an empty directory without recursive (the non-recursive arm still works)` | `files/session.test.ts` |
+| 3 | `refuses a non-empty directory when recursive is absent or false` | `files/session.test.ts` |
+| 4 | `refuses the sandbox root even with recursive set` | `files/session.test.ts` |
+| 5 | `answers the begin with the initial cumulative ack (defect 2)` | `files/session.test.ts` |
+| 6 | `carries the transferId on an upload timeout frame (defect 3)` | `files/session.test.ts` |
+| 7 | `carries the wire-relative destination on files-upload-complete (defect 4)` | `files/session.test.ts` |
+| 8 | `does not leak a slot when a subscription throws (defect 5)` | `terminal/pty.test.ts` |
+| 9 | `does not let a closed process evict the live session reusing its id (defect 6)` | `terminal/pty.test.ts` |
+| 10 | `refuses a shell the policy disallows, before any spawn (defect 7)` | `terminal/pty.test.ts` |
+| 11 | `spawns the canonical path the policy resolved (defect 7)` | `terminal/pty.test.ts` |
+| 12 | `accepts a path under a root of "/" (defect 8)` | `files/sandbox.test.ts` |
+
+Defect 1 carries four cells (positive, negative, the empty-directory control that
+proves `recursive` is not mandatory, and the root refusal that precedes both arms).
+The two shell cells are a pair: one shows the refusal happens **before** any spawn,
+the other that the resolved canonical path is what actually executes.
+
+Zero assertions removed or weakened. Zero `.skip`, `.only`, or `.todo` introduced. Removed lines in `apps/agent/test/`: exactly **1** — the `node:fs` import line in `sandbox.test.ts`, rewritten to a multi-line form that **adds `realpathSync`** (`git diff d640a9d 0a3f900 -- apps/agent/test` → `31/1`, `172/0`, `149/0`). Suite passed: **34 files / 422 passed**.
+
+---
+
+### Task 21: Re-point `agent-api-access-gate.test.ts` at the TypeScript agent tree
+
+**Landed at:** `0b471e0c173305a47eca7b0c7ef659220b5e806d`
+**Files:**
+- Modify: `packages/api-client/test/agent-api-access-gate.test.ts`
+
+**Origin and Problem:**
+`plan-2-core.md:94` assigned `agent-api-access-gate.test.ts` to Plan 2 ("**Modify.** Re-point at the TS agent tree | R3, R6"), but no commit on this branch executed it while Tasks 1–20 landed. At `0a3f900` the file is **2 failed | 2 passed (4)**, reddening the gating CI job `@ponter/api-client#test`. Both failures are false positives on correct TypeScript, produced by rules translated from a Rust scan whose spelling conventions differ:
+1. `DEFAULT_SERVER = 'ws://localhost:8787/api/ws/agent'` in `apps/agent/src/config.ts:42` is the port of `main.rs:29`'s clap default — a sanctioned-set question, not a stray URL. Measured: it is the only file in the 32-file tree a `wss?://` literal appears in.
+2. `/\{\s*(error|code|message)\s*:/` fires on **3** files — `logging/index.ts` (the level table `{ error: 0, … }` and the method map `error: (f, m) => …`), `signalling/client.ts:110,118,137,165`, `signalling/inbound.ts:47` (all `logger.warn({ error: … })` / `{ code: … }` log fields) — while staying **silent** on a real `details` envelope. The Rust's own discriminator is `details` (`build-agent.yml:95-98`).
+
+**The landed change:**
+
+1. **The sanctioned set is per rule, not one shared directory.** One shared `api/` cannot express the Rust's `main.rs` + `api.rs` split: too narrow for the URL rule, too wide for the HTTP rule.
+   | rule | set | measured effect on the 32-file tree |
+   |---|---|---|
+   | `SANCTIONED_URL` | `['api/', 'config.ts']` | excludes exactly **1 of 32** |
+   | `SANCTIONED_ENVELOPE` | `['api/']` | excludes **0 of 32** — `apps/agent/src/api/` does not exist yet |
+   | `SANCTIONED_HTTP` | `[]` | excludes **0 of 32**; sanctioning `api/` here would sanction an absence |
+   `isSanctioned()` matches a directory prefix (`api/`) or an exact file (`config.ts`); `startsWith` alone would treat `config.ts.bak` as sanctioned. `governed(keys)` takes the rule's set as an argument.
+
+2. **The three patterns name the class, not one spelling** (a rule written against one spelling reports zero offenders on a tree that spells the class another way, which reads as a green gate):
+   ```ts
+   const HTTP_CLIENT =
+     /(?:from|require\(|import\()\s*['"]node:(?:http|https)['"]|from\s*['"]undici['"]|require\(\s*['"]undici['"]\s*\)|import\(\s*['"]undici['"]\s*\)/;
+   const LITERAL_URL = /['"`](?:https?|wss?):\/\//;
+   const ERROR_ENVELOPE =
+     /\bdetails\s*\??\s*:|\{[^{}]*\berror\s*:[^{}]*\bstatus\s*:|\{[^{}]*\bstatus\s*:[^{}]*\berror\s*:/;
+   ```
+   **Deliberately excluded from `ERROR_ENVELOPE`: `error` + `code` together.** The agent uses that pair for its own wire frames (`{ type: 'files-error', code: 'TRANSFER_TIMEOUT', … }`) and for logging, so including it would fire on the agent rather than on a hand-rolled envelope. The cost is a **documented gap** — an envelope carrying `error` + `code` and neither `details` nor `status` is not seen — pinned by a control so it stays a decision rather than an oversight.
+
+3. **The vacuity guard is the one that can fail.** `files.every(f => f.endsWith('.ts'))` is deleted: `walk()` pushes only paths already ending in `.ts`, so the assertion restated its own filter. Replaced 1 for 1 by the property that actually distinguishes the right root from the wrong one:
+   ```ts
+   expect(files.some((f) => relPath(f).includes('node_modules/'))).toBe(false);
+   ```
+   Measured both polarities through the file's own `walk()`: `apps/agent/src` → **32 walked, 0 under `node_modules/`** (passes); `apps/agent` one level up → **5907 walked, 5837 under `node_modules/`** (fails). `expect(files.length).toBeGreaterThan(0)` is kept — it is the live guard, since `walk()` has no `try` and a missing directory throws. A **sanctioned-set liveness** cell is added for the URL rule (`expect(governed(SANCTIONED_URL).length).toBeLessThan(walk(AGENT_SRC).length)`, measured `31 < 32`): a set that names nothing real makes its rule unconditionally strict, and no fixture can show that. No file count is pinned, so a legitimate source addition keeps it green.
+
+4. **Positive controls, driving the same `RegExp` objects.** A `describe` block of **3 cells / 20 assertions**: 4 HTTP import spellings, 2 URL quote styles, 5 envelope forms that must fire (including the type-annotation form `as { error?: string; details?: unknown }`), and 6 logging / prose / wire-frame forms that must stay silent — **plus the accepted gap**, pinned. Measured before writing: **20 fixtures, 0 mismatches**. Without these, the "no offenders" scans would be unfalsifiable: a pattern matching nothing at all passes every one of them.
+
+5. **Cross-host paths.** `relPath(f) = relative(AGENT_SRC, f).split(sep).join('/')` is used by both `isSanctioned()` and the `node_modules` control, so `api/` and the control agree on a Windows runner where `relative()` returns backslashes.
+
+**Deliberately not written:** the `api/`-boundary half ("the envelope filter removes at least one file"). It is false today — `apps/agent/src/api/` does not exist, so `governed(SANCTIONED_ENVELOPE).length === 32`. Writing it now forces `it.skip`, which the Global Constraints forbid; the omission is stated in the `SANCTIONED_ENVELOPE` docblock so it is a ruling rather than a hole. It belongs to the commit that adds `apps/agent/src/api/`.
+
+**TEST-INTEGRITY declaration:**
+
+Counts on committed blobs (`git show 0a3f900:…` vs `git show 0b471e0:…`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+- **Before:** **4 `it()` / 6 `expect()`**
+- **After:** **8 `it()` / 26 `expect()`**
+- **Net:** **+4 / +20**; `.skip` / `.only` / `.todo` **0 → 0**
+
+Package total `packages/api-client`: **2 failed | 39 passed (41) → 45 passed (45)** — +4, exactly the added cells. `apps/agent` unchanged at **422 passed / 34 files**, as required. Every removed line has a declared replacement: the dead `every('.ts')` assertion, the single-spelling `HTTP_CLIENT`, the `{error|code|message :` envelope rule, `SANCTIONED = 'api/'`, `governed()` without an argument, the `node:path` import (adds `sep`), and docblock lines stating the old rationale.
+
+**Gating requirement, measured:** the turbo job
+`pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always` → **9/9**. `tsc --noEmit` and `prettier --check` (on the committed blob, with `--ignore-path /dev/null --config`) clean. Both polarities measured: three offenders planted in a scratch tree under `/tmp` (none in the repo) → **3 failed | 5 passed**, 8/8 after removal; and 6 in-file mutants **6 killed, 0 survivors** — including one that weakens the liveness cell to `toBeLessThanOrEqual` and shows the strict comparison is what gives that cell teeth. Report: `task-21-report.md`.
 
 ---
 
