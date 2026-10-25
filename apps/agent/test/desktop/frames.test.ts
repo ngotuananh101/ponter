@@ -87,6 +87,36 @@ describe('buildStatsFrame', () => {
       expect(key in frame.payload).toBe(false);
     }
   });
+
+  it('carries the optional stats fields when they are set, and omits only the unset one', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+          status: {
+            kind: 'quality-downgraded',
+            detail: '720p (quality downgraded)',
+          },
+          frameSeq: 42,
+          encodeMsP50: 11,
+          frameSamples: [{ seq: 42, captureEpochMs: 1000, encodeMs: 11 }],
+        },
+        3,
+      ),
+    );
+    expect(frame.payload.status).toEqual({
+      kind: 'quality-downgraded',
+      detail: '720p (quality downgraded)',
+    });
+    expect(frame.payload.frameSeq).toBe(42);
+    expect(frame.payload.frameSamples).toEqual([
+      { seq: 42, captureEpochMs: 1000, encodeMs: 11 },
+    ]);
+    expect('captureMsP50' in frame.payload).toBe(false);
+  });
 });
 
 describe('buildCursorFrame', () => {
@@ -193,6 +223,7 @@ describe('buildSourcesFrame', () => {
     const frame = parse(buildSourcesFrame([], true, true, true, 7));
     expect(frame.type).toBe('desktop-sources');
     expect(frame.channel).toBe('control');
+    expect(frame.timestamp).toBe(7);
     expect(frame.payload).toMatchObject({
       sources: [],
       inputEnabled: true,
@@ -230,5 +261,40 @@ describe('buildSourcesFrame', () => {
     const frame = parse(buildSourcesFrame([source], true, true, true, 1));
     expect(frame.payload.sources[0]).toEqual(source);
     expect('scale_factor' in frame.payload.sources[0]).toBe(false);
+  });
+
+  it('carries multi-entry sources including windows and monitors', () => {
+    const monitor: DesktopSourceInfo = {
+      id: 'monitor:0',
+      kind: 'monitor',
+      name: 'Display 1',
+      width: 1920,
+      height: 1080,
+      x: 0,
+      y: 0,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: true,
+      default: true,
+    };
+    const window: DesktopSourceInfo = {
+      id: 'window:123',
+      kind: 'window',
+      name: 'Terminal',
+      width: 800,
+      height: 600,
+      x: 100,
+      y: 100,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: false,
+      default: false,
+    };
+    const frame = parse(
+      buildSourcesFrame([monitor, window], true, true, true, 1),
+    );
+    expect(frame.payload.sources).toHaveLength(2);
+    expect(frame.payload.sources[0]).toEqual(monitor);
+    expect(frame.payload.sources[1]).toEqual(window);
   });
 });

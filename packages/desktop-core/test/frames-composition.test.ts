@@ -91,7 +91,7 @@ describe('DesktopClient composition with agent desktop frames', () => {
       encodeMsP50: 7.2,
       captureMsP50: 3.1,
     };
-    const raw = buildStatsFrame(statsInput as never, 1000);
+    const raw = buildStatsFrame(statsInput, 1000);
     emitControlRaw(raw);
 
     expect(statsReceived).toHaveLength(1);
@@ -123,8 +123,7 @@ describe('DesktopClient composition with agent desktop frames', () => {
         default: true,
       },
     ];
-    // Under BASE, buildSourcesFrame only accepts 1 object param; passing 5 args
-    const raw = buildSourcesFrame(sourceList as never, true, true, true, 1000);
+    const raw = buildSourcesFrame(sourceList, true, true, true, 1000);
     emitControlRaw(raw);
 
     expect(sourcesReceived).toHaveLength(1);
@@ -143,7 +142,7 @@ describe('DesktopClient composition with agent desktop frames', () => {
       visible: true,
       seq: 42,
     };
-    const raw = buildCursorFrame(cursorInput as never, 1000);
+    const raw = buildCursorFrame(cursorInput, 1000);
     emitControlRaw(raw);
 
     expect(cursorReceived).toHaveLength(1);
