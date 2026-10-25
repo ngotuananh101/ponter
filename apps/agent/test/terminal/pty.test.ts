@@ -84,12 +84,9 @@ describe('PtyManager.create', () => {
    * typecheck — and `apps/agent` is excluded from the CI test matrix, so the
    * cell is inert unless typecheck runs.
    */
-  it('cannot be called without a policy (compile-time gate)', async () => {
-    const { host } = fakeHost();
+  it('cannot be called without a policy (compile-time gate, and refuses at runtime)', async () => {
+    const { host, spawned } = fakeHost();
     const manager = new PtyManager(host);
-    // Never executed: the object below does not typecheck, and `tsc` is the
-    // gate. The `expect` keeps the cell honest at runtime if the cast is ever
-    // removed -- it would then throw, not pass.
     const call = () =>
       manager.create(
         // @ts-expect-error — `policy` is required on `PtyCreateOptions`;
@@ -104,7 +101,18 @@ describe('PtyManager.create', () => {
           shellSource: 'peer' as const,
         },
       );
-    expect(typeof call).toBe('function');
+    // **The compiler is one tooth; this is the other.** An earlier version of
+    // this cell asserted `typeof call === 'function'` and never called it — an
+    // assertion with no failure mode, true for any function, i.e. a no-op.
+    // Calling it gives the cell the failure mode that matters: `policy` is
+    // `undefined`, so `resolveClientShell` is dereferenced on `undefined` and
+    // the refusal is re-thrown as the pinned `pty-spawn-failed` **before any
+    // spawn**. Restore the original defect (a policy consulted only when
+    // present, `options.policy ? … : options.shell`) and this call resolves and
+    // spawns instead — `rejects` fails, `spawned` is non-empty. Measured; see
+    // the task-31 report.
+    await expect(call()).rejects.toMatchObject({ code: 'pty-spawn-failed' });
+    expect(spawned).toHaveLength(0);
   });
 
   it('spawns with the documented TERM and LANG', async () => {
