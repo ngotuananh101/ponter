@@ -11565,8 +11565,8 @@ Recounted on committed blobs (`git show 35e8a32:apps/agent/test/terminal/pty.tes
 
 **QA Scope Finding (§6): Unpinned Constants in the Workspace:**
 QA's independent mechanical census and multi-point band mutation of all 24 numeric exported constants in `apps/agent/src/**` revealed that the brief's claim ("`MAX_SESSIONS` is the only member") was incomplete. Three other constants admit material value mutations while leaving the entire 431-test suite green:
-1. `FILE_MAX_BYTES` (1 GiB, `apps/agent/src/files/protocol.ts:16`): The only test exercising it (`session.test.ts:780`) tests `size: FILE_MAX_BYTES + 1` (circular rejection above constant), leaving values such as 512 MiB or 2 GiB completely unpinned. A literal pin `expect(FILE_MAX_BYTES).toBe(1073741824)` is proven by QA's `gap-cure.mjs` to catch this gap.
-2. `ACK_FLUSH_INTERVAL_MS` (20 ms, `apps/agent/src/files/protocol.ts:24`): Zero tests import or verify this constant; any value ≤ 20 ms passes because the test harness advances mock time in 20 ms ticks.
+1. `FILE_MAX_BYTES` (1 GiB, `apps/agent/src/files/protocol.ts:10`): The only test exercising it (`session.test.ts:780`) tests `size: FILE_MAX_BYTES + 1` (circular rejection above constant), leaving values such as 512 MiB or 2 GiB completely unpinned. A literal pin `expect(FILE_MAX_BYTES).toBe(1073741824)` is proven by QA's `gap-cure.mjs` to catch this gap.
+2. `ACK_FLUSH_INTERVAL_MS` (20 ms, `apps/agent/src/files/protocol.ts:9`): Zero tests import or verify this constant; any value ≤ 20 ms passes because the test harness advances mock time in 20 ms ticks.
 3. `MAX_FRAME_BYTES` (64 KiB, `apps/agent/src/terminal/pty.ts:11`): A dead port artifact with **zero production callers** in the TypeScript codebase (as recorded in `data-channels.ts:236`), allowing any value from 1 KiB to 1 MiB to ship green. Scheduled for removal in Task 27.
 
 ---
