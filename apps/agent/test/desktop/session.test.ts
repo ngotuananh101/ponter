@@ -1,5 +1,6 @@
 // apps/agent/test/desktop/session.test.ts
 import { describe, expect, it, vi } from 'vitest';
+import type { DesktopSource } from '../../src/desktop/control.js';
 import { DesktopSession } from '../../src/desktop/session.js';
 
 function deps() {
@@ -9,7 +10,7 @@ function deps() {
         monitors: [{ id: '1', primary: true }],
         windows: [],
       })),
-      start: vi.fn(async () => undefined),
+      start: vi.fn(async (_source?: DesktopSource) => undefined),
       stop: vi.fn(async () => undefined),
       nextFrame: vi.fn(async () => ({
         width: 4,
@@ -237,5 +238,80 @@ describe('DesktopSession', () => {
     expect(d.encode.configure).toHaveBeenLastCalledWith(
       expect.objectContaining({ profile: '720p60', gop: 120 }),
     );
+  });
+
+  describe('select (source swap)', () => {
+    it('stops the old source only after the new one is started (desktop.rs:3254)', async () => {
+      const order: string[] = [];
+      const d = deps();
+      const session = new DesktopSession(d as never);
+      await session.start({ kind: 'test' }, '720p30', 1_000_000);
+
+      d.capture.start = vi.fn(async () => {
+        order.push('start');
+      });
+      d.capture.stop = vi.fn(async () => {
+        order.push('stop');
+      });
+
+      await session.select({ kind: 'monitor', id: '2' });
+      expect(order).toEqual(['start', 'stop']);
+    });
+
+    it('refuses an invalid source without touching the live source (desktop.rs:3279)', async () => {
+      const d = deps();
+      const session = new DesktopSession(d as never);
+      await session.start({ kind: 'test' }, '720p30', 1_000_000);
+
+      d.capture.start = vi.fn(async () => {
+        throw new Error('unknown source id: window:999');
+      });
+      d.capture.stop = vi.fn(async () => undefined);
+
+      await expect(
+        session.select({ kind: 'window', id: '999' }),
+      ).rejects.toThrow('unknown source id: window:999');
+      expect(d.capture.stop).not.toHaveBeenCalled();
+    });
+
+    it('keeps the current stream running when the new source fails to start (desktop.rs:3304)', async () => {
+      // Fake capture device that tracks whether its current live source is active.
+      let live = true;
+      let framesProduced = 0;
+      const d = deps();
+      d.capture.start = vi.fn(async (source?: DesktopSource) => {
+        if (source && source.kind === 'window' && source.id === 'missing') {
+          throw new Error('portal failed to start window capture');
+        }
+        live = true;
+      });
+      d.capture.stop = vi.fn(async () => {
+        live = false;
+      });
+      d.capture.nextFrame = vi.fn(async () => {
+        if (!live) throw new Error('capture is stopped; cannot read nextFrame');
+        framesProduced += 1;
+        return {
+          width: 4,
+          height: 4,
+          rgba: new Uint8Array(64).fill(framesProduced),
+          seq: framesProduced,
+        };
+      });
+
+      const session = new DesktopSession(d as never);
+      await session.start({ kind: 'test' }, '720p30', 1_000_000);
+      expect(await session.pump()).toBe(true);
+
+      // Attempt swap that fails
+      await expect(
+        session.select({ kind: 'window', id: 'missing' }),
+      ).rejects.toThrow('portal failed to start window capture');
+
+      // The live source was never stopped, so pump continues to succeed
+      expect(d.capture.stop).not.toHaveBeenCalled();
+      expect(live).toBe(true);
+      expect(await session.pump()).toBe(true);
+    });
   });
 });

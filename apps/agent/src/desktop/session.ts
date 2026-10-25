@@ -38,6 +38,12 @@ export interface DesktopSessionDeps {
       monitors: { id: string; primary: boolean }[];
       windows: unknown[];
     }>;
+    /**
+     * Start capturing `source`. **Additive**: it must not stop the source already
+     * running — `select()` stops that only after `start` resolves, which is the
+     * Rust's `build`-then-`current.stop()` order (`desktop.rs:1264-1279`). A
+     * rejecting `start` must leave the current source untouched.
+     */
     start(source: DesktopSource): Promise<void>;
     stop(): Promise<void>;
     nextFrame(): Promise<RawFrame>;
@@ -196,8 +202,12 @@ export class DesktopSession {
   }
 
   async select(source: DesktopSource): Promise<void> {
-    await this.deps.capture.stop();
+    // The Rust builds before it stops anything (`desktop.rs:1264-1279`), and
+    // `sources.build` is additive — it never touches the live source. So this
+    // order is the port: a failed start leaves the current source running, which
+    // is ADR-22's guarantee. Stopping first would kill the stream on any refusal.
     await this.deps.capture.start(source);
+    await this.deps.capture.stop();
     // Source-swap reset: the new source is a new screen, so the previous
     // signature is meaningless and must not suppress the first frame.
     this.skip?.reset();
