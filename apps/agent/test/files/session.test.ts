@@ -295,6 +295,99 @@ describe('upload', () => {
     expect(JSON.stringify(out)).toContain('BAD_FRAME');
   });
 
+  /**
+   * Strict base64 on the chunk path. This is the **corrupting** site: the chunk
+   * length check downstream (`acceptChunk`, `expectedChunkLen`) cannot see a
+   * payload that decoded to the right number of bytes with the wrong content,
+   * so a lenient decode writes corrupt bytes into the file on disk while every
+   * guard says the frame was well formed. Rust decodes with `STANDARD` and
+   * discards the upload on `Err` (`files.rs:1640-1649`).
+   */
+  it('rejects a chunk whose base64 is not strict with BAD_FRAME', () => {
+    // `!!!!` is the empty-decode trap: `Buffer.from('!!!!', 'base64')` is 0
+    // bytes, so a lenient decode reaches `acceptChunk` with a length that
+    // fails the chunk-length check for the *wrong reason* (length, not
+    // encoding) — the frame must be refused at the decode boundary instead.
+    const { dir, s } = session();
+    s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      name: 'strict.bin',
+      size: 32_768,
+    });
+    const out = s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 0,
+      totalChunks: 1,
+      data: '!!!!',
+    });
+    expect(JSON.stringify(out)).toContain('BAD_FRAME');
+    expect(JSON.stringify(out)).toContain('chunk data is not valid base64');
+    expect(() => statSync(join(dir, 'strict.bin'))).toThrow();
+  });
+
+  it('rejects the substitution payload that keeps the expected chunk length', () => {
+    // The demonstrator, and the reason this defect is corruption rather than a
+    // refusal: measured on this repo's Node 24, `Buffer.from(evil, 'base64')`
+    // is **exactly** 32 bytes — `expectedChunkLen` would accept it — and
+    // differs from the honest payload in every byte. Only a strict decode can
+    // tell them apart.
+    const good = Buffer.alloc(32, 7).toString('base64');
+    const evil = `${good.slice(0, 20)}x!${good.slice(21)}`;
+    expect(Buffer.from(evil, 'base64').length).toBe(32);
+    expect(
+      Buffer.from(evil, 'base64').equals(Buffer.from(good, 'base64')),
+    ).toBe(false);
+
+    const { dir, s } = session();
+    s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      name: 'corrupt.bin',
+      size: 32,
+    });
+    const out = s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 0,
+      totalChunks: 1,
+      data: evil,
+    });
+    expect(JSON.stringify(out)).toContain('BAD_FRAME');
+    // Nothing was written: the `.part` file is discarded, and the destination
+    // never appears. The lenient decode used to write 32 corrupt bytes here.
+    expect(() => statSync(join(dir, 'corrupt.bin'))).toThrow();
+    expect(() => statSync(join(dir, 'corrupt.bin.ponter-part'))).toThrow();
+  });
+
+  it('accepts an empty chunk payload, which STANDARD decodes to zero bytes', () => {
+    // The positive control for the two refusals above: a helper that refused
+    // everything would satisfy them. An empty string is `Ok(vec![])` in Rust;
+    // here it reaches the length check as a zero-byte chunk, which is a
+    // *length* refusal, and the code it produces is the proof the decode step
+    // let it through.
+    const { s } = session();
+    s.handle({
+      type: 'files-upload-begin',
+      transferId: ID,
+      path: '',
+      name: 'empty.bin',
+      size: 32_768,
+    });
+    const out = s.handle({
+      type: 'files-upload-chunk',
+      transferId: ID,
+      chunkIndex: 0,
+      totalChunks: 1,
+      data: '',
+    });
+    expect(JSON.stringify(out)).toContain('BAD_FRAME');
+    expect(JSON.stringify(out)).toContain('chunk length does not match');
+  });
+
   it('rejects upload-end before the last chunk', () => {
     const { s } = session();
     s.handle({

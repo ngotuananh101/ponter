@@ -5,6 +5,7 @@ import {
   type EncryptionManager,
 } from '@ponter/crypto';
 import { canonicalKeyBinding, WS1_TERMINAL_INFO } from '@ponter/shared';
+import { decodeBase64Strict } from '../base64.js';
 import type { AgentIdentity } from '../identity/store.js';
 
 export { WS1_TERMINAL_INFO };
@@ -62,8 +63,15 @@ export class E2eeSession {
     peerSigningPublicKeyRawBase64: string,
   ): Promise<{ session: E2eeSession; ack: E2eeAck } | null> {
     try {
-      const raw = Buffer.from(peerSigningPublicKeyRawBase64, 'base64');
-      if (raw.length !== 32) return null;
+      // Strict, as `e2ee.rs:76-90` is (`E2eeError::Encoding` on a bad decode).
+      // `Buffer.from(x, 'base64')` silently skips non-alphabet characters, so a
+      // key with junk *inserted* decodes to the identical 32 bytes and would be
+      // accepted here while the Rust refuses it; junk *substituted* decodes to
+      // 32 different bytes and fails as a bad signature instead of an encoding
+      // error. Both are classification defects at this boundary, not key
+      // problems — the value never should have reached `importSigningPublicKeyRaw`.
+      const raw = decodeBase64Strict(peerSigningPublicKeyRawBase64);
+      if (raw === null || raw.length !== 32) return null;
 
       // 1. Our ephemeral keypair, generated ONCE: the private half derives the
       //    session key and the public half goes out in the ack, and those must be

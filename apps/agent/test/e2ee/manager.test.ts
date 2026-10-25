@@ -77,6 +77,30 @@ describe('E2eeSession', () => {
     expect(result).toBeNull();
   });
 
+  it('refuses a peer signing key with junk appended, which a lenient decode drops', async () => {
+    // The Rust decodes with `STANDARD` and returns `E2eeError::Encoding`
+    // (`e2ee.rs:76-90`). Measured on this repo's Node 24: the lenient
+    // `Buffer.from` drops the `!!!` and yields the *identical* 32 bytes, so
+    // this hello used to derive a session from a key the Rust refuses outright.
+    // The junk-appended spelling is the discriminating one — a *substituted*
+    // character decodes to 32 different bytes and fails the signature under
+    // either implementation, so it could not tell the two apart.
+    const withJunk = `${peerPublicRaw}!!!`;
+    expect(
+      Buffer.from(withJunk, 'base64').equals(
+        Buffer.from(peerPublicRaw, 'base64'),
+      ),
+    ).toBe(true);
+
+    const result = await E2eeSession.acceptHello(
+      agentIdentity,
+      SESSION_ID,
+      peerHello(),
+      withJunk,
+    );
+    expect(result).toBeNull();
+  });
+
   it('derives a session on a valid hello and round-trips a frame', async () => {
     const result = await E2eeSession.acceptHello(
       agentIdentity,

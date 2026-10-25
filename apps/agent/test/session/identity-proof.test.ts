@@ -151,6 +151,76 @@ describe('verifyOfferIdentity', () => {
     );
   });
 
+  /**
+   * The base64 boundary, as a **classification** claim and not a corruption
+   * one. Measured on this repo's Node 24 for a raw 32-byte Ed25519 key:
+   *
+   * - `key + '!!!'` and one non-alphabet char *inserted* mid-key both decode to
+   *   the **identical** 32 bytes under a lenient `Buffer.from`, so today the
+   *   signature verifies and an offer the Rust refuses outright is accepted.
+   * - one alphabet char *substituted* decodes to 32 **different** bytes, so
+   *   today the verify fails and the caller is told `BAD_SIGNATURE`.
+   *
+   * Neither is a signature problem. Rust's `identity::base64_decode`
+   * (`identity.rs:150-157`) errors before `verify_proof` is reached, and the
+   * operator's fix for a broken encoding is not the fix for a wrong key.
+   */
+  it('reports a non-strict base64 signing key as BAD_ENCODING, not BAD_SIGNATURE', () => {
+    const offer = offerWith();
+    const key = (offer.data as { userSigningPublicKey: string })
+      .userSigningPublicKey;
+    const withJunk = `${key}!!!`;
+    // The leniency that makes this a defect rather than a curiosity: the junk
+    // is silently dropped, so the key bytes are unchanged.
+    expect(
+      Buffer.from(withJunk, 'base64').equals(Buffer.from(key, 'base64')),
+    ).toBe(true);
+
+    let code: unknown = 'NO-THROW';
+    try {
+      verifyOfferIdentity(
+        offerWith({ userSigningPublicKey: withJunk }) as never,
+        SESSION,
+      );
+    } catch (error) {
+      code = (error as { code?: unknown }).code;
+    }
+    expect(code).toBe('BAD_ENCODING');
+  });
+
+  it('reports a non-strict base64 signature as BAD_ENCODING', () => {
+    const signed = offerWith();
+    const signature = (signed.data as { proof: { signature: string } }).proof
+      .signature;
+    let code: unknown = 'NO-THROW';
+    try {
+      verifyOfferIdentity(
+        offerWith({
+          proof: { fingerprint: FINGERPRINT, signature: `${signature}!!` },
+        }) as never,
+        SESSION,
+      );
+    } catch (error) {
+      code = (error as { code?: unknown }).code;
+    }
+    expect(code).toBe('BAD_ENCODING');
+  });
+
+  it('keeps reporting a well-formed but wrong signature as BAD_SIGNATURE', () => {
+    // The positive control for the two cells above: they would both pass
+    // against an implementation that renamed every signature failure to
+    // BAD_ENCODING, and that would send an operator chasing an encoding bug
+    // that does not exist.
+    const offer = offerWith();
+    let code: unknown = 'NO-THROW';
+    try {
+      verifyOfferIdentity(offer, 'sess-other');
+    } catch (error) {
+      code = (error as { code?: unknown }).code;
+    }
+    expect(code).toBe('BAD_SIGNATURE');
+  });
+
   it('distinguishes the mismatch code from the bad-signature code', () => {
     // Callers need to tell them apart: a fingerprint mismatch is a client bug,
     // a bad signature is either a stale key or an attacker. One error message

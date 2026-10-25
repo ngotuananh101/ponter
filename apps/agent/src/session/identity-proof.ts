@@ -6,6 +6,7 @@ import {
   parseSdpFingerprint,
   type SignalMessage,
 } from '@ponter/shared';
+import { decodeBase64Strict } from '../base64.js';
 
 /**
  * The arm of the shared signal union this module validates. Defined by
@@ -21,6 +22,7 @@ export type OfferIdentityFailure =
   | 'NO_SIGNING_KEY'
   | 'MALFORMED_FINGERPRINT'
   | 'FINGERPRINT_MISMATCH'
+  | 'BAD_ENCODING'
   | 'BAD_SIGNATURE';
 
 export class OfferIdentityError extends Error {
@@ -112,12 +114,26 @@ export function verifyOfferIdentity(
     sdpSha256Hex: createHash('sha256').update(data.sdp, 'utf8').digest('hex'),
     fingerprint: sdpFingerprint,
   });
-  const ok = verifyMessage(
+  const outcome = verifyMessage(
     data.userSigningPublicKey,
     data.proof.signature ?? '',
     message,
   );
-  if (!ok) {
+  if (outcome === 'bad-encoding') {
+    // **Classification, not corruption.** Measured on this repo's Node 24: a
+    // key with `!!!` appended decodes to the *identical* 32 bytes under a
+    // lenient `Buffer.from`, so today the offer verifies and a payload the Rust
+    // rejects outright is accepted; a key with a substituted character decodes
+    // to 32 *different* bytes, so today it fails as a bad signature. Neither is
+    // a signature problem — the Rust's `identity::base64_decode` errors before
+    // `verify_proof` is ever reached (`identity.rs:150-157`). The two failures
+    // send an operator to different places, so they get different codes.
+    throw new OfferIdentityError(
+      'BAD_ENCODING',
+      'the offer identity proof is not valid base64',
+    );
+  }
+  if (outcome === 'bad-signature') {
     throw new OfferIdentityError(
       'BAD_SIGNATURE',
       'the offer identity signature is invalid',
@@ -147,27 +163,38 @@ export function verifyOfferIdentity(
  * `node:crypto`'s, wrapped here because `crypto.verify` throws on a malformed key
  * and a hostile offer is exactly where that would happen. **A throw is a failed
  * signature**, never an escaping exception.
+ *
+ * Returns *why* it failed, because the two reasons are not the same defect and
+ * the caller reports them differently: `'bad-encoding'` is a base64 boundary
+ * failure the Rust refuses before any crypto (`identity.rs:150-157`), while
+ * `'bad-signature'` is a payload that decoded and did not verify.
  */
 function verifyMessage(
   publicKeyRawBase64: string,
   signatureBase64: string,
   message: string,
-): boolean {
+): 'ok' | 'bad-encoding' | 'bad-signature' {
+  const raw = decodeBase64Strict(publicKeyRawBase64);
+  const signature = decodeBase64Strict(signatureBase64);
+  if (raw === null || signature === null) return 'bad-encoding';
+  if (raw.length !== 32) return 'bad-signature';
   try {
-    const raw = Buffer.from(publicKeyRawBase64, 'base64');
-    if (raw.length !== 32) return false;
     const key = createPublicKey({
-      key: { kty: 'OKP', crv: 'Ed25519', x: raw.toString('base64url') },
+      key: {
+        kty: 'OKP',
+        crv: 'Ed25519',
+        // `decodeBase64Strict` hands back a `Uint8Array`; the JWK wants the
+        // base64url text, so the Buffer view is re-taken here rather than
+        // widening the helper's return type for one caller.
+        x: Buffer.from(raw).toString('base64url'),
+      },
       format: 'jwk',
     });
-    return verify(
-      null,
-      Buffer.from(message, 'utf8'),
-      key,
-      Buffer.from(signatureBase64, 'base64'),
-    );
+    return verify(null, Buffer.from(message, 'utf8'), key, signature)
+      ? 'ok'
+      : 'bad-signature';
   } catch {
-    return false;
+    return 'bad-signature';
   }
 }
 

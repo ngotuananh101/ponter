@@ -1,4 +1,5 @@
 // apps/agent/src/session/data-channels.ts
+import { decodeBase64Strict } from '../base64.js';
 import { MAX_DATA_CHANNEL_FRAME_BYTES } from '../signalling/constants.js';
 import { frameFiles } from '../files/protocol.js';
 import type { FilesFrame } from '../files/session.js';
@@ -467,15 +468,22 @@ export class DataChannelRouter {
           data?: unknown;
         };
         if (typeof terminalId !== 'string' || typeof data !== 'string') return;
-        try {
-          this.deps.terminal.write(
-            terminalId,
-            new Uint8Array(Buffer.from(data, 'base64')),
+        // Strict, as the Rust is: `STANDARD.decode` fails on a non-alphabet
+        // character, a bad length or misplaced padding, and the Rust logs and
+        // drops (`lib.rs:1474-1480`). `Buffer.from(x, 'base64')` would instead
+        // hand the pty whatever prefix survived — the cast that used to sit
+        // here wrapped it in a `try` that could never fire, because a lenient
+        // decode does not throw. Dropping is the contract; writing garbage to a
+        // shell is not, and the warning is kept distinct from the unknown-type
+        // drop so an operator can tell routing from a corrupt payload.
+        const bytes = decodeBase64Strict(data);
+        if (bytes === null) {
+          this.deps.logger.warn(
+            'dropped a terminal-data frame with invalid base64',
           );
-        } catch {
-          // Non-standard base64 (`Buffer` is lenient where Rust's STANDARD is
-          // strict) or a malformed payload: drop, never throw into the channel.
+          return;
         }
+        this.deps.terminal.write(terminalId, bytes);
         return;
       }
       case 'terminal-create': {

@@ -17,6 +17,7 @@ import {
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import type { FilesErrorCode } from '@ponter/shared';
+import { decodeBase64Strict } from '../base64.js';
 import { SandboxError, errnoToCode } from './sandbox.js';
 import type { FilesRoot } from './sandbox.js';
 import {
@@ -757,7 +758,17 @@ export class FilesSession {
 
   private chunkUpload(message: { [key: string]: unknown }): FilesFrame[] {
     try {
-      const payload = Buffer.from(String(message.data ?? ''), 'base64');
+      // Strict, as `files.rs:1640-1649` is: a payload that is not standard
+      // base64 is `BadFrame` and the upload is discarded. This is not
+      // pedantry — `Buffer.from(x, 'base64')` **silently skips** non-alphabet
+      // characters, so a corrupted chunk can arrive one character longer,
+      // decode to exactly `expectedChunkLen` bytes with the wrong content, and
+      // be written to disk. The length check below cannot see that; only a
+      // strict decode can refuse it.
+      const payload = decodeBase64Strict(String(message.data ?? ''));
+      if (payload === null) {
+        throw new SandboxError('BAD_FRAME', 'chunk data is not valid base64');
+      }
       this.acceptChunk(
         String(message.transferId),
         Number(message.chunkIndex),

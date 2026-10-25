@@ -162,6 +162,74 @@ describe('dispatch', () => {
     expect(deps.logger.warn).not.toHaveBeenCalled();
   });
 
+  /**
+   * The strict-decoding fence for `terminal-data`, one cell per class of input
+   * the Rust's `STANDARD.decode` refuses (`lib.rs:1474-1480`). Each asserts
+   * both that `terminal.write` was reached (or not) **and** the exact bytes:
+   * a cell that only counted calls would pass for an implementation that wrote
+   * the wrong payload, and the payload is the whole contract here.
+   *
+   * The empty-string cell is the one that looks like a mistake and is not:
+   * `STANDARD.decode("")` is `Ok(vec![])`, so the pty receives a zero-byte
+   * write. Refusing it would be a divergence invented by the port.
+   */
+  function emitTerminalData(data: string) {
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-data', { terminalId: 't1', data }),
+    );
+    return deps;
+  }
+
+  it('writes the decoded bytes for strict standard base64', () => {
+    const deps = emitTerminalData('aGVsbG8=');
+    expect(deps.terminal.write).toHaveBeenCalledWith(
+      't1',
+      new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f]),
+    );
+    expect(deps.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('accepts an empty data string as a zero-byte write, as STANDARD.decode does', () => {
+    const deps = emitTerminalData('');
+    expect(deps.terminal.write).toHaveBeenCalledWith('t1', new Uint8Array(0));
+    expect(deps.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('drops a terminal-data frame whose data is not strict base64 (non-alphabet)', () => {
+    // `Buffer.from('!!!!', 'base64')` is a zero-length buffer, so a lenient
+    // decode silently turns garbage into a no-op write the operator cannot see.
+    const deps = emitTerminalData('!!!!');
+    expect(deps.terminal.write).not.toHaveBeenCalled();
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      'dropped a terminal-data frame with invalid base64',
+    );
+  });
+
+  it('drops a terminal-data frame whose data is not a multiple of four characters', () => {
+    // The length arm: `Buffer.from('abc', 'base64')` decodes 2 bytes today.
+    const deps = emitTerminalData('abc');
+    expect(deps.terminal.write).not.toHaveBeenCalled();
+    expect(deps.logger.warn).toHaveBeenCalled();
+  });
+
+  it('drops a terminal-data frame whose padding is in the wrong place', () => {
+    const deps = emitTerminalData('ab=c');
+    expect(deps.terminal.write).not.toHaveBeenCalled();
+    expect(deps.logger.warn).toHaveBeenCalled();
+  });
+
+  it('refuses the URL-safe alphabet, which is a different encoding', () => {
+    // `-_==` decodes to one byte under a lenient decode and to `Err` under
+    // STANDARD: `-` and `_` belong to base64url, not to this wire.
+    const deps = emitTerminalData('-_==');
+    expect(deps.terminal.write).not.toHaveBeenCalled();
+    expect(deps.logger.warn).toHaveBeenCalled();
+  });
+
   it('routes a files binary 0x02 frame to the files session', () => {
     const { deps, r } = router();
     const channel = fakeChannel('files');
