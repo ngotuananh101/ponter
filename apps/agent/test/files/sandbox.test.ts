@@ -9,7 +9,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { FilesRoot, SandboxError } from '../../src/files/sandbox.js';
+import { FilesRoot } from '../../src/files/sandbox.js';
+import type { SandboxError } from '../../src/files/sandbox.js';
 
 /** Every temp dir this file creates, removed once the file finishes. */
 const TMP_DIRS: string[] = [];

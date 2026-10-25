@@ -1,5 +1,5 @@
 // apps/agent/test/input/decode.test.ts
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   InputLimiter,
   applyInput,

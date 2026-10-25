@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  createPublicKey,
-  generateKeyPairSync,
-  sign as nodeSign,
-} from 'node:crypto';
+import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { canonicalKeyBinding } from '@ponter/shared';
 import { TerminalE2ee } from '@ponter/terminal-core';
 import { E2eeSession } from '../../src/e2ee/manager.js';
