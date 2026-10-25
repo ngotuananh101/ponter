@@ -54,6 +54,11 @@ const ORACLE: {
     accept: false,
     why: 'a newline is skipped, not tolerated',
   },
+  {
+    input: 'AB==',
+    accept: false,
+    why: 'non-zero trailing bits are discarded, so Rust refuses',
+  },
 ];
 
 describe('decodeBase64Strict', () => {
