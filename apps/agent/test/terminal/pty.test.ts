@@ -93,6 +93,16 @@ describe('PtyManager.create', () => {
     expect(spawned).toHaveLength(1);
   });
 
+  // Only the literal `10` is asserted. "The prod cap equals the constant"
+  // is NOT asserted, because in TS both sides are the same symbol — asserting
+  // that `MAX_SESSIONS` equals itself cannot fail. Rust could assert the
+  // equivalent by passing a literal to its constructor (`PtyManager::new(1)`);
+  // TS made the cap a module constant, so only asserting against the literal
+  // wire value `10` makes the assertion non-circular.
+  it('pins the session cap to the wire value', () => {
+    expect(MAX_SESSIONS).toBe(10);
+  });
+
   it('refuses an 11th session with session-limit-reached', async () => {
     const { host } = fakeHost();
     const manager = new PtyManager(host);
