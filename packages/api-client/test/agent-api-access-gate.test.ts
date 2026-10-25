@@ -35,9 +35,13 @@ const AGENT_SRC = join(
  * Every rule names a **class**, not one spelling of it. A pattern written
  * against a single spelling reports zero offenders on a tree that spells the
  * class another way, and that reads as a green gate.
+ *
+ * The `node:` prefix is optional because Node and TypeScript resolve bare
+ * `http` and `https` module specifiers to the identical built-in runtime.
+ * Requiring the prefix leaves the bare import spelling completely un-gated.
  */
 const HTTP_CLIENT =
-  /(?:from|require\(|import\()\s*['"]node:(?:http|https)['"]|from\s*['"]undici['"]|require\(\s*['"]undici['"]\s*\)|import\(\s*['"]undici['"]\s*\)/;
+  /(?:from|require\(|import\()\s*['"](?:node:)?(?:http|https)['"]|from\s*['"]undici['"]|require\(\s*['"]undici['"]\s*\)|import\(\s*['"]undici['"]\s*\)/;
 const LITERAL_URL = /['"`](?:https?|wss?):\/\//;
 const ERROR_ENVELOPE =
   /\bdetails\s*\??\s*:|\{[^{}]*\berror\s*:[^{}]*\bstatus\s*:|\{[^{}]*\bstatus\s*:[^{}]*\berror\s*:/;
@@ -161,11 +165,23 @@ describe('the gate rules fire on what they name', () => {
     expect(HTTP_CLIENT.test(`const http = require('node:http');`)).toBe(true);
     expect(HTTP_CLIENT.test(`const u = await import('node:http');`)).toBe(true);
     expect(HTTP_CLIENT.test(`import { Agent } from 'undici';`)).toBe(true);
-    // The rule must not fire on the filesystem, which is the only `node:`
-    // import the agent actually takes.
+
+    // Bare module spellings: Node/TS resolves `https` and `http` without the
+    // `node:` prefix identically. The pre-Task-28 pattern required `node:`, so
+    // these exact fixtures were silent through it. A "simplification" that
+    // restores the prefix turns these cells red.
+    expect(HTTP_CLIENT.test(`import { request } from 'https';`)).toBe(true);
+    expect(HTTP_CLIENT.test(`const http = require('http');`)).toBe(true);
+    expect(HTTP_CLIENT.test(`const u = await import('http');`)).toBe(true);
+
+    // The rule must not fire on other built-ins, whether prefixed or bare,
+    // nor on bare strings.
     expect(HTTP_CLIENT.test(`import { readFileSync } from 'node:fs';`)).toBe(
       false,
     );
+    expect(HTTP_CLIENT.test(`import { readFileSync } from 'fs';`)).toBe(false);
+    expect(HTTP_CLIENT.test(`import { join } from 'node:path';`)).toBe(false);
+    expect(HTTP_CLIENT.test(`const x = 'http';`)).toBe(false);
   });
 
   it('the URL rule sees a literal in any quote style', () => {
