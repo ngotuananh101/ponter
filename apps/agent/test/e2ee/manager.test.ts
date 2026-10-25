@@ -77,17 +77,31 @@ describe('E2eeSession', () => {
     expect(result).toBeNull();
   });
 
-  it('refuses a peer signing key with junk appended, which a lenient decode drops', async () => {
+  it('refuses a peer signing key with trailing whitespace, which a lenient decode accepts', async () => {
     // The Rust decodes with `STANDARD` and returns `E2eeError::Encoding`
-    // (`e2ee.rs:76-90`). Measured on this repo's Node 24: the lenient
-    // `Buffer.from` drops the `!!!` and yields the *identical* 32 bytes, so
-    // this hello used to derive a session from a key the Rust refuses outright.
-    // The junk-appended spelling is the discriminating one — a *substituted*
-    // character decodes to 32 different bytes and fails the signature under
-    // either implementation, so it could not tell the two apart.
-    const withJunk = `${peerPublicRaw}!!!`;
+    // (`e2ee.rs:76-90`). Measured at BASE (isolated `git archive 8a35f62` tree):
+    // a key with one trailing newline **derived a session** — `acceptHello`
+    // returned a result, not `null` — from a key the Rust refuses outright.
+    //
+    // **Why this spelling and not junk characters.** The decode that matters on
+    // this path is `packages/crypto`'s `importSigningPublicKeyRaw`, which uses
+    // `atob`, not `Buffer.from`. `atob` *throws* on a non-alphabet character
+    // (`InvalidCharacterError`), and `acceptHello` catches it and returns
+    // `null` — so a `'!!!'` spelling was already `null` at BASE, for a reason
+    // that had nothing to do with the decode boundary. It was a vacuous cell.
+    // `atob` *does* tolerate whitespace, and yields the same 32 bytes, so the
+    // newline is the spelling that actually distinguishes "refused at the
+    // boundary" from "threw somewhere downstream".
+    //
+    // The assertions below are the measured facts the claim rests on: the
+    // whitespace is tolerated by `atob`, the length is not a multiple of four,
+    // and the bytes are unchanged. Without them the cell could pass for a
+    // reason other than the one it claims.
+    const withWhitespace = `${peerPublicRaw}\n`;
+    expect(atob(withWhitespace).length).toBe(32);
+    expect(withWhitespace.length % 4).not.toBe(0);
     expect(
-      Buffer.from(withJunk, 'base64').equals(
+      Buffer.from(withWhitespace, 'base64').equals(
         Buffer.from(peerPublicRaw, 'base64'),
       ),
     ).toBe(true);
@@ -96,7 +110,7 @@ describe('E2eeSession', () => {
       agentIdentity,
       SESSION_ID,
       peerHello(),
-      withJunk,
+      withWhitespace,
     );
     expect(result).toBeNull();
   });
