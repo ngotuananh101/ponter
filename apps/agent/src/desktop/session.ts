@@ -4,8 +4,8 @@ import { packetizeAnnexB } from '../session/packetizer.js';
 import {
   clampBitrate,
   gopForFps,
+  type BitrateControl,
   type DesktopSource,
-  type StreamControl,
 } from './control.js';
 import { StaticFrameSkip, type RawFrame } from './static-skip.js';
 import { SustainLadder } from './sustain.js';
@@ -167,43 +167,32 @@ export class DesktopSession {
     this.started = true;
   }
 
-  control(control: StreamControl): void {
-    switch (control.kind) {
-      case 'bitrate':
-        this.bitrate = control.bitrate;
-        this.skip?.reset();
-        this.skipWasReset = true;
-        this.ladder?.noteBitrateChange(control.bitrate);
-        if (!this.started) {
-          this.pendingBitrate = control.bitrate;
-          return;
-        }
-        this.deps.encode.configure({
-          profile: this.profile,
-          bitrate: control.bitrate,
-          gop: gopForFps(PROFILES[this.profile].fps),
-        });
-        return;
-      case 'quality': {
-        this.profile = control.profile;
-        const geometry = PROFILES[control.profile];
-        this.skip = new StaticFrameSkip(geometry.fps);
-        this.ladder = new SustainLadder(control.profile, 1000 / geometry.fps);
-        this.deps.encode.configure({
-          profile: control.profile,
-          bitrate: this.bitrate,
-          gop: gopForFps(geometry.fps),
-        });
-        return;
-      }
-      case 'pause':
-        return;
-      case 'resume':
-        this.skip?.reset();
-        return;
-      case 'stop':
-        return;
+  /**
+   * Apply an inbound control command.
+   *
+   * Takes `BitrateControl`, not the whole `StreamControl`: the `select` member
+   * is handled by `select()` (it stops and restarts capture, which is a
+   * different shape of work), and the three the type used to carry besides
+   * these — `pause`/`resume`/`stop` and a `quality` profile change — were a
+   * plan defect with no producer on the wire and no arm in the Rust's
+   * `StreamControl` (`desktop.rs:1938-1947`). A profile change is not an
+   * inbound command at all: it comes from the sustain ladder, which calls
+   * `applyProfile` from inside `pump()`.
+   */
+  control(control: BitrateControl): void {
+    this.bitrate = control.bitrate;
+    this.skip?.reset();
+    this.skipWasReset = true;
+    this.ladder?.noteBitrateChange(control.bitrate);
+    if (!this.started) {
+      this.pendingBitrate = control.bitrate;
+      return;
     }
+    this.deps.encode.configure({
+      profile: this.profile,
+      bitrate: control.bitrate,
+      gop: gopForFps(PROFILES[this.profile].fps),
+    });
   }
 
   async select(source: DesktopSource): Promise<void> {

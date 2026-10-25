@@ -79,16 +79,14 @@ describe('DesktopSession', () => {
     expect(order).toEqual(['capture', 'encoder']);
   });
 
-  it('re-configures the encoder on a quality change', async () => {
-    const d = deps();
-    const session = new DesktopSession(d as never);
-    await session.start({ kind: 'test' }, '1080p60', 4_000_000);
-    d.encode.configure.mockClear();
-    session.control({ kind: 'quality', profile: '720p30' });
-    expect(d.encode.configure).toHaveBeenCalledWith(
-      expect.objectContaining({ gop: 60 }),
-    );
-  });
+  // Task 26 removed the cell `re-configures the encoder on a quality change`.
+  // It drove `control({kind:'quality'})`, a member the Rust's `StreamControl`
+  // has never had (`desktop.rs:1938-1947` — `SetBitrate` and `SourceSwap`,
+  // nothing else) and no producer sends. The behaviour it covered — the
+  // encoder being reconfigured for a new profile — is real, but it is reached
+  // from exactly one place, the sustain ladder inside `pump()`, and the cell
+  // `downgrades on pump after 30 over-budget frames and resets the skip` below
+  // asserts it there (`toHaveBeenLastCalledWith` `{profile:'720p60', gop:120}`).
 
   it('resets the static-skip on a bitrate change', async () => {
     // One of the three reset sites: a bitrate change invalidates nothing about
@@ -116,6 +114,28 @@ describe('DesktopSession', () => {
     expect(d.encode.configure).toHaveBeenCalledWith(
       expect.objectContaining({ bitrate: 3_000_000 }),
     );
+  });
+
+  it('retargets the encoder on a bitrate received while streaming', async () => {
+    // The **live** half of the retarget, which the two cells around this one
+    // miss between them: the "before the first encode" cell above only
+    // exercises the `pendingBitrate` path, and the static-skip cell asserts
+    // `skipIsReset()`/`skippedFrames`, which the reset sets independently of
+    // the bitrate. A `control()` that forgot to record and apply the target
+    // passed both. This asserts the two things a retarget actually is — the
+    // encoder is reconfigured for the new target, and `stats()` reflects it,
+    // which is what the "reflect the effective value to the UI" requirement
+    // means (`desktop.rs:1580-1590`).
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    session.control({ kind: 'bitrate', bitrate: 2_000_000 });
+    expect(d.encode.configure).toHaveBeenLastCalledWith({
+      profile: '720p30',
+      bitrate: 2_000_000,
+      gop: 60,
+    });
+    expect(session.stats().bitrate).toBe(2_000_000);
   });
 
   it('reports a stats frame with the sustained profile', async () => {

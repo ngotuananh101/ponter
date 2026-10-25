@@ -2,7 +2,7 @@
 import { MAX_DATA_CHANNEL_FRAME_BYTES } from '../signalling/constants.js';
 import { frameFiles } from '../files/protocol.js';
 import type { FilesFrame } from '../files/session.js';
-import { clampBitrate } from '../desktop/control.js';
+import { decodeStreamControl } from '../desktop/control.js';
 import { buildTerminalErrorFrame } from '../terminal/frames.js';
 // Task 15's wire union. The import is **load-bearing, not cosmetic**: without
 // it, `InputEvent` below resolves to the DOM global of the same name (`lib`
@@ -587,12 +587,11 @@ export class DataChannelRouter {
   }
 
   /**
-   * Desktop JSON control on the `control` channel, dispatched by the **real
-   * wire types**.
+   * Desktop JSON control on the `control` channel — **one decoder, one clamp**.
    *
    * The browser sends `sendJson('control', 'desktop-select', { sourceId })`
    * and `sendJson('control', 'desktop-bitrate', { bitrateBps })`
-   * (`desktop-core/src/client.ts:423-430`) — there is no `stream-control` type
+   * (`desktop-core/src/client.ts:424,429`). There is no `stream-control` type
    * on the wire, and `sourceId` is the **scheme string** the Rust carries
    * verbatim: `desktop.rs:1986-1988` deserialises `{ source_id }` (camelCase)
    * into `StreamControl::SourceSwap(message.source_id)` and the test at
@@ -602,60 +601,50 @@ export class DataChannelRouter {
    * stays with the consumer (`source_for`, `desktop.rs:922-948`, splits the
    * same scheme), exactly where the Rust puts it.
    *
-   * **Byte source, stated: neither the envelope bytes nor a re-serialisation.**
-   * The body is already parsed (`message`); the two real types are decoded
-   * here. The comment this replaces claimed the decoders read the top-level
-   * frame; they never did — and handing them the envelope's bytes made every
-   * decode return `null`, because the envelope's `type` is not a field of the
-   * body they match.
+   * **This used to be a second implementation.** Under BASE the two arms were
+   * hand-rolled here while `desktop/control.ts` shipped decoders that read a
+   * vocabulary nobody sends (`stream-control`/`action`, `source: {kind, id}`),
+   * and the two drifted exactly as two copies of one contract do. Task 26
+   * repointed those decoders at the real wire and this boundary now calls
+   * them, so the parse, the type match and the **clamp** all live in
+   * `decodeStreamControl` — the same three steps `decode_control` performs in
+   * one function (`desktop.rs:1998-2023`).
    *
-   * **Task 17 must follow.** Its `decodeStreamControl` / `decodeDesktopSelect`
-   * port (`:7587-7639`) reads a vocabulary the browser never sends —
-   * `stream-control`/`action` and `source: { kind, id }`. Re-porting those two
-   * decoders to the real vocabulary (`desktop-select { sourceId }`,
-   * `desktop-bitrate { bitrateBps }`) is **Task 17's own change** and is out of
-   * scope here (its fence is untouched). Until it lands, this boundary decodes
-   * the two real types itself and reuses only Task 17's `clampBitrate` — the
-   * one piece that is already right, and the same clamp the Rust runs inside
-   * `decode_control` (`desktop.rs:2016-2019`). `desktop-input` does not come
-   * through here at all: the router's own arm runs **admit → decode → apply**
-   * before any dispatch, which is the Rust's real order — the operator gate,
-   * then the 120 Hz cap, then `apply_if_allowed` (which is what calls
-   * `decode_desktop_input` and injects), `lib.rs:2413-2469`. The landed
-   * comment said "decoded before the limiter and the injector — the order the
-   * Rust established", which inverted the Rust and put the JSON parse in front
-   * of the DoS control that exists to bound it (MAJOR-5). `desktop-e2ee-hello`
-   * also
-   * arrives on `control` (`desktop-core/src/client.ts:257`); answering it is
-   * the e2ee wiring's job, unfenced here, so an unknown type is dropped the
-   * way the Rust's `_ => Ok(None)` arm drops it.
+   * **What stays here is the logging.** The decoder answers `null` for both
+   * "unknown type" and "this known type but a malformed body", and the two
+   * deserve different handling: an unknown type is dropped silently, the way
+   * the Rust's `_ => Ok(None)` drops it (`desktop-e2ee-hello` really does
+   * arrive on this channel, `desktop-core/src/client.ts:257`), while a
+   * malformed `desktop-select`/`desktop-bitrate` warns, because there a peer
+   * meant to do something and it did not happen.
+   *
+   * `desktop-input` does not come through here at all: the router's own arm
+   * runs **admit → decode → apply** before any dispatch, which is the Rust's
+   * real order — the operator gate, then the 120 Hz cap, then
+   * `apply_if_allowed` (which is what calls `decode_desktop_input` and
+   * injects), `lib.rs:2413-2469`. The landed comment said "decoded before the
+   * limiter and the injector — the order the Rust established", which inverted
+   * the Rust and put the JSON parse in front of the DoS control that exists to
+   * bound it (MAJOR-5).
    */
   private dispatchDesktop(message: Record<string, unknown>): void {
-    if (message.type === 'desktop-select') {
-      if (typeof message.sourceId !== 'string') {
-        this.deps.logger.warn(
-          'dropped a desktop-select frame with no sourceId',
-        );
-        return;
-      }
-      this.deps.desktop.onSelect(message.sourceId);
-      return;
-    }
-    if (message.type === 'desktop-bitrate') {
+    const control = decodeStreamControl(message);
+    if (!control) {
       if (
-        typeof message.bitrateBps !== 'number' ||
-        !Number.isFinite(message.bitrateBps)
+        message.type === 'desktop-select' ||
+        message.type === 'desktop-bitrate'
       ) {
         this.deps.logger.warn(
-          'dropped a desktop-bitrate frame with no bitrateBps',
+          `dropped a malformed ${String(message.type)} frame`,
         );
-        return;
       }
-      this.deps.desktop.onControl({
-        kind: 'bitrate',
-        bitrate: clampBitrate(message.bitrateBps),
-      });
+      return;
     }
+    if (control.kind === 'select') {
+      this.deps.desktop.onSelect(control.sourceId);
+      return;
+    }
+    this.deps.desktop.onControl({ kind: 'bitrate', bitrate: control.bitrate });
   }
 
   /**
