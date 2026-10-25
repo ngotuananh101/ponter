@@ -64,6 +64,49 @@ function fakeHost() {
 }
 
 describe('PtyManager.create', () => {
+  /**
+   * The compile-time gate for `PtyCreateOptions.policy`.
+   *
+   * The runtime-level gate (in `test/runtime.test.ts`) pins `RuntimeDeps.shellPolicy`,
+   * but that is the *outer* face. This is the *inner* one: the spawn options
+   * themselves. Measured, both poles: with `policy` optional again, this
+   * directive becomes `TS2578: Unused '@ts-expect-error' directive` and `tsc`
+   * exits 2 — so the "there is no object shape in which a peer shell reaches
+   * `spawn` unvalidated" claim is enforced by the compiler, not by a runtime
+   * cell that could pass for another reason.
+   *
+   * The directive sits above the **argument**, not above the missing property:
+   * `tsc` reports a missing required property against the whole argument
+   * (`TS2345 … Property 'policy' is missing`), so a directive on the trailing
+   * property is unused and the gate never fires.
+   *
+   * As with the runtime gate, this is enforced by `tsc` only — vitest does not
+   * typecheck — and `apps/agent` is excluded from the CI test matrix, so the
+   * cell is inert unless typecheck runs.
+   */
+  it('cannot be called without a policy (compile-time gate)', async () => {
+    const { host } = fakeHost();
+    const manager = new PtyManager(host);
+    // Never executed: the object below does not typecheck, and `tsc` is the
+    // gate. The `expect` keeps the cell honest at runtime if the cast is ever
+    // removed -- it would then throw, not pass.
+    const call = () =>
+      manager.create(
+        // @ts-expect-error — `policy` is required on `PtyCreateOptions`;
+        // supplying spawn options without one must not compile. If this
+        // directive ever becomes unused, a peer-supplied shell can reach
+        // `spawn` unvalidated again.
+        {
+          terminalId: 't1',
+          shell: '/bin/sh',
+          cols: 80,
+          rows: 24,
+          shellSource: 'peer' as const,
+        },
+      );
+    expect(typeof call).toBe('function');
+  });
+
   it('spawns with the documented TERM and LANG', async () => {
     const { host, spawned } = fakeHost();
     const manager = new PtyManager(host);
