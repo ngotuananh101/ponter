@@ -1,4 +1,5 @@
 // apps/agent/test/desktop/frames.test.ts
+import type { DesktopSourceInfo } from '@ponter/shared';
 import { describe, expect, it } from 'vitest';
 import {
   buildCursorFrame,
@@ -9,110 +10,225 @@ import {
 const parse = (text: string) => JSON.parse(text);
 
 describe('buildStatsFrame', () => {
-  it('emits the documented field names', () => {
+  it('emits the DataChannelMessage envelope on the control channel', () => {
     const frame = parse(
-      buildStatsFrame({
-        seq: 10,
-        fps: 58.5,
-        bitrate: 4_000_000,
-        encodeMsP50: 7.2,
-        captureMsP50: 3.1,
-        skippedFrames: 12,
-        profile: '1080p30',
-      }),
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+        },
+        12_345,
+      ),
     );
-    expect(frame).toMatchObject({
-      type: 'desktop-stats',
-      data: {
-        seq: 10,
-        fps: 58.5,
-        bitrate: 4_000_000,
-        encodeMsP50: 7.2,
-        captureMsP50: 3.1,
-        skippedFrames: 12,
-        profile: '1080p30',
-      },
+    expect(frame.type).toBe('desktop-stats');
+    expect(frame.channel).toBe('control');
+    expect(frame.timestamp).toBe(12_345);
+  });
+
+  it('carries the stats fields the browser requires', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+        },
+        1,
+      ),
+    );
+    expect(frame.payload).toMatchObject({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      targetBitrateBps: 4_000_000,
     });
   });
 
   it('rounds the two p50s to one decimal place', () => {
     const frame = parse(
-      buildStatsFrame({
-        seq: 1,
-        fps: 30,
-        bitrate: 1,
-        encodeMsP50: 7.25,
-        captureMsP50: 3.04,
-        skippedFrames: 0,
-        profile: '720p30',
-      }),
+      buildStatsFrame(
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          targetBitrateBps: 1,
+          encodeMsP50: 7.25,
+          captureMsP50: 3.04,
+        },
+        1,
+      ),
     );
-    expect(frame.data.encodeMsP50).toBe(7.3);
-    expect(frame.data.captureMsP50).toBe(3);
+    expect(frame.payload.encodeMsP50).toBe(7.3);
+    expect(frame.payload.captureMsP50).toBe(3);
+  });
+
+  it('omits every absent optional stats field', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 6_000_000,
+        },
+        1,
+      ),
+    );
+    for (const key of [
+      'status',
+      'frameSeq',
+      'captureMsP50',
+      'encodeMsP50',
+      'frameSamples',
+    ]) {
+      expect(key in frame.payload).toBe(false);
+    }
   });
 });
 
 describe('buildCursorFrame', () => {
-  it('emits x, y, visible and shape', () => {
+  it('emits the envelope with x, y, visible and seq', () => {
     const frame = parse(
-      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default' }),
+      buildCursorFrame(
+        {
+          x: 0.25,
+          y: 0.75,
+          visible: true,
+          seq: 7,
+        },
+        1_700_000_000,
+      ),
     );
-    expect(frame).toEqual({
+    expect(frame).toMatchObject({
       type: 'desktop-cursor',
-      data: { x: 100, y: 200, visible: true, shape: 'default' },
+      channel: 'control',
+      timestamp: 1_700_000_000,
+      payload: {
+        x: 0.25,
+        y: 0.75,
+        visible: true,
+        seq: 7,
+      },
     });
   });
 
-  it('emits visible=false with a null shape rather than omitting the field', () => {
-    // The browser's cursor layer reads `data.shape` unconditionally; a missing
-    // field there draws the previous cursor shape at the new position.
+  it('omits shape when the cursor has none', () => {
     const frame = parse(
-      buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }),
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: false,
+          seq: 1,
+        },
+        1,
+      ),
     );
-    expect(frame.data).toEqual({ x: 0, y: 0, visible: false, shape: null });
+    expect('shape' in frame.payload).toBe(false);
+  });
+
+  it('emits the shape record when one is set', () => {
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: true,
+          seq: 0,
+          shape: {
+            png: 'iVBORw0KGgo=',
+            hotspotX: 4,
+            hotspotY: 8,
+            serial: 42,
+          },
+        },
+        1,
+      ),
+    );
+    expect(frame.payload.shape).toEqual({
+      png: 'iVBORw0KGgo=',
+      hotspotX: 4,
+      hotspotY: 8,
+      serial: 42,
+    });
   });
 
   it('stamps lastInputSeq on the wire when one is set', () => {
-    // ADR-47's echo: the browser's latency meter reads this field. The Rust
-    // pins `lastInputSeq: 3` on the payload (`desktop.rs:3758`).
     const frame = parse(
-      buildCursorFrame({
-        x: 100,
-        y: 200,
-        visible: true,
-        shape: 'default',
-        lastInputSeq: 3,
-      }),
+      buildCursorFrame(
+        {
+          x: 100,
+          y: 200,
+          visible: true,
+          seq: 1,
+          lastInputSeq: 3,
+        },
+        1,
+      ),
     );
-    expect(frame.data).toMatchObject({ lastInputSeq: 3 });
+    expect(frame.payload).toMatchObject({ lastInputSeq: 3 });
   });
 
   it('omits lastInputSeq from the wire when none is set', () => {
-    // Mirrors `frame_desktop_cursor_omits_last_input_seq_when_none`
-    // (`desktop.rs:3766-3786`): `skip_serializing_if` on `None` — the field is
-    // absent from the JSON, not null.
     const frame = parse(
-      buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }),
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: false,
+          seq: 1,
+        },
+        1,
+      ),
     );
-    expect('lastInputSeq' in frame.data).toBe(false);
+    expect('lastInputSeq' in frame.payload).toBe(false);
   });
 });
 
 describe('buildSourcesFrame', () => {
-  it('lists monitors and windows with their ids', () => {
-    const frame = parse(
-      buildSourcesFrame({
-        monitors: [
-          { id: '1', name: 'DP-1', width: 1920, height: 1080, primary: true },
-        ],
-        windows: [{ id: '0x40', title: 'Editor' }],
-      }),
-    );
+  it('emits the DesktopSourcesPayload shape', () => {
+    const frame = parse(buildSourcesFrame([], true, true, true, 7));
     expect(frame.type).toBe('desktop-sources');
-    expect(frame.data.monitors[0]).toMatchObject({ id: '1', primary: true });
-    expect(frame.data.windows[0]).toMatchObject({
-      id: '0x40',
-      title: 'Editor',
+    expect(frame.channel).toBe('control');
+    expect(frame.payload).toMatchObject({
+      sources: [],
+      inputEnabled: true,
+      peerVerified: true,
+      cursorInFrame: true,
     });
+  });
+
+  it('renders inputEnabled, peerVerified and cursorInFrame in both directions', () => {
+    const t = parse(buildSourcesFrame([], true, true, true, 1));
+    expect(t.payload.inputEnabled).toBe(true);
+    expect(t.payload.peerVerified).toBe(true);
+    expect(t.payload.cursorInFrame).toBe(true);
+
+    const f = parse(buildSourcesFrame([], false, false, false, 1));
+    expect(f.payload.inputEnabled).toBe(false);
+    expect(f.payload.peerVerified).toBe(false);
+    expect(f.payload.cursorInFrame).toBe(false);
+  });
+
+  it('carries every DesktopSourceInfo field with the camelCase spelling', () => {
+    const source: DesktopSourceInfo = {
+      id: 'test:0',
+      kind: 'monitor',
+      name: 'Test pattern',
+      width: 1280,
+      height: 720,
+      x: 0,
+      y: 0,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: true,
+      default: true,
+    };
+    const frame = parse(buildSourcesFrame([source], true, true, true, 1));
+    expect(frame.payload.sources[0]).toEqual(source);
+    expect('scale_factor' in frame.payload.sources[0]).toBe(false);
   });
 });

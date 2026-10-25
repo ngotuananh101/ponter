@@ -1,98 +1,112 @@
 // apps/agent/src/desktop/frames.ts
-import type { ProfileId } from '@ponter/shared';
+import type {
+  DataChannelMessage,
+  DesktopCursorPayload,
+  DesktopSourceInfo,
+  DesktopSourcesPayload,
+  DesktopStats,
+} from '@ponter/shared';
 
-export interface StatsInput {
-  seq: number;
-  fps: number;
-  bitrate: number;
-  encodeMsP50: number;
-  captureMsP50: number;
-  skippedFrames: number;
-  profile: ProfileId;
-}
-
-export interface CursorInput {
-  x: number;
-  y: number;
-  visible: boolean;
-  shape: string | null;
-  /**
-   * ADR-47's echo: the `seq` of the last input frame the agent **applied**,
-   * stamped on every `desktop-cursor` payload as `lastInputSeq` and read by the
-   * browser's latency meter. The Rust carries it as `last_input_seq:
-   * Option<u64>` with `skip_serializing_if = "Option::is_none"`
-   * (`desktop.rs:2176-2177`), so the field is **omitted from the wire when
-   * unset** — the builder below spreads it conditionally, never writing
-   * `lastInputSeq: undefined` (which would survive `JSON.stringify` as an
-   * absent key but would not survive a typed consumer that inspects
-   * `Object.keys`). The **runtime owns the single mutable holder** for this
-   * value — the Rust's hoisted `Arc<AtomicU64>`
-   * (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor
-   * loop reads it, and Task 19's desktop session loop owns that wiring.
-   */
-  lastInputSeq?: number;
-}
-
-export interface SourcesInput {
-  monitors: {
-    id: string;
-    name: string;
-    width: number;
-    height: number;
-    primary: boolean;
-  }[];
-  windows: { id: string; title: string }[];
-}
-
+/**
+ * TS-only divergence from Rust: the Rust serialises f32 p50s unrounded (7.25 -> 7.25);
+ * the builder emits 7.3. Neither captureMsP50 nor encodeMsP50 has any reader in
+ * packages/desktop-core/src or apps/web/src (where readers are targetBitrateBps, width,
+ * height, status.kind, status.detail). The divergence is unobservable to readers
+ * and kept to avoid moving green cells for measurement noise.
+ */
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-export function buildStatsFrame(input: StatsInput): string {
+/**
+ * Stats frame builder. Mirrors Rust `frame_desktop_stats` (desktop.rs:2147).
+ *
+ * Optional fields (`status`, `frameSeq`, `captureMsP50`, `encodeMsP50`, `frameSamples`)
+ * are omitted when unset via conditional spread, matching Rust's `skip_serializing_if`.
+ */
+export function buildStatsFrame(
+  stats: DesktopStats,
+  timestamp: number,
+): string {
+  const payload: DesktopStats = {
+    width: stats.width,
+    height: stats.height,
+    fps: stats.fps,
+    targetBitrateBps: stats.targetBitrateBps,
+    ...(stats.status !== undefined ? { status: stats.status } : {}),
+    ...(stats.frameSeq !== undefined ? { frameSeq: stats.frameSeq } : {}),
+    ...(stats.captureMsP50 !== undefined
+      ? { captureMsP50: round1(stats.captureMsP50) }
+      : {}),
+    ...(stats.encodeMsP50 !== undefined
+      ? { encodeMsP50: round1(stats.encodeMsP50) }
+      : {}),
+    ...(stats.frameSamples !== undefined
+      ? { frameSamples: stats.frameSamples }
+      : {}),
+  };
   return JSON.stringify({
     type: 'desktop-stats',
-    data: {
-      seq: input.seq,
-      fps: round1(input.fps),
-      bitrate: input.bitrate,
-      encodeMsP50: round1(input.encodeMsP50),
-      captureMsP50: round1(input.captureMsP50),
-      skippedFrames: input.skippedFrames,
-      profile: input.profile,
-    },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopStats>);
 }
 
 /**
- * `shape: null` when the cursor is hidden is deliberate rather than omitting the
- * key: the web cursor layer reads `data.shape` unconditionally and would draw
- * the previous shape at the new position.
+ * Cursor frame builder. Mirrors Rust `frame_desktop_cursor` (desktop.rs:2093).
  *
- * `lastInputSeq` is the inverse: it is **omitted when unset**, mirroring the
- * Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176`) — the
- * browser treats an absent field and a `null` differently here (a stale echo
- * from an earlier input must not be re-sent forever; the holder resets to
- * null between applications). The conditional spread keeps the field off the
- * object rather than writing `undefined`.
+ * `shape` and `lastInputSeq` carry `skip_serializing_if = "Option::is_none"`
+ * in Rust (desktop.rs:2175-2179), so both fields are omitted from the wire
+ * when unset — the builder below uses conditional spread, never writing
+ * `undefined` or `null`.
  */
-export function buildCursorFrame(input: CursorInput): string {
+export function buildCursorFrame(
+  cursor: DesktopCursorPayload,
+  timestamp: number,
+): string {
+  const payload: DesktopCursorPayload = {
+    x: cursor.x,
+    y: cursor.y,
+    visible: cursor.visible,
+    seq: cursor.seq,
+    ...(cursor.lastInputSeq !== undefined
+      ? { lastInputSeq: cursor.lastInputSeq }
+      : {}),
+    ...(cursor.shape !== undefined ? { shape: cursor.shape } : {}),
+  };
   return JSON.stringify({
     type: 'desktop-cursor',
-    data: {
-      x: input.x,
-      y: input.y,
-      visible: input.visible,
-      shape: input.shape,
-      ...(input.lastInputSeq === undefined
-        ? {}
-        : { lastInputSeq: input.lastInputSeq }),
-    },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopCursorPayload>);
 }
 
-export function buildSourcesFrame(input: SourcesInput): string {
+/**
+ * Desktop sources frame builder. Mirrors Rust `frame_desktop_sources` (desktop.rs:2066).
+ *
+ * Takes `inputEnabled`, `peerVerified`, and `cursorInFrame` flags as parameters and
+ * renders each in both directions so that the wire format accurately reflects the
+ * admission and capture state.
+ */
+export function buildSourcesFrame(
+  sources: DesktopSourceInfo[],
+  inputEnabled: boolean,
+  peerVerified: boolean,
+  cursorInFrame: boolean,
+  timestamp: number,
+): string {
+  const payload: DesktopSourcesPayload = {
+    sources,
+    inputEnabled,
+    peerVerified,
+    cursorInFrame,
+  };
   return JSON.stringify({
     type: 'desktop-sources',
-    data: { monitors: input.monitors, windows: input.windows },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopSourcesPayload>);
 }
