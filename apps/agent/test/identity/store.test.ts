@@ -1,13 +1,33 @@
 // apps/agent/test/identity/store.test.ts
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { loadOrCreateIdentity } from '../../src/identity/store.js';
 
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+
+// `force` so teardown cannot fail the file from a path a cell already removed;
+// `recursive` because one cell creates `nested/deeper/` under the dir.
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
 function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'ponter-identity-'));
+  return tmpDir('ponter-identity-');
 }
 
 describe('loadOrCreateIdentity', () => {

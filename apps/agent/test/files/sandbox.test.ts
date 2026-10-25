@@ -2,16 +2,31 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { FilesRoot, SandboxError } from '../../src/files/sandbox.js';
 
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+
+// `force` so a cell that removed its own tree cannot fail the file from a
+// teardown; `recursive` because the fixtures nest `docs/` and symlinks.
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
 function root() {
-  const dir = mkdtempSync(join(tmpdir(), 'ponter-files-'));
+  const dir = tmpDir('ponter-files-');
   mkdirSync(join(dir, 'docs'));
   writeFileSync(join(dir, 'docs', 'a.txt'), 'hello');
   return dir;
@@ -92,7 +107,7 @@ describe('FilesRoot.resolveExisting', () => {
 
   it('rejects a symlink that resolves outside the root', () => {
     const dir = root();
-    const outside = mkdtempSync(join(tmpdir(), 'ponter-outside-'));
+    const outside = tmpDir('ponter-outside-');
     writeFileSync(join(outside, 'secret'), 'x');
     symlinkSync(outside, join(dir, 'escape'));
     expect(
@@ -110,8 +125,15 @@ describe('FilesRoot.resolveExisting', () => {
 
   it('uses component-wise containment, not string prefix', () => {
     const dir = root();
+    // NOT `tmpDir()`: the name is this cell's subject. `${dir}2` shares a
+    // STRING prefix with `dir` while not being path-contained by it, so a
+    // naive `startsWith` containment accepts the symlink. A generated name
+    // would share only `/tmp/ponter-` and this cell would pass under that
+    // mutant — the assertion would be satisfied by the absence of a signal.
+    // Registered instead, so the teardown in `afterAll` still removes it.
     const sibling = `${dir}2`;
     mkdirSync(sibling);
+    TMP_DIRS.push(sibling);
     writeFileSync(join(sibling, 'x'), 'x');
     symlinkSync(sibling, join(dir, 'sibling'));
     expect(code(() => FilesRoot.open(dir).resolveExisting('sibling/x'))).toBe(

@@ -2,16 +2,31 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { loadShellPolicy } from '../../src/terminal/shell-policy.js';
 
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+
+// `recursive` because the fixture nests directories; `force` so a cell that
+// already removed its own path cannot fail the file from a teardown.
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
 function scratch() {
-  const dir = mkdtempSync(join(tmpdir(), 'ponter-shell-'));
+  const dir = tmpDir('ponter-shell-');
   const allowed = join(dir, 'allowed.sh');
   writeFileSync(allowed, '#!/bin/sh\n');
   chmodSync(allowed, 0o755);

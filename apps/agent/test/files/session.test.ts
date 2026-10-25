@@ -4,12 +4,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { FilesRoot } from '../../src/files/sandbox.js';
 import {
   FILE_MAX_BYTES,
@@ -30,8 +31,24 @@ import {
 const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const ID2 = '11111111-2222-3333-4444-555555555555';
 
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+
+// `force` is required, not defensive: the delete cells remove their own trees
+// and the outside-the-root cell reaches outside the fixture, so teardown must
+// not throw on an already-gone path. `recursive` because the fixtures nest
+// directories.
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
 function session() {
-  const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+  const dir = tmpDir('ponter-xfer-');
   // 64 * 32 KiB = 2 097 152 bytes is the smallest file whose first window is
   // actually full: with 100 000 bytes the window is 4 chunks, and the
   // "exactly the 64-chunk window" assertion below can never hold.
@@ -67,7 +84,7 @@ describe('list', () => {
   // the dir first, so the name-order half is what discriminates — byte-wise
   // puts `a.txt` before `b.txt`, and would put `B.txt` before `a.txt`.
   it('lists entries sorted directories-first, then name byte-wise', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    const dir = tmpDir('ponter-list-');
     mkdirSync(join(dir, 'zz-dir'));
     writeFileSync(join(dir, 'b.txt'), 'bb');
     writeFileSync(join(dir, 'a.txt'), 'a');
@@ -100,7 +117,7 @@ describe('list', () => {
   // `list()` itself, Node's `ENOTDIR` reaches `handle()`'s generic catch and
   // the wire code becomes `IO_ERROR`.
   it('reports NOT_A_DIRECTORY when listing a file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    const dir = tmpDir('ponter-list-');
     writeFileSync(join(dir, 'f.txt'), 'x');
     const s = new FilesSession(FilesRoot.open(dir), () => 0);
 
@@ -114,7 +131,7 @@ describe('list', () => {
 
   // Ports `list_cap_truncates_at_4096_with_the_flag` (files.rs:2740).
   it('truncates at the cap and sets the flag', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-list-'));
+    const dir = tmpDir('ponter-list-');
     for (let i = 0; i < 4097; i++)
       writeFileSync(join(dir, `f${String(i).padStart(4, '0')}`), '');
     const s = new FilesSession(FilesRoot.open(dir), () => 0);
@@ -339,7 +356,7 @@ describe('upload', () => {
     // which leaks the host layout and breaks any consumer that resolves it
     // against the root again.
     const size = 32_768;
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-complete-'));
+    const dir = tmpDir('ponter-complete-');
     mkdirSync(join(dir, 'sub'));
     const s = new FilesSession(FilesRoot.open(dir), () => 0);
     s.handle({
@@ -419,7 +436,7 @@ describe('resume', () => {
   // the injected clock, which reaches the same state without touching internals.
   it('paused transfers do not time out', () => {
     let now = 0;
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+    const dir = tmpDir('ponter-xfer-');
     const s = new FilesSession(FilesRoot.open(dir), () => now);
     s.handle({
       type: 'files-upload-begin',
@@ -435,7 +452,7 @@ describe('resume', () => {
 
   it('kills a stalled transfer at the idle timeout', () => {
     let now = 0;
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+    const dir = tmpDir('ponter-xfer-');
     writeFileSync(join(dir, 'g.bin'), Buffer.alloc(100_000));
     const s = new FilesSession(FilesRoot.open(dir), () => now);
     s.handle({ type: 'files-download', transferId: ID, path: 'g.bin' });
@@ -449,7 +466,7 @@ describe('resume', () => {
     // (`packages/file-core/src/client.ts:637-641`). Rust sets it on both
     // (`files.rs:1259-1270`, `timeout_frame(direction, transfer_id)`).
     let now = 0;
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-xfer-'));
+    const dir = tmpDir('ponter-xfer-');
     const s = new FilesSession(FilesRoot.open(dir), () => now);
     s.handle({
       type: 'files-upload-begin',
@@ -505,7 +522,7 @@ describe('delete honours recursive (defect 1)', () => {
   // non-recursive arm, so every folder delete in the web UI — which sends
   // `recursive: true` for directories (`FilesView.vue:145`) — failed.
   function withTree() {
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-delete-'));
+    const dir = tmpDir('ponter-delete-');
     mkdirSync(join(dir, 'folder'));
     writeFileSync(join(dir, 'folder', 'inner.txt'), 'content');
     return { dir, s: new FilesSession(FilesRoot.open(dir), () => 0) };
@@ -546,7 +563,7 @@ describe('delete honours recursive (defect 1)', () => {
   });
 
   it('removes an empty directory without recursive (the non-recursive arm still works)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-delete-'));
+    const dir = tmpDir('ponter-delete-');
     mkdirSync(join(dir, 'empty'));
     const s = new FilesSession(FilesRoot.open(dir), () => 0);
     const out = s.handle({
@@ -1067,7 +1084,7 @@ describe('the ack split (R7, R8)', () => {
     // interval has elapsed. `noteChunk()` returns the predicate (false here);
     // `flushAcks()` takes unconditionally and emits.
     let now = 0;
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-ack-'));
+    const dir = tmpDir('ponter-ack-');
     const s = new FilesSession(FilesRoot.open(dir), () => now);
     s.handle({
       type: 'files-upload-begin',
@@ -1095,7 +1112,7 @@ describe('the ack split (R7, R8)', () => {
 
   it('takes unconditionally on the tick even when the frequency rule says no', () => {
     let now = 0;
-    const dir = mkdtempSync(join(tmpdir(), 'ponter-ack-'));
+    const dir = tmpDir('ponter-ack-');
     const s = new FilesSession(FilesRoot.open(dir), () => now);
     s.handle({
       type: 'files-upload-begin',

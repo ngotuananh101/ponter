@@ -1,11 +1,25 @@
 // apps/agent/test/terminal/pty.test.ts
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { MAX_SESSIONS, PtyManager } from '../../src/terminal/pty.js';
 import { ShellPolicy } from '../../src/terminal/shell-policy.js';
+
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+
+// `recursive` because the fixture writes files; `force` so a cell that already
+// removed its own path cannot fail the file from a teardown.
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
 
 function fakeHost() {
   const spawned: {
@@ -347,7 +361,7 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
     // simply not on the allowlist — not `/etc/passwd`, which fails the earlier
     // executable-bit arm and would pass this test even with the allowlist
     // membership check deleted.
-    const outside = mkdtempSync(join(tmpdir(), 'ponter-shell-'));
+    const outside = tmpDir('ponter-shell-');
     const candidate = join(outside, 'evil.sh');
     writeFileSync(candidate, '#!/bin/sh\n', { mode: 0o755 });
     const { host, spawned } = fakeHost();
