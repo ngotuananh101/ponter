@@ -403,6 +403,303 @@ describe('dispatch', () => {
     expect(order).toEqual(['admit']);
   });
 
+  it("routes terminal-create to the pty with the browser's three fields and the shell", () => {
+    // B41: the browser's opener is
+    // `sendJson('terminal', 'terminal-create', { terminalId, cols, rows, shell })`
+    // (`terminal-core/src/client.ts:106`) and the Rust deserialises exactly
+    // that payload into `TerminalCreateMessage` (`lib.rs:1366-1370`). Before
+    // this arm the type was handled nowhere in `src/` — measured 0 occurrences
+    // — so a peer that opened a terminal got silence.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-create', {
+        terminalId: 't1',
+        cols: 120,
+        rows: 40,
+        shell: '/bin/bash',
+      }),
+    );
+    expect(deps.terminal.create).toHaveBeenCalledWith({
+      terminalId: 't1',
+      cols: 120,
+      rows: 40,
+      shell: '/bin/bash',
+    });
+  });
+
+  it('passes an absent shell through as undefined so the operator default applies', () => {
+    // Rust: `None => shell_for_dispatch.clone()` (`lib.rs:1403`) — the
+    // operator's configured shell, which `PtyManager.create` receives as
+    // `options.shell` and only resolves through the policy when one is given.
+    // The router must not substitute a shell of its own: two allowlists is the
+    // drift this plan keeps repairing.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-create', {
+        terminalId: 't1',
+        cols: 80,
+        rows: 24,
+      }),
+    );
+    expect(deps.terminal.create).toHaveBeenCalledWith({
+      terminalId: 't1',
+      cols: 80,
+      rows: 24,
+      shell: undefined,
+    });
+  });
+
+  it('drops a terminal-create frame whose dimensions are not finite integers', () => {
+    // The Rust's `cols`/`rows` are `u16` (`pty.rs:263-267`); serde rejects a
+    // negative or a float and the dispatch site logs and `continue`s
+    // (`lib.rs:1439-1445`). That is a **drop**, not a clamp: clamping would
+    // resize a live terminal to a size the peer never asked for.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    for (const bad of [
+      { cols: -1, rows: 24 },
+      { cols: 80.5, rows: 24 },
+      { cols: 80, rows: Number.NaN },
+      { cols: '80', rows: 24 },
+      // The `u16` upper bound (`pty.rs:280-285`). Without it a peer can ask for
+      // a 70000-column pty and node-pty passes the number straight to ioctl.
+      { cols: 65536, rows: 24 },
+      { cols: 80, rows: 65536 },
+    ]) {
+      channel.emit(
+        'message',
+        envelope('terminal', 'terminal-create', { terminalId: 't1', ...bad }),
+      );
+    }
+    expect(deps.terminal.create).not.toHaveBeenCalled();
+  });
+
+  it('drops a terminal-create frame with no terminalId', () => {
+    // Same shape as the `terminal-data` arm: drop rather than guess a session.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-create', { cols: 80, rows: 24 }),
+    );
+    expect(deps.terminal.create).not.toHaveBeenCalled();
+  });
+
+  it('routes terminal-resize to the pty with the exact dimensions', () => {
+    // Cell 2 of Task 27's fence. Under BASE this frame is ignored entirely —
+    // no arm exists — so this cell is the RED that proves the arm is what
+    // carries the numbers, not the decode.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-resize', {
+        terminalId: 't1',
+        cols: 132,
+        rows: 43,
+      }),
+    );
+    expect(deps.terminal.resize).toHaveBeenCalledWith('t1', 132, 43);
+  });
+
+  it('drops a terminal-resize frame whose dimensions are not finite integers', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-resize', {
+        terminalId: 't1',
+        cols: 0,
+        rows: 24,
+      }),
+    );
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-resize', {
+        terminalId: 't1',
+        cols: 80,
+        rows: 0.5,
+      }),
+    );
+    expect(deps.terminal.resize).not.toHaveBeenCalled();
+  });
+
+  it('drops a terminal-resize frame whose dimensions exceed the Rust u16 range', () => {
+    // `isPtyDimension` checked "positive integer" and stopped there, which
+    // accepts `cols: 70000`. The Rust's fields are `u16` (`pty.rs:263-267`), so
+    // serde rejects anything above 65535 and the dispatch site drops the frame
+    // (`lib.rs:1439-1445`). node-pty does not: an out-of-range width reaches the
+    // ioctl. 65535 is the bound itself and must still pass — the control is
+    // below, so a guard written as `>= 65535` fails here too.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    for (const bad of [
+      { cols: 65536, rows: 24 },
+      { cols: 80, rows: 65536 },
+      { cols: Number.MAX_SAFE_INTEGER, rows: 24 },
+    ]) {
+      channel.emit(
+        'message',
+        envelope('terminal', 'terminal-resize', {
+          terminalId: 't1',
+          ...bad,
+        }),
+      );
+    }
+    expect(deps.terminal.resize).not.toHaveBeenCalled();
+
+    // Positive control: the inclusive bound is accepted and forwarded exactly.
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-resize', {
+        terminalId: 't1',
+        cols: 65535,
+        rows: 1,
+      }),
+    );
+    expect(deps.terminal.resize).toHaveBeenCalledWith('t1', 65535, 1);
+  });
+
+  it('routes terminal-close to the pty by terminalId', () => {
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-close', { terminalId: 't1' }),
+    );
+    expect(deps.terminal.close).toHaveBeenCalledWith('t1');
+  });
+
+  it('answers a refused shell with a terminal-error frame, never a throw', async () => {
+    // Rust: a client-supplied shell goes through `resolve_client_shell` before
+    // `spawn_session`, and a refusal sends `frame_pty_error(…, SpawnFailed,
+    // "shell refused: …")` on the terminal channel (`lib.rs:1372-1401`). The
+    // browser shows `payload.message`; without the frame the terminal opens
+    // blank and the operator cannot tell a refused shell from a slow one.
+    //
+    // The frame is built **at this boundary**, exactly as the Rust builds it in
+    // the dispatcher and not in `PtyManager` — which is why `PtyManager` keeps
+    // its throwing contract (defects 5/7 pin `rejects.toMatchObject`).
+    const { deps, r } = router({
+      terminal: {
+        write: vi.fn(),
+        resize: vi.fn(),
+        close: vi.fn(),
+        create: vi.fn(async () => {
+          throw Object.assign(new Error('shell refused: /tmp/evil.sh'), {
+            name: 'PtyError',
+            code: 'pty-spawn-failed',
+          });
+        }),
+      },
+    });
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    // **"Never a throw" needs something that can see a throw.** `createTerminal`
+    // hands the rejection to a detached `.catch`, so a `throw` inside that
+    // handler is not an exception anyone awaits — it is an *unhandled
+    // rejection*, and Node prints it to stderr without failing the test. A cell
+    // that reads only `channel.send` therefore passes with the throw present
+    // (measured: the mutant survives 54/54). Observe the rejection instead.
+    const escaped: unknown[] = [];
+    const onUnhandled = (reason: unknown) => escaped.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      channel.emit(
+        'message',
+        envelope('terminal', 'terminal-create', {
+          terminalId: 't1',
+          cols: 80,
+          rows: 24,
+          shell: '/tmp/evil.sh',
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const wire = channel.send.mock.calls.at(-1)?.[0] as string;
+      expect(typeof wire).toBe('string');
+      const frame = JSON.parse(wire) as Record<string, unknown>;
+      expect(frame.type).toBe('terminal-error');
+      expect(frame.channel).toBe('terminal');
+      expect(frame.payload).toMatchObject({
+        terminalId: 't1',
+        code: 'pty-spawn-failed',
+        message: 'shell refused: /tmp/evil.sh',
+      });
+      expect(deps.logger.warn).toHaveBeenCalled();
+      // One more turn of the loop: `unhandledRejection` is emitted after the
+      // microtask queue drains, so the frame assertions above can run first.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(escaped).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('answers an over-cap spawn with session-limit-reached on the frame', async () => {
+    // The Rust maps the manager's own 10-session refusal to the second pinned
+    // code (`spawn_failure_frame`, `lib.rs:2833-2849`). Both spellings are a
+    // wire contract the browser switches on, so both polarities are asserted.
+    const { deps, r } = router({
+      terminal: {
+        write: vi.fn(),
+        resize: vi.fn(),
+        close: vi.fn(),
+        create: vi.fn(async () => {
+          throw Object.assign(new Error('the agent already has 10 sessions'), {
+            name: 'PtyError',
+            code: 'session-limit-reached',
+          });
+        }),
+      },
+    });
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-create', {
+        terminalId: 't11',
+        cols: 80,
+        rows: 24,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const wire = channel.send.mock.calls.at(-1)?.[0] as string;
+    const frame = JSON.parse(wire) as { payload: Record<string, unknown> };
+    expect(frame.payload.code).toBe('session-limit-reached');
+    expect(deps.logger.warn).toHaveBeenCalled();
+  });
+
+  it('drops an unknown terminal type without answering it', () => {
+    // Mirrors the Rust's `_ => {}` fallthrough (`lib.rs:1470-1480`): an
+    // unknown type on the terminal channel is dropped, never answered, so a
+    // peer cannot probe for supported vocabulary by watching for errors.
+    const { deps, r } = router();
+    const channel = fakeChannel('terminal');
+    r.attach(channel);
+    channel.emit(
+      'message',
+      envelope('terminal', 'terminal-bogus', { terminalId: 't1' }),
+    );
+    expect(deps.terminal.create).not.toHaveBeenCalled();
+    expect(deps.terminal.resize).not.toHaveBeenCalled();
+    expect(deps.terminal.close).not.toHaveBeenCalled();
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+
   it('logs and ignores a corrupt JSON frame on any channel', () => {
     const { deps, r } = router();
     const channel = fakeChannel('control');

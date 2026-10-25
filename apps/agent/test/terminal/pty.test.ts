@@ -257,6 +257,75 @@ describe('PtyManager.write', () => {
   });
 });
 
+describe('PtyManager.closeAll', () => {
+  it('kills every live session and leaves no slot occupied', async () => {
+    // B41's lifecycle half: `AgentRuntime.stop()` promises "pty sessions" are
+    // torn down before the socket (its own docblock), and a pty that outlives
+    // the socket leaves an orphan shell on the host. Without this method the
+    // runtime can only close ids it happens to remember, which it cannot:
+    // the ids come from the peer.
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    for (const id of ['a', 'b']) {
+      await manager.create({
+        terminalId: id,
+        shell: '/bin/sh',
+        cols: 80,
+        rows: 24,
+      });
+    }
+    // The positive control: both are live now, so a `closeAll` that kills
+    // nothing cannot pass by the fixture being empty.
+    manager.write('a', Buffer.from('x'));
+    manager.write('b', Buffer.from('x'));
+    expect(procs[0]!.write).toHaveBeenCalledTimes(1);
+    expect(procs[1]!.write).toHaveBeenCalledTimes(1);
+
+    manager.closeAll();
+
+    expect(procs[0]!.kill).toHaveBeenCalledTimes(1);
+    expect(procs[1]!.kill).toHaveBeenCalledTimes(1);
+    // The registry is what the 10-session cap reads: an emptied map means the
+    // next peer to connect starts from 10 free slots, not 8.
+    for (let i = 0; i < MAX_SESSIONS; i += 1) {
+      await manager.create({
+        terminalId: `fresh${i}`,
+        shell: '/bin/sh',
+        cols: 80,
+        rows: 24,
+      });
+    }
+    expect(procs).toHaveLength(MAX_SESSIONS + 2);
+  });
+
+  it('is a no-op on a manager with no sessions', () => {
+    const { host, procs } = fakeHost();
+    const manager = new PtyManager(host);
+    expect(() => manager.closeAll()).not.toThrow();
+    expect(procs).toHaveLength(0);
+  });
+
+  it('does not emit a terminal-exit for a session it closed itself', async () => {
+    // The SIGTERM this issues may produce an exit event on a real host, but
+    // the browser asked for the close and already dropped its session — an
+    // exit frame would re-open a terminal the operator just closed. The
+    // manager does not fake one: it reports only events the host delivers,
+    // and the runtime's `closeAll` ordering means the channel is gone anyway.
+    const { host } = fakeHost();
+    const manager = new PtyManager(host);
+    const exits: unknown[] = [];
+    manager.onExit((e) => exits.push(e));
+    await manager.create({
+      terminalId: 'a',
+      shell: '/bin/sh',
+      cols: 80,
+      rows: 24,
+    });
+    manager.closeAll();
+    expect(exits).toEqual([]);
+  });
+});
+
 /** A host whose first spawn returns a process that cannot be subscribed to. */
 function brokenFirstHost() {
   const procs: (EventEmitter & {

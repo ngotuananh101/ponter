@@ -3,12 +3,6 @@ import type { ShellPolicy } from './shell-policy.js';
 
 export const MAX_PTY_CHUNK = 16 * 1024;
 export const MAX_SESSIONS = 10;
-/**
- * Exported with no caller: the frame-size cap belongs to the data-channel
- * router (Task 18), which is the only layer that sees a whole frame. Carried
- * obligation, not an unused constant.
- */
-export const MAX_FRAME_BYTES = 64 * 1024;
 
 /**
  * The `node-pty` seam, written against the surface `IPty` actually declares
@@ -59,9 +53,20 @@ export interface PtyCreateOptions {
   policy?: ShellPolicy;
 }
 
+/**
+ * The two wire spellings a terminal failure can carry (B41).
+ *
+ * Named rather than inlined because two modules now need it: `PtyError` below
+ * narrows `code` to it, and `frames.buildTerminalErrorFrame` types the frame's
+ * `payload.code` with it. The Rust pins the same pair in
+ * `every_pty_error_code_has_the_kebab_case_wire_spelling` (`pty.rs:642`) — the
+ * browser switches on these strings, so a rename is a breaking change.
+ */
+export type PtyErrorCode = 'pty-spawn-failed' | 'session-limit-reached';
+
 export class PtyError extends Error {
   constructor(
-    readonly code: 'pty-spawn-failed' | 'session-limit-reached',
+    readonly code: PtyErrorCode,
     message: string,
   ) {
     super(message);
@@ -238,6 +243,33 @@ export class PtyManager {
     if (!session) return;
     this.sessions.delete(terminalId);
     session.process.kill();
+  }
+
+  /**
+   * Kill every live session (B41's lifecycle half).
+   *
+   * `AgentRuntime.stop()` promises the pty sessions are torn down before the
+   * socket — a pty that outlives the socket leaves an orphan shell on the host
+   * — and it cannot enumerate the ids itself: they come from the peer. Clearing
+   * the map **before** killing matters for the same reason `emitExit` guards on
+   * process identity (`:204-221`): a `kill()` that synchronously delivered an
+   * exit event would otherwise re-enter `emitExit` and delete whatever a
+   * concurrent `create` had just registered under a reused id.
+   *
+   * Deliberately **not** `Promise.all(ids.map(close))`: `close()` is async only
+   * in signature (its body is synchronous), and an `await` here would make the
+   * teardown order in `stop()` depend on a microtask the caller cannot see.
+   */
+  closeAll(): void {
+    const sessions = [...this.sessions.values()];
+    this.sessions.clear();
+    for (const session of sessions) {
+      try {
+        session.process.kill();
+      } catch {
+        // A process that is already gone is exactly what this method wants.
+      }
+    }
   }
 
   private emitChunks(terminalId: string, buffer: Buffer): void {

@@ -3,6 +3,7 @@ import { MAX_DATA_CHANNEL_FRAME_BYTES } from '../signalling/constants.js';
 import { frameFiles } from '../files/protocol.js';
 import type { FilesFrame } from '../files/session.js';
 import { clampBitrate } from '../desktop/control.js';
+import { buildTerminalErrorFrame } from '../terminal/frames.js';
 // Task 15's wire union. The import is **load-bearing, not cosmetic**: without
 // it, `InputEvent` below resolves to the DOM global of the same name (`lib`
 // includes `DOM`), and `RouterDeps.input` silently declares the browser's
@@ -95,10 +96,31 @@ export interface RouterDeps {
    * The pty seam, shaped as `PtyManager` really is (Task 12): `write` takes
    * the **terminal id and bytes**, not a bare string — a terminal channel
    * carries several sessions, and `terminal-data`'s payload routes them.
+   *
+   * **B41 (Task 27) widened this to the other three wire types.** The browser
+   * sends `terminal-create`, `terminal-resize` and `terminal-close` on the same
+   * channel (`terminal-core/src/client.ts:106`, `:220`, `:248`) and the Rust
+   * has an arm for each (`lib.rs:1366`, `:1436`, `:1452`). Only `write` and
+   * `resize` existed here and `resize` had **no caller** — a peer that resized
+   * or closed a terminal was ignored, and a shell that could not be spawned
+   * left the browser staring at a blank terminal with no message.
+   *
+   * `create` is typed `Promise<void>` because `PtyManager.create` is async and
+   * **rejects** on a refusal (`pty.ts:119-191`); the router is what turns that
+   * rejection into the `terminal-error` frame, exactly as the Rust's dispatcher
+   * does and `PtyManager` does not (`lib.rs:1390-1401`, `spawn_failure_frame`
+   * at `:2833-2849`).
    */
   terminal: {
     write(terminalId: string, bytes: Uint8Array): void;
     resize(terminalId: string, cols: number, rows: number): void;
+    create(options: {
+      terminalId: string;
+      cols: number;
+      rows: number;
+      shell: string | undefined;
+    }): Promise<void>;
+    close(terminalId: string): Promise<void> | void;
   };
   files: {
     handle(message: { type: string; [key: string]: unknown }): unknown[];
@@ -144,6 +166,34 @@ export interface RouterDeps {
 function toBytes(data: ArrayBuffer | Uint8Array | string): Uint8Array {
   if (typeof data === 'string') return new TextEncoder().encode(data);
   return data instanceof Uint8Array ? data : new Uint8Array(data);
+}
+
+/**
+ * A pty dimension as the Rust's `u16` accepts it.
+ *
+ * `u16` is a **positive integer** — `serde` rejects a negative, a float, a
+ * string and a non-finite value, and the Rust dispatch site logs and drops
+ * rather than clamping (`lib.rs:1439-1445`). A zero is rejected for the same
+ * reason the browser's own `debouncedResize` rejects it
+ * (`terminal-core/src/client.ts:205`): a 0-column pty is not a terminal any
+ * reader can use.
+ *
+ * Both the create and resize arms share this, so the two cannot drift on what
+ * a dimension is.
+ */
+/**
+ * Matches Rust's `u16` fields on `TerminalCreateMessage` / `TerminalResizeMessage`
+ * (`pty.rs:263-267`, `:280-285`): serde rejects negatives, floats, zero, and
+ * anything above 65535, and the dispatch site logs and drops
+ * (`lib.rs:1439-1445`). node-pty accepts any number and delegates to ioctl,
+ * so the bound is load-bearing in this adapter.
+ */
+function isPtyDimension(value: unknown): value is number {
+  return (
+    Number.isInteger(value) &&
+    (value as number) > 0 &&
+    (value as number) <= 0xffff
+  );
 }
 
 function parseJson(bytes: Uint8Array): Record<string, unknown> | null {
@@ -370,21 +420,48 @@ export class DataChannelRouter {
 
     switch (label) {
       case CHANNEL_LABELS.terminal: {
-        // **Ruling 1: the terminal vocabulary is `terminal-data`, not
-        // `terminal-input`.** The browser's only inbound terminal write is
-        // `sendJson('terminal', 'terminal-data', { terminalId, data:
-        // uint8ArrayToBase64(bytes) })` (`terminal-core/src/client.ts:179,189`),
-        // and the Rust's decoder matches exactly that: `decode_pty_input_with_id`
-        // (`pty.rs:181-198`) gates `channel == "terminal" && type ==
-        // "terminal-data"`, then STANDARD-decodes `payload.data` and returns
-        // `(terminal_id, bytes)`. The plan's previous arm read `message.data`
-        // as a plain string and had no terminalId — bytes would have been the
-        // base64 **text**, and one channel's stream would have gone to one
-        // implicit pty. `terminal-input` has **no producer anywhere** — it now
-        // appears in this document only inside comments recording its
-        // retirement (no fence constructs one) — so the
-        // type is retired here rather than kept as a dead alternative.
-        if (message.type !== 'terminal-data') return;
+        this.dispatchTerminal(message);
+        return;
+      }
+      case CHANNEL_LABELS.files: {
+        this.emit(this.deps.files.handle(message));
+        return;
+      }
+      case CHANNEL_LABELS.control: {
+        this.dispatchDesktop(message);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * The terminal channel's inbound vocabulary (B41) — the four types the Rust
+   * dispatches and the browser sends.
+   *
+   * **Decoded here, not in a separate module.** `dispatchDesktop`'s note
+   * explains why the desktop side is about to grow a decoder file (Task 26):
+   * two decoders of one contract drift. The terminal side has no vocabulary of
+   * its own — three fields and an optional string each — so a decoder module
+   * would be a second place for `terminalId` to be spelled differently. The
+   * shape that *is* shared, the envelope, is already unwrapped above.
+   *
+   * **A refused spawn is answered, not thrown.** `create` rejects with
+   * `PtyError` carrying one of the two pinned codes (`pty.ts:62-70`); the
+   * Rust answers exactly that with `frame_pty_error` in the dispatcher
+   * (`lib.rs:1390-1401` and `spawn_failure_frame` at `:2833-2849`) and never
+   * propagates the error into the channel. Without the frame the browser shows
+   * a blank terminal with no way to tell a refused shell from a slow one —
+   * the Rust's own comment says so.
+   *
+   * `terminal-data` keeps its base64 decode and its drop-on-malformed contract
+   * (`pty.rs:181-198` gates on both the channel and the type, then
+   * STANDARD-decodes).
+   */
+  private dispatchTerminal(message: Record<string, unknown>): void {
+    switch (message.type) {
+      case 'terminal-data': {
         const { terminalId, data } = message as {
           terminalId?: unknown;
           data?: unknown;
@@ -401,17 +478,112 @@ export class DataChannelRouter {
         }
         return;
       }
-      case CHANNEL_LABELS.files: {
-        this.emit(this.deps.files.handle(message));
+      case 'terminal-create': {
+        const { terminalId, cols, rows, shell } = message as {
+          terminalId?: unknown;
+          cols?: unknown;
+          rows?: unknown;
+          shell?: unknown;
+        };
+        if (typeof terminalId !== 'string' || terminalId === '') return;
+        if (!isPtyDimension(cols) || !isPtyDimension(rows)) {
+          this.deps.logger.warn(
+            `dropped a terminal-create frame with cols=${String(cols)} rows=${String(rows)}`,
+          );
+          return;
+        }
+        // `shell` is passed through **unvalidated**: `PtyManager.create`
+        // resolves it against the `ShellPolicy` before any process exists
+        // (`pty.ts:134-140`). Pre-validating here would be a second allowlist.
+        this.createTerminal(terminalId, cols, rows, shell);
         return;
       }
-      case CHANNEL_LABELS.control: {
-        this.dispatchDesktop(message);
+      case 'terminal-resize': {
+        const { terminalId, cols, rows } = message as {
+          terminalId?: unknown;
+          cols?: unknown;
+          rows?: unknown;
+        };
+        if (typeof terminalId !== 'string' || terminalId === '') return;
+        // The Rust's `cols`/`rows` are `u16`: serde rejects a negative or a
+        // float and the dispatch site logs and drops (`lib.rs:1439-1445`).
+        // **Drop, never clamp** — clamping would resize a live terminal to a
+        // geometry the peer never asked for, and the peer has no way to learn
+        // that its request was altered.
+        if (!isPtyDimension(cols) || !isPtyDimension(rows)) {
+          this.deps.logger.warn(
+            `dropped a terminal-resize frame with cols=${String(cols)} rows=${String(rows)}`,
+          );
+          return;
+        }
+        this.deps.terminal.resize(terminalId, cols, rows);
+        return;
+      }
+      case 'terminal-close': {
+        const { terminalId } = message as { terminalId?: unknown };
+        if (typeof terminalId !== 'string' || terminalId === '') return;
+        // `close` is fire-and-forget here: `PtyManager.close` is `async` but
+        // its body is synchronous (`pty.ts:236-241`), and the channel callback
+        // must not become a place a rejection can escape from.
+        void Promise.resolve(this.deps.terminal.close(terminalId)).catch(() => {
+          // A close that fails has no frame to answer with — the browser
+          // already dropped its session — so it is a log, not an error frame.
+          this.deps.logger.warn(
+            `failed to close the pty for terminal ${terminalId}`,
+          );
+        });
         return;
       }
       default:
+        // Mirrors the Rust's `_ => {}` (`lib.rs:1470-1480`): an unknown type on
+        // the terminal channel is dropped, never answered.
         return;
     }
+  }
+
+  /**
+   * Spawn, and turn a `PtyError` into the frame the browser reads.
+   *
+   * The error's `code` is read **off the thrown object** rather than inferred
+   * from the message text, which is what the Rust does (`spawn_failure_frame`
+   * matches the string `"maximum concurrent PTY sessions"`, `lib.rs:2835-2842`)
+   * only because Rust's `anyhow::Error` erases the type. TS keeps the class,
+   * so the discriminator is `code`. An error with no recognised code is
+   * reported as `pty-spawn-failed`: the Rust's own fallback arm.
+   */
+  private createTerminal(
+    terminalId: string,
+    cols: number,
+    rows: number,
+    shell: unknown,
+  ): void {
+    void Promise.resolve(
+      this.deps.terminal.create({
+        terminalId,
+        cols,
+        rows,
+        shell: typeof shell === 'string' ? shell : undefined,
+      }),
+    ).catch((error: unknown) => {
+      const code =
+        (error as { code?: unknown } | null)?.code === 'session-limit-reached'
+          ? 'session-limit-reached'
+          : 'pty-spawn-failed';
+      const message =
+        error instanceof Error ? error.message : 'the pty could not be spawned';
+      this.deps.logger.warn(
+        `terminal ${terminalId} could not be created: ${message}`,
+      );
+      this.send(
+        CHANNEL_LABELS.terminal,
+        buildTerminalErrorFrame(
+          terminalId,
+          code,
+          message,
+          (this.deps.now ?? Date.now)(),
+        ),
+      );
+    });
   }
 
   /**

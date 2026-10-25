@@ -1,4 +1,5 @@
 // apps/agent/test/runtime.test.ts
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AgentRuntime,
@@ -6,6 +7,8 @@ import {
   IDLE_TICK_MS,
   resolveDefaultSource,
 } from '../src/runtime.js';
+import { DataChannelRouter } from '../src/session/data-channels.js';
+import { ShellPolicy } from '../src/terminal/shell-policy.js';
 import { FILES_IDLE_TIMEOUT_MS } from '../src/files/protocol.js';
 import type { AgentConfig } from '../src/config.js';
 
@@ -299,6 +302,327 @@ describe('AgentRuntime — the production tick wiring (MAJOR-1)', () => {
         allowInput: true,
         desktopProfile: '720p30',
       });
+    } finally {
+      await runtime.stop();
+    }
+  });
+});
+
+describe('AgentRuntime — the terminal path (B41)', () => {
+  /**
+   * **The defect this closes is a composition one.** `PtyManager` had no
+   * production constructor and `DataChannelRouter` had none either (measured:
+   * `new PtyManager` 0 and `new DataChannelRouter` 0 in `src/`), so `AgentRuntime`'s
+   * own docblock promised a pty teardown that did not exist and no `terminal-*`
+   * frame was ever produced. These cells drive the **real** `PtyManager` through
+   * the **real** router and read what comes out of the runtime's send seam —
+   * the seam a transport binds. A fake host supplies the processes, so no shell
+   * is ever spawned.
+   */
+  function fakePtyHost() {
+    const spawned: { file: string; opts: Record<string, unknown> }[] = [];
+    const procs: (EventEmitter & {
+      write: ReturnType<typeof vi.fn>;
+      resize: ReturnType<typeof vi.fn>;
+      kill: ReturnType<typeof vi.fn>;
+      onData: (cb: (chunk: string | Buffer) => void) => void;
+      onExit: (cb: (event: { exitCode?: number }) => void) => void;
+    })[] = [];
+    const host = {
+      spawn: (file: string, _args: string[], opts: Record<string, unknown>) => {
+        spawned.push({ file, opts });
+        const emitter = new EventEmitter();
+        const p = Object.assign(emitter, {
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(),
+          onData: (cb: (chunk: string | Buffer) => void) => {
+            emitter.on('data', cb);
+          },
+          onExit: (cb: (event: { exitCode?: number }) => void) => {
+            emitter.on('exit', cb);
+          },
+        });
+        procs.push(p);
+        return p;
+      },
+    };
+    return { host, spawned, procs };
+  }
+
+  function terminalWiring(
+    overrides: Partial<AgentConfig> = {},
+    depOverrides: Record<string, unknown> = {},
+  ) {
+    const config = {
+      filesRoot: null,
+      shell: '/bin/sh',
+      cols: 80,
+      rows: 24,
+      ...overrides,
+    } as unknown as AgentConfig;
+    const sent: { label: string; frame: unknown }[] = [];
+    const { host, spawned, procs } = fakePtyHost();
+    const deps = {
+      send: (label: string, frame: unknown) => sent.push({ label, frame }),
+      now: () => 1_700_000_000_000,
+      pty: host,
+      ...depOverrides,
+    };
+    return { config, deps, sent, spawned, procs };
+  }
+
+  it('emits pty output as a terminal-data frame on the terminal channel', async () => {
+    const { config, deps, sent, procs } = terminalWiring();
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      await runtime.terminal.create({
+        terminalId: 't1',
+        cols: 80,
+        rows: 24,
+        shell: undefined,
+      });
+      procs[0]!.emit('data', Buffer.from('hi'));
+
+      expect(sent).toEqual([
+        {
+          label: 'terminal',
+          // The full envelope, asserted through the reader's operation: the
+          // browser keys on `type`, drops anything whose `channel` is not
+          // `terminal`, and base64-decodes `payload.data`.
+          frame: {
+            type: 'terminal-data',
+            channel: 'terminal',
+            payload: {
+              terminalId: 't1',
+              data: Buffer.from('hi').toString('base64'),
+            },
+            timestamp: 1_700_000_000_000,
+          },
+        },
+      ]);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('emits the exit as a terminal-exit frame, both polarities of the code', async () => {
+    const { config, deps, sent, procs } = terminalWiring();
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      for (const id of ['t1', 't2']) {
+        await runtime.terminal.create({
+          terminalId: id,
+          cols: 80,
+          rows: 24,
+          shell: undefined,
+        });
+      }
+      procs[0]!.emit('exit', { exitCode: 7 });
+      procs[1]!.emit('exit', {});
+
+      const frames = sent.map((s) => s.frame as Record<string, unknown>);
+      expect(frames[0]).toMatchObject({
+        type: 'terminal-exit',
+        channel: 'terminal',
+        payload: { terminalId: 't1', exitCode: 7 },
+      });
+      // `null`, not an absent key: Rust's `Option<u32>` has no
+      // `skip_serializing_if`, so the key is always on the wire.
+      expect(frames[1]).toMatchObject({
+        type: 'terminal-exit',
+        channel: 'terminal',
+        payload: { terminalId: 't2', exitCode: null },
+      });
+      expect('exitCode' in (frames[1]!.payload as object)).toBe(true);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('stop() closes every live pty before it returns', async () => {
+    // The docblock's teardown order, made observable. A pty that outlives the
+    // socket is an orphan shell on the host, and the runtime is the only object
+    // that knows a pty exists at all.
+    const { config, deps, procs } = terminalWiring();
+    const runtime = await AgentRuntime.start(config, deps);
+    const ids = ['a', 'b', 'c'];
+    for (const id of ids) {
+      await runtime.terminal.create({
+        terminalId: id,
+        cols: 80,
+        rows: 24,
+        shell: undefined,
+      });
+    }
+    expect(procs.every((p) => p.kill.mock.calls.length === 0)).toBe(true);
+
+    await runtime.stop();
+
+    expect(procs.map((p) => p.kill.mock.calls.length)).toEqual([1, 1, 1]);
+  });
+
+  it('joins the router to the manager: a terminal-create frame spawns, a resize forwards', async () => {
+    // The composition seam — the axis this whole defect hid on. A
+    // `DataChannelRouter` built over `runtime.terminal` (the shape `RouterDeps`
+    // asks for) must reach the same `PtyManager` the runtime tears down.
+    const { config, deps, spawned, procs, sent } = terminalWiring();
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      const router = new DataChannelRouter({
+        terminal: runtime.terminal,
+        files: { handle: () => [], acceptBinaryChunk: () => [] },
+        desktop: { onControl: () => {}, onSelect: () => {} },
+        input: { admit: () => false, decode: () => null, apply: () => null },
+        send: () => {},
+        logger: { warn: () => {} },
+        now: () => 1_700_000_000_000,
+      });
+      const channel = {
+        label: 'terminal',
+        on: (_event: 'message', cb: (data: Uint8Array) => void) => {
+          emit = (data: Uint8Array) => cb(data);
+          return () => {};
+        },
+        send: vi.fn(),
+        close: vi.fn(),
+      };
+      let emit: (data: Uint8Array) => void = () => {};
+      router.attach(channel);
+
+      const envelope = (type: string, payload: Record<string, unknown>) =>
+        new TextEncoder().encode(
+          JSON.stringify({ type, channel: 'terminal', payload, timestamp: 0 }),
+        );
+
+      emit(
+        envelope('terminal-create', { terminalId: 't1', cols: 100, rows: 30 }),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.file).toBe('/bin/sh');
+      expect(spawned[0]!.opts).toMatchObject({ cols: 100, rows: 30 });
+
+      emit(
+        envelope('terminal-resize', { terminalId: 't1', cols: 120, rows: 40 }),
+      );
+      expect(procs[0]!.resize).toHaveBeenCalledWith(120, 40);
+
+      emit(envelope('terminal-data', { terminalId: 't1', data: 'bHM=' }));
+      expect(procs[0]!.write).toHaveBeenCalledWith(Buffer.from([0x6c, 0x73]));
+
+      procs[0]!.emit('data', Buffer.from('out'));
+      expect(sent.at(-1)?.label).toBe('terminal');
+
+      emit(envelope('terminal-close', { terminalId: 't1' }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(procs[0]!.kill).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('spawns the operator shell without consulting the allowlist when the peer asked for none', async () => {
+    // Rust's arm is `None => shell_for_dispatch.clone()` (`lib.rs:1403`) — the
+    // configured shell is **operator policy and is never re-checked**, so a
+    // deployment whose `AGENT_SHELL` sits outside its own `/etc/shells` still
+    // gets its own terminal. The peer's `Some(requested)` arm is the one that
+    // goes through `resolve_client_shell`. This cell is the discriminating
+    // polarity: the policy below does not allow `/opt/operator/shell`, and the
+    // spawn must happen anyway.
+    const { config, deps, spawned } = terminalWiring(
+      { shell: '/opt/operator/shell' },
+      { shellPolicy: new ShellPolicy({ configured: '/bin/sh' }) },
+    );
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      await runtime.terminal.create({
+        terminalId: 't1',
+        cols: 80,
+        rows: 24,
+        shell: undefined,
+      });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.file).toBe('/opt/operator/shell');
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('reports a refused shell to the browser on the terminal channel', async () => {
+    // Through the real policy: the peer asks for a shell outside the
+    // allowlist, `PtyManager.create` refuses before spawning, and the router
+    // turns the rejection into the frame the browser shows. Under BASE the
+    // throw escaped into the channel callback and nothing was sent.
+    const { config, deps, sent } = terminalWiring(
+      {},
+      {
+        // Operator policy, resolved once at start — the Rust's
+        // `shell_policy_for_dispatch`. Injected so the cell needles a shell the
+        // host would otherwise accept.
+        shellPolicy: new ShellPolicy({ configured: '/bin/sh' }),
+      },
+    );
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      const router = new DataChannelRouter({
+        terminal: runtime.terminal,
+        files: { handle: () => [], acceptBinaryChunk: () => [] },
+        desktop: { onControl: () => {}, onSelect: () => {} },
+        input: { admit: () => false, decode: () => null, apply: () => null },
+        send: () => {},
+        logger: { warn: () => {} },
+        now: () => 1_700_000_000_000,
+      });
+      let emit: (data: Uint8Array) => void = () => {};
+      const channel = {
+        label: 'terminal',
+        on: (_event: 'message', cb: (data: Uint8Array) => void) => {
+          emit = (data: Uint8Array) => cb(data);
+          return () => {};
+        },
+        send: vi.fn(),
+        close: vi.fn(),
+      };
+      router.attach(channel);
+      emit(
+        new TextEncoder().encode(
+          JSON.stringify({
+            type: 'terminal-create',
+            channel: 'terminal',
+            payload: {
+              terminalId: 't1',
+              cols: 80,
+              rows: 24,
+              shell: '/tmp/evil.sh',
+            },
+            timestamp: 0,
+          }),
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+
+      // The refusal is framed at the router's boundary, so it leaves through
+      // the attached channel — the same wire the browser reads.
+      const wire = channel.send.mock.calls.at(-1)?.[0] as string;
+      expect(typeof wire).toBe('string');
+      expect(JSON.parse(wire)).toEqual({
+        type: 'terminal-error',
+        channel: 'terminal',
+        payload: {
+          terminalId: 't1',
+          code: 'pty-spawn-failed',
+          message: expect.stringContaining('shell refused'),
+        },
+        timestamp: 1_700_000_000_000,
+      });
+      // And nothing was spawned.
+      expect(sent).toEqual([]);
+      // **Exactly one frame.** `at(-1)` alone cannot see a second frame, and
+      // the router is the single error-frame owner (the Rust frames at the
+      // dispatch site, `lib.rs:1390-1401`, never inside `pty.rs`); a runtime
+      // that also framed would send the browser the message twice.
+      expect(channel.send).toHaveBeenCalledTimes(1);
     } finally {
       await runtime.stop();
     }
