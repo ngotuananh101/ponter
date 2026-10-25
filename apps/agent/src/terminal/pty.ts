@@ -49,8 +49,29 @@ export interface PtyCreateOptions {
   shell: string;
   cols: number;
   rows: number;
-  /** Resolved through `ShellPolicy` before it reaches here. */
-  policy?: ShellPolicy;
+  /**
+   * Which of the Rust's two arms this spawn is on (`lib.rs:1379-1405`).
+   *
+   * - `'peer'` — `create.shell` came off the wire and is **untrusted input**: it
+   *   is resolved through `policy` before any process exists.
+   * - `'operator'` — the peer asked for no shell, so this is
+   *   `shell_for_dispatch.clone()`, the operator's own `AGENT_SHELL`. The Rust
+   *   deliberately does **not** re-check it (`lib.rs:1405`): a deployment whose
+   *   shell sits outside its own allowlist still gets its own terminal.
+   *
+   * Required, and required *separately* from `policy`, because the two arms must
+   * not be distinguishable by whether a policy happens to be present — that
+   * coupling is what made a missing policy mean "spawn unchecked".
+   */
+  shellSource: 'peer' | 'operator';
+  /**
+   * The allowlist. **Required**: there is now no object shape in which a
+   * peer-supplied shell reaches `spawn`. The Rust cannot express one either —
+   * `SessionConfig.shell_policy` is built non-optionally from config
+   * (`lib.rs:714`) and read as a plain field at the dispatch site
+   * (`lib.rs:567`).
+   */
+  policy: ShellPolicy;
 }
 
 /**
@@ -136,9 +157,16 @@ export class PtyManager {
     // as `pty-spawn-failed`, which is the frame the Rust sends for a refused
     // shell too ("reuse the pinned spawn-failure frame … a third wire code
     // would change a contract for no reader's benefit").
-    const shell = options.policy
-      ? this.resolveShell(options.policy, options.shell)
-      : options.shell;
+    //
+    // **The operator's shell is exempt, and the split is the Rust's own**: it
+    // resolves `Some(requested)` through the policy and passes
+    // `None => shell_for_dispatch.clone()` straight through (`lib.rs:1379-1405`).
+    // Re-checking the operator's shell would make a deployment whose
+    // `AGENT_SHELL` is outside its own `/etc/shells` refuse its own terminal.
+    const shell =
+      options.shellSource === 'peer'
+        ? this.resolveShell(options.policy, options.shell)
+        : options.shell;
     let process_: PtyProcess;
     try {
       process_ = this.host.spawn(shell, [], {

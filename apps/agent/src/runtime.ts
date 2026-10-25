@@ -10,7 +10,7 @@ import {
   buildTerminalDataFrame,
   buildTerminalExitFrame,
 } from './terminal/frames.js';
-import type { ShellPolicy } from './terminal/shell-policy.js';
+import { ShellPolicy, readEtcShells } from './terminal/shell-policy.js';
 import type { RouterDeps } from './session/data-channels.js';
 
 export interface DesktopSourceList {
@@ -184,10 +184,17 @@ export interface RuntimeDeps {
   /**
    * The operator's shell policy (B36/B37), resolved once at start the way the
    * Rust resolves `shell_policy_for_dispatch`. Peer-requested shells are
-   * resolved against this **before any process exists**; an absent policy keeps
-   * the operator's configured shell for every session.
+   * resolved against this **before any process exists**.
+   *
+   * **Required, not optional.** An optional policy reads like the test seams
+   * around it and is not one: absent, every peer-requested shell reached
+   * `spawn` unvalidated. The Rust has no such shape —
+   * `SessionConfig.shell_policy` is constructed from config unconditionally
+   * (`lib.rs:714`) and read as a plain `Arc`, not an `Option` (`lib.rs:567`).
+   * `createAgentRuntime` builds it from `config.shell`; callers that construct
+   * a runtime directly must supply one.
    */
-  shellPolicy?: ShellPolicy;
+  shellPolicy: ShellPolicy;
 }
 
 /**
@@ -205,6 +212,22 @@ export interface RuntimeDeps {
  * under Node today but not under every bundler the agent may be packaged with,
  * and the addon is exactly the case `createRequire` exists for.
  */
+/**
+ * The production policy, built from config exactly as the Rust builds
+ * `ShellPolicy::from_config(&config.shell)` (`shell_policy.rs:30-38`,
+ * `lib.rs:714`): the operator's shell, the POSIX floor, and `/etc/shells`.
+ *
+ * Lives here rather than in `shell-policy.ts` so that module stays free of a
+ * dependency on `AgentConfig` — it is the POSIX policy, and config is the
+ * runtime's concern.
+ */
+export function shellPolicyFromConfig(config: AgentConfig): ShellPolicy {
+  return new ShellPolicy({
+    configured: config.shell,
+    etcShells: readEtcShells(),
+  });
+}
+
 function lazyNodePtyHost(): PtyHost {
   let real: PtyHost | null = null;
   return {
@@ -288,6 +311,7 @@ export class AgentRuntime {
           terminalId: options.terminalId,
           cols: options.cols,
           rows: options.rows,
+          shell: options.shell ?? this.config.shell,
           // **The operator's shell is policy-exempt; a peer's is not.** Rust
           // splits exactly this way (`lib.rs:1372-1403`): `Some(requested) =>
           // shell_policy.resolve_client_shell(&requested)` and `None =>
@@ -295,14 +319,12 @@ export class AgentRuntime {
           // re-checked, because it is operator policy, not peer input. Passing
           // the policy for a `None` request would make a deployment whose
           // `AGENT_SHELL` is outside its own allowlist refuse its own terminal.
-          ...(options.shell === undefined
-            ? { shell: this.config.shell }
-            : {
-                shell: options.shell,
-                ...(this.deps.shellPolicy
-                  ? { policy: this.deps.shellPolicy }
-                  : {}),
-              }),
+          //
+          // The arm is stated rather than inferred from "was a policy passed",
+          // so the two questions — *which shell* and *may it be checked* — stay
+          // independent.
+          shellSource: options.shell === undefined ? 'operator' : 'peer',
+          policy: this.deps.shellPolicy,
         }),
       close: (terminalId) => this.pty.close(terminalId),
     };
@@ -316,6 +338,12 @@ export class AgentRuntime {
    * `send` seam is the one Task 18's router exposes (`router.send`), so the
    * runtime→router binding is `send: router.send` once Task 18 lands in the
    * same binary.
+   *
+   * The default deps object carries the policy because there is no correct
+   * default *without* one: the only other option is "no allowlist", which is
+   * the fail-open this parameter used to have. `createAgentRuntime` is the
+   * public entry point and it fills the same field from config; this default
+   * exists so the shape is constructible and is derived the same way.
    */
   static async start(
     config: AgentConfig,
@@ -323,6 +351,7 @@ export class AgentRuntime {
       send: () => {
         throw new Error('no transport is wired yet');
       },
+      shellPolicy: shellPolicyFromConfig(config),
     },
   ): Promise<AgentRuntime> {
     const runtime = new AgentRuntime(config, deps);
@@ -370,5 +399,10 @@ export class AgentRuntime {
 export async function createAgentRuntime(
   config: AgentConfig,
 ): Promise<AgentRuntime> {
-  return AgentRuntime.start(config);
+  return AgentRuntime.start(config, {
+    send: () => {
+      throw new Error('no transport is wired yet');
+    },
+    shellPolicy: shellPolicyFromConfig(config),
+  });
 }

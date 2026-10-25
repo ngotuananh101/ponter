@@ -1,6 +1,7 @@
 // apps/agent/test/terminal/pty-real.test.ts
 import { describe, expect, it } from 'vitest';
 import { PtyManager } from '../../src/terminal/pty.js';
+import { ShellPolicy } from '../../src/terminal/shell-policy.js';
 
 describe('a real shell', () => {
   it('echoes, then delivers terminal-exit after the child exits', async () => {
@@ -15,6 +16,11 @@ describe('a real shell', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      // A peer-requested shell, resolved through the real policy. Task 31's
+      // defect C made both fields required; this cell spawns the shell the
+      // policy allows, so the real `node-pty` path is still exercised.
+      shellSource: 'peer',
+      policy: new ShellPolicy({ configured: '/bin/sh' }),
     });
     manager.write('t', Buffer.from('echo PONTER_E2E\n'));
     await new Promise((r) => setTimeout(r, 300));

@@ -15,6 +15,14 @@ function tmpDir(prefix: string): string {
   return dir;
 }
 
+/**
+ * The operator's policy, as production builds it (Task 31 defect C:
+ * `PtyCreateOptions.policy` is required, so every cell must state one).
+ * `/bin/sh` is on the POSIX floor and canonicalises, so this allows the shell
+ * those cells spawn and nothing else in the temp dirs.
+ */
+const OPERATOR_POLICY = new ShellPolicy({ configured: '/bin/sh' });
+
 // `recursive` because the fixture writes files; `force` so a cell that already
 // removed its own path cannot fail the file from a teardown.
 afterAll(() => {
@@ -64,6 +72,8 @@ describe('PtyManager.create', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     expect(spawned[0]!.opts).toMatchObject({
       name: 'xterm-256color',
@@ -83,12 +93,16 @@ describe('PtyManager.create', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     await manager.create({
       terminalId: 't1',
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     expect(spawned).toHaveLength(1);
   });
@@ -112,6 +126,8 @@ describe('PtyManager.create', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       });
     }
     await expect(
@@ -120,6 +136,8 @@ describe('PtyManager.create', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       }),
     ).rejects.toMatchObject({ code: 'session-limit-reached' });
   });
@@ -133,6 +151,8 @@ describe('PtyManager.create', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       });
     }
     procs[0]!.emit('exit', { exitCode: 0 });
@@ -142,6 +162,8 @@ describe('PtyManager.create', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       }),
     ).resolves.toBeUndefined();
   });
@@ -158,6 +180,8 @@ describe('PtyManager output', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     procs[0]!.emit('data', Buffer.from([0x00, 0xff, 0xc3]));
     expect(frames[0]!.data).toBe(
@@ -178,6 +202,8 @@ describe('PtyManager output', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     procs[0]!.emit('data', Buffer.alloc(16 * 1024 + 100, 0x41));
     expect(frames).toHaveLength(2);
@@ -195,6 +221,8 @@ describe('PtyManager output', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     procs[0]!.emit('exit', { exitCode: 3 });
     expect(exits).toEqual([{ terminalId: 't1', exitCode: 3 }]);
@@ -210,6 +238,8 @@ describe('PtyManager output', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     procs[0]!.emit('exit', {});
     expect(exits[0]!.exitCode).toBeNull();
@@ -229,6 +259,8 @@ describe('PtyManager.write', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     manager.write('t1', Buffer.from([0x41, 0xff, 0xfe, 0x42]));
     const passed = procs[0]!.write.mock.calls[0]![0] as Buffer;
@@ -250,6 +282,8 @@ describe('PtyManager.write', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     manager.resize('t1', 120, 40);
     expect(procs[0]!.resize).toHaveBeenCalledWith(120, 40);
@@ -272,6 +306,8 @@ describe('PtyManager.closeAll', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       });
     }
     // The positive control: both are live now, so a `closeAll` that kills
@@ -293,6 +329,8 @@ describe('PtyManager.closeAll', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       });
     }
     expect(procs).toHaveLength(MAX_SESSIONS + 2);
@@ -320,6 +358,8 @@ describe('PtyManager.closeAll', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     manager.closeAll();
     expect(exits).toEqual([]);
@@ -375,6 +415,8 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       }),
     ).rejects.toMatchObject({ code: 'pty-spawn-failed' });
     // The unusable process is killed rather than left running unobserved.
@@ -387,6 +429,8 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
         shell: '/bin/sh',
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
+        policy: OPERATOR_POLICY,
       });
       accepted += 1;
     }
@@ -408,6 +452,8 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     await manager.close('t1');
     await manager.create({
@@ -415,6 +461,8 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
+      policy: OPERATOR_POLICY,
     });
     expect(procs).toHaveLength(2);
 
@@ -451,6 +499,7 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
         shell: candidate,
         cols: 80,
         rows: 24,
+        shellSource: 'peer' as const,
         policy: policyFor(realpathSync('/bin/sh')),
       }),
     ).rejects.toMatchObject({ code: 'pty-spawn-failed' });
@@ -465,6 +514,7 @@ describe('PtyManager.create lifecycle (defects 5, 6, 7)', () => {
       shell: '/bin/sh',
       cols: 80,
       rows: 24,
+      shellSource: 'peer' as const,
       policy: policyFor(realpathSync('/bin/sh')),
     });
     expect(spawned[0]!.file).toBe(realpathSync('/bin/sh'));

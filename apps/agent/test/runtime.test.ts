@@ -1,11 +1,15 @@
 // apps/agent/test/runtime.test.ts
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AgentRuntime,
   FilesTicker,
   IDLE_TICK_MS,
   resolveDefaultSource,
+  shellPolicyFromConfig,
 } from '../src/runtime.js';
 import { DataChannelRouter } from '../src/session/data-channels.js';
 import { ShellPolicy } from '../src/terminal/shell-policy.js';
@@ -205,6 +209,10 @@ describe('AgentRuntime — the production tick wiring (MAJOR-1)', () => {
       // actually call it for `advanceTimersByTimeAsync` to move it.
       now: () => Date.now(),
       filesSession: () => session,
+      // `RuntimeDeps.shellPolicy` is required (Task 31 defect C), and this
+      // fixture's config carries no `shell`, so the policy is supplied as
+      // `/bin/sh` rather than derived.
+      shellPolicy: new ShellPolicy({ configured: '/bin/sh' }),
     };
     return { config, deps, sent, session };
   }
@@ -367,6 +375,9 @@ describe('AgentRuntime — the terminal path (B41)', () => {
       send: (label: string, frame: unknown) => sent.push({ label, frame }),
       now: () => 1_700_000_000_000,
       pty: host,
+      // The production derivation, exactly what `createAgentRuntime` builds:
+      // the fake host replaces only the process seam, not the policy.
+      shellPolicy: shellPolicyFromConfig(config),
       ...depOverrides,
     };
     return { config, deps, sent, spawned, procs };
@@ -623,6 +634,104 @@ describe('AgentRuntime — the terminal path (B41)', () => {
       // dispatch site, `lib.rs:1390-1401`, never inside `pty.rs`); a runtime
       // that also framed would send the browser the message twice.
       expect(channel.send).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  /**
+   * **The type gate, and the reason the two cells below are not enough on their
+   * own.** At HEAD `RuntimeDeps.shellPolicy` is required, so the fail-open
+   * shape — a runtime built with no policy — cannot be written. Measured, both
+   * poles: with the BASE `runtime.ts` this object typechecked and the shell
+   * spawned; with HEAD's it is a compile error, which is the assertion below.
+   *
+   * This is the only mechanism in the language that pins "you cannot express
+   * the defect". It is checked by `tsc` (`pnpm --filter @ponter/agent-node
+   * run typecheck`), **not** by vitest, and `apps/agent` is excluded from the
+   * CI test matrix — so this cell is inert unless typecheck runs. Stated here
+   * rather than left implicit: a `@ts-expect-error` with no gate behind it is
+   * a decoration.
+   */
+  it('cannot be constructed without a shell policy (compile-time gate)', async () => {
+    const config = {
+      filesRoot: null,
+      shell: '/bin/sh',
+    } as unknown as AgentConfig;
+    await expect(
+      AgentRuntime.start(
+        config,
+        // @ts-expect-error — `shellPolicy` is required on `RuntimeDeps`;
+        // supplying deps without one must not compile. If this directive ever
+        // becomes unused, the requirement was dropped and a peer-supplied
+        // shell is unvalidated again.
+        { send: () => {} },
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  /**
+   * Two executed cells, two polarities: the refusal and the positive control.
+   * Without the control, a policy that refused *everything* would satisfy the
+   * refusal — which is exactly what mutant C2 (`policy` applied to BOTH arms)
+   * demonstrated: it failed the control and the pre-existing operator-shell
+   * cell, and nothing else.
+   *
+   * Both go through `terminalWiring`'s deps, which carry
+   * `shellPolicyFromConfig(config)` — the same derivation `createAgentRuntime`
+   * uses. The *absence* of a policy is not testable at runtime any more; that
+   * is the compile-time cell above.
+   */
+  it('refuses a peer shell outside the allowlist with the config-derived policy', async () => {
+    // The deps carry the production derivation (`shellPolicyFromConfig`), not
+    // a hand-built allowlist: this cell reads the cfg→policy path the runtime
+    // actually takes, through the public `terminal.create` entry point.
+    const { config, deps, spawned } = terminalWiring({
+      shell: realpathSync('/bin/sh'),
+    });
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      // A real, executable, resolvable file that is simply not on the
+      // allowlist — not `/etc/passwd`, which fails the executable-bit arm and
+      // would pass even with the membership check deleted.
+      const outside = mkdtempSync(join(tmpdir(), 'ponter-t31-shell-'));
+      const candidate = join(outside, 'evil.sh');
+      writeFileSync(candidate, '#!/bin/sh\n', { mode: 0o755 });
+      try {
+        await expect(
+          runtime.terminal.create({
+            terminalId: 't1',
+            cols: 80,
+            rows: 24,
+            shell: candidate,
+          }),
+        ).rejects.toMatchObject({ code: 'pty-spawn-failed' });
+        expect(spawned).toHaveLength(0);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('still accepts an allowlisted peer shell', async () => {
+    // The positive control. A runtime that refused every peer shell would pass
+    // the cell above while making the browser's shell picker useless.
+    const { config, deps, spawned } = terminalWiring({
+      shell: realpathSync('/bin/sh'),
+    });
+    const runtime = await AgentRuntime.start(config, deps);
+    try {
+      await runtime.terminal.create({
+        terminalId: 't1',
+        cols: 80,
+        rows: 24,
+        shell: '/bin/sh',
+      });
+      expect(spawned).toHaveLength(1);
+      // The canonical path, not the request: the policy resolves it.
+      expect(spawned[0]!.file).toBe(realpathSync('/bin/sh'));
     } finally {
       await runtime.stop();
     }
