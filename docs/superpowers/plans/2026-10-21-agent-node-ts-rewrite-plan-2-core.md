@@ -11514,6 +11514,63 @@ All five rows are **identical**. Test title sets are also identical (105 titles,
 
 ---
 
+### Task 24: Literal pin of the PTY session cap
+
+**Landed at:** `783dda143809e5d330b529663faf8e8dafdeaeac`
+**Files (tests only, 0 source files modified):**
+- Modify: `apps/agent/test/terminal/pty.test.ts` (+10 / −0)
+- Total: **1 file changed, 10 insertions(+)** (`git diff --numstat 35e8a32 783dda1` → `10 0`); `git diff --name-only 35e8a32 783dda1 | grep -c '^apps/agent/src/'` → **0**.
+
+**Origin & Purpose: The circular assertion defect.**
+Register Item 5 / Brief §1 identified a circular assertion hole in `apps/agent/test/terminal/pty.test.ts`. Existing tests asserted `expect(accepted).toBe(MAX_SESSIONS)` where `accepted` counted iterations in a loop explicitly bounded by `for (let i = 0; i < MAX_SESSIONS; i += 1)`. In TypeScript, both sides of the assertion read the identical imported module-level constant symbol. Consequently, the test asserted `constant === constant`, never verifying what the constant actually was. At BASE (`35e8a32`), mutating `MAX_SESSIONS` from 10 to 1, 2, 3, 5, 9, 11, 16, or 100 left the test suite 100% blind and green.
+
+The Rust codebase did not have this blind spot because its PTY cap was an explicit constructor parameter (`PtyManager::new(max_sessions)`, `lib.rs:2871-2879`), so Rust unit tests passed literal values (such as `PtyManager::new(1)`) and asserted observable overflow behaviour (`lib.rs:3132-3156`). When the TypeScript port converted the cap into a module-level constant (`apps/agent/src/terminal/pty.ts:5`), it lost the literal parameter that made the Rust assertions non-circular.
+
+**The Landed Cell:**
+A dedicated test cell was added to `apps/agent/test/terminal/pty.test.ts:96-104` inside the `describe('PtyManager.create', ...)` block, mirroring the precedent in `apps/agent/test/files/session.test.ts:400` (`FILES_IDLE_TIMEOUT_MS`):
+
+```ts
+  // Only the literal `10` is asserted. "The prod cap equals the constant"
+  // is NOT asserted, because in TS both sides are the same symbol — asserting
+  // that `MAX_SESSIONS` equals itself cannot fail. Rust could assert the
+  // equivalent by passing a literal to its constructor (`PtyManager::new(1)`);
+  // TS made the cap a module constant, so only asserting against the literal
+  // wire value `10` makes the assertion non-circular.
+  it('pins the session cap to the wire value', () => {
+    expect(MAX_SESSIONS).toBe(10);
+  });
+```
+
+The comment preceding the cell was carefully drafted in prose to avoid writing `expect(` syntax inside comments (unlike a prior comment in `session.test.ts:396`), ensuring naive text-search recipes `\bexpect\s*\(` accurately match only executable assertions.
+
+**TEST-INTEGRITY Declaration:**
+Recounted on committed blobs (`git show 35e8a32:apps/agent/test/terminal/pty.test.ts` vs. `git show 783dda1:apps/agent/test/terminal/pty.test.ts`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` and `grep -oP '\bexpect\s*\('`:
+
+| Scope | Before (BASE `35e8a32`) | After (`783dda1`) | Net |
+|---|---|---|---|
+| `apps/agent/test/terminal/pty.test.ts` | **15 `it()` / 24 `expect()`** | **16 / 25** | **+1 / +1** |
+| `apps/agent/test/` (33 files) | **396 / 677** | **397 / 678** | **+1 / +1** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Deleted lines: **0** (`git diff --numstat` → `10 0`). Title-set diff: exactly `+ "pins the session cap to the wire value"`, with zero existing cells modified, renamed, or deleted.
+
+**Seven Measured Axes (All verified independently):**
+1. **Single-file run:** `cd apps/agent && ./node_modules/.bin/vitest run test/terminal/pty.test.ts`: **16 passed (16)**, exit 0.
+1b. **Full suite run:** `cd apps/agent && ./node_modules/.bin/vitest run`: **34 files / 431 passed (431)** (430 at BASE + 1), exit 0.
+2. **Text recount on committed blob:** 15/24 → 16/25 (+1 it / +1 expect), 0 skips.
+3. **Typecheck:** `cd apps/agent && ./node_modules/.bin/tsc --noEmit`: **exit 0**, 0 diagnostics. Must-error control with string cap `MAX_SESSIONS = "10"`: **exit 2, 4 diagnostics** (`error TS2365: Operator '>=' cannot be applied to types 'number' and 'string'`).
+4. **Format:** Prettier check on committed blob exits 0; positive control exits 1; repo-wide `pnpm format:check` exits 0.
+5. **Both polarities:** Unmutated control `MAX_SESSIONS = 10` is green (16/16). Mutant `MAX_SESSIONS = 3` is **RED (1 failed | 15 passed)** on `pins the session cap to the wire value` with `AssertionError: expected 3 to be 10` (mutant killed).
+6. **No other cell moved:** Under mutant `MAX_SESSIONS = 3`, exactly the single pin cell fails while all other 15 existing test cells remain green. Specificity controls U1 (`MAX_PTY_CHUNK` mutated to 32 KiB) and U2 (enforcement `>=` mutated to `>`) fail their own respective cells while the pin cell remains green.
+7. **Workspace gating job:** `pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force`: **9 successful, 9 total**, exit 0.
+
+**QA Scope Finding (§6): Unpinned Constants in the Workspace:**
+QA's independent mechanical census and multi-point band mutation of all 24 numeric exported constants in `apps/agent/src/**` revealed that the brief's claim ("`MAX_SESSIONS` is the only member") was incomplete. Three other constants admit material value mutations while leaving the entire 431-test suite green:
+1. `FILE_MAX_BYTES` (1 GiB, `apps/agent/src/files/protocol.ts:16`): The only test exercising it (`session.test.ts:780`) tests `size: FILE_MAX_BYTES + 1` (circular rejection above constant), leaving values such as 512 MiB or 2 GiB completely unpinned. A literal pin `expect(FILE_MAX_BYTES).toBe(1073741824)` is proven by QA's `gap-cure.mjs` to catch this gap.
+2. `ACK_FLUSH_INTERVAL_MS` (20 ms, `apps/agent/src/files/protocol.ts:24`): Zero tests import or verify this constant; any value ≤ 20 ms passes because the test harness advances mock time in 20 ms ticks.
+3. `MAX_FRAME_BYTES` (64 KiB, `apps/agent/src/terminal/pty.ts:11`): A dead port artifact with **zero production callers** in the TypeScript codebase (as recorded in `data-channels.ts:236`), allowing any value from 1 KiB to 1 MiB to ship green. Scheduled for removal in Task 27.
+
+---
+
 ## Closing sections
 
 ### The retirement note (R5) — the ten noise rules, and what becomes of each
