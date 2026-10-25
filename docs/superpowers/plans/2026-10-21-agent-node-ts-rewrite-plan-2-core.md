@@ -11873,6 +11873,84 @@ Recounted on committed blobs (`git show 69ffc18:<path>` vs. `git show 833e6c1:<p
 
 ---
 
+### Task 26: Decode the desktop control types the browser actually sends
+
+**Landed at:** `8fd1098425a97edba422eb21e75e54cf8d202037` — 6 files, **+516 / −247**.
+**Files modified:**
+- `apps/agent/src/desktop/control.ts` (+80 / −66, decoders repointed to real wire format, dead vocabulary removed)
+- `apps/agent/src/desktop/session.ts` (+26 / −37, `control(control: BitrateControl)` restricted to bitrate)
+- `apps/agent/src/session/data-channels.ts` (+38 / −49, `dispatchDesktop` wired through `decodeStreamControl`, duplicate arms removed)
+- `apps/agent/test/desktop/control.test.ts` (+121 / −85, unit fence repointed at real wire fixtures)
+- `apps/agent/test/desktop/session.test.ts` (+30 / −10, dead quality cell removed, live bitrate retarget cell added)
+- `packages/desktop-core/test/control-composition.test.ts` (+221 / −0, **new** cross-tree composition fence)
+
+**Origin & Purpose: The Dead Desktop Control Vocabulary (QA Task 17 F-1):**
+At BASE, `apps/agent/src/desktop/control.ts` exported two decoders that decoded a vocabulary no producer on this wire ever sends:
+1. **`decodeStreamControl`** parsed `type: 'stream-control'` with `action: 'pause' | 'resume' | 'stop' | 'set-bitrate' | 'set-quality'` into a 5-member `StreamControl` union. Neither the browser nor Rust ever produces or consumes this vocabulary.
+2. **`decodeDesktopSelect`** parsed `type: 'desktop-select'` with `source: { kind, id }`, splitting the source into `{ kind: 'monitor' | 'window', id } | { kind: 'test' }`.
+
+What the browser actually sends (`packages/desktop-core/src/client.ts:424`, `:429`):
+- `selectSource(sourceId: string)`: `sendControl('desktop-select', { sourceId })`
+- `setBitrate(bitrateBps: number)`: `sendControl('desktop-bitrate', { bitrateBps })`
+
+What Rust implements (`apps/agent/src/desktop.rs:1998-2023`):
+- `desktop-select`: extracts `source_id: String` verbatim as `StreamControl::SourceSwap(source_id)` without splitting.
+- `desktop-bitrate`: deserializes `bitrate_bps: u32` and clamps it via `clamp_bitrate` to `[250_000, 20_000_000]`.
+- Unknown control types return `Ok(None)`: dropped silently, never answered.
+
+**Why every fence was green at BASE (The Duplicate Implementation Defect):**
+`apps/agent/test/desktop/control.test.ts` fed the decoders the dead plan-invented vocabulary, certifying an implementation against a contract no one else used. Meanwhile, `apps/agent/src/session/data-channels.ts:dispatchDesktop` had implemented a second, hand-rolled decoder for the real types, consuming only `clampBitrate` from `control.ts`. Thus, both unit fences passed green while certifying drifted, duplicated contracts.
+
+**The Deliverable (Shape A: Repoint & Wire):**
+- **Decoder Signature Takes Merged Body:** In Rust, `decode_control` takes raw `&str` and performs envelope parsing, channel gating (`channel == "control"`), and deserialization. In TypeScript, `DataChannelRouter.handleFrame` already parsed the envelope, gated `channel !== label`, and built `{ type, ...payload }` before `dispatchDesktop` is called. Therefore, `decodeStreamControl` and `decodeDesktopSelect` take `Record<string, unknown>` (the merged body), avoiding duplicate parsing and channel checks.
+- **`StreamControl` Union Reduced to 2 Members:** `{ kind: 'select'; sourceId: string } | BitrateControl`, matching Rust's `SourceSwap` and `SetBitrate` (`desktop.rs:1938-1947`). Dead variants (`pause`, `resume`, `stop`, `quality`) are removed.
+- **`BitrateControl`:** `{ kind: 'bitrate'; bitrate: number }`.
+- **`DesktopSource` Retained for Capture Layer:** Kept in `control.ts` but re-documented as the capture layer's input specification, explicitly *not* a wire decode output.
+- **`DesktopSession.control()` Takes `BitrateControl`:** Accepts only `{ kind: 'bitrate', bitrate }`. Stream profile reconfiguration is triggered strictly from the sustain ladder in `pump()` (`applyProfile`), never from inbound control messages.
+- **Deduplication in `data-channels.ts`:** Hand-rolled decoding in `dispatchDesktop` is replaced by `decodeStreamControl`. Unknown control types drop silently (matching Rust `_ => Ok(None)`); known types with invalid payloads log a warning.
+- **Strict `u32` Boundary Validation (`isU32`):** Rust deserializes `bitrate_bps: u32` (`desktop.rs:1970`). A negative, fractional, or oversized number fails deserialization before reaching `clamp_bitrate`. At BASE, the TS hand-rolled arm accepted non-integers (e.g., `3_000_000.5` clamped to `3_000_001`). The port introduces `isU32`, rejecting invalid values as `null` at the decode boundary to match Rust serde strictness.
+
+**Cross-Tree Composition Fence:**
+`packages/desktop-core/test/control-composition.test.ts` connects the real browser client (`DesktopClient.selectSource` / `setBitrate`) through `webrtc-core`'s `DataChannelManager` into the agent's `DataChannelRouter`.
+- 6 real test cells:
+  1. `selectSource reaches onSelect as the scheme string it sent`
+  2. `setBitrate reaches onControl clamped at the wire boundary` (99 Mbps → 20 Mbps)
+  3. `a bitrate inside the range passes through unchanged` (positive control)
+  4. `drops the dead stream-control vocabulary the old fence certified`
+  5. `refuses a fractional bitrate instead of rounding it onto the wire` (RED at BASE)
+  6. `warns on a malformed known type instead of dropping it silently` (RED at BASE)
+- Two of six cells are RED at BASE, catching the fractional bitrate leak and malformed warning defects. The remaining four cells act as regression pins verifying that the working duplicate in `data-channels.ts` was preserved during the rewrite.
+
+**TEST-INTEGRITY Declaration:**
+Measured on committed blobs (`git show {3eac965,8fd1098}:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+
+| File | BASE `3eac965` | HEAD `8fd1098` | Delta |
+|---|---|---|---|
+| `apps/agent/test/desktop/control.test.ts` | 10 `it()` / 21 `expect()` | 12 / 27 | **+2 / +6** |
+| `apps/agent/test/desktop/session.test.ts` | 11 / 27 | 11 / 28 | **+0 / +1** |
+| `packages/desktop-core/test/control-composition.test.ts` (new) | — | 8 / 16 (recipe) / 6 / 14 (real cells) | **+8 / +16 (recipe)** |
+
+`.skip` / `.only` / `.todo`: **0 → 0** across all touched files.
+
+**Accounting for Cell Removals & Replacements:**
+- `control.test.ts`:
+  - `decodes the four control kinds` (3 `expect`): Removed. Pinned `pause`/`resume`/`stop`, which have no variants in Rust `StreamControl`. Replaced by cell asserting dead vocabulary decodes to `null`.
+  - `decodes a quality change` (1 `expect`): Removed. `set-quality` is not an inbound wire command. Replaced by `refuses a bitrate that is not a u32 instead of clamping it`.
+  - `rejects an unknown profile instead of defaulting` (1 `expect`): Folded into the above.
+  - `rejects an unknown action and malformed JSON` (2 `expect`): Replaced by `drops a control type the Rust has no arm for` and `does not accept the dead stream-control vocabulary`.
+  - `decodes monitor, window and test sources` (3 `expect`): Replaced by `returns the scheme string rather than a parsed {kind, id} pair`.
+  - `rejects a monitor with no id or an empty one` (3 `expect`): Replaced by `refuses a missing, non-string or empty sourceId`.
+- `session.test.ts`:
+  - `re-configures the encoder on a quality change` (1 `expect`): Removed. Profile changes are internal to the sustain ladder in `pump()`. Replaced by `retargets the encoder on a bitrate received while streaming` (+2 `expect`), which killed surviving mutant M-j.
+- `control-composition.test.ts` recipe anomaly:
+  - The recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` matches lines 135 (`must clamp it (`) and 166 (`arm for it (`), yielding 8 matches for 6 real test cells. Vitest runner executes exactly **6** tests.
+
+**Suite Counts (clean checkouts):**
+- `apps/agent`: BASE **35 files / 466 tests** → HEAD **35 files / 468 tests**, exit 0 (+2 tests net).
+- `packages/desktop-core`: BASE **2 files / 54 tests** → HEAD **3 files / 60 tests**, exit 0 (+6 tests).
+
+---
+
 ### Task 27: Own the terminal message set on the wire (B41)
 
 **Landed at:** `3eac9653e301eae0b0dd3f4006c151271cbb4c49` — 9 files, **+1475 / −27**.
