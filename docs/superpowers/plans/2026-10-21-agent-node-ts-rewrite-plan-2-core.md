@@ -11434,6 +11434,86 @@ Two non-blocking observations from QA's audit, carried rather than closed: **O-1
 
 ---
 
+### Task 23: Temp-dir teardown in the five test files
+
+**Landed at:** `35e8a32ba7a862c72542f52a8fb55bdb6c45369d`
+**Files (tests only, 0 source files modified):**
+- `apps/agent/test/files/sandbox.test.ts` (+25 / −3)
+- `apps/agent/test/files/session.test.ts` (+30 / −13)
+- `apps/agent/test/identity/store.test.ts` (+23 / −3)
+- `apps/agent/test/terminal/pty.test.ts` (+17 / −3)
+- `apps/agent/test/terminal/shell-policy.test.ts` (+17 / −2)
+- Total: **5 files changed, 112 insertions(+), 24 deletions(-)** (`git diff --shortstat 6b47ede 35e8a32`); `git diff --name-only 6b47ede 35e8a32 | grep -c '^apps/agent/src/'` → **0**.
+
+**Origin & Purpose:**
+At BASE, `apps/agent/test/` had 22 `mkdtempSync` occurrences across five files (17 call sites + 5 import lines) and zero teardown hooks. Every test execution left its fixtures in `/tmp`, leaking +106 temporary directories per full suite run (`+106` measured at BASE across three independent runs). Task 23 installs a clean, self-contained teardown mechanism across all five files without introducing shared global state or altering test semantics.
+
+**The Landed Pattern:**
+Each file maintains an isolated module-scope registry, a registering helper, and a single top-level `afterAll` hook:
+
+```ts
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+```
+
+- **Call sites converted:** All 17 `mkdtempSync(join(tmpdir(), ...))` call sites across the five files were replaced with `tmpDir(...)` (sandbox: 2, session: 12, store: 1, pty: 1, shell-policy: 1). Outside the helper bodies, zero `mkdtempSync` calls remain.
+- **Teardown flags:** `recursive: true` is strictly mandatory because fixtures nest subdirectories; omitting it (`recursive: false`) fails all five files with `EISDIR`. `force: true` ensures teardown is idempotent and cannot throw if an assertion cell already deleted its target directory (e.g., destructive delete tests).
+- **Per-file isolation:** No global registries are used (`git grep 'globalThis.*TMP_DIRS'` is empty). Each test file's teardown runs independently under vitest's process isolation, verified by disabling `afterAll` in `session.test.ts` alone: only session's 68 directories leak, not a union of files.
+
+**The Sibling Cell: Variant C vs. Variant B (Why Variant B was rejected):**
+In `apps/agent/test/files/sandbox.test.ts:126-142`, the component-wise containment cell creates a second directory that is not produced by `mkdtempSync`:
+
+```ts
+const sibling = `${dir}2`;
+mkdirSync(sibling);
+TMP_DIRS.push(sibling); // added
+```
+
+Routing this creation through `tmpDir('ponter-sibling-')` (Variant B) was initially considered and rejected after measurement. The cell exists specifically to verify that `Sandbox` checks path component boundaries rather than a naive string `startsWith` prefix:
+- `${dir}2` shares a string prefix with `dir` (`/tmp/.../ponter-files-XYZ` vs. `/tmp/.../ponter-files-XYZ2`) without being path-contained by it.
+- Under the mutant `const prefix = this.root` at `apps/agent/src/files/sandbox.ts:159` (naive string prefix without trailing separator), Variant B generates random prefixes that share only `/tmp/ponter-`, causing the mutant to **SURVIVE** (19 passed — assertion satisfied by absence of signal).
+- Under Variant C (`${dir}2` kept + `TMP_DIRS.push(sibling)`), the common string prefix is retained, and the mutant is **KILLED** (`1 failed | 18 passed`). Restoring the code passes all 19 tests, ensuring both polarities hold.
+
+**TEST-INTEGRITY Declaration:**
+Counted on committed blobs (`git show 6b47ede:<path>` vs. `git show 35e8a32:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` and `grep -oP '\bexpect\s*\('`:
+
+| File | `it()` BASE → HEAD | `expect()` BASE → HEAD | `.skip / .only / .todo` |
+|---|---|---|---|
+| `apps/agent/test/files/sandbox.test.ts` | 19 → **19** | 21 → **21** | 0 → 0 |
+| `apps/agent/test/files/session.test.ts` | 45 → **45** | 110 → **110** | 0 → 0 |
+| `apps/agent/test/identity/store.test.ts` | 5 → **5** | 6 → **6** | 0 → 0 |
+| `apps/agent/test/terminal/pty.test.ts` | 15 → **15** | 24 → **24** | 0 → 0 |
+| `apps/agent/test/terminal/shell-policy.test.ts` | 12 → **12** | 13 → **13** | 0 → 0 |
+| **Total** | **96 → 96** | **174 → 174** | **0 → 0** |
+
+All five rows are **identical**. Test title sets are also identical (105 titles, `diff` empty). Zero test-side assertions were added, weakened, or removed:
+- Audit of the **24 deleted lines**: exactly 7 import lines that expanded to include `afterAll`/`rmSync`, and 17 `mkdtempSync` call sites converted to `tmpDir`. Zero deleted lines contain `expect(`.
+- Text vs. runner reconciliation: The text recipe reports 96 `it()` across the five files while the runner reports 107 passed because `session.test.ts:617` contains `it.each(FILES_INBOUND_TYPES)` with 12 cases (45 text → 56 runtime; 19 + 56 + 5 + 15 + 12 = 107).
+
+**The Seven Measured Axes (All verified in one run):**
+1. **Run:** `cd apps/agent && ./node_modules/.bin/vitest run`: **34 files / 430 passed (430)**, exit 0. The 5 touched files alone: **5 files / 107 passed**.
+2. **Text:** 96 → 96 `it()`, 174 → 174 `expect()`, 0 `.skip/.only/.todo`.
+3. **Typecheck:** `cd apps/agent && ./node_modules/.bin/tsc --noEmit`: **exit 0**. Must-error control (appending bad type to `sandbox.test.ts`) exits **2** (TS2322), proving `test/` is in `tsconfig.json`'s include scope.
+4. **Format:** Prettier check on all 5 committed blobs exits 0; positive control exits 1; repo `pnpm format:check` exits 0.
+5. **The Leak:** Full `/tmp` superset detector across three consecutive full suite runs: **0, 0, 0** new entries (`233 → 233` entries, delta 0). BASE was **+106**.
+6. **Must-Error Controls:**
+   - **C1** (disable `afterAll` in all 5 files): **+106** entries.
+   - **C2** (disable `afterAll` in `sandbox.test.ts` only): **+20** entries (18 `root()` factory calls + 1 sibling + 1 outside = 20), matching the file's runtime creation count.
+   - **C3** (disable `afterAll` in all 5 files across full suite): **+106** entries (`C1 == R0 == C3 == 106`).
+   - **C4** (drop only `TMP_DIRS.push(sibling)` in `sandbox.test.ts`): **+1** entry (`ponter-files-XYZ2`).
+   - **Failure path:** Injected test failure in `sandbox.test.ts` still runs `afterAll` (exit 1, leak delta 0).
+7. **Workspace Gating Job:** `pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force`: **9 successful, 9 total** (`@ponter/mobile` has no test script, dropping from 10 to 9). As `@ponter/agent-node` is excluded from CI gating, manual verification of axes 1–6 is load-bearing.
+
+---
+
 ## Closing sections
 
 ### The retirement note (R5) — the ten noise rules, and what becomes of each
