@@ -8569,13 +8569,15 @@ An earlier draft cited six names under a `sustain_ladder_*` scheme that appears 
 - Test: `apps/agent/test/desktop/control.test.ts`, `apps/agent/test/desktop/frames.test.ts`
 
 **Interfaces:**
-- Consumes: `ProfileId`, `DesktopProfile`.
+- Consumes: `ProfileId`, `DesktopProfile`; and — for the frames — the canonical wire types from `@ponter/shared` (`DataChannelMessage`, `DesktopStats`, `DesktopCursorPayload`, `DesktopSourceInfo`, `DesktopSourcesPayload`), which is where the browser's own parser reads them.
 - Produces:
   - `const MIN_BITRATE = 250_000`, `const MAX_BITRATE = 20_000_000`
   - `function clampBitrate(bps: number): number`
   - `function decodeStreamControl(bytes): StreamControl | null` → `{ kind: 'pause' } | { kind: 'resume' } | { kind: 'stop' } | { kind: 'bitrate'; bitrate: number } | { kind: 'quality'; profile: ProfileId }`
   - `function decodeDesktopSelect(bytes): { kind: 'monitor'; id: string } | { kind: 'window'; id: string } | { kind: 'test' } | null`
-  - `function buildStatsFrame(...)`, `function buildCursorFrame(...)`, `function buildSourcesFrame(...)`
+  - `function buildStatsFrame(stats: DesktopStats, timestamp: number): string` → `DataChannelMessage<DesktopStats>` on `channel: 'control'`
+  - `function buildCursorFrame(cursor: DesktopCursorPayload, timestamp: number): string` → `DataChannelMessage<DesktopCursorPayload>` on `channel: 'control'`
+  - `function buildSourcesFrame(sources: DesktopSourceInfo[], inputEnabled: boolean, peerVerified: boolean, cursorInFrame: boolean, timestamp: number): string` → `DataChannelMessage<DesktopSourcesPayload>` on `channel: 'control'`
   - `function gopForFps(fps: number): number`
 
 - [ ] **Step 1: Write the failing control test**
@@ -8760,102 +8762,303 @@ export function gopForFps(fps: number): number {
 
 ```ts
 // apps/agent/test/desktop/frames.test.ts
+import type { DesktopSourceInfo } from '@ponter/shared';
 import { describe, expect, it } from 'vitest';
-import { buildCursorFrame, buildSourcesFrame, buildStatsFrame } from '../../src/desktop/frames.js';
+import {
+  buildCursorFrame,
+  buildSourcesFrame,
+  buildStatsFrame,
+} from '../../src/desktop/frames.js';
 
 const parse = (text: string) => JSON.parse(text);
 
 describe('buildStatsFrame', () => {
-  it('emits the documented field names', () => {
+  it('emits the DataChannelMessage envelope on the control channel', () => {
     const frame = parse(
-      buildStatsFrame({
-        seq: 10,
-        fps: 58.5,
-        bitrate: 4_000_000,
-        encodeMsP50: 7.2,
-        captureMsP50: 3.1,
-        skippedFrames: 12,
-        profile: '1080p30',
-      }),
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+        },
+        12_345,
+      ),
     );
-    expect(frame).toMatchObject({
-      type: 'desktop-stats',
-      data: {
-        seq: 10,
-        fps: 58.5,
-        bitrate: 4_000_000,
-        encodeMsP50: 7.2,
-        captureMsP50: 3.1,
-        skippedFrames: 12,
-        profile: '1080p30',
-      },
+    expect(frame.type).toBe('desktop-stats');
+    expect(frame.channel).toBe('control');
+    expect(frame.timestamp).toBe(12_345);
+  });
+
+  it('carries the stats fields the browser requires', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+        },
+        1,
+      ),
+    );
+    expect(frame.payload).toMatchObject({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      targetBitrateBps: 4_000_000,
     });
   });
 
   it('rounds the two p50s to one decimal place', () => {
     const frame = parse(
-      buildStatsFrame({
-        seq: 1,
-        fps: 30,
-        bitrate: 1,
-        encodeMsP50: 7.25,
-        captureMsP50: 3.04,
-        skippedFrames: 0,
-        profile: '720p30',
-      }),
+      buildStatsFrame(
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          targetBitrateBps: 1,
+          encodeMsP50: 7.25,
+          captureMsP50: 3.04,
+        },
+        1,
+      ),
     );
-    expect(frame.data.encodeMsP50).toBe(7.3);
-    expect(frame.data.captureMsP50).toBe(3);
+    expect(frame.payload.encodeMsP50).toBe(7.3);
+    expect(frame.payload.captureMsP50).toBe(3);
+  });
+
+  it('omits every absent optional stats field', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 6_000_000,
+        },
+        1,
+      ),
+    );
+    for (const key of [
+      'status',
+      'frameSeq',
+      'captureMsP50',
+      'encodeMsP50',
+      'frameSamples',
+    ]) {
+      expect(key in frame.payload).toBe(false);
+    }
+  });
+
+  it('carries the optional stats fields when they are set, and omits only the unset one', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+          status: {
+            kind: 'quality-downgraded',
+            detail: '720p (quality downgraded)',
+          },
+          frameSeq: 42,
+          encodeMsP50: 11,
+          frameSamples: [{ seq: 42, captureEpochMs: 1000, encodeMs: 11 }],
+        },
+        3,
+      ),
+    );
+    expect(frame.payload.status).toEqual({
+      kind: 'quality-downgraded',
+      detail: '720p (quality downgraded)',
+    });
+    expect(frame.payload.frameSeq).toBe(42);
+    expect(frame.payload.frameSamples).toEqual([
+      { seq: 42, captureEpochMs: 1000, encodeMs: 11 },
+    ]);
+    expect('captureMsP50' in frame.payload).toBe(false);
   });
 });
 
 describe('buildCursorFrame', () => {
-  it('emits x, y, visible and shape', () => {
+  it('emits the envelope with x, y, visible and seq', () => {
     const frame = parse(
-      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default' }),
+      buildCursorFrame(
+        {
+          x: 0.25,
+          y: 0.75,
+          visible: true,
+          seq: 7,
+        },
+        1_700_000_000,
+      ),
     );
-    expect(frame).toEqual({
+    expect(frame).toMatchObject({
       type: 'desktop-cursor',
-      data: { x: 100, y: 200, visible: true, shape: 'default' },
+      channel: 'control',
+      timestamp: 1_700_000_000,
+      payload: {
+        x: 0.25,
+        y: 0.75,
+        visible: true,
+        seq: 7,
+      },
     });
   });
 
-  it('emits visible=false with a null shape rather than omitting the field', () => {
-    // The browser's cursor layer reads `data.shape` unconditionally; a missing
-    // field there draws the previous cursor shape at the new position.
-    const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
-    expect(frame.data).toEqual({ x: 0, y: 0, visible: false, shape: null });
+  it('omits shape when the cursor has none', () => {
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: false,
+          seq: 1,
+        },
+        1,
+      ),
+    );
+    expect('shape' in frame.payload).toBe(false);
+  });
+
+  it('emits the shape record when one is set', () => {
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: true,
+          seq: 0,
+          shape: {
+            png: 'iVBORw0KGgo=',
+            hotspotX: 4,
+            hotspotY: 8,
+            serial: 42,
+          },
+        },
+        1,
+      ),
+    );
+    expect(frame.payload.shape).toEqual({
+      png: 'iVBORw0KGgo=',
+      hotspotX: 4,
+      hotspotY: 8,
+      serial: 42,
+    });
   });
 
   it('stamps lastInputSeq on the wire when one is set', () => {
-    // ADR-47's echo: the browser's latency meter reads this field. The Rust
-    // pins `lastInputSeq: 3` on the payload (`desktop.rs:3758`).
     const frame = parse(
-      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default', lastInputSeq: 3 }),
+      buildCursorFrame(
+        {
+          x: 100,
+          y: 200,
+          visible: true,
+          seq: 1,
+          lastInputSeq: 3,
+        },
+        1,
+      ),
     );
-    expect(frame.data).toMatchObject({ lastInputSeq: 3 });
+    expect(frame.payload).toMatchObject({ lastInputSeq: 3 });
   });
 
   it('omits lastInputSeq from the wire when none is set', () => {
-    // Mirrors `frame_desktop_cursor_omits_last_input_seq_when_none`
-    // (`desktop.rs:3766-3786`): `skip_serializing_if` on `None` — the field is
-    // absent from the JSON, not null.
-    const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
-    expect('lastInputSeq' in frame.data).toBe(false);
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: false,
+          seq: 1,
+        },
+        1,
+      ),
+    );
+    expect('lastInputSeq' in frame.payload).toBe(false);
   });
 });
 
 describe('buildSourcesFrame', () => {
-  it('lists monitors and windows with their ids', () => {
-    const frame = parse(
-      buildSourcesFrame({
-        monitors: [{ id: '1', name: 'DP-1', width: 1920, height: 1080, primary: true }],
-        windows: [{ id: '0x40', title: 'Editor' }],
-      }),
-    );
+  it('emits the DesktopSourcesPayload shape', () => {
+    const frame = parse(buildSourcesFrame([], true, true, true, 7));
     expect(frame.type).toBe('desktop-sources');
-    expect(frame.data.monitors[0]).toMatchObject({ id: '1', primary: true });
-    expect(frame.data.windows[0]).toMatchObject({ id: '0x40', title: 'Editor' });
+    expect(frame.channel).toBe('control');
+    expect(frame.timestamp).toBe(7);
+    expect(frame.payload).toMatchObject({
+      sources: [],
+      inputEnabled: true,
+      peerVerified: true,
+      cursorInFrame: true,
+    });
+  });
+
+  it('renders inputEnabled, peerVerified and cursorInFrame in both directions', () => {
+    const t = parse(buildSourcesFrame([], true, true, true, 1));
+    expect(t.payload.inputEnabled).toBe(true);
+    expect(t.payload.peerVerified).toBe(true);
+    expect(t.payload.cursorInFrame).toBe(true);
+
+    const f = parse(buildSourcesFrame([], false, false, false, 1));
+    expect(f.payload.inputEnabled).toBe(false);
+    expect(f.payload.peerVerified).toBe(false);
+    expect(f.payload.cursorInFrame).toBe(false);
+  });
+
+  it('carries every DesktopSourceInfo field with the camelCase spelling', () => {
+    const source: DesktopSourceInfo = {
+      id: 'test:0',
+      kind: 'monitor',
+      name: 'Test pattern',
+      width: 1280,
+      height: 720,
+      x: 0,
+      y: 0,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: true,
+      default: true,
+    };
+    const frame = parse(buildSourcesFrame([source], true, true, true, 1));
+    expect(frame.payload.sources[0]).toEqual(source);
+    expect('scale_factor' in frame.payload.sources[0]).toBe(false);
+  });
+
+  it('carries multi-entry sources including windows and monitors', () => {
+    const monitor: DesktopSourceInfo = {
+      id: 'monitor:0',
+      kind: 'monitor',
+      name: 'Display 1',
+      width: 1920,
+      height: 1080,
+      x: 0,
+      y: 0,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: true,
+      default: true,
+    };
+    const window: DesktopSourceInfo = {
+      id: 'window:123',
+      kind: 'window',
+      name: 'Terminal',
+      width: 800,
+      height: 600,
+      x: 100,
+      y: 100,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: false,
+      default: false,
+    };
+    const frame = parse(
+      buildSourcesFrame([monitor, window], true, true, true, 1),
+    );
+    expect(frame.payload.sources).toHaveLength(2);
+    expect(frame.payload.sources[0]).toEqual(monitor);
+    expect(frame.payload.sources[1]).toEqual(window);
   });
 });
 ```
@@ -8867,94 +9070,116 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/desktop/frames.ts
-import type { ProfileId } from '@ponter/shared';
+import type {
+  DataChannelMessage,
+  DesktopCursorPayload,
+  DesktopSourceInfo,
+  DesktopSourcesPayload,
+  DesktopStats,
+} from '@ponter/shared';
 
-export interface StatsInput {
-  seq: number;
-  fps: number;
-  bitrate: number;
-  encodeMsP50: number;
-  captureMsP50: number;
-  skippedFrames: number;
-  profile: ProfileId;
-}
-
-export interface CursorInput {
-  x: number;
-  y: number;
-  visible: boolean;
-  shape: string | null;
-  /**
-   * ADR-47's echo: the `seq` of the last input frame the agent **applied**,
-   * stamped on every `desktop-cursor` payload as `lastInputSeq` and read by the
-   * browser's latency meter. The Rust carries it as `last_input_seq:
-   * Option<u64>` with `skip_serializing_if = "Option::is_none"`
-   * (`desktop.rs:2176-2177`), so the field is **omitted from the wire when
-   * unset** — the builder below spreads it conditionally, never writing
-   * `lastInputSeq: undefined` (which would survive `JSON.stringify` as an
-   * absent key but would not survive a typed consumer that inspects
-   * `Object.keys`). The **runtime owns the single mutable holder** for this
-   * value — the Rust's hoisted `Arc<AtomicU64>`
-   * (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor
-   * loop reads it, and Task 19's desktop session loop owns that wiring.
-   */
-  lastInputSeq?: number;
-}
-
-export interface SourcesInput {
-  monitors: { id: string; name: string; width: number; height: number; primary: boolean }[];
-  windows: { id: string; title: string }[];
-}
-
+/**
+ * TS-only divergence from Rust: the Rust serialises f32 p50s unrounded (7.25 -> 7.25);
+ * the builder emits 7.3. Neither captureMsP50 nor encodeMsP50 has any reader in
+ * packages/desktop-core/src or apps/web/src (where readers are targetBitrateBps, width,
+ * height, status.kind, status.detail). The divergence is unobservable to readers
+ * and kept to avoid moving green cells for measurement noise.
+ */
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-export function buildStatsFrame(input: StatsInput): string {
+/**
+ * Stats frame builder. Mirrors Rust `frame_desktop_stats` (desktop.rs:2147).
+ *
+ * Optional fields (`status`, `frameSeq`, `captureMsP50`, `encodeMsP50`, `frameSamples`)
+ * are omitted when unset via conditional spread, matching Rust's `skip_serializing_if`.
+ */
+export function buildStatsFrame(
+  stats: DesktopStats,
+  timestamp: number,
+): string {
+  const payload: DesktopStats = {
+    width: stats.width,
+    height: stats.height,
+    fps: stats.fps,
+    targetBitrateBps: stats.targetBitrateBps,
+    ...(stats.status !== undefined ? { status: stats.status } : {}),
+    ...(stats.frameSeq !== undefined ? { frameSeq: stats.frameSeq } : {}),
+    ...(stats.captureMsP50 !== undefined
+      ? { captureMsP50: round1(stats.captureMsP50) }
+      : {}),
+    ...(stats.encodeMsP50 !== undefined
+      ? { encodeMsP50: round1(stats.encodeMsP50) }
+      : {}),
+    ...(stats.frameSamples !== undefined
+      ? { frameSamples: stats.frameSamples }
+      : {}),
+  };
   return JSON.stringify({
     type: 'desktop-stats',
-    data: {
-      seq: input.seq,
-      fps: round1(input.fps),
-      bitrate: input.bitrate,
-      encodeMsP50: round1(input.encodeMsP50),
-      captureMsP50: round1(input.captureMsP50),
-      skippedFrames: input.skippedFrames,
-      profile: input.profile,
-    },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopStats>);
 }
 
 /**
- * `shape: null` when the cursor is hidden is deliberate rather than omitting the
- * key: the web cursor layer reads `data.shape` unconditionally and would draw
- * the previous shape at the new position.
+ * Cursor frame builder. Mirrors Rust `frame_desktop_cursor` (desktop.rs:2093).
  *
- * `lastInputSeq` is the inverse: it is **omitted when unset**, mirroring the
- * Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176`) — the
- * browser treats an absent field and a `null` differently here (a stale echo
- * from an earlier input must not be re-sent forever; the holder resets to
- * null between applications). The conditional spread keeps the field off the
- * object rather than writing `undefined`.
+ * `shape` and `lastInputSeq` carry `skip_serializing_if = "Option::is_none"`
+ * in Rust (desktop.rs:2175-2179), so both fields are omitted from the wire
+ * when unset — the builder below uses conditional spread, never writing
+ * `undefined` or `null`.
  */
-export function buildCursorFrame(input: CursorInput): string {
+export function buildCursorFrame(
+  cursor: DesktopCursorPayload,
+  timestamp: number,
+): string {
+  const payload: DesktopCursorPayload = {
+    x: cursor.x,
+    y: cursor.y,
+    visible: cursor.visible,
+    seq: cursor.seq,
+    ...(cursor.lastInputSeq !== undefined
+      ? { lastInputSeq: cursor.lastInputSeq }
+      : {}),
+    ...(cursor.shape !== undefined ? { shape: cursor.shape } : {}),
+  };
   return JSON.stringify({
     type: 'desktop-cursor',
-    data: {
-      x: input.x,
-      y: input.y,
-      visible: input.visible,
-      shape: input.shape,
-      ...(input.lastInputSeq === undefined ? {} : { lastInputSeq: input.lastInputSeq }),
-    },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopCursorPayload>);
 }
 
-export function buildSourcesFrame(input: SourcesInput): string {
+/**
+ * Desktop sources frame builder. Mirrors Rust `frame_desktop_sources` (desktop.rs:2066).
+ *
+ * Takes `inputEnabled`, `peerVerified`, and `cursorInFrame` flags as parameters and
+ * renders each in both directions so that the wire format accurately reflects the
+ * admission and capture state.
+ */
+export function buildSourcesFrame(
+  sources: DesktopSourceInfo[],
+  inputEnabled: boolean,
+  peerVerified: boolean,
+  cursorInFrame: boolean,
+  timestamp: number,
+): string {
+  const payload: DesktopSourcesPayload = {
+    sources,
+    inputEnabled,
+    peerVerified,
+    cursorInFrame,
+  };
   return JSON.stringify({
     type: 'desktop-sources',
-    data: { monitors: input.monitors, windows: input.windows },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopSourcesPayload>);
 }
 ```
 
@@ -8967,7 +9192,13 @@ git add apps/agent/src/desktop apps/agent/test/desktop
 git commit -m "feat(agent): decode stream control and build the desktop frames"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 29 new `expect()`** — **15 / 27** as the previous revision landed it, **17 / 29** after the ADR-47 seq-echo repair (+2 `it()`, +2 `expect()`, both in `frames.test.ts`: the `lastInputSeq` set case and the `lastInputSeq` omitted case; `control.test.ts` is unchanged at 10 / 19, `frames.test.ts` goes 5 / 8 → 7 / 10). Ports `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
+**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 29 new `expect()`** — **15 / 27** as the previous revision landed it, **17 / 29** after the ADR-47 seq-echo repair (+2 `it()`, +2 `expect()`, both in `frames.test.ts`: the `lastInputSeq` set case and the `lastInputSeq` omitted case; `control.test.ts` is unchanged at 10 / 19, `frames.test.ts` goes 5 / 8 → 7 / 10).
+
+**Task 25 supersedes the `frames.test.ts` figures above.** When the builders moved to the `DataChannelMessage` wire format, the frames fence was rewritten and then extended by a test-only fix round: `frames.test.ts` now stands at **14 `it()` / 31 `expect()`**, so this task's two test files stand at **24 `it()` / 52 `expect()`** on the committed blobs (`control.test.ts` 10 / 21 + `frames.test.ts` 14 / 31). The full per-cell accounting is in `### Task 25`; nothing was deleted or skipped (`.skip` / `.only` / `.todo` = 0 throughout), and the four pre-wire cells were replaced with their wire equivalents.
+
+One drift predates Task 25 and is recorded here rather than silently re-based: the landed `control.test.ts` carries **21** `expect()` against this fence's **19**, because the empty-source-id guard (`value.id === ''`) landed with Task 17 — asserted in both polarities, missing-key and empty-string — and the fence text was not updated at the time. The fence below still shows the single missing-key case, and the explicit `from '@ponter/shared'` type import the frames fence now needs.
+
+**Ports:** `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
 
 **ADR-47's echo declared (MAJOR-2/2d).** `buildCursorFrame` now carries `lastInputSeq?: number` and stamps it on the wire as `lastInputSeq` — the browser's latency meter reads that field, so without it the one-way-latency display is dead on arrival. **Omitted when absent**, mirroring the Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176-2177`) and its two cursor-frame tests (`desktop.rs:3730-3763` asserts `p["lastInputSeq"] == 3`; `desktop.rs:3766-3786` asserts the field is **absent** when `None`) — the two new tests are those two, and the absent case asserts the key is **not in** the payload rather than that it is `null`, because "absent" and "null" are different on this wire. The **runtime owns the single mutable holder** for the echoed value, the way the Rust's hoisted `Arc<AtomicU64>` does (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor loop reads it, and that wiring stays with Task 19's desktop session loop, which this commit does not touch.
 
@@ -9984,17 +10215,17 @@ On the six-number axes: fence **23 `it()`** / call sites **23** (no `it.each(` i
 
 **Desktop outbound frames — the follow-up register entry (MAJOR-2 addendum, extended 2026-10-24).** Task 17's fence is untouched by this repair, so the obligations below are carried here rather than fixed. They are one class: **Task 17's builders, their own fence, and the browser disagree, and only the browser is the authority.** The probe `.superpowers/probes/b12g-send-stringify-pm/` (`test/frame-shape.test.ts`, `test/payload-fields.test.ts`) measures all of it; Task 17's fence passes 5/5 against its own builders, which is the point — they agree with each other and not with the reader.
 
-1. **The builders produce no envelope.** `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` return `{ type, data }`. The Rust builds a full `DataChannelMessage` — `{ type, channel, payload, timestamp }` (`desktop.rs:2048-2085`, `:2093-2101`) — and the browser reads `msg.payload` (`desktop-core/src/client.ts:268-330`). The re-port must emit the envelope; `send()`'s string branch (MAJOR-3, landed in this commit) only stops the *double-encoding*, it does not wrap the frame.
-2. **The payload vocabularies are a third vocabulary.** Measured gates:
+1. **The builders produce no envelope.** *(CLOSED by Task 25, `95fd96c` + `833e6c1`.)* At the time this entry was written, `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` returned `{ type, data }`. The Rust builds a full `DataChannelMessage` — `{ type, channel, payload, timestamp }` (`desktop.rs:2048-2085`, `:2093-2101`) — and the browser reads `msg.payload` (`desktop-core/src/client.ts:268-330`). Task 25 re-ported all three builders onto the envelope; `send()`'s string branch (MAJOR-3) only stopped the *double-encoding* and never wrapped the frame, which is why the builders own it.
+2. **The payload vocabularies are a third vocabulary.** *(CLOSED by Task 25 for all three frames; the table below is the record of what was measured at BASE.)* Measured gates:
 
-   | frame | the plan sends | the browser requires | source |
+   | frame | the plan sent (BASE) | the browser requires | source |
    |---|---|---|---|
-   | `desktop-stats` | `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` | `width`, `height`, `fps`, `targetBitrateBps` — `parseStats` returns `null` without all four | `client.ts:356-368` |
-   | `desktop-cursor` | `shape: string` | `shape: DesktopShape` = `{ png, hotspotX, hotspotY, serial }`; `seq` required; `lastInputSeq?` (landed this commit on the sender side, 2d) | `desktop.ts:107-114` |
-   | `desktop-sources` | `{ monitors, windows }` | `{ sources: DesktopSourceInfo[], inputEnabled, peerVerified, cursorInFrame }` | `desktop.ts:11-27`, `:123-139` |
+   | `desktop-stats` | `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` | `width`, `height`, `fps`, `targetBitrateBps` — `parseStats` returns `null` without all four | `client.ts:358-370` |
+   | `desktop-cursor` | `shape: string` | `shape: DesktopShape` = `{ png, hotspotX, hotspotY, serial }`; `seq` required; `lastInputSeq?` (landed this commit on the sender side, 2d) | `desktop.ts:95-115` |
+   | `desktop-sources` | `{ monitors, windows }` | `{ sources: DesktopSourceInfo[], inputEnabled, peerVerified, cursorInFrame }` | `desktop.ts:11-28`, `:123-139` |
 
-   `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-27`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
-3. **Nothing calls `deps.send` for these frames.** Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. The `deps.send` seam exists and the router serves `control`; the producer does not.
+   `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-28`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
+3. **Nothing calls `deps.send` for these frames.** *(STILL OPEN — unaffected by Task 25.)* Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. Task 25 fixed the builders, not the wiring: `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` still have **no production caller** anywhere in `apps/agent/src` (grep: only `data-channels.ts:287`'s docblock mentions one). The `deps.send` seam exists, the router serves `control`, and the frames are now wire-correct — the producer is what is missing.
 4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `E2eeSession` (`acceptHello` / `encrypt` / `decrypt`) is a WS1 answerer and has no desktop path at all — the old `AgentE2ee`, with its `beginTerminalE2ee`/`isArmed` shape, named a class this plan no longer has — and the `desktop-e2ee-ack` outbound type is named with nothing that builds it: no Produces entry, no builder, no producer. Grep the plan for `desktop-e2ee-ack`. Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
 5. **`verifyOfferIdentity` and `advertisesE2ee` have no production caller in Plan 2.** The Rust admission gate (`lib.rs:1162` in `run_one_session`) is not fenced; Task 19 runtime does not wire `onOffer`. Handed off to Plan 3 alongside the other unfenced session-loop wirings.
 6. **The one-session-at-a-time invariant is now a *caller* obligation, and nothing owns it.** The Rust refuses a second hello while a session is live, and it does so at the two dispatch sites rather than in `accept_hello`: the terminal path reads `let already_active = e2ee_guard.is_some();` and negotiates only `if !already_active` (`lib.rs:1313-1316`), the desktop path gates on `if negotiated && e2ee_session.is_none()` (`lib.rs:2364`). **Task 7's `E2eeSession.acceptHello` is a pure static constructor** — it takes no registry, sees no existing session, and cannot refuse anything; a second call simply derives a second key from the same `sessionId` and returns a second ack. So the invariant lives entirely with whoever calls it, and this plan currently has **no such caller at all**: Task 18's router drops an unknown `control` type and Task 19 wires no E2EE dispatch, both recorded above. Whoever lands the wiring must hold the session and check it before calling, or a peer's second hello silently re-keys a live terminal. **The Rust does not test this either**, stated plainly so the gap is not mistaken for a ported guarantee: `already_active` occurs only at those two production lines, `e2ee_session` occurs at seven production sites (`lib.rs:1267,1286,1630,2351,2364,2394,2416`) and **zero** times inside `#[cfg(test)]` (the test module starts at `lib.rs:3045`), and the two tests that drive `accept_hello` (`lib.rs:3548`, `:3691`) call it directly and bypass the gate entirely. This is therefore **not a regression against the authority** — it is an unfenced obligation the port inherits, and the first caller is where it must be pinned.
@@ -11568,6 +11799,61 @@ QA's independent mechanical census and multi-point band mutation of all 24 numer
 1. `FILE_MAX_BYTES` (1 GiB, `apps/agent/src/files/protocol.ts:10`): The only test exercising it (`session.test.ts:780`) tests `size: FILE_MAX_BYTES + 1` (circular rejection above constant), leaving values such as 512 MiB or 2 GiB completely unpinned. A literal pin `expect(FILE_MAX_BYTES).toBe(1073741824)` is proven by QA's `gap-cure.mjs` to catch this gap.
 2. `ACK_FLUSH_INTERVAL_MS` (20 ms, `apps/agent/src/files/protocol.ts:9`): Zero tests import or verify this constant; any value ≤ 20 ms passes because the test harness advances mock time in 20 ms ticks.
 3. `MAX_FRAME_BYTES` (64 KiB, `apps/agent/src/terminal/pty.ts:11`): A dead port artifact with **zero production callers** in the TypeScript codebase (as recorded in `data-channels.ts:236`), allowing any value from 1 KiB to 1 MiB to ship green. Scheduled for removal in Task 27.
+
+---
+
+### Task 25: Put the three desktop control frames on the wire the browser reads
+
+**Landed at:** `95fd96c035830b0a9c0f0d0a52ebbeb53297722a` (landing) + `833e6c1d4237cf4abd3900df06fddafff6db69da` (test-only fix round)
+**Files modified:**
+- Landing commit (`95fd96c`, +429 / −147, 3 files):
+  - `apps/agent/src/desktop/frames.ts` (+92 / −78, 1 product file)
+  - `apps/agent/test/desktop/frames.test.ts` (+185 / −69)
+  - `packages/desktop-core/test/frames-composition.test.ts` (+152 / −0, new composition test file)
+- Fix commit (`833e6c1`, +69 / −4, 2 files, 0 in `src/`):
+  - `apps/agent/test/desktop/frames.test.ts` (+66 / −0)
+  - `packages/desktop-core/test/frames-composition.test.ts` (+3 / −4)
+
+**Origin & Purpose: The Three Composition Defects (D-1, D-2, D-3):**
+Driving the agent's desktop control frames through `webrtc-core`'s typed listener and `packages/desktop-core`'s browser client parsers at BASE revealed three independent defects that silently broke control frame delivery despite green unit tests:
+1. **D-1 (No envelope):** All three builders emitted `{ type, data }`. The browser and WebRTC wire format requires `DataChannelMessage { type, channel: 'control', payload, timestamp }` (`packages/shared/src/types/webrtc.ts:9-14`). The browser reads `msg.payload`, so `data` was ignored: stats and cursor frames were dropped silently, and sources frames arrived with `payload === undefined`.
+2. **D-2 (Sources payload shape mismatch):** Agent emitted `{ monitors, windows }` with non-wire shapes. The browser parser (`client.ts:270-291`) reads `DesktopSourcesPayload` (`sources`, `inputEnabled`, `peerVerified`, `cursorInFrame`), where each source in `sources` requires 11 camelCase fields (`id, kind, name, width, height, x, y, scaleFactor, rotation, isPrimary, default`). At BASE, the browser normalized this to `{ sources: [], inputEnabled: false, peerVerified: false, cursorInFrame: false }` — an empty display picker and an input gate that read closed even when open.
+3. **D-3 (Stats and cursor validation failure):** `parseStats` (`client.ts:358-370`) requires finite numbers for `width`, `height`, `fps`, and `targetBitrateBps`. The agent emitted `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` without `width`, `height`, or `targetBitrateBps`. The stats line could never render. For cursor, `seq` was missing, causing `watch(() => desktopCursor?.seq)` to never trigger latency/extrapolation resets. In addition, `shape: null` was emitted instead of omitting the field when unset (violating Rust's `skip_serializing_if = "Option::is_none"`).
+
+**Implementation & Parity with Rust:**
+- **Wire envelope:** All three builders return serialized JSON matching `DataChannelMessage<T> satisfies`: `{ type, channel: 'control', payload, timestamp }`.
+- **Shared Types:** Uses canonical types from `@ponter/shared` (`DesktopStats`, `DesktopSourcesPayload`, `DesktopSourceInfo`, `DesktopCursorPayload`, `DataChannelMessage`). Local non-wire interfaces (`StatsInput`, `CursorInput`, `SourcesInput`) are eliminated.
+- **Optional field omission:** Rust serde uses `skip_serializing_if = "Option::is_none"`. In TypeScript, conditional spreads (`...(field !== undefined ? { field } : {})`) are used for `status`, `frameSeq`, `captureMsP50`, `encodeMsP50`, `frameSamples`, `shape`, and `lastInputSeq`, ensuring unset keys are completely absent from serialized JSON.
+- **`buildSourcesFrame` parameterization:** Takes `(sources, inputEnabled, peerVerified, cursorInFrame, timestamp)` and passes all flags directly, enabling two-direction verification mirroring Rust `desktop.rs:3036-3088`.
+- **`round1` divergence:** Retained and declared in docblock. Rust serializes `f32` unrounded (`7.25`), whereas TS emits `7.3`. P50 values are unread by client UI/stores (which read `width`, `height`, `fps`, `targetBitrateBps`, `status.kind`, `status.detail`).
+
+**The Test-Only Fix Round (Commit `833e6c1` closing F-1..F-4):**
+QA audit on landing commit `95fd96c` reported four fence gaps (F-1..F-4) with zero product defects:
+- **F-1 (Optional stats set-direction):** Added test cell `carries the optional stats fields when they are set, and omits only the unset one` (+4 `expect()`), killing mutants dropping `status`, `frameSeq`, and `frameSamples`.
+- **F-2 (Sources envelope timestamp):** Cell 10 added `expect(frame.timestamp).toBe(7)` (+1 `expect()`), killing mutant timestamp omission.
+- **F-3 (Masked cross-tree type gate & false comment):** Deleted all three `as never` casts and stale comment in `packages/desktop-core/test/frames-composition.test.ts`. Unmasked call-site type checking verified live (drifting parameter types causes `tsc` TS2345 in `desktop-core`).
+- **F-4 (Multi-entry sources & windows):** Added test cell `carries multi-entry sources including windows and monitors` (+3 `expect()`), asserting full preservation of multi-entry sources with both `monitor` and `window` kinds.
+
+**Cross-Tree Composition Gate:**
+`packages/desktop-core/test/frames-composition.test.ts` imports the agent's builders directly (`import ... from '../../../apps/agent/src/desktop/frames'`). Because `@ponter/desktop-core#typecheck` and `#test` are gated in `ci-node.yml`, `apps/agent/src/desktop/frames.ts` is now covered by a CI-gated compiler check. The cross-package gate is active, unmasked, and verified.
+
+**TEST-INTEGRITY Declaration & Accounting:**
+Recounted on committed blobs (`git show 69ffc18:<path>` vs. `git show 833e6c1:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` and `grep -oP '\bexpect\s*\('`:
+
+| File | Before (`69ffc18`) | Landing (`95fd96c`) | Fix (`833e6c1`) | Net Delta |
+|---|---|---|---|---|
+| `apps/agent/test/desktop/frames.test.ts` | 7 `it()` / 10 `expect()` | 12 / 23 | **14 / 31** | **+7 / +21** |
+| `packages/desktop-core/test/frames-composition.test.ts` | 0 / 0 (absent) | 3 / 7 | **3 / 7** | **+3 / +7** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Zero tests weakened. All 4 old cells were replaced with justification (plan fields replaced with wire schema, shape record decoupled, null shape replaced with key omission, sources decoupled into wire payload + multi-entry cells).
+
+**Final Suite & Package Test Counts** (measured on commit `833e6c1`, not on a shared working tree — later untracked work in the tree changes both figures):
+- `apps/agent`: 34 files / **438 passed (438)** (+7 net tests vs BASE 431; 436 at landing `95fd96c`, +2 in the fix round).
+- `packages/desktop-core`: 2 files / **54 passed (54)** (+3 tests in `frames-composition.test.ts` vs BASE 51).
+
+**QA Binding Verdicts:**
+- Landing commit `95fd96c`: **BOUND PASS** (QA verdict `qa-verdict-task-25.md`).
+- Fix commit `833e6c1`: **BOUND PASS** (QA verdict `qa-verdict-task-25-re-review.md`).
 
 ---
 
