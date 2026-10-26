@@ -12592,6 +12592,17 @@ Probe, on the committed `sustain.ts`, in an isolated `git archive` tree: a ladde
 | `pnpm exec turbo run typecheck` | 12/12 tasks (agent excluded) | **13/13 tasks**, 0 cached, exit 0 |
 | `pnpm exec turbo run test` (gated subset) | 9/9 tasks (agent excluded) | **10/10 tasks**, 0 cached, exit 0 |
 
+**The prospective gate run was already red at `a129ea1` with the agent included.** Running the post-Task-34 gate commands against `a129ea1` with `@ponter/agent-node` included gives:
+
+| Command | Result at `a129ea1` |
+|---|---|
+| `pnpm exec turbo run lint --force` | **12/12 tasks**, `0 cached`, exit 0 |
+| `pnpm exec turbo run typecheck --force` | **13/13 tasks**, `0 cached`, exit 0 |
+| `pnpm exec turbo run test --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force` | **exit 1**, `Failed: @ponter/agent-node#test` |
+| the same test command with `--concurrency=1` | **10/10 tasks**, exit 0 |
+
+The failing cell is `test/terminal/pty-real.test.ts > a real shell > echoes, then delivers terminal-exit after the child exits`, failing with `AssertionError: expected [] to deeply equal [ 7 ]` — `exits` is empty, i.e. the event had not arrived, not a wrong code. This is why the gate change alone could not land: without the cure, the first push would have been a red CI job, so the cure is part of the same task rather than a follow-up. The `--concurrency=1` observation confirms the test passes when run alone — which is exactly the load-dependence, so `--concurrency=1` is a diagnostic, not a cure; the committed fix is the condition-based `waitFor`, not the flag (do not add `--concurrency=1` to CI).
+
 **TEST-INTEGRITY declaration (`pty-real.test.ts`):**
 - `it()`: 1 → 1
 - `expect()`: 2 → 2
