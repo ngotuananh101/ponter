@@ -4,27 +4,18 @@ name: CI (Node)
 # Node/TypeScript test suites.
 #
 # Split out of the old monolithic `ci.yml` so that a push only runs the work
-# that its changes actually affect. The agent at `apps/agent` is deliberately
-# EXCLUDED here by the turbo `--filter='!@ponter/agent-node'` below.
+# that its changes actually affect.
 #
-# Two reasons, and only the second is permanent:
-#   1. `paths:` does not list `apps/agent/**`, so a branch that touches only the
-#      agent never reaches this job anyway. The exclusion makes that explicit.
-#   2. The directory holds BOTH the Rust crate — gated by `build-agent.yml` —
-#      and the `@ponter/agent-node` TypeScript package, which is not gated yet.
-#      When Plan 3 adds `apps/agent/**` to `paths:`, the filter is what keeps
-#      the not-yet-gating package out of a job that runs on unrelated pushes.
-#
-# The filter names the agent's CURRENT package name. Turbo treats a filter that
-# matches no package as a fatal error, not an empty selection, so renaming
-# `apps/agent/package.json` without updating these filters aborts the whole
-# workspace verify step — every Node push, not only an agent one. Keep all three
-# in step with that manifest.
+# `apps/agent/**` holds BOTH the Rust crate — gated by `build-agent.yml` — and
+# the `@ponter/agent-node` TypeScript package, fully gated here (Task 34).
+# Because GitHub Actions path filters are directory-based, changes to the Rust
+# tree also trigger this workflow (deliberate cost of owner ruling b).
 
 on:
   push:
     branches: [main, develop]
     paths:
+      - 'apps/agent/**'
       - 'apps/server/**'
       - 'apps/web/**'
       - 'apps/mobile/**'
@@ -41,6 +32,7 @@ on:
   pull_request:
     branches: [main, develop]
     paths:
+      - 'apps/agent/**'
       - 'apps/server/**'
       - 'apps/web/**'
       - 'apps/mobile/**'
@@ -77,13 +69,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # `!@ponter/agent-node` excludes the agent's TS package: it is not gating
-      # yet, and `apps/agent/**` is absent from `paths:` (see the header note).
+      # The agent's `test` script is `vitest run --passWithNoTests`, and the
+      # default include reaches `spike/spike.test.ts`, which drives a real
+      # Chromium through @playwright/test (`spike.ts:153`). `pnpm install`
+      # does NOT fetch browsers -- playwright and playwright-core both ship an
+      # empty `scripts{}` -- so this step is required, not an optimisation.
+      # Measured without it: 35 files / 497 passed, 3 failed.
+      - name: Install Playwright chromium for the agent spike
+        run: pnpm --filter @ponter/agent-node exec playwright install chromium --with-deps
+
       - name: Lint workspace
-        run: pnpm exec turbo run lint --filter='!@ponter/agent-node'
+        run: pnpm exec turbo run lint
 
       - name: Typecheck workspace
-        run: pnpm exec turbo run typecheck --filter='!@ponter/agent-node'
+        run: pnpm exec turbo run typecheck
 
       - name: Check code formatting
         run: pnpm format:check
@@ -91,8 +90,6 @@ jobs:
       # Run every Node/TypeScript test suite through turbo, so the CI log and
       # exit code cover the whole workspace rather than a hand-picked few.
       #
-      # `!@ponter/agent-node` drops the agent's TS package, which is not gating
-      # yet (see the header note).
       # `!@ponter/web` and `!@ponter/shared` are excluded here only because
       # they are non-gating: their steps below keep the `continue-on-error:
       # true` behaviour they have always had, and turbo has no per-package
@@ -105,7 +102,6 @@ jobs:
       - name: Run Node test suites
         run: >-
           pnpm exec turbo run test
-          --filter='!@ponter/agent-node'
           --filter='!@ponter/web'
           --filter='!@ponter/shared'
           --continue=always

@@ -12560,6 +12560,45 @@ Probe, on the committed `sustain.ts`, in an isolated `git archive` tree: a ladde
 
 ---
 
+### Task 34: Gate `apps/agent` in `ci-node.yml` and cure the load-dependent PTY test
+
+**Owner ruling (2026-10-26): option (b), full gating now, not deferred to Plan 3.**
+
+`apps/agent/**` was previously absent from `ci-node.yml`'s `paths:` lists, and each gating step
+(`lint`, `typecheck`, `test`) passed `--filter='!@ponter/agent-node'`. This task fully gates
+`@ponter/agent-node` in CI and cures the one test cell that failed under concurrent load.
+
+#### Changes
+
+1. **Gate inclusion in `.github/workflows/ci-node.yml`:**
+   - Added `- 'apps/agent/**'` to both `on.push.paths` and `on.pull_request.paths`.
+   - Dropped `--filter='!@ponter/agent-node'` from `Lint workspace`, `Typecheck workspace`, and
+     `Run Node test suites`.
+   - Added Playwright chromium installation step (`pnpm --filter @ponter/agent-node exec playwright install chromium --with-deps`)
+     prior to test execution, required because `vitest run` includes `spike/spike.test.ts` driving Chromium.
+   - Updated header and inline comments to reflect that `@ponter/agent-node` is now fully gated.
+
+2. **Cure for `apps/agent/test/terminal/pty-real.test.ts`:**
+   - Replaced two fixed `setTimeout(300)` sleeps with condition-based `waitFor(predicate, what, timeoutMs = 10_000)` polling.
+   - Fixed sleeps caused deterministic test failures under concurrent CPU load (exit event arrived at ~600ms, exceeding the 300ms guess).
+   - Condition polling resolves immediately when the event arrives (healthy run: ~440ms; under 16-worker CPU saturation: 1.64s).
+   - Added must-fail timeout verification (`timed out after 10000ms waiting for the child to exit`).
+
+#### Measured Before / After
+
+| Gate Command | Before (a129ea1) | After (Task 34) |
+|---|---|---|
+| `pnpm exec turbo run lint` | 11/11 tasks (agent excluded) | **12/12 tasks**, 0 cached, exit 0 |
+| `pnpm exec turbo run typecheck` | 12/12 tasks (agent excluded) | **13/13 tasks**, 0 cached, exit 0 |
+| `pnpm exec turbo run test` (gated subset) | 9/9 tasks (agent excluded) | **10/10 tasks**, 0 cached, exit 0 |
+
+**TEST-INTEGRITY declaration (`pty-real.test.ts`):**
+- `it()`: 1 → 1
+- `expect()`: 2 → 2
+- Fixed `setTimeout` waits: 2 → 0 (replaced with condition waits)
+
+---
+
 ## Closing sections
 
 ### The retirement note (R5) — the ten noise rules, and what becomes of each
