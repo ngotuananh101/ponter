@@ -12610,6 +12610,82 @@ The failing cell is `test/terminal/pty-real.test.ts > a real shell > echoes, the
 
 ---
 
+### Task 35: Cure SonarCloud Reliability bug (S4158) and clean-code smells
+
+**Landed at:** `4ea89f4241ff7801f4abac2f60a22e29b66eac4a` (`4ea89f4`) — 10 files, **+186 / −76**.  
+**Author:** `Ngo Tuan Anh <ngotuananh2101@gmail.com>` (zero trailers, no `Co-authored-by`).  
+**Independent code review:** `APPROVE`.
+
+#### Context: SonarCloud Quality Gate Failure on PR #178
+
+PR #178 SonarCloud Quality Gate failed with `new_reliability_rating: 2 (B)` vs the required `1 (A)`. There was exactly 1 reliability bug reported on new code, alongside several clean-code and modern TypeScript smells:
+- `apps/agent/src/logging/index.ts:26` (rule S4158, *Empty collections should not be accessed or iterated*): `export const NOISE: readonly NoiseRule[] = [];` was checked via `NOISE.some(...)`. Because `NOISE` ships empty (as recorded in R5, every legacy rule named Rust crate targets and werift uses a different logging mechanism), iterating over an empty array constant was flagged as a defect.
+
+#### Remediation (commit `4ea89f4`)
+
+Remediation cured the reliability bug and cleaned up modern TypeScript smells across 10 files while strictly preserving behavioral contracts:
+
+1. **`apps/agent/src/logging/index.ts` (S4158, S4624):**
+   - Parameterized `isNoise(target: string, message: string, rules: readonly NoiseRule[] = NOISE)` with an upfront empty guard: `if (rules.length === 0) return false;`. The default argument preserves existing call sites reading the shipped table while allowing callers and tests to supply rules.
+   - Extracted nested template literal in `createLogger` (`S4624`): `const suffix = extra ? \` (\${extra})\` : ''; sink(\`\${level.toUpperCase()} \${message}\${suffix}\`);`.
+
+2. **`apps/agent/test/logging/index.test.ts` (Positive/Negative Controls & TEST-INTEGRITY):**
+   - Added `sampleRules` to verify `isNoise` matches target AND message, keeps unknown lines from noisy targets, and verifies the empty-table contract.
+   - TEST-INTEGRITY: 3 `it()` / 3 `expect()` → 3 `it()` / 7 `expect()` (+4 assertions). Zero deleted or weakened tests.
+
+3. **`apps/agent/src/files/protocol.ts` (S7781):**
+   - Replaced `transferId.replace(/-/g, '')` with `transferId.replaceAll('-', '')`.
+
+4. **`apps/agent/src/runtime.ts` (S7503, S7737 & Rejection Contract):**
+   - Removed `async` from `AgentRuntime.start()` and `stop()` (`S7503`).
+   - Resolved default `deps` inside the function body (`const resolvedDeps: RuntimeDeps = deps ?? { ... }`) rather than an in-parameter default object literal evaluating `config` per call (`S7737`).
+   - Wrapped `start` body in `try { ... return Promise.resolve(runtime); } catch (error) { return Promise.reject(error); }`: `FilesRoot.open` throws a `SandboxError` on an unresolvable root. Callers `await` `start()`; removing `async` without rejection wrapping would cause a bare synchronous throw to escape before the promise exists.
+
+5. **`apps/agent/src/terminal/pty.ts` (S7503 & Rejection Contract):**
+   - Removed `async` from `PtyManager.create()` and `close()` (`S7503`), wrapping synchronous session execution in `try { ... return Promise.resolve(); } catch (error) { return Promise.reject(error); }`.
+   - **Load-bearing rejection contract:** Every caller treats `create` as returning a Promise (`data-channels.ts:568` wraps in `Promise.resolve(...).catch(...)` to answer with a `terminal-error` frame; four `pty.test.ts` cells assert `expect(manager.create(...)).rejects.toMatchObject(...)`). A bare `throw` would escape before promise creation, bypassing `.catch` and bubbling into werift's `async datachannelReceive` as an `unhandledRejection` causing process termination (`process.exit(1)`).
+
+6. **`apps/agent/src/e2ee/manager.ts` (S7763, S6582, S7503):**
+   - Direct re-export: `export { WS1_TERMINAL_INFO } from '@ponter/shared'` (`S7763`).
+   - Optional chaining: `if (raw?.length !== 32) return null;` (`S6582`).
+   - Wrapped `encrypt()` and `decrypt()` in `try/catch` returning `Promise.resolve()` / `Promise.reject()` to preserve the rejection contract of `EncryptionManager` (`S7503`).
+
+7. **`apps/agent/src/files/session.ts` (S3735, S6509, S6551, S6582):**
+   - Removed dead assignment `void download;` in `discardUpload` (`S3735`).
+   - Replaced `Boolean(message.recursive)` with `message.recursive`: `inboundShapeValid` already validates `recursive` as a boolean, avoiding the bug where `"false"` coerced to `true` (`S6509`).
+   - Introduced helper `safeString(val: unknown): string { return typeof val === 'string' ? val : ''; }` to eliminate unsafe `String(val ?? '')` type coercions on wire message fields (`S6551`).
+   - Optional chaining: `state?.pendingAck == null` and `state?.transferId !== transferId` (`S6582`).
+
+8. **`apps/agent/src/desktop/control.ts` (S7749):**
+   - Replaced `0xffff_ffff` with `0xffffffff` in `isU32` (`S7749`).
+
+9. **`apps/agent/src/session/peer.ts` (S6582):**
+   - Optional chaining: `if (mode?.[1] === '1')` (`S6582`).
+
+10. **`apps/agent/src/session/data-channels.ts` (S1940):**
+    - Replaced boolean negation `!(typeof data === 'string')` with `typeof data !== 'string'` (`S1940`).
+
+#### TEST-INTEGRITY Declaration
+
+Measured on committed blobs `git show {4ea89f4^,4ea89f4}:<path>`:
+
+| File | BASE `4ea89f4^` | HEAD `4ea89f4` | Delta |
+|---|---|---|---|
+| `apps/agent/test/logging/index.test.ts` | 3 `it()` / 0 `it.each` / 3 `expect()` | 3 / 0 / 7 | **+0 / +0 / +4** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. No test deleted or weakened. +4 assertions added for positive and negative controls.
+
+#### Measured Verification at `4ea89f4`
+
+| Gate Command | Result |
+|---|---|
+| `pnpm exec turbo run lint --force` | **12/12 tasks**, `0 cached`, exit 0 |
+| `pnpm exec turbo run typecheck --force` | **13/13 tasks**, `0 cached`, exit 0 |
+| `pnpm run format:check` | **All matched files use Prettier code style!**, exit 0 |
+| `pnpm exec turbo run test --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force` | **10/10 tasks**, `@ponter/agent-node` 36/36 files, 506/506 tests passed, exit 0 |
+
+---
+
 ## Closing sections
 
 ### The retirement note (R5) — the ten noise rules, and what becomes of each
