@@ -142,7 +142,32 @@ export class PtyManager {
     this.exitHandler = cb;
   }
 
-  async create(options: PtyCreateOptions): Promise<void> {
+  /**
+   * The promise is part of the contract, so a failure must arrive as a
+   * **rejection**, never as a synchronous throw: every caller in the tree
+   * treats this as a promise (`data-channels.ts:568` wraps it in
+   * `Promise.resolve(...).catch(...)` to answer with a `terminal-error` frame,
+   * and four tests assert `expect(manager.create(...)).rejects`). A bare
+   * `throw` from a non-`async` function escapes *before* the promise exists:
+   * measured, that turns those four cells red, and in production it skips the
+   * `.catch` so the browser gets no error frame and the throw continues into
+   * werift's `async datachannelReceive` as an `unhandledRejection` (the Task 31
+   * F-6 path to `process.exit(1)`).
+   *
+   * The body runs **synchronously**, exactly as an `async` body without an
+   * `await` does — `openSession` is called inline, not deferred to a microtask,
+   * so nothing that observed the old ordering sees a change.
+   */
+  create(options: PtyCreateOptions): Promise<void> {
+    try {
+      this.openSession(options);
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private openSession(options: PtyCreateOptions): void {
     if (this.sessions.has(options.terminalId)) return;
     if (this.sessions.size >= MAX_SESSIONS) {
       throw new PtyError(
@@ -266,7 +291,23 @@ export class PtyManager {
     this.sessions.get(terminalId)?.process.write(Buffer.from(bytes));
   }
 
-  async close(terminalId: string): Promise<void> {
+  /**
+   * Same contract as `create`: failures are rejections, not synchronous throws.
+   * `kill()` is the reachable one — `closeAll` wraps it in `try/catch` twice in
+   * this file precisely because a process that is already gone can throw — and
+   * `data-channels.ts:536` calls this through `Promise.resolve(...).catch(...)`
+   * to log a failed close. A bare throw would skip that `.catch`.
+   */
+  close(terminalId: string): Promise<void> {
+    try {
+      this.closeSession(terminalId);
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private closeSession(terminalId: string): void {
     const session = this.sessions.get(terminalId);
     if (!session) return;
     this.sessions.delete(terminalId);
@@ -284,9 +325,10 @@ export class PtyManager {
    * exit event would otherwise re-enter `emitExit` and delete whatever a
    * concurrent `create` had just registered under a reused id.
    *
-   * Deliberately **not** `Promise.all(ids.map(close))`: `close()` is async only
-   * in signature (its body is synchronous), and an `await` here would make the
-   * teardown order in `stop()` depend on a microtask the caller cannot see.
+   * Deliberately **not** `Promise.all(ids.map(close))`: `close()` runs its body
+   * synchronously (only its failure arm is deferred, as a rejection), and an
+   * `await` here would make the teardown order in `stop()` depend on a
+   * microtask the caller cannot see.
    */
   closeAll(): void {
     const sessions = [...this.sessions.values()];

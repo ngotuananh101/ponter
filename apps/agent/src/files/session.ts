@@ -268,6 +268,10 @@ const ACTION_TYPES = new Set<string>([
   'files-rename',
 ]);
 
+function safeString(val: unknown): string {
+  return typeof val === 'string' ? val : '';
+}
+
 /**
  * The inbound decode step, and the only way into `dispatch`.
  *
@@ -452,7 +456,10 @@ export class FilesSession {
   /** Takes whatever is pending, with **no** gate. Called from the 20 ms tick. */
   private takePendingAck(): FilesFrame[] {
     const state = this.upload;
-    if (!state || state.pendingAck === null) return [];
+    // `pendingAck` is `number | null`, so `== null` and `=== null` agree here;
+    // the loose form is written only because it also reads as "absent". The
+    // optional chain is what carries the meaning: no upload state means no ack.
+    if (state?.pendingAck == null) return [];
     const nextChunkIndex = state.pendingAck;
     state.lastAcked = nextChunkIndex;
     state.pendingAck = null;
@@ -538,7 +545,7 @@ export class FilesSession {
    * `isDirectory`.
    */
   private list(message: { [key: string]: unknown }): FilesFrame[] {
-    const rel = String(message.path ?? '');
+    const rel = safeString(message.path);
     const path = this.root.resolveExisting(rel);
     // A file where a directory was expected is NOT_A_DIRECTORY; other failures
     // are IO_ERROR. `readdirSync` is the call that raises it, so the mapping
@@ -587,7 +594,7 @@ export class FilesSession {
 
   private startDownload(message: { [key: string]: unknown }): FilesFrame[] {
     const transferId = String(message.transferId);
-    const resolved = this.root.resolveExisting(String(message.path ?? ''));
+    const resolved = this.root.resolveExisting(safeString(message.path));
     const stat = statSync(resolved);
     if (stat.isDirectory()) throw new SandboxError('NOT_A_FILE', 'not a file');
     if (stat.size > FILE_MAX_BYTES)
@@ -603,7 +610,7 @@ export class FilesSession {
         type: 'files-download-begin',
         transferId,
         name: resolved.split('/').pop(),
-        path: String(message.path),
+        path: safeString(message.path),
         size: stat.size,
         totalChunks: total,
       },
@@ -679,7 +686,7 @@ export class FilesSession {
     if (this.upload)
       throw new SandboxError('TRANSFER_BUSY', 'an upload is already in flight');
     const name = String(message.name);
-    const dirWire = String(message.path ?? '');
+    const dirWire = safeString(message.path);
     const dest = this.root.resolveParentForCreate(dirWire, name);
     try {
       statSync(dest);
@@ -734,7 +741,7 @@ export class FilesSession {
     payload: Uint8Array,
   ): void {
     const state = this.upload;
-    if (!state || state.transferId !== transferId) {
+    if (state?.transferId !== transferId) {
       throw new SandboxError('TRANSFER_UNKNOWN', 'no such upload');
     }
     if (total !== null && total !== state.total) {
@@ -765,7 +772,7 @@ export class FilesSession {
       // decode to exactly `expectedChunkLen` bytes with the wrong content, and
       // be written to disk. The length check below cannot see that; only a
       // strict decode can refuse it.
-      const payload = decodeBase64Strict(String(message.data ?? ''));
+      const payload = decodeBase64Strict(safeString(message.data));
       if (payload === null) {
         throw new SandboxError('BAD_FRAME', 'chunk data is not valid base64');
       }
@@ -985,11 +992,12 @@ export class FilesSession {
    */
   dispose(): void {
     const upload = this.upload;
-    const download = this.download;
     this.upload = null;
     this.download = null;
+    // Only an upload has an on-disk artifact to remove: the `.part` file. A
+    // download writes nothing local, so there is no `discardDownload` to call
+    // and nothing for this method to do with the slot's old value.
     if (upload) this.discardUpload(upload);
-    void download;
   }
 
   /**
@@ -1014,17 +1022,13 @@ export class FilesSession {
    * same code without a TOCTOU window between the check and the call.
    */
   private mkdir(message: { [key: string]: unknown }): FilesFrame[] {
-    const target = this.root.resolveParentForCreate(
-      String(message.dir ?? ''),
-      String(message.name),
-    );
+    const dir = safeString(message.dir);
+    const name = safeString(message.name);
+    const target = this.root.resolveParentForCreate(dir, name);
     try {
       mkdirSync(target);
     } catch (error) {
-      throw new SandboxError(
-        errnoToCode(error),
-        `mkdir ${String(message.dir ?? '')}/${String(message.name)}`,
-      );
+      throw new SandboxError(errnoToCode(error), `mkdir ${dir}/${name}`);
     }
     return [this.actionResult(message, target)];
   }
@@ -1041,7 +1045,7 @@ export class FilesSession {
    * on the root would delete the whole sandbox in one message.
    */
   private remove(message: { [key: string]: unknown }): FilesFrame[] {
-    const target = this.root.resolveExisting(String(message.path ?? ''));
+    const target = this.root.resolveExisting(safeString(message.path));
     // `resolveExisting('')` returns the canonical root, so this compares two
     // canonical strings. Comparing against `this.root` (the object) would be
     // always-false and would let a peer delete the root itself.
@@ -1053,7 +1057,11 @@ export class FilesSession {
     }
     const stat = statSync(target);
     if (stat.isDirectory()) {
-      if (Boolean(message.recursive)) {
+      // `recursive` is already validated as a `bool` by `inboundShapeValid`
+      // (an absent or `null` value is the non-recursive arm), so no coercion
+      // is needed — and `Boolean(...)` here is exactly the coercion that made
+      // `recursive: "false"` delete the tree.
+      if (message.recursive) {
         rmSync(target, { recursive: true });
       } else {
         try {
@@ -1099,7 +1107,7 @@ export class FilesSession {
    * break, and the guard is the behaviour the Rust pinned.
    */
   private rename(message: { [key: string]: unknown }): FilesFrame[] {
-    const from = this.root.resolveExisting(String(message.oldPath ?? ''));
+    const from = this.root.resolveExisting(safeString(message.oldPath));
     // The same comparison `remove` makes, for the same reason: two canonical
     // strings, never the `FilesRoot` object (which would be always-false).
     if (from === this.root.root) {
@@ -1112,13 +1120,10 @@ export class FilesSession {
     // name. Splitting it here keeps `resolveParentForCreate` — which rejects a
     // name containing a separator — as the single place a create-target is
     // validated.
-    const slash = String(message.newPath ?? '').lastIndexOf('/');
-    const parentDir =
-      slash === -1 ? '' : String(message.newPath).slice(0, slash);
-    const name =
-      slash === -1
-        ? String(message.newPath ?? '')
-        : String(message.newPath).slice(slash + 1);
+    const newPath = safeString(message.newPath);
+    const slash = newPath.lastIndexOf('/');
+    const parentDir = slash === -1 ? '' : newPath.slice(0, slash);
+    const name = slash === -1 ? newPath : newPath.slice(slash + 1);
     const to = this.root.resolveParentForCreate(parentDir, name);
     try {
       statSync(to);

@@ -63,7 +63,7 @@ export function h264Mode1Codec(offerSdp: string): {
     // offer carries it explicitly. An absent key means mode 0 by the letter of
     // the RFC — do NOT treat absent as mode 1.
     const mode = /(?:^|;)packetization-mode=(\d+)/.exec(parameters);
-    if (mode && mode[1] === '1') {
+    if (mode?.[1] === '1') {
       return { mimeType: 'video/H264', payloadType, parameters };
     }
   }

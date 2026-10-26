@@ -50,7 +50,7 @@ function isU32(value: unknown): value is number {
     typeof value === 'number' &&
     Number.isInteger(value) &&
     value >= 0 &&
-    value <= 0xffff_ffff
+    value <= 0xffffffff
   );
 }
 

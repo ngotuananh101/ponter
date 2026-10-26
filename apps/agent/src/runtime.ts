@@ -345,31 +345,41 @@ export class AgentRuntime {
    * public entry point and it fills the same field from config; this default
    * exists so the shape is constructible and is derived the same way.
    */
-  static async start(
-    config: AgentConfig,
-    deps: RuntimeDeps = {
+  static start(config: AgentConfig, deps?: RuntimeDeps): Promise<AgentRuntime> {
+    // The default is resolved in the body, not as a parameter default: a
+    // default object literal cannot mention `config` without being re-evaluated
+    // per call in a position readers do not expect, and it hides that the
+    // policy is derived from *this* call's config.
+    const resolvedDeps: RuntimeDeps = deps ?? {
       send: () => {
         throw new Error('no transport is wired yet');
       },
       shellPolicy: shellPolicyFromConfig(config),
-    },
-  ): Promise<AgentRuntime> {
-    const runtime = new AgentRuntime(config, deps);
-    if (config.filesRoot) {
-      const now = deps.now ?? Date.now;
-      const session = deps.filesSession
-        ? deps.filesSession(config.filesRoot, now)
-        : new FilesSession(FilesRoot.open(config.filesRoot), now);
-      const ticker = new FilesTicker(session, {
-        now,
-        emit: (frame) => deps.send('files', frame),
-      });
-      runtime.tickers.push(
-        setInterval(() => ticker.tick(), IDLE_TICK_MS),
-        setInterval(() => ticker.tick(), ACK_TICK_MS),
-      );
+    };
+    // `FilesRoot.open` throws a `SandboxError` on an unresolvable root, so the
+    // failure must leave here as a **rejection**: `createAgentRuntime` returns
+    // this promise and callers `await` it. A synchronous throw would escape
+    // before the promise exists.
+    try {
+      const runtime = new AgentRuntime(config, resolvedDeps);
+      if (config.filesRoot) {
+        const now = resolvedDeps.now ?? Date.now;
+        const session = resolvedDeps.filesSession
+          ? resolvedDeps.filesSession(config.filesRoot, now)
+          : new FilesSession(FilesRoot.open(config.filesRoot), now);
+        const ticker = new FilesTicker(session, {
+          now,
+          emit: (frame) => resolvedDeps.send('files', frame),
+        });
+        runtime.tickers.push(
+          setInterval(() => ticker.tick(), IDLE_TICK_MS),
+          setInterval(() => ticker.tick(), ACK_TICK_MS),
+        );
+      }
+      return Promise.resolve(runtime);
+    } catch (error) {
+      return Promise.reject(error);
     }
-    return runtime;
   }
 
   status(): RuntimeStatus {
@@ -383,16 +393,20 @@ export class AgentRuntime {
     };
   }
 
-  async stop(): Promise<void> {
-    if (this.stopped) return;
+  stop(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     this.stopped = true;
     // **The docblock's order, now real: pty sessions before the socket.** A
     // pty that outlives the socket leaves an orphan shell on the host. The
     // intervals go first so a late tick cannot emit against a torn-down
     // session; `closeAll` then kills every live shell, including the ones no
     // caller remembers — the ids came from the peer.
+    //
+    // No `try/catch`: `closeAll` already swallows a `kill()` on a dead process
+    // (`pty.ts` `closeAll`), which is the only throw this body can raise.
     for (const handle of this.tickers.splice(0)) clearInterval(handle);
     this.pty.closeAll();
+    return Promise.resolve();
   }
 }
 

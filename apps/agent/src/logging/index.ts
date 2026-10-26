@@ -22,8 +22,19 @@ export type NoiseRule = readonly [target: string, message: string];
 /** Both parts must match: the target scopes the crate, the substring the case. */
 export const NOISE: readonly NoiseRule[] = [];
 
-export function isNoise(target: string, message: string): boolean {
-  return NOISE.some(([t, m]) => target.startsWith(t) && message.includes(m));
+/**
+ * `rules` is a parameter so the matcher can be exercised against a table that
+ * is not empty: `NOISE` ships empty, and a function whose only input is `[]`
+ * cannot be shown to match anything. The default keeps every production call
+ * site reading the shipped table.
+ */
+export function isNoise(
+  target: string,
+  message: string,
+  rules: readonly NoiseRule[] = NOISE,
+): boolean {
+  if (rules.length === 0) return false;
+  return rules.some(([t, m]) => target.startsWith(t) && message.includes(m));
 }
 
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
@@ -81,7 +92,8 @@ export function createLogger(
     const extra = Object.entries(fields)
       .map(([k, v]) => `${k}=${String(v)}`)
       .join(' ');
-    sink(`${level.toUpperCase()} ${message}${extra ? ` (${extra})` : ''}`);
+    const suffix = extra ? ` (${extra})` : '';
+    sink(`${level.toUpperCase()} ${message}${suffix}`);
   };
   return {
     error: (f, m) => emit('error', f, m),

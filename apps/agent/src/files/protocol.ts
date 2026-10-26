@@ -37,7 +37,7 @@ export function expectedChunkLen(size: number, index: number): number {
 }
 
 function transferIdTo16(transferId: string): Uint8Array {
-  const hex = transferId.replace(/-/g, '');
+  const hex = transferId.replaceAll('-', '');
   if (/^[0-9a-fA-F]{32}$/.test(hex))
     return new Uint8Array(Buffer.from(hex, 'hex'));
   // Test-only affordance the Rust also had: a non-UUID id becomes its first 16

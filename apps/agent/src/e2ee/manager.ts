@@ -4,11 +4,11 @@ import {
   importSigningPublicKeyRaw,
   type EncryptionManager,
 } from '@ponter/crypto';
-import { canonicalKeyBinding, WS1_TERMINAL_INFO } from '@ponter/shared';
+import { canonicalKeyBinding } from '@ponter/shared';
 import { decodeBase64Strict } from '../base64.js';
 import type { AgentIdentity } from '../identity/store.js';
 
-export { WS1_TERMINAL_INFO };
+export { WS1_TERMINAL_INFO } from '@ponter/shared';
 
 export interface E2eeHello {
   terminalId: string;
@@ -71,7 +71,7 @@ export class E2eeSession {
       // error. Both are classification defects at this boundary, not key
       // problems — the value never should have reached `importSigningPublicKeyRaw`.
       const raw = decodeBase64Strict(peerSigningPublicKeyRawBase64);
-      if (raw === null || raw.length !== 32) return null;
+      if (raw?.length !== 32) return null;
 
       // 1. Our ephemeral keypair, generated ONCE: the private half derives the
       //    session key and the public half goes out in the ack, and those must be
@@ -119,11 +119,28 @@ export class E2eeSession {
     }
   }
 
-  async encrypt(plaintext: Uint8Array): Promise<Uint8Array> {
-    return this.manager.encrypt(plaintext);
+  /**
+   * Both directions keep the **rejection** contract of the `EncryptionManager`
+   * they delegate to: callers `await` these, and a synchronous throw from a
+   * delegate would escape before a promise exists. `decrypt` is the reachable
+   * one — the crypto layer rejects on a short frame or a failed GCM tag, and
+   * `manager.test.ts:180` asserts `rejects.toThrow()` — so a bare throw would
+   * red that cell. `encrypt` is wrapped for the same reason, not because its
+   * delegate currently throws.
+   */
+  encrypt(plaintext: Uint8Array): Promise<Uint8Array> {
+    try {
+      return Promise.resolve(this.manager.encrypt(plaintext));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
-  async decrypt(framed: Uint8Array): Promise<Uint8Array> {
-    return this.manager.decrypt(framed);
+  decrypt(framed: Uint8Array): Promise<Uint8Array> {
+    try {
+      return Promise.resolve(this.manager.decrypt(framed));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 }

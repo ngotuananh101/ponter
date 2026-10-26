@@ -312,7 +312,7 @@ export class DataChannelRouter {
 
     if (
       label === CHANNEL_LABELS.files &&
-      !(typeof data === 'string') &&
+      typeof data !== 'string' &&
       bytes[0] === 0x02
     ) {
       this.emit(this.deps.files.acceptBinaryChunk(bytes));
@@ -530,9 +530,9 @@ export class DataChannelRouter {
       case 'terminal-close': {
         const { terminalId } = message as { terminalId?: unknown };
         if (typeof terminalId !== 'string' || terminalId === '') return;
-        // `close` is fire-and-forget here: `PtyManager.close` is `async` but
-        // its body is synchronous (`pty.ts:236-241`), and the channel callback
-        // must not become a place a rejection can escape from.
+        // `close` is fire-and-forget here: `PtyManager.close` runs its body
+        // synchronously and reports a failure as a rejection, but the channel
+        // callback must not become a place a rejection can escape from.
         void Promise.resolve(this.deps.terminal.close(terminalId)).catch(() => {
           // A close that fails has no frame to answer with — the browser
           // already dropped its session — so it is a log, not an error frame.
