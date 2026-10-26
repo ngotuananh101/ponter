@@ -1,6 +1,6 @@
 export * from './terminal.js';
 export { STREAM_PROFILES, streamProfileById } from './stream-profile.js';
-export type { StreamProfile } from './stream-profile.js';
+export type { StreamProfile, ProfileId } from './stream-profile.js';
 export type {
   DeviceType,
   User,
@@ -34,6 +34,7 @@ export {
   BINARY_TYPE_DOWNLOAD_CHUNK,
   BINARY_TYPE_UPLOAD_CHUNK,
   BINARY_HEADER_LEN,
+  FILES_ERROR_CODES,
 } from './files.js';
 export type {
   TransferDirection,

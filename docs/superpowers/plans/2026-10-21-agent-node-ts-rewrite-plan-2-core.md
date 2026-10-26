@@ -37,7 +37,7 @@ These apply to every task. Most are copied verbatim from the spec; the ones mark
 - **(P2) Do not assert fractional milliseconds in the backoff test.** The Rust's own comment scopes its parity test to "the factor, the initial value, the cap and the reset rule — not the fractional milliseconds". The Rust computes `current.as_secs_f64() * 1.5 * 1000` and rounds; the TS computes `currentMs * 1.5` and rounds. Both ladders are **200 → 300 → 450 → 675 → 1013**, and they part at the **sixth** rung: 1520 (TS) versus 1519 (Rust). The mechanism is the f64 *seconds* round-trip, and it is worth stating correctly because an earlier draft got it backwards twice. At the 675 step the two agree — `Math.round(1012.5)` is **1013**, not 1012 (JS rounds half toward `+Infinity`), and the f64 path lands just above the tie at `1012.5000000000002`, which also rounds to 1013. The divergent tie is one rung later, at **1519.5**: TS computes `1013 * 1.5 = 1519.5` exactly and rounds **up to 1520**, while the Rust's `1.013 * 1.5 * 1000` is `1519.4999999999998` and rounds **down to 1519**. So the 675 step is not the divergence — it is the step where the two agree in spite of the tie, and saying otherwise points a future reader at the wrong rung. **Assert `[200, 300, 450, 675]` and the 2000 cap**, exactly as the Rust test does, and assert the later rungs within ±1 ms rather than equal.
 - **(P2) `apps/agent/tsconfig.json` must keep `include: ["src/**/*.ts", "test/**/*.ts"]` and `types: ["node"]` through the Rust→Node manifest conversion.** Without `src/**` the typecheck exits 0 having checked nothing; without `types: ["node"]` tsc never loads the hoisted `@types/node` and every `Buffer` reference in `src/` fails as TS2591. A typecheck that cannot fail is not a gate.
 - **(P2) Commands assume Plan 1 Task 1 has landed.** Once `apps/agent` is `@ponter/agent-node` with its own `vitest` devDependency and `vitest.config.ts`, the ordinary `./apps/agent/node_modules/.bin/vitest run <file>` works. **Do not copy the `--root apps/agent` workaround** that was necessary only while `apps/agent/package.json` was still the Rust manifest. If the command fails with "no such file", the prerequisite has not landed — stop and say so; do not invent a path.
-- **(P2) `ci-node.yml` does not yet run `apps/agent/**`.** Its `paths:` filter omits the directory until Plan 3. Every task's verification therefore runs locally and the report must say so explicitly; a green local suite is the only evidence this plan has.
+- **(P2) `ci-node.yml` does not yet run `apps/agent/**`, and the three mechanisms are worth naming separately because fixing any one alone changes nothing.** (a) The directory is **absent from both `paths:` filters** (`push:` and `pull_request:`, which list `apps/server/**`, `apps/web/**`, `apps/mobile/**` and `packages/**`), so a branch that touches only `apps/agent` never triggers the job at all. (b) Every gating step excludes the package by name — `--filter='!@ponter/agent-node'` on lint (`:83`), typecheck (`:86`) and the test run (`:108`) — so even a triggering push would not run its `tsc` or `vitest`. (c) **No other workflow covers it either**: `build-agent.yml` and `ci-e2e.yml` do list `apps/agent/**` in their `paths:` but run `cargo fmt`/`clippy`/`test`/`build` and the webrtc e2e, and `build-desktop.yml`'s agent step is `cargo test --locked`. Every task's verification therefore runs locally and the report must say so explicitly; a green local suite is the only evidence this plan has. **The Plan-3 handoff needs both halves or it silently does nothing** — adding `apps/agent/**` to `paths:` without dropping the filter gives a job that triggers and then skips the package, and dropping the filter without the path gives a filter that only matters on unrelated pushes.
 
 ## Review Focus
 
@@ -78,20 +78,21 @@ Locked so implementers cannot disagree about what creates what.
 | `apps/agent/src/terminal/pty.ts` | `node-pty` wrapper, base64 16 KiB chunking, exit reaping, 10-session limit | B39, B40, B41 |
 | `apps/agent/src/files/sandbox.ts` | The 7-step containment algorithm | B44 |
 | `apps/agent/src/files/protocol.ts` | The 25-byte binary header, chunk arithmetic, the constants | B42, B43 |
-| `apps/agent/src/files/session.ts` | Transfer state machine: window, ack batching, resume, pause | B42, B43, B45, B46 |
+| `apps/agent/src/files/session.ts` | Transfer state machine: window, ack batching, resume, pause. **Modified after Task 11** by Task 20's four transfer repairs (`0a3f900`) and Task 22's decode-boundary validation (`2e3f763`) | B42, B43, B45, B46 |
 | `apps/agent/src/input/decode.ts` | Input JSON decode, 0..1 clamp, 120 Hz limiter, agent-local gate | B28, B29, B30, B34 |
 | `apps/agent/src/desktop/static-skip.ts` | Frame signature + skip counters | B22 |
 | `apps/agent/src/desktop/timing-ring.ts` | The 32-frame timing ring and its two medians | B24 |
 | `apps/agent/src/desktop/sustain.ts` | The quality ladder | B18, B23 |
-| `apps/agent/src/desktop/control.ts` | Bitrate clamp, `DesktopSelectMessage` decode, `StreamControl` | B20, B62 |
+| `apps/agent/src/desktop/control.ts` | Bitrate clamp, `desktop-select` / `desktop-bitrate` decode, `StreamControl` | B20, B62 |
 | `apps/agent/src/desktop/frames.ts` | `desktop-stats`, `desktop-cursor`, `desktop-sources` frame builders | B56, B58, B61 |
-| `apps/agent/src/desktop/session.ts` | Capture → downscale → encode → packetize → send loop | B14, B59 |
+| `apps/agent/src/desktop/session.ts` | Capture → downscale → encode → packetize → send loop. **Modified after Task 19** by Task 31's source-swap ordering repair (`661434e`) | B14, B59 |
+| `apps/agent/src/base64.ts` | **Created after Task 19** by Task 31's strict-base64 repair (`b467d13`) — the one shared decoder for the five inbound base64 sites | — |
 | `apps/agent/src/runtime.ts` | Lifecycle: start / stop / status; the tick driver's interval handles (MAJOR-1) | B53 |
 | `apps/agent/src/index.ts` | Public surface: `createAgentRuntime` | — |
 | `packages/shared/src/types/stream-profile.ts` | **Modify (Plan 1 owns it).** Add `export type ProfileId = (typeof STREAM_PROFILES)[number]['id']` beside `StreamProfile`. Five modules here import it by name; without it every `ProfileId` reference in this plan is an unresolved type. | B18, B20, B24, B56, B62 |
 | `packages/webrtc-core/src/url.ts` | **Modify.** Add `rewriteWsScheme` beside `toWsUrl` | B2 |
 | `packages/webrtc-core/test/url.test.ts` | **Modify.** Add the `rewriteWsScheme` describe block (12 cases) | B2 |
-| `packages/api-client/test/agent-api-access-gate.test.ts` | **Modify.** Re-point at the TS agent tree | R3, R6 |
+| `packages/api-client/test/agent-api-access-gate.test.ts` | **Modify.** Re-point at the TS agent tree — **landed as Task 21** (`0b471e0`) | R3, R6 |
 | `docs/superpowers/plans/2026-10-21-agent-node-ts-rewrite-plan-1-coverage-matrix.md` | **Modify.** Flip Plan 2's rows to "Covered" with their test file | §9.4 gate |
 
 **Not created here:** `apps/agent/src/session/packetizer.ts` (Plan 1 Task 3), `apps/agent/native/**` (Plan 1 Task 4), `apps/agent/spike/**` (Plan 1 Task 1), `apps/desktop/**` supervisor rewiring (Plan 3), `.github/workflows/**` (Plan 3).
@@ -1182,7 +1183,7 @@ git commit -m "feat(agent): add the reconnect ladder, close classification and k
 - Consumes: `SignalMessage`, `SignalOffer`, `SignalAnswer`, `IceCandidateSignal`, `IdentityProof`, `IceServerConfig` from `@ponter/shared`; `MAX_INBOUND_FRAME_BYTES` from `./constants.js`.
 - Produces:
   - `function parseInbound(raw: string): SignalMessage | null` — throws `InboundParseError` on malformed JSON or an unknown envelope `type`; returns `null` for a `pong`, and `null` for an `error` frame **after** logging via the injected logger.
-  - `function parseIceServers(raw: string): IceServerConfig[] | null`
+  - `function parseIceServers(raw: string): IceServerEntry[] | null` — the local `IceServerEntry`, not shared's `IceServerConfig`: the Rust has its own `IceServerEntry` with `urls: Vec<String>`, while shared's `urls` is `string | string[]`, so the port keeps the list-only shape the server actually pushes.
   - `function parseIdentityChallenge(raw: string): string | null`
   - `function dispatchInbound(raw: string, logger: Logger): InboundEvent` where `type InboundEvent = { kind: 'signal'; message } | { kind: 'ice'; servers } | { kind: 'challenge'; nonce } | { kind: 'ignored' }` — the cascade in the one order that works.
 
@@ -1196,7 +1197,7 @@ import { parseInbound } from '../../src/signalling/inbound.js';
 describe('the signal envelope', () => {
   it('round-trips an offer with its capabilities and camelCase payload', () => {
     const raw =
-      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"]}}';
+      '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","capabilities":["terminal"]}}}';
     const parsed = parseInbound(raw);
     expect(parsed).toMatchObject({ type: 'offer', data: { sessionId: 's1', sdp: 'v=0' } });
     expect(JSON.stringify(parsed)).toContain('"sessionId"');
@@ -1205,20 +1206,20 @@ describe('the signal envelope', () => {
 
   it('carries an identity proof', () => {
     const raw =
-      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","proof":{"signature":"c2ln","fingerprint":"AB"}}}';
+      '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","proof":{"signature":"c2ln","fingerprint":"AB"}}}}';
     expect(parseInbound(raw)).toMatchObject({
       data: { proof: { signature: 'c2ln', fingerprint: 'AB' } },
     });
   });
 
   it('treats the proof as optional for older peers', () => {
-    const raw = '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0"}}';
+    const raw = '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0"}}}';
     expect((parseInbound(raw) as { data: Record<string, unknown> }).data.proof).toBeUndefined();
   });
 
   it('round-trips the user signing key in camelCase', () => {
     const raw =
-      '{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","userSigningPublicKey":"cGs="}}';
+      '{"type":"signal","data":{"type":"offer","data":{"sessionId":"s1","sdp":"v=0","userSigningPublicKey":"cGs="}}}';
     expect(parseInbound(raw)).toMatchObject({ data: { userSigningPublicKey: 'cGs=' } });
   });
 
@@ -1227,7 +1228,7 @@ describe('the signal envelope', () => {
     // capitalised because the WebRTC spec capitalises it. Both the browser and
     // the server emit this spelling, so the type must model it literally.
     const raw =
-      '{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMid":"0","sdpMLineIndex":0}}';
+      '{"type":"signal","data":{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMid":"0","sdpMLineIndex":0}}}';
     expect(parseInbound(raw)).toMatchObject({ data: { sdpMLineIndex: 0 } });
   });
 
@@ -1236,7 +1237,7 @@ describe('the signal envelope', () => {
     // boundary, which turns them into a typed rejection rather than a generic
     // "malformed frame".
     for (const bad of [-1, 70000]) {
-      const raw = `{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMLineIndex":${bad}}}`;
+      const raw = `{"type":"signal","data":{"type":"ice-candidate","data":{"sessionId":"s1","candidate":"c","sdpMLineIndex":${bad}}}}`;
       expect(parseInbound(raw)).toMatchObject({ data: { sdpMLineIndex: bad } });
     }
   });
@@ -1411,7 +1412,7 @@ export function dispatchInbound(raw: string, logger: Logger): InboundEvent {
 
 ```ts
 // apps/agent/test/signalling/inbound.test.ts
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createLogger } from '../../src/logging/index.js';
 import {
   dispatchInbound,
@@ -1477,7 +1478,11 @@ describe('parseIdentityChallenge', () => {
   });
 
   it('returns null for a non-challenge frame', () => {
-    expect(parseIdentityChallenge('{"type":"offer","data":{"sessionId":"s"}}')).toBeNull();
+    // Fixture fidelity only: the unwrapped offer also returns null, so this is
+    // not a semantic change — it just feeds the shape the wire really carries.
+    expect(
+      parseIdentityChallenge('{"type":"signal","data":{"type":"offer","data":{"sessionId":"s"}}}'),
+    ).toBeNull();
     expect(parseIdentityChallenge('{"type":"ice-servers","data":{"iceServers":[]}}')).toBeNull();
   });
 });
@@ -1533,6 +1538,8 @@ git commit -m "feat(agent): parse the inbound cascade in challenge, ICE, signal 
 ```
 
 **TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 28 new `expect()`**. The Rust counterparts are `signal.rs`'s `offer_round_trip`, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes`, `offer_with_user_signing_key_round_trips`, `parses_the_pushed_ice_servers_frame`, `parses_a_stun_only_ice_servers_frame`, `parse_identity_challenge_returns_none_for_non_challenge`, `an_ice_servers_frame_is_not_taken_as_one`, `rejects_malformed` and `oversize_frame_is_rejected_before_parsing` — 10 Rust tests become 18 TS tests. Two of them (`the cascade order produces zero warnings`, `dispatchInbound ignores a pong without a warning`) are **new**: the Rust had no test for the cascade order, which is precisely the ordering that a porter is most likely to invert.
+
+**The fences' signal frames carry the transport envelope** — `{"type":"signal","data":{"type":"offer",…}}`, matching `signal.rs`'s internally-tagged `InboundFrame::Signal { data }` (`:131-143`) and the server's own send (`ws.ts:72`). The `messages.test.ts` fence previously fed unwrapped `{"type":"offer",…}` literals, which `parseInbound` rejects as an unknown envelope type; the fixtures are now the shape the wire carries. `pong`, `error` and `hello` stay top-level, because those **are** top-level envelope variants.
 
 ---
 
@@ -1650,9 +1657,11 @@ function harness() {
   const logLines: string[] = [];
   let socketHandle = fakeSocket();
   let connects = 0;
+  const calls: { url: string; headers: Record<string, string> }[] = [];
   const deps: SignallingDeps = {
-    connect: () => {
+    connect: (url: string, headers: Record<string, string>) => {
       connects += 1;
+      calls.push({ url, headers });
       return socketHandle.socket;
     },
     logger: createLogger({ RUST_LOG: 'debug' }, (l) => logLines.push(l)),
@@ -1675,6 +1684,7 @@ function harness() {
     emit: (...a: [string, ...unknown[]]) => socketHandle.emit(...a),
     logLines,
     connects: () => connects,
+    calls: () => calls,
     advance,
     reset: () => {
       socketHandle = fakeSocket();
@@ -1707,17 +1717,12 @@ function makeClient(h: ReturnType<typeof harness>, overrides = {}) {
 describe('SignallingClient.runOnce', () => {
   it('connects to the configured URL with a Bearer header', async () => {
     const h = harness();
-    const seen: { url: string; headers: Record<string, string> }[] = [];
-    h.deps.connect = (url, headers) => {
-      seen.push({ url, headers });
-      return fakeSocket().socket;
-    };
     const { client } = makeClient(h);
     const done = client.runOnce();
     h.emit('open');
     h.emit('close', 4409);
     await done;
-    expect(seen[0]).toEqual({
+    expect(h.calls()[0]).toEqual({
       url: 'ws://h:8787/api/ws/agent',
       headers: { Authorization: 'Bearer ag_secret' },
     });
@@ -1743,7 +1748,7 @@ describe('SignallingClient.runOnce', () => {
     h.emit('close', 4409);
     await done;
     expect(handlers.onChallenge).not.toHaveBeenCalled();
-    const reply = JSON.parse(h.sent()[0]);
+    const reply = JSON.parse(h.sent()[0] as string);
     expect(reply.type).toBe('agent-identity');
     expect(reply.data.nonce).toBe('n1');
     expect(reply.data.publicKey).toBe('cGs=');
@@ -1862,11 +1867,11 @@ describe('SignallingClient.run', () => {
     const done = client.run();
     h.emit('open');
     h.emit('close', 1006);
+    h.reset(); // the NEXT connect() must capture the fresh socket
     await vi.advanceTimersByTimeAsync(199);
     expect(h.connects()).toBe(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(h.connects()).toBe(2);
-    h.reset();
     h.emit('open');
     h.emit('close', 4409);
     await done;
@@ -1880,16 +1885,16 @@ describe('SignallingClient.run', () => {
     const done = client.run();
     // First death without ever connecting: 200 ms.
     h.emit('close', 1006);
+    h.reset(); // the NEXT connect() must capture the fresh socket
     await vi.advanceTimersByTimeAsync(200);
     // Second attempt connects, then dies: the ladder must be back at 200.
-    h.reset();
     h.emit('open');
     h.emit('close', 1006);
+    h.reset();
     await vi.advanceTimersByTimeAsync(199);
     expect(h.connects()).toBe(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(h.connects()).toBe(3);
-    h.reset();
     h.emit('open');
     h.emit('close', 4409);
     await done;
@@ -1911,8 +1916,8 @@ import type { AgentIdentity } from '../identity/store.js';
 import { buildAgentIdentityFrame } from '../identity/frame.js';
 import { rewriteWsScheme } from '@ponter/webrtc-core';
 import { isAuthFatal } from './auth.js';
-import { BACKOFF_INITIAL_MS, IDLE_TIMEOUT_MS, PING_INTERVAL_MS } from './constants.js';
-import { nextBackoff } from './backoff.js';
+import { IDLE_TIMEOUT_MS, PING_INTERVAL_MS } from './constants.js';
+import { BACKOFF_INITIAL_MS, nextBackoff } from './backoff.js';
 import { classifyClose, type RunEnd } from './close.js';
 import { dispatchInbound } from './inbound.js';
 import { buildUpgradeHeaders } from './upgrade.js';
@@ -1920,7 +1925,7 @@ import { buildUpgradeHeaders } from './upgrade.js';
 export interface SignallingSocket {
   send(data: string): void;
   close(code?: number): void;
-  on(event: 'open' | 'message' | 'close' | 'error', cb: (...args: never[]) => void): void;
+  on(event: 'open' | 'message' | 'close' | 'error', cb: (...args: unknown[]) => void): void;
 }
 
 export interface SignallingDeps {
@@ -1938,12 +1943,12 @@ export interface SignallingHandlers {
   onAnswer(message: unknown): void;
   onCandidate(message: unknown): void;
   onIceServers(servers: unknown): void;
-  onChallenge?(nonce: string): void;
 }
 
 export class SignallingClient {
   private readonly url: string;
   private readonly headers: Record<string, string>;
+  private lastRunOpened = false;
 
   constructor(
     private readonly deps: SignallingDeps,
@@ -1972,6 +1977,7 @@ export class SignallingClient {
       };
 
       socket.on('open', () => {
+        this.lastRunOpened = true;
         this.deps.logger.info({ url: this.url }, 'signalling connected');
         lastActivityAt = this.deps.now();
         cancelPing = this.deps.every(PING_INTERVAL_MS, () => {
@@ -1991,7 +1997,6 @@ export class SignallingClient {
           const event = dispatchInbound(raw, this.deps.logger);
           if (event.kind === 'challenge') {
             socket.send(buildAgentIdentityFrame(event.nonce, this.identity));
-            this.handlers.onChallenge?.(event.nonce);
             return;
           }
           if (event.kind === 'ice') {
@@ -2028,8 +2033,6 @@ export class SignallingClient {
       // fatality must still end the run rather than fall through to a retry, so
       // it is classified here from the raw bytes — the only place that still
       // has them.
-      const originalMessage = socket.on;
-      void originalMessage;
       const checkAuth = (raw: unknown): void => {
         if (typeof raw !== 'string' || !raw.includes('UNAUTHORIZED')) return;
         try {
@@ -2057,11 +2060,16 @@ export class SignallingClient {
   async run(): Promise<void> {
     let wait = BACKOFF_INITIAL_MS;
     for (;;) {
+      this.lastRunOpened = false;
       const end = await this.runOnce();
       if (end.kind === 'terminal') {
         this.deps.logger.info({ code: end.code }, 'signalling ended terminally; not reconnecting');
         return;
       }
+      // Reset on a successful CONNECT, not on a successful run: a server that
+      // accepts the socket and immediately drops it is still a server in
+      // trouble, and resetting on every attempt would hammer it at 200 ms.
+      if (this.lastRunOpened) wait = BACKOFF_INITIAL_MS;
       this.deps.logger.info({ waitMs: wait }, 'signalling dropped; reconnecting');
       await sleep(this.deps, wait);
       wait = nextBackoff(wait);
@@ -2076,6 +2084,8 @@ function sleep(deps: SignallingDeps, ms: number): Promise<void> {
 ```
 
 > The `checkAuth` listener above is deliberately a **second** `message` listener rather than a branch inside the first: `dispatchInbound` owns logging and returns `ignored` for error frames, so the fatality decision needs the raw bytes before they are swallowed. Both listeners run on the same event; `finish()` is idempotent via `settled`.
+>
+> `lastRunOpened` is a class field rather than a richer `RunEnd` because `RunEnd` is landed in `close.ts` (`be9dfdc`) as `transient | terminal` and that shape is shared with the callers of `runOnce()`; the "did this attempt ever open?" bit is a private concern of the reconnect loop, so it stays on the loop's own object.
 
 - [ ] **Step 5: Run green, format, commit**
 
@@ -2086,7 +2096,7 @@ git add apps/agent/src/signalling apps/agent/test/signalling
 git commit -m "feat(agent): add the signalling client, run loop and auth-fatality classifier"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 29 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own.
+**TEST-INTEGRITY declaration:** two new files, **19 new `it()` / 29 new `expect()`**. Ported from `signal.rs`: `classify_close_treats_*` ×2, `auth_fatal_on_401_or_unauthorized_code`, `not_auth_fatal_on_other_failures`, `rejects_malformed`, `oversize_frame_is_rejected_before_parsing`, `answers_the_identity_challenge_with_a_verifiable_proof`, `keepalive_window_is_three_missed_pings`. **New** (no Rust counterpart): the two `run()` reconnect tests, since the Rust's reconnect loop was `run_with_reconnect` in `lib.rs` and had no test of its own. The spec repair above (ladder-reset signal, harness `calls` hook, reset ordering, `onChallenge` removal) adds and removes **zero** assertions: both counts are unchanged from the pre-repair fence.
 
 ---
 
@@ -2110,6 +2120,7 @@ git commit -m "feat(agent): add the signalling client, run loop and auth-fatalit
 ```ts
 // apps/agent/test/identity/store.test.ts
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { webcrypto } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -2145,17 +2156,26 @@ describe('loadOrCreateIdentity', () => {
     expect(readFileSync(path, 'utf8')).toBe('not a pkcs8 key');
   });
 
-  it('signs and verifies a round trip', async () => {
-    const { createVerify, createPublicKey } = await import('node:crypto');
+  it('signs and verifies a round trip through the raw key the server imports', async () => {
+    // The published key must be the RAW 32-byte form: the server imports it with
+    // `subtle.importKey('raw', ...)` (`apps/server/src/routes/ws.ts:960`), and an
+    // SPKI DER key (44 bytes) throws `DataError: Invalid keyData` there. This
+    // assertion therefore goes through the server's own import path.
     const path = join(tempDir(), 'agent-identity.pkcs8');
     const identity = loadOrCreateIdentity(path);
     const message = Buffer.from('hello');
     const signature = identity.sign(message);
-    const der = Buffer.from(identity.publicKeyBase64, 'base64');
-    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
-    const verifier = createVerify('ed25519');
-    verifier.update(message);
-    expect(verifier.verify(key, signature)).toBe(true);
+    const raw = Buffer.from(identity.publicKeyBase64, 'base64');
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      raw,
+      { name: 'Ed25519' },
+      false,
+      ['verify'],
+    );
+    expect(
+      await webcrypto.subtle.verify('Ed25519', key, signature, message),
+    ).toBe(true);
   });
 });
 ```
@@ -2198,17 +2218,25 @@ export interface AgentIdentity {
   sign(bytes: Uint8Array): Uint8Array;
 }
 
-const PUBLIC_KEY_TYPE = 'spki';
-
-function encodeBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
+/**
+ * Derive the **raw 32-byte** Ed25519 public key.
+ *
+ * The wire form is raw, not SPKI DER: `apps/server/src/routes/ws.ts:960` imports
+ * it with `subtle.importKey('raw', ...)`, and the Rust's `public_key_base64`
+ * (`identity.rs:46`) encodes `public_key_raw()`. An SPKI DER key (44 bytes) is
+ * rejected there with `DataError: Invalid keyData`, which the server turns into
+ * a 4401 'Identity proof failed' — an agent that can never authenticate.
+ */
+function rawPublicKeyBase64(privateKey: KeyObject): string {
+  const jwk = createPublicKey(privateKey).export({ format: 'jwk' });
+  return Buffer.from(jwk.x as string, 'base64url').toString('base64');
 }
 
 function toIdentity(privateKey: KeyObject): AgentIdentity {
-  const publicDer = createPublicKey(privateKey).export({ type: PUBLIC_KEY_TYPE, format: 'der' });
   return {
-    publicKeyBase64: encodeBase64(publicDer as Buffer),
-    sign: (bytes) => new Uint8Array(nodeSign(null, Buffer.from(bytes), privateKey)),
+    publicKeyBase64: rawPublicKeyBase64(privateKey),
+    sign: (bytes) =>
+      new Uint8Array(nodeSign(null, Buffer.from(bytes), privateKey)),
   };
 }
 
@@ -2220,11 +2248,18 @@ function readPrivateKey(path: string): KeyObject {
       format: 'der',
     });
   } catch (error) {
-    throw new Error(
+    const wrapped = new Error(
       `identity file is not a valid PKCS#8 Ed25519 key (${path}): ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
+    // The errno `code` must survive the wrap: `loadOrCreateIdentity` uses it to
+    // tell "no file yet" (ENOENT — a first run) from "the file is there and
+    // unusable" (everything else — a hard error).
+    (wrapped as NodeJS.ErrnoException).code = (
+      error as NodeJS.ErrnoException
+    ).code;
+    throw wrapped;
   }
 }
 
@@ -2334,7 +2369,7 @@ git add apps/agent/src/identity apps/agent/test/identity
 git commit -m "feat(agent): add the Ed25519 identity store and the WS2 identity frame"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 11 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested.
+**TEST-INTEGRITY declaration:** two new files, **9 new `it()` / 11 new `expect()`**. Ports `identity.rs`'s `generates_then_reloads_the_same_public_key`, `identity_file_is_owner_only`, `sign_and_verify_round_trip`. The `parses_and_normalizes_sdp_fingerprint` test does **not** port — `normalizeFingerprint` already lives in `@ponter/shared` (B9 is reuse). Two are **new**: the never-truncate property and the parent-directory creation, neither of which the Rust tested. The Task 6 spec repair (errno `code` preservation across the error wrap, raw 32-byte public key derivation via JWK `x`, server-path subtle import verification) preserves the count exactly: 9 new `it()` / 11 new `expect()` (store 5/6 + frame 4/5), with zero assertions added or removed.
 
 ---
 
@@ -2343,70 +2378,119 @@ git commit -m "feat(agent): add the Ed25519 identity store and the WS2 identity 
 **Files:**
 - Create: `apps/agent/src/e2ee/manager.ts`
 - Test: `apps/agent/test/e2ee/manager.test.ts`
+- Modify: `apps/agent/package.json`, `pnpm-lock.yaml` (the dependencies in Step 0)
 
 **Interfaces:**
-- Consumes: `@ponter/crypto`'s `EncryptionManager` and key helpers (B49–B51, already gating per D4); `AgentIdentity` (Task 6).
+- Consumes: `@ponter/crypto`'s `buildSessionKey`, `generateUserKeyPair`, `importSigningPublicKeyRaw`, `EncryptionManager` (B49–B51, already gating per D4); `@ponter/shared`'s `canonicalKeyBinding` and `WS1_TERMINAL_INFO`; `AgentIdentity` (Task 6). The test consumes `@ponter/terminal-core`'s `TerminalE2ee` — **the browser is the peer**, so the seam test uses the real class rather than a second hand-rolled one.
 - Produces:
-  - `class AgentE2ee { beginTerminalE2ee(terminalId): Promise<{ ecdhPublicKey: string; signature: string }>; acceptHello(msg): boolean; isArmed(terminalId): boolean }`
-  - `const WS1_TERMINAL_INFO = 'ponter-ws1-terminal-v1'`
+  - `class E2eeSession { static acceptHello(identity: AgentIdentity, sessionId: string, hello: E2eeHello, peerSigningPublicKeyRawBase64: string): Promise<{ session: E2eeSession; ack: E2eeAck } | null>; encrypt(plaintext: Uint8Array): Promise<Uint8Array>; decrypt(framed: Uint8Array): Promise<Uint8Array> }`
+  - `interface E2eeHello { terminalId: string; ecdhPublicKey: string; signature: string }`
+  - `interface E2eeAck { terminalId: string; ecdhPublicKey: string; signature: string }`
+  - `export { WS1_TERMINAL_INFO }` — re-exported from `@ponter/shared`, never redeclared here.
+
+- [ ] **Step 0: Add the dependencies, and install them**
+
+`apps/agent` declares neither `@ponter/crypto` nor `@ponter/terminal-core` today, so
+the module below does not resolve and the fence cannot run. Measured on the same
+resolution matrix as the Task 11 gap
+(`.superpowers/probes/b12g-task11-staging-gap-v2/`, state **S3**): a manifest edit
+alone resolves nothing, because nothing links `apps/agent/node_modules/@ponter/*`
+until an install runs. `@ponter/terminal-core` is a **devDependency** — a test-only
+consumer of a browser package, the same dependency direction Task 11 established
+for `@ponter/file-core` — while `@ponter/crypto` is a runtime dependency.
+
+```bash
+pnpm --filter @ponter/agent-node add --workspace @ponter/crypto
+pnpm --filter @ponter/agent-node add -D --workspace @ponter/terminal-core
+```
+
+Both commands write `apps/agent/package.json` **and** regenerate `pnpm-lock.yaml`.
+CI installs with `--frozen-lockfile` (`ci-node.yml:78`) and its `paths:` includes
+`pnpm-lock.yaml`, so the lockfile half is gating: it must be staged with the commit.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // apps/agent/test/e2ee/manager.test.ts
 import { describe, expect, it } from 'vitest';
-import { generateKeyPairSync, sign as nodeSign, verify as nodeVerify } from 'node:crypto';
-import { AgentE2ee } from '../../src/e2ee/manager.js';
+import { createPublicKey, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
+import { canonicalKeyBinding } from '@ponter/shared';
+import { TerminalE2ee } from '@ponter/terminal-core';
+import { E2eeSession } from '../../src/e2ee/manager.js';
 
+const SESSION_ID = 'sess-abc';
+
+// The agent's own WS2 identity: Ed25519, published as the RAW 32-byte form.
+const { privateKey: agentPrivate, publicKey: agentPublic } = generateKeyPairSync('ed25519');
+const agentPublicRaw = Buffer.from(
+  (agentPublic.export({ format: 'jwk' }) as { x: string }).x,
+  'base64url',
+).toString('base64');
 const agentIdentity = {
-  publicKeyBase64: 'cGs=',
+  publicKeyBase64: agentPublicRaw,
   sign: (bytes: Uint8Array) => new Uint8Array(nodeSign(null, Buffer.from(bytes), agentPrivate)),
 };
 
-const { privateKey: agentPrivate } = generateKeyPairSync('ed25519');
+// The peer's identity (the browser's). DELIBERATELY a different key from the
+// agent's: the agent verifies the peer's hello, it never signs it. A fixture that
+// reuses `agentPrivate` for both sides passes even when the verifier accepts its
+// own signatures, which is the failure mode this whole task is about.
+const { privateKey: peerPrivate, publicKey: peerPublic } = generateKeyPairSync('ed25519');
+const peerPublicRaw = Buffer.from(
+  (peerPublic.export({ format: 'jwk' }) as { x: string }).x,
+  'base64url',
+).toString('base64');
 
-function peerHello(binding: string) {
-  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+// A third key, for the wrong-signer must-error control.
+const { privateKey: otherPrivate } = generateKeyPairSync('ed25519');
+
+function peerHello(bindingFor?: (ecdhPublicKey: string) => string, signer = peerPrivate) {
+  const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const ecdhPublicKey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString(
     'base64',
   );
-  const signature = nodeSign(null, Buffer.from(binding), agentPrivate).toString('base64');
-  return { ecdhPublicKey, signature };
+  const message = bindingFor ? bindingFor(ecdhPublicKey) : canonicalKeyBinding(ecdhPublicKey);
+  const signature = nodeSign(null, Buffer.from(message), signer).toString('base64');
+  return { terminalId: 't1', ecdhPublicKey, signature };
 }
 
-describe('AgentE2ee', () => {
+describe('E2eeSession', () => {
   it('produces an ack carrying its ephemeral ECDH key and a signature', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    const ack = await e2ee.beginTerminalE2ee('t1');
-    expect(Buffer.from(ack.ecdhPublicKey, 'base64').length).toBeGreaterThan(0);
-    expect(ack.signature.length).toBeGreaterThan(0);
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw);
+    expect(Buffer.from(result!.ack.ecdhPublicKey, 'base64').length).toBeGreaterThan(0);
+    expect(result!.ack.signature.length).toBeGreaterThan(0);
   });
 
-  it('arms no session before a peer hello arrives', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    expect(e2ee.isArmed('t1')).toBe(false);
+  it('returns null when the peer signing key is not 32 raw bytes', async () => {
+    // `peer_signing_public_key_raw: &[u8; 32]` (e2ee.rs:203) is a length check the
+    // type system cannot make in TS. An SPKI DER key is 44 bytes; letting one
+    // through would import as the wrong key shape and reject every real hello.
+    const result = await E2eeSession.acceptHello(
+      agentIdentity,
+      SESSION_ID,
+      peerHello(),
+      Buffer.from('short').toString('base64'),
+    );
+    expect(result).toBeNull();
   });
 
-  it('arms the session after a valid hello and round-trips a frame', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    const hello = peerHello('ponter-ws1-terminal-v1\nterminalId=t1');
-    expect(e2ee.acceptHello({ terminalId: 't1', ...hello })).toBe(true);
-    expect(e2ee.isArmed('t1')).toBe(true);
+  it('derives a session on a valid hello and round-trips a frame', async () => {
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw);
+    expect(result).not.toBeNull();
+    const sealed = await result!.session.encrypt(Buffer.from('payload'));
+    expect(Buffer.from(await result!.session.decrypt(sealed)).toString()).toBe('payload');
   });
 
   it('rejects a mis-signed hello and yields no session', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    const hello = peerHello('a different binding');
-    expect(e2ee.acceptHello({ terminalId: 't1', ...hello })).toBe(false);
-    expect(e2ee.isArmed('t1')).toBe(false);
+    const hello = peerHello(() => 'a different binding');
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, hello, peerPublicRaw);
+    expect(result).toBeNull();
   });
 
-  it('rejects a hello for a terminal that was never begun', () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    expect(e2ee.acceptHello({ terminalId: 'nope', ...peerHello('x') })).toBe(false);
+  it('rejects a hello signed by the wrong peer key', async () => {
+    const hello = peerHello(undefined, otherPrivate);
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, hello, peerPublicRaw);
+    expect(result).toBeNull();
   });
 
   it('round-trips an EMPTY plaintext frame', async () => {
@@ -2414,21 +2498,62 @@ describe('AgentE2ee', () => {
     // encrypt produced exactly that for []. @ponter/crypto accepts it and returns
     // an empty buffer; that is the behaviour this port keeps, because it is the
     // one that round-trips.
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    e2ee.acceptHello({ terminalId: 't1', ...peerHello('ponter-ws1-terminal-v1\nterminalId=t1') });
-    const sealed = e2ee.seal('t1', new Uint8Array(0));
+    const result = (await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw))!;
+    const sealed = await result.session.encrypt(new Uint8Array(0));
     expect(sealed).toHaveLength(28);
-    expect(e2ee.open('t1', sealed)).toEqual(new Uint8Array(0));
+    expect(await result.session.decrypt(sealed)).toEqual(new Uint8Array(0));
   });
 
   it('rejects a tampered frame', async () => {
-    const e2ee = new AgentE2ee(agentIdentity);
-    await e2ee.beginTerminalE2ee('t1');
-    e2ee.acceptHello({ terminalId: 't1', ...peerHello('ponter-ws1-terminal-v1\nterminalId=t1') });
-    const sealed = e2ee.seal('t1', Buffer.from('secret'));
-    sealed[sealed.length - 1] ^= 0xff;
-    expect(() => e2ee.open('t1', sealed)).toThrow();
+    const result = (await E2eeSession.acceptHello(agentIdentity, SESSION_ID, peerHello(), peerPublicRaw))!;
+    const sealed = await result.session.encrypt(Buffer.from('secret'));
+    const tampered = Uint8Array.from(sealed);
+    tampered[tampered.length - 1]! ^= 0xff;
+    await expect(result.session.decrypt(tampered)).rejects.toThrow();
+  });
+
+  it('cross-side: decrypts frames encrypted by the browser under the same sessionId', async () => {
+    // The ONLY assertion that can catch a wrong HKDF salt. A self-round-trip
+    // encrypts and decrypts through one EncryptionManager derived from one salt,
+    // so it is a mirror: it stays green under ANY salt, including a wrong one.
+    // Here two independent parties derive the key from their own private half,
+    // so `sessionId` is the only value that can make the GCM tag authenticate.
+    const ecdh = (await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      ['deriveBits'],
+    )) as CryptoKeyPair;
+    const browserSigningKey = await crypto.subtle.importKey(
+      'pkcs8',
+      Buffer.from(peerPrivate.export({ type: 'pkcs8', format: 'der' }) as Buffer),
+      'Ed25519',
+      false,
+      ['sign'],
+    );
+    const agentSigningKey = await crypto.subtle.importKey(
+      'raw',
+      Buffer.from(agentPublicRaw, 'base64'),
+      'Ed25519',
+      true,
+      ['verify'],
+    );
+    const browser = new TerminalE2ee({
+      ecdhPrivateKey: ecdh.privateKey,
+      ecdhPublicKey: ecdh.publicKey,
+      signingPrivateKey: browserSigningKey,
+      peerSigningPublicKey: agentSigningKey,
+      sessionId: SESSION_ID,
+    });
+
+    const hello = await browser.buildHello('t1');
+    const result = await E2eeSession.acceptHello(agentIdentity, SESSION_ID, hello, peerPublicRaw);
+    expect(result).not.toBeNull();
+    await browser.handleAck(result!.ack);
+
+    const encryptedByBrowser = await browser.encrypt(Buffer.from('terminal keystroke'));
+    expect(Buffer.from(await result!.session.decrypt(encryptedByBrowser)).toString()).toBe(
+      'terminal keystroke',
+    );
   });
 });
 ```
@@ -2440,12 +2565,16 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/e2ee/manager.ts
-import { randomBytes } from 'node:crypto';
-import { EncryptionManager } from '@ponter/crypto';
+import {
+  buildSessionKey,
+  generateUserKeyPair,
+  importSigningPublicKeyRaw,
+  type EncryptionManager,
+} from '@ponter/crypto';
+import { canonicalKeyBinding, WS1_TERMINAL_INFO } from '@ponter/shared';
 import type { AgentIdentity } from '../identity/store.js';
 
-/** The HKDF `info` string. Shared with the browser; changing it breaks every peer. */
-export const WS1_TERMINAL_INFO = 'ponter-ws1-terminal-v1';
+export { WS1_TERMINAL_INFO };
 
 export interface E2eeHello {
   terminalId: string;
@@ -2453,83 +2582,107 @@ export interface E2eeHello {
   signature: string;
 }
 
-interface PendingSession {
-  manager: EncryptionManager;
-  armed: boolean;
-}
-
-function bindingMessage(terminalId: string): string {
-  return `${WS1_TERMINAL_INFO}\nterminalId=${terminalId}`;
+export interface E2eeAck {
+  terminalId: string;
+  ecdhPublicKey: string;
+  signature: string;
 }
 
 /**
- * The WS1 terminal E2EE handshake (B52).
+ * Answerer-side WS1 terminal E2EE, porting `E2eeSession` from `apps/agent/src/e2ee.rs`.
  *
- * Fail-closed by construction: a session is created **unarmed**, and only
- * `acceptHello` — after verifying the peer's signature over the binding string
- * — arms it. An unarmed session refuses to seal. The Rust had the same shape and
- * the same reason: arming on the ack alone would let a peer that never proved
- * key possession receive plaintext.
+ * **There is no `begin` step, and that is deliberate.** The agent is the
+ * answerer: the browser sends `terminal-e2ee-hello` first, and the Rust's
+ * `accept_hello` (`e2ee.rs:198-220`) generates our ephemeral key *inside* the
+ * call, after verifying the peer, returning the session and the signed ack
+ * together. An `AgentE2ee` that pre-allocated a pending session in one call and
+ * armed it in another carried three states nothing could distinguish (never
+ * begun / begun-unarmed / armed) and an ordering nobody enforced.
  *
- * The primitives (ECDH, HKDF, AES-GCM, the frame layout, the shared vectors) are
- * `@ponter/crypto`'s and are already gating; this class is only the wiring.
+ * **The signature is verified before the session key is derived, and the session
+ * object does not exist until it verifies** — the Rust's doc comment states the
+ * reason: "a session that exists is always a session that may encrypt".
  */
-export class AgentE2ee {
-  private readonly sessions = new Map<string, PendingSession>();
+export class E2eeSession {
+  private constructor(private readonly manager: EncryptionManager) {}
 
-  constructor(private readonly identity: AgentIdentity) {}
-
-  async beginTerminalE2ee(
-    terminalId: string,
-  ): Promise<{ ecdhPublicKey: string; signature: string }> {
-    const manager = await EncryptionManager.create({ info: WS1_TERMINAL_INFO, salt: terminalId });
-    this.sessions.set(terminalId, { manager, armed: false });
-    const ecdhPublicKey = manager.exportPublicKeySpki();
-    const signature = Buffer.from(
-      this.identity.sign(new TextEncoder().encode(bindingMessage(terminalId))),
-    ).toString('base64');
-    return { ecdhPublicKey, signature };
-  }
-
-  acceptHello(hello: E2eeHello): boolean {
-    const session = this.sessions.get(hello.terminalId);
-    if (!session) return false;
-    let ok = false;
+  /**
+   * Verify the peer's hello, derive the session key, and return our signed ack.
+   *
+   * `sessionId` is a **parameter, with no default**: it comes off the wire with
+   * the session being negotiated and is the HKDF salt (`@ponter/crypto`'s
+   * `buildSessionKey`; Rust `e2ee.rs:220`). A defaulted salt is a silent seam
+   * break — the agent arms, reports success, and then fails every GCM tag
+   * because the browser derived under its real session id. Required is the only
+   * safe shape.
+   *
+   * `peerSigningPublicKeyRawBase64` is the **raw 32-byte** Ed25519 key the offer
+   * carried (Rust `&[u8; 32]`, `lib.rs:1250-1258`), not SPKI DER.
+   *
+   * Fail-closed: a bad signature, a malformed key or a failed import returns
+   * `null`. The caller then stays plaintext and sends no ack.
+   */
+  static async acceptHello(
+    identity: AgentIdentity,
+    sessionId: string,
+    hello: E2eeHello,
+    peerSigningPublicKeyRawBase64: string,
+  ): Promise<{ session: E2eeSession; ack: E2eeAck } | null> {
     try {
-      ok = session.manager.acceptPeerHello({
-        ecdhPublicKey: hello.ecdhPublicKey,
-        signature: hello.signature,
-        message: bindingMessage(hello.terminalId),
-        nonce: randomBytes(0),
+      const raw = Buffer.from(peerSigningPublicKeyRawBase64, 'base64');
+      if (raw.length !== 32) return null;
+
+      // 1. Our ephemeral keypair, generated ONCE: the private half derives the
+      //    session key and the public half goes out in the ack, and those must be
+      //    the same key or the browser derives a different secret.
+      //
+      //    This sits *before* the verify because `buildSessionKey` needs our
+      //    private half as an input — the Rust verifies first and generates
+      //    second (`e2ee.rs:210-216`). The divergence is safe and deliberate: an
+      //    ephemeral keypair is a throwaway that touches no state and escapes
+      //    nothing until an ack is returned, and the property the Rust's ordering
+      //    protects — "a session that exists is always a session that may
+      //    encrypt" — is kept because `E2eeSession` is constructed only after
+      //    `buildSessionKey` resolves, and `buildSessionKey` throws when the
+      //    binding does not verify.
+      //
+      //    Nothing about the binding is built locally: the verified string is
+      //    `canonicalKeyBinding(ecdhPublicKey)` and the HKDF salt is
+      //    `sessionId`, the two values the browser and the Rust also use.
+      const keyPair = await generateUserKeyPair();
+      const manager = await buildSessionKey({
+        myEcdhPrivateKey: keyPair.privateKey,
+        peerEcdhPublicKeySpkiBase64: hello.ecdhPublicKey,
+        peerBindingSignature: hello.signature,
+        peerSigningPublicKey: await importSigningPublicKeyRaw(peerSigningPublicKeyRawBase64),
+        sessionId,
       });
+
+      // 2. Build our signed ack so the browser can derive the identical key.
+      const ackSignature = identity.sign(
+        new TextEncoder().encode(canonicalKeyBinding(keyPair.publicKeySpkiBase64)),
+      );
+      const ack: E2eeAck = {
+        terminalId: hello.terminalId,
+        ecdhPublicKey: keyPair.publicKeySpkiBase64,
+        signature: Buffer.from(ackSignature).toString('base64'),
+      };
+
+      return { session: new E2eeSession(manager), ack };
     } catch {
-      ok = false;
+      return null;
     }
-    session.armed = ok;
-    return ok;
   }
 
-  isArmed(terminalId: string): boolean {
-    return this.sessions.get(terminalId)?.armed === true;
+  async encrypt(plaintext: Uint8Array): Promise<Uint8Array> {
+    return this.manager.encrypt(plaintext);
   }
 
-  seal(terminalId: string, plaintext: Uint8Array): Uint8Array {
-    return this.requireArmed(terminalId).encrypt(plaintext);
-  }
-
-  open(terminalId: string, framed: Uint8Array): Uint8Array {
-    return this.requireArmed(terminalId).decrypt(framed);
-  }
-
-  private requireArmed(terminalId: string): EncryptionManager {
-    const session = this.sessions.get(terminalId);
-    if (!session?.armed) throw new Error(`no armed e2ee session for terminal ${terminalId}`);
-    return session.manager;
+  async decrypt(framed: Uint8Array): Promise<Uint8Array> {
+    return this.manager.decrypt(framed);
   }
 }
 ```
-
-> **Implementation note for the executor:** `EncryptionManager`'s exact option names (`salt`, `info`, `exportPublicKeySpki`, `acceptPeerHello`) must be read from `packages/crypto/src/` before implementing — the plan names the behaviours, the package names the symbols. If `acceptPeerHello` does not exist, the verification half is `packages/crypto`'s existing `verifyKeyBinding`, and that is what this class calls. **Do not re-implement ECDH or HKDF here**; that is what makes B49–B51 already proven.
 
 - [ ] **Step 3: Run green, format, commit**
 
@@ -2537,11 +2690,65 @@ export class AgentE2ee {
 ./apps/agent/node_modules/.bin/vitest run test/e2ee
 ./packages/crypto/node_modules/.bin/vitest run
 ./node_modules/.bin/prettier --write apps/agent/src/e2ee apps/agent/test/e2ee
-git add apps/agent/src/e2ee apps/agent/test/e2ee
-git commit -m "feat(agent): wire the WS1 terminal E2EE handshake fail-closed"
+git add apps/agent/src/e2ee apps/agent/test/e2ee apps/agent/package.json pnpm-lock.yaml
+git commit -m "feat(agent): port the WS1 terminal E2EE answerer handshake"
 ```
 
-**TEST-INTEGRITY declaration:** one new file, **7 new `it()` / 11 new `expect()`**. Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and `a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do **not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the empty-plaintext round trip (the divergence ruling) and hello-for-an-unbegun-terminal.
+**TEST-INTEGRITY declaration:** one new file, **8 new `it()` / 12 new `expect()`**.
+
+The before→after is **not** a +1/+1 net. Enumerated by name, because a net figure
+is what hides a removal:
+
+| test | pre | post |
+|---|---|---|
+| `produces an ack carrying its ephemeral ECDH key and a signature` | 2 | 2 |
+| `arms no session before a peer hello arrives` | 1 | — **removed** |
+| `arms the session after a valid hello and round-trips a frame` | 2 | 2, **renamed** to `derives a session on a valid hello and round-trips a frame` |
+| `rejects a mis-signed hello and yields no session` | 2 | **1** — lost its `isArmed(false)` assertion |
+| `rejects a hello for a terminal that was never begun` | 1 | — **removed** |
+| `round-trips an EMPTY plaintext frame` | 2 | 2 |
+| `rejects a tampered frame` | 1 | 1 |
+| `returns null when the peer signing key is not 32 raw bytes` | — | 1 **added** |
+| `rejects a hello signed by the wrong peer key` | — | 1 **added** |
+| `cross-side: decrypts frames encrypted by the browser under the same sessionId` | — | 2 **added** |
+
+So **`it()`: −2 / +3, and `expect()`: −3 / +4** — a net +1/+1 that arrives from
+unequal movements, not from one addition. `11 − 3 + 4 = 12` and `7 − 2 + 3 = 8`.
+
+The three removals are all the same class, and each is named with its reason:
+
+- **Two whole tests go: `arms no session before a peer hello arrives` and
+  `rejects a hello for a terminal that was never begun`.** Both pinned states the
+  Rust cannot have. `isArmed` does not exist on `E2eeSession` — the Rust's
+  `accept_hello` is a static constructor returning `(Self, E2eeAck)`
+  (`e2ee.rs:198-203`), so "created but not armed" is not a representable state and
+  asserting `isArmed === false` asserted the *retired shape*, not the contract.
+  The second pinned terminal-id-begun validation that the Rust never performs:
+  `accept_hello` never inspects `hello.terminal_id` for validity, it only echoes it
+  into the ack (`e2ee.rs:222`). These are the test-asserts-the-bug class, not
+  coverage given up.
+- **One assertion goes from a surviving test:
+  `expect(e2ee.isArmed('t1')).toBe(false)` in `rejects a mis-signed hello`.**
+  Same reason, one level down — with no arming state, `result === null` *is* the
+  fail-closed assertion, and it is still there.
+
+What replaces them is stronger on the two properties those tests could never
+prove. **Added and worth raising:** the 32-byte key-shape rejection (the Rust's
+`&[u8; 32]` is a type-level guarantee TS does not have), and the wrong-peer-key
+must-error control — the pre-repair fixture signed with the **agent's own** key,
+so its "mis-signed hello" test varied only the message string and could never show
+signature verification works. The third addition is the cross-side `TerminalE2ee`
+round trip, the only assertion that can distinguish the correct HKDF salt from any
+other: the pre-repair fence's round trips went through a single
+`EncryptionManager`, so it stayed green when the salt was replaced with
+`'WRONG-SALT'` (measured: 7/7 passing).
+
+Ports `e2ee.rs`'s `accept_hello_derives_and_round_trips` and
+`a_mis_signed_hello_is_rejected_and_yields_no_session`. The six primitive tests do
+**not** port — `@ponter/crypto` owns them and is gating (D4). Two are **new**: the
+empty-plaintext round trip (the divergence ruling) and the 32-byte key-shape
+rejection. Two more are must-error controls a fail-closed port needs: the
+wrong-signer hello, and the cross-side salt seam.
 
 ---
 
@@ -3541,7 +3748,7 @@ git commit -m "feat(agent): port the POSIX shell allowlist with its resolution o
 
 **Files:**
 - Create: `apps/agent/src/files/sandbox.ts`
-- Modify: `packages/shared/src/types/files.ts` (add the `FILES_ERROR_CODES` value export), `packages/shared/src/types/index.ts` (re-export it from the **value** block), `apps/agent/package.json` (add `@ponter/shared`), `pnpm-lock.yaml` (regenerated by the install in Step 3)
+- Modify: `packages/shared/src/types/files.ts` (add the `FILES_ERROR_CODES` value export), `packages/shared/src/types/index.ts` (re-export it from the **value** block) — `apps/agent/package.json` already declared `@ponter/shared` as of Task 1, so the Step 3 install produces no manifest or lockfile diff
 - Test: `apps/agent/test/files/sandbox.test.ts`
 
 **Interfaces:**
@@ -3705,7 +3912,7 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/files/sandbox.ts
-import { realpathSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, sep } from 'node:path';
 import type { FilesErrorCode } from '@ponter/shared';
 
@@ -3776,13 +3983,15 @@ export class FilesRoot {
       throw new SandboxError('NOT_A_DIRECTORY', `files root ${root} is not a directory`);
     }
     try {
-      // The Rust probes read_dir so an unreadable root closes the gate at
-      // startup rather than at the first listing.
-      statSync(canonical);
+      // The Rust probes `read_dir` so an unreadable root closes the gate at
+      // startup rather than at the first listing (ADR-32). `stat` is not a
+      // substitute: it succeeds on a mode-000 directory the agent owns, which
+      // is exactly the case the probe exists for.
+      readdirSync(canonical);
     } catch (error) {
       throw new SandboxError(errnoToCode(error), `files root ${root} is not readable`);
     }
-    return FilesRoot.open(canonical);
+    return new FilesRoot(canonical);
   }
 
   resolveExisting(wirePath: string): string {
@@ -3833,7 +4042,14 @@ export class FilesRoot {
 
   private ensureContained(canonical: string, wirePath: string): void {
     if (canonical === this.root) return;
-    if (!canonical.startsWith(this.root + sep)) {
+    // The separator is appended **only when the root does not already end in
+    // one**. `AGENT_FILES_ROOT=/` canonicalises to `/`, and `/` + `/` is `//`,
+    // which no path but `//` itself starts with — so the unconditional form
+    // rejects everything under a root of `/` with `PATH_OUTSIDE_ROOT`
+    // (fail-closed: a usability bug, not an escape). Appending unconditionally
+    // is the same trap for any root that names a filesystem root.
+    const prefix = this.root.endsWith(sep) ? this.root : this.root + sep;
+    if (!canonical.startsWith(prefix)) {
       throw new SandboxError('PATH_OUTSIDE_ROOT', `${wirePath} resolves outside the files root`);
     }
   }
@@ -3913,13 +4129,14 @@ export {
 } from './files.js';
 ```
 
-**Then R11's dependency, as one command.** `apps/agent` does not declare
-`@ponter/shared` today (measured: 0 hits in `apps/agent/package.json`), so
-`sandbox.ts`'s `import type { FilesErrorCode } from '@ponter/shared'` does not
-resolve. `pnpm add` writes the manifest, regenerates `pnpm-lock.yaml`, and
-links `apps/agent/node_modules/@ponter/shared` — the same three edits Task 11's
-Step 5 makes for `@ponter/file-core`, and for the same reason: a manifest edit
-alone resolves nothing.
+**Then R11's dependency, as one command.** An earlier draft asserted that
+`apps/agent` did not declare `@ponter/shared` (claiming 0 hits in
+`apps/agent/package.json`). That claim was stale: `@ponter/shared` was already
+declared (`"@ponter/shared": "workspace:*"`) and present in `pnpm-lock.yaml` as
+of Task 1 (`9cc4c65`). Running the prescribed command below is therefore an
+idempotent no-op and produces **no diff** in `apps/agent/package.json` or
+`pnpm-lock.yaml` — which is why landed commit `411e632` correctly contains no
+manifest or lockfile blob. The command is kept for idempotence:
 
 ```bash
 pnpm --filter @ponter/agent-node add --workspace @ponter/shared
@@ -3932,8 +4149,13 @@ only `typecheck` run is `ci-node.yml:86` (`turbo run typecheck
 workflow's `paths:`. So a broken import here is green locally and invisible in
 CI. The **lockfile** half is gating (`ci-node.yml:78` runs `pnpm install
 --frozen-lockfile`, and `paths:` includes `packages/**` and `pnpm-lock.yaml`),
-which is why the install must run before the commit. The Plan-3 handoff is the
-path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
+which is why the install must run before the commit. The Plan-3 handoff is
+**both halves**: `apps/agent/**` into `ci-node.yml`'s `paths:` **and** the
+`!@ponter/agent-node` filter dropped from `:83`, `:86` and `:108`. Either alone
+is a no-op — the path without the filter triggers a job that still skips the
+package, the filter without the path only matters on unrelated pushes. No other
+workflow runs `tsc` on it (`build-agent.yml`, `ci-e2e.yml` and
+`build-desktop.yml` are Rust and e2e only), so this is the whole fix.
 
 - [ ] **Step 4: Run green, format, commit**
 
@@ -3942,19 +4164,32 @@ path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`
 ./node_modules/.bin/tsc --noEmit -p packages/shared/tsconfig.json
 ./node_modules/.bin/prettier --write apps/agent/src/files/sandbox.ts apps/agent/test/files/sandbox.test.ts packages/shared/src/types/files.ts packages/shared/src/types/index.ts
 git add apps/agent/src/files apps/agent/test/files \
-        packages/shared/src/types/files.ts packages/shared/src/types/index.ts \
-        apps/agent/package.json pnpm-lock.yaml
+        packages/shared/src/types/files.ts packages/shared/src/types/index.ts
 git commit -m "feat(agent): port the files sandbox on the shared error union"
 ```
 
-**All four paths outside `apps/agent/src` and `apps/agent/test` must be in that
+**Both paths outside `apps/agent/src` and `apps/agent/test` must be in that
 `git add`.** `packages/shared/src/types/files.ts` and `index.ts` are staged by
 no other step in any plan, and leaving them out leaves `FILES_ERROR_CODES` in
 the working tree only — Task 11's fence would then import a name that does not
 exist on `main`, and the failure is invisible because nothing in CI typechecks
-the port's package.
+the port's package. (`apps/agent/package.json` and `pnpm-lock.yaml` produce no
+diff because `@ponter/shared` was already present in the workspace manifest).
 
 **TEST-INTEGRITY declaration:** one new file, **18 new `it()` / 19 new `expect()`**. Ports `path_policy_rejects_dotdot_escape`, `path_policy_rejects_absolute`, `path_policy_rejects_empty_components_and_dots`, `path_policy_rejects_symlink_escape`, `path_policy_rejects_prefix_confusion`, `upload_create_path_validates_parent_and_name`, `root_resolution_fails_when_missing_not_a_dir_or_unreadable`. **New:** the NUL and backslash rejections as separate cases (the Rust tested them inside one `path_policy_*` test), and the inside-the-root symlink acceptance, which the Rust had no positive case for.
+
+**Declared open gap (unreadable-root test):** While the declaration cites
+`root_resolution_fails_when_missing_not_a_dir_or_unreadable` (`files.rs:3258`),
+the Rust test actually has **three** arms: missing path (`NotFound`), file not a
+directory (`NotADirectory`), and mode-000 unreadable directory
+(`PermissionDenied`). The ported fence (`describe('FilesRoot.open')` at
+`:3895-3904`) ports only the first two and has **no unreadable-root test**.
+Measured consequence: reverting production `readdirSync` back to the vacuous
+`statSync` leaves the fence **18/18 green**, meaning the fence does not pin the
+probe that `sandbox.ts:83` implements. The test cannot be added here without
+changing the landed and declared count (**18 `it()` / 19 `expect()`**); it is
+recorded as an open gap with the Rust citation (`files.rs:3258`) for a later task
+or follow-up suite to own and pin against `EACCES`.
 
 **Known limitation carried into Plan 3's docs:** a TOCTOU window exists between `realpath` and the later `open` — a symlink swapped in that gap escapes. The Rust has the same window and does not close it. Closing it needs per-component `openat` with `O_NOFOLLOW`, which Node cannot do without a native call. Record it; do not attempt a partial mitigation that reads as a guarantee.
 
@@ -3978,6 +4213,7 @@ the port's package.
   - `function partName(name: string): string`
   - `function frameFiles(payload: FilesFrame, timestamp: number): DataChannelMessage<FilesFrame>` — **R1**, the outbound envelope
   - `const FILES_INBOUND_TYPES` (12 entries), `type FilesInboundType`, `function decodeFilesFrame(message): … | null` — **R6**, the inbound decode gate
+  - `type FieldKind`, `interface InboundShape`, `const INBOUND_FIELDS: Record<FilesInboundType, InboundShape>` (12 types / **32 fields**), `function matchesKind(value, kind)`, `function inboundShapeValid(message): boolean` — **the wire type contract**, added by Task 22 (landed `2e3f763`). `INBOUND_FIELDS` is a `Record` whose key is `FilesInboundType`, so a thirteenth type joins the enumeration and fails `tsc` until it has a shape; that is the property the comment cannot enforce.
   - `class FilesSession { handle(message); checkIdle(); flushAcks(); acceptBinaryChunk(frame); dispose() }` — `noteChunk()` and `takePendingAck()` are **private** and split per **R7**
 
 - [ ] **Step 1: Write the failing protocol test**
@@ -4738,6 +4974,7 @@ import {
   readdirSync,
   renameSync,
   rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -4815,6 +5052,172 @@ export type FilesInboundType = (typeof FILES_INBOUND_TYPES)[number];
 const INBOUND = new Set<string>(FILES_INBOUND_TYPES);
 
 /**
+ * The JSON kind the Rust requires for one inbound field (`files.rs:279-600`).
+ *
+ * `u64` is `serde_json`'s unsigned 64-bit integer; `direction` is the
+ * `FilesDirection` enum, which deserializes from the strings `"download"` and
+ * `"upload"` and nothing else (`files.rs:347-373`).
+ */
+type FieldKind = 'string' | 'u64' | 'bool' | 'direction';
+
+interface InboundShape {
+  readonly required: Readonly<Record<string, FieldKind>>;
+  readonly optional: Readonly<Record<string, FieldKind>>;
+}
+
+/**
+ * **The wire type system the Rust had, and this port did not.**
+ *
+ * The Rust decodes every inbound payload with `serde_json::from_value` into a
+ * struct of typed fields (`files.rs:582-600`). A field of the wrong JSON kind —
+ * or a missing required field — fails the **whole frame**, which
+ * `lib.rs:1969-1975` answers as `BAD_FRAME`. The port's decode checked only that
+ * `type` was one of twelve names, and each handler then coerced
+ * (`String(...)`, `Number(...)`, `Boolean(...)`), so the type system was gone.
+ * What that cost, measured rather than argued:
+ *
+ * - `Boolean("false")` is `true`, so `files-delete` with `recursive: "false"`
+ *   selected `rmSync(..., { recursive: true })` and **deleted the tree**.
+ * - `Number("abc")` is `NaN`, and `NaN > FILE_MAX_BYTES` is false, so a
+ *   non-numeric `size` walked past the only limit on upload size — a `u64`
+ *   cannot hold `NaN`, so the Rust has no equivalent.
+ * - `String(undefined)` is `"undefined"`, so a `files-upload-begin` with no
+ *   `name` created a file called `undefined.ponter-part`.
+ *
+ * This table is that contract, and it is why `dispatch` never sees a coerced
+ * value. It is keyed by `FilesInboundType`, so a type added to
+ * `FILES_INBOUND_TYPES` tomorrow without a shape here is a `tsc` error rather
+ * than an arm that skips validation.
+ *
+ * **Two oracle properties the check must respect**, both measured against the
+ * Rust (`ORACLE.txt` in the Task 22 probe):
+ *
+ * 1. `serde` does **not** deny unknown fields — `deny_unknown_fields` has 0
+ *    occurrences in `files.rs`. An extra key is ignored, so this validator
+ *    checks the named fields and ignores everything else. Rejecting unknown
+ *    keys would refuse frames the Rust accepts: a new divergence introduced by
+ *    the fix.
+ * 2. `Option<T>` accepts an explicit `null` — the oracle measures
+ *    `recursive = null` as ACCEPTED (then `unwrap_or(false)` takes the
+ *    non-recursive arm). So for an **optional** field, absent and `null` are
+ *    both fine, and a present non-null value must still be the right kind.
+ *    `recursive: "false"` is `BAD_FRAME`; `recursive: null` is not.
+ */
+export const INBOUND_FIELDS: Record<FilesInboundType, InboundShape> = {
+  'files-list': {
+    required: { requestId: 'string', path: 'string' },
+    optional: {},
+  },
+  'files-download': {
+    required: { transferId: 'string', path: 'string' },
+    optional: {},
+  },
+  'files-download-ack': {
+    required: { transferId: 'string', nextChunkIndex: 'u64' },
+    optional: {},
+  },
+  'files-upload-begin': {
+    required: {
+      transferId: 'string',
+      path: 'string',
+      name: 'string',
+      size: 'u64',
+    },
+    optional: {},
+  },
+  'files-upload-chunk': {
+    required: {
+      transferId: 'string',
+      chunkIndex: 'u64',
+      totalChunks: 'u64',
+      data: 'string',
+    },
+    optional: {},
+  },
+  'files-upload-end': {
+    required: { transferId: 'string' },
+    optional: {},
+  },
+  'files-pause': {
+    required: { transferId: 'string', direction: 'direction' },
+    optional: {},
+  },
+  'files-resume': {
+    required: {
+      transferId: 'string',
+      path: 'string',
+      direction: 'direction',
+      fromChunkIndex: 'u64',
+    },
+    optional: {},
+  },
+  'files-cancel': {
+    required: {},
+    optional: { requestId: 'string', transferId: 'string' },
+  },
+  'files-mkdir': {
+    required: { requestId: 'string', dir: 'string', name: 'string' },
+    optional: {},
+  },
+  'files-delete': {
+    required: { requestId: 'string', path: 'string' },
+    optional: { recursive: 'bool' },
+  },
+  'files-rename': {
+    required: { requestId: 'string', oldPath: 'string', newPath: 'string' },
+    optional: {},
+  },
+};
+
+const DIRECTIONS = new Set<string>(['download', 'upload']);
+
+function matchesKind(value: unknown, kind: FieldKind): boolean {
+  switch (kind) {
+    case 'string':
+      return typeof value === 'string';
+    case 'bool':
+      return typeof value === 'boolean';
+    case 'direction':
+      return typeof value === 'string' && DIRECTIONS.has(value);
+    // `u64` rejects a string, a non-integral number, a negative number, `NaN`,
+    // `Infinity`, `null`, an array and an object. `Number.isSafeInteger` is the
+    // honest bound: `serde_json`'s `u64` is 64-bit, `MAX_SAFE_INTEGER` is the
+    // closest a double gets, and the browser never declares a size above
+    // `FILE_MAX_BYTES`, so no real payload meets the narrower limit.
+    case 'u64':
+      return (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        Number.isSafeInteger(value) &&
+        value >= 0
+      );
+  }
+}
+
+/**
+ * The per-type field-shape check, answering what `serde_json::from_value`
+ * would: every required field present and of its declared kind, every optional
+ * field absent / `null` / of its declared kind, extra keys ignored.
+ */
+export function inboundShapeValid(message: {
+  type: string;
+  [key: string]: unknown;
+}): boolean {
+  const shape = INBOUND_FIELDS[message.type as FilesInboundType];
+  if (shape === undefined) return false;
+  for (const [field, kind] of Object.entries(shape.required)) {
+    if (!matchesKind(message[field], kind)) return false;
+  }
+  for (const [field, kind] of Object.entries(shape.optional)) {
+    const value = message[field];
+    // `Option<T>`: absent or explicit `null` are both ACCEPTED by the oracle.
+    if (value === undefined || value === null) continue;
+    if (!matchesKind(value, kind)) return false;
+  }
+  return true;
+}
+
+/**
  * The three arms whose failures answer on `files-action-result`. Kept beside
  * the decode list because both are claims about the same twelve names, and a
  * reader checking one should not have to hunt for the other.
@@ -4824,12 +5227,21 @@ const ACTION_TYPES = new Set<string>(['files-mkdir', 'files-delete', 'files-rena
 /**
  * The inbound decode step, and the only way into `dispatch`.
  *
- * Returning `null` for an unrecognised `type` is the whole contract: `dispatch`
- * switches on the *decoded* discriminant, so a type this function rejects
- * cannot reach an arm. Routing dispatch through the decoder rather than
- * testing them separately is what makes the decode test evidence about
- * dispatch — a test that called a decoder nothing used would prove the decoder
- * knows twelve names and nothing else.
+ * Returning `null` for an unrecognised `type` is **half** the contract, and the
+ * half that is not about payloads: `dispatch` switches on the *decoded*
+ * discriminant, so a type this function rejects cannot reach an arm. Routing
+ * dispatch through the decoder rather than testing them separately is what
+ * makes the decode test evidence about dispatch — a test that called a decoder
+ * nothing used would prove the decoder knows twelve names and nothing else.
+ *
+ * **This function is a name check, not a shape check.** It answers "is this one
+ * of the twelve?"; `inboundShapeValid` answers "is the payload the shape that
+ * name promises?" — that is the other half. They stay separate because their
+ * failure modes differ and the Rust keeps them separate: an unknown `type` is
+ * warn-and-ignore (`decode_files_frame` → `Ok(None)` → `[]`), while a known
+ * `type` with a bad payload is `BAD_FRAME` (`Err` → the error frame). Merging
+ * them would turn a frame this agent does not understand into an error the peer
+ * must handle.
  */
 export function decodeFilesFrame(
   message: { type: string; [key: string]: unknown },
@@ -4866,7 +5278,10 @@ interface UploadState {
   total: number;
   size: number;
   partPath: string;
+  /** The host path. Filesystem calls only — **never** put this on the wire. */
   destPath: string;
+  /** The wire-relative destination, from `join_rel` (`files.rs:2069-2075`). */
+  destRel: string;
   lastAcked: number;
   pendingAck: number | null;
   lastAckAt: number;
@@ -4906,6 +5321,16 @@ export class FilesSession {
     const decoded = decodeFilesFrame(message);
     if (decoded === null) return [];
     try {
+      // The name is legal; now the payload must be the shape that name
+      // promises. Thrown **inside this try** on purpose: the catch below is
+      // what routes an action frame to `files-action-result` and everything
+      // else to `files-error`, using the *original* `message` for the id
+      // extraction. A check placed above the `try` would have to re-implement
+      // that routing — and would get it wrong for exactly the three action
+      // frames, which are the ones a bad payload is most likely to name.
+      if (!inboundShapeValid(decoded)) {
+        throw new SandboxError('BAD_FRAME', 'the frame could not be decoded');
+      }
       return this.dispatch(decoded);
     } catch (error) {
       const code = error instanceof SandboxError ? error.code : errnoToCode(error);
@@ -4929,9 +5354,27 @@ export class FilesSession {
       this.download = null;
     }
     if (this.upload && !this.upload.paused && this.upload.deadline <= now) {
+      // `timeout_frame(direction, transfer_id)` (`files.rs:1259-1270`) sets the
+      // id in **both** directions. The download arm above is naturally correct
+      // because its state is still in hand; the upload arm has to read the id
+      // *before* `discardUpload` clears it.
+      //
+      // An id-less frame is **not** a hang — measured: the handle stays pending,
+      // then the client's own 30 s timer (`client.ts:328`) rejects it with a
+      // locally minted `TRANSFER_TIMEOUT`. The damage is two other things. The
+      // `files-error` arm only routes to a transfer when the frame carries its
+      // id (`client.ts:637-641`), so the entry is never deleted from
+      // `client.transfers`: measured, the map still holds it after the local
+      // timeout, one dead entry per timed-out upload, for the life of the
+      // connection. And the rejection the caller sees is the client's own
+      // message rather than the agent's frame, so any other agent-side code is
+      // lost. An id-less error also falls through to the `requestId` arms and
+      // the `onError` listeners (`:643-660`), reporting an unsolicited error
+      // that belongs to no request.
+      const { transferId } = this.upload;
       this.discardUpload(this.upload);
       this.upload = null;
-      out.push({ type: 'files-error', code: 'TRANSFER_TIMEOUT', message: 'transfer timed out' });
+      out.push({ type: 'files-error', transferId, code: 'TRANSFER_TIMEOUT', message: 'transfer timed out' });
     }
     return out;
   }
@@ -4983,6 +5426,33 @@ export class FilesSession {
     return this.takePendingAck();
   }
 
+  /**
+   * **The handlers below coerce (`String(...)`, `Number(...)`,
+   * `Boolean(...)`), and that is correct — read this before "fixing" one.**
+   *
+   * Every value reaching an arm has already passed `inboundShapeValid`, so
+   * `message.size` is a `u64`-shaped number, `message.recursive` a boolean or
+   * `null`, `message.name` a string. The coercion is the *narrowing* between
+   * `unknown` and the handler's own parameter type, not a validation. Two
+   * consequences worth knowing:
+   *
+   * - `String(message.path ?? '')` on a field the table declares required: the
+   *   `?? ''` is now unreachable for a missing key (the boundary refuses) but
+   *   still meaningful for a legal empty string, which is the wire's "root".
+   * - `Boolean(message.recursive)` after the boundary sees `true`, `false`,
+   *   `null` or absent — all four of which it maps correctly. Removing the
+   *   boundary would make every one of these lines a bug again at once, which
+   *   is why the table is keyed by `FilesInboundType` and checked by `tsc`.
+   *
+   * `acceptBinaryChunk` is outside this: binary frames never enter `handle()`
+   * and never see this table (`data-channels.ts:263` routes them straight to
+   * `acceptBinaryChunk`). Their boundary is `decodeUploadChunk`
+   * (`protocol.ts:86`), which has its own `BAD_FRAME` throws for a truncated
+   * header and an over-cap payload. "The decode boundary is validated" is a
+   * claim about the **JSON** path only; stating it without this paragraph is
+   * the kind of over-read that makes a later reader trust the binary path for
+   * a check it does not perform.
+   */
   private dispatch(message: { type: FilesInboundType; [key: string]: unknown }): FilesFrame[] {
     switch (message.type) {
       case 'files-list':
@@ -5163,7 +5633,9 @@ export class FilesSession {
     const size = Number(message.size);
     if (size > FILE_MAX_BYTES) throw new SandboxError('FILE_TOO_LARGE', 'file too large');
     if (this.upload) throw new SandboxError('TRANSFER_BUSY', 'an upload is already in flight');
-    const dest = this.root.resolveParentForCreate(String(message.path ?? ''), String(message.name));
+    const name = String(message.name);
+    const dirWire = String(message.path ?? '');
+    const dest = this.root.resolveParentForCreate(dirWire, name);
     try {
       statSync(dest);
       throw new SandboxError('FILE_EXISTS', 'destination already exists');
@@ -5178,25 +5650,31 @@ export class FilesSession {
       unlinkSync(partPath);
       closeSync(openSync(partPath, 'wx', 0o600));
     }
+    const transferId = String(message.transferId);
     this.upload = {
-      transferId: String(message.transferId),
+      transferId,
       nextChunk: 0,
       written: 0,
       total: totalChunks(size),
       size,
       partPath,
       destPath: dest,
+      // `join_rel` (`files.rs:2069-2075`): the **wire** path, not the host path.
+      // `''` + name for the root, `dir/name` otherwise. `destPath` stays for the
+      // filesystem calls; only these two wire values may leave the agent.
+      destRel: dirWire === '' ? name : `${dirWire}/${name}`,
       lastAcked: 0,
       pendingAck: null,
       lastAckAt: this.now(),
       paused: false,
       deadline: this.now() + FILES_IDLE_TIMEOUT_MS,
     };
-    // Nothing has been received yet, so nothing is pending: `pendingAck` is
-    // `null` and `takePendingAck()` would return `[]` anyway. Stated as `[]`
-    // rather than routed through the ack path so the begin frame cannot start
-    // emitting acks if that path changes.
-    return [];
+    // **The begin is answered with the first cumulative ack** (`files.rs:1623-1627`,
+    // spec §6.1). Not an optimisation: the browser's transfer pump is driven from
+    // `onAck` alone (`packages/file-core/src/transfer.ts:164-177`), so a begin
+    // that answers nothing means no chunk is ever sent and every upload hangs
+    // until the 30 s idle timeout.
+    return [{ type: 'files-upload-ack', transferId, nextChunkIndex: 0 }];
   }
 
   /**
@@ -5318,8 +5796,14 @@ export class FilesSession {
       {
         type: 'files-upload-complete',
         transferId: state.transferId,
-        name: state.destPath.split('/').pop(),
-        path: state.destPath,
+        // **Both derive from `destRel`.** `files.rs:2281` emits `state.dest_rel`
+        // and nothing else; an earlier draft put `state.destPath` on the wire,
+        // which sends the agent host's absolute path to the browser — the
+        // sandbox root's location, in every upload-complete frame. `name` is
+        // the last wire component, not the host basename, so the two agree even
+        // when the sandbox root is a symlinked path.
+        name: state.destRel.split('/').pop(),
+        path: state.destRel,
         size: state.size,
       },
     ];
@@ -5455,28 +5939,56 @@ export class FilesSession {
   }
 
   /**
-   * `rm -r` is **not** offered: a peer that can recursively delete a directory
-   * inside the sandbox can destroy a document tree with one message and no undo.
-   * A non-empty directory is refused with `DIR_NOT_EMPTY` and the user removes
-   * its contents explicitly.
+   * `files-delete` honours `recursive`, as the Rust does (ADR-40,
+   * `files.rs:911-951`): the root refusal comes first, then
+   * `if recursive { remove_dir_all }`, else the read-dir-and-`DirNotEmpty` arm.
+   * A non-recursive call on a non-empty directory is refused with
+   * `DIR_NOT_EMPTY` so the caller must say what it means. The web UI sends
+   * `recursive: true` for every folder delete, so a port that always took the
+   * non-recursive arm fails every folder delete outright.
+   *
+   * **The root refusal sits above both arms**, and it is not implied by the
+   * field names: `rmSync(root, { recursive: true })` would delete the whole
+   * sandbox in one message. `remove` and `rename` both compare the canonical
+   * *string* against `this.root.root` — comparing against the `FilesRoot`
+   * object would be always-false and would let a peer delete the root itself.
+   *
+   * An earlier draft of this plan argued the opposite ("`rm -r` is **not**
+   * offered"), which contradicted the owner's 2026-10-22 ruling that
+   * `recursive` is honoured exactly as Rust's `remove_dir_all` honours it. It
+   * was a security-shaped reason to keep a defect, and it is recorded here so
+   * the next reader does not re-derive it as a design choice.
+   *
+   * **`Boolean(message.recursive)` below is a coercion, and it stays — but it
+   * is no longer reachable with a non-boolean.** Task 22 (`2e3f763`) put
+   * `inboundShapeValid` between `decodeFilesFrame` and `dispatch`, and its
+   * `'files-delete'` entry declares `recursive` as an optional `bool`. So
+   * `recursive: "false"` is refused at the boundary as `BAD_FRAME` and never
+   * arrives here; only a real boolean or an absent/`null` value does. The
+   * idiom is deliberately not "fixed" to `message.recursive === true`: doing
+   * so would restore the fail-open behaviour that the boundary now prevents,
+   * for the sake of a validation the boundary already performed. Two guards,
+   * one contract — the boundary rejects the wrong kind, this line picks the
+   * arm for the right one.
    */
   private remove(message: { [key: string]: unknown }): FilesFrame[] {
     const target = this.root.resolveExisting(String(message.path ?? ''));
-    // `resolveExisting('')` returns the canonical root, so this compares two
-    // canonical strings. Comparing against `this.root` (the object) would be
-    // always-false and would let a peer delete the root itself.
     if (target === this.root.root) {
       throw new SandboxError('PERMISSION_DENIED', 'the files root itself cannot be deleted');
     }
     const stat = statSync(target);
     if (stat.isDirectory()) {
-      try {
-        rmdirSync(target);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
-          throw new SandboxError('DIR_NOT_EMPTY', 'the directory is not empty');
+      if (Boolean(message.recursive)) {
+        rmSync(target, { recursive: true });
+      } else {
+        try {
+          rmdirSync(target);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') {
+            throw new SandboxError('DIR_NOT_EMPTY', 'the directory is not empty');
+          }
+          throw error;
         }
-        throw error;
       }
     } else {
       unlinkSync(target);
@@ -5705,7 +6217,10 @@ non-discriminating + 1 fallback assertion**, never "16/16 covered".
 `ci-node.yml`'s `paths:`, and the gating test run excludes
 `@ponter/agent-node` (`:105-111`), so a test in the port's package is green
 locally and invisible in CI. Record the local run in the report; the Plan-3
-handoff is the path plus dropping the filters.
+handoff is **both halves** — `apps/agent/**` into `paths:` **and** the
+`!@ponter/agent-node` filter dropped from `:83`, `:86` and `:108`, since either
+alone leaves the package ungated — and no other workflow runs `tsc` or `vitest`
+on it.
 
 - [ ] **Step 6: Run green, format, commit**
 
@@ -5980,11 +6495,19 @@ function fakeHost() {
   const host = {
     spawn: (file: string, args: string[], opts: Record<string, unknown>) => {
       spawned.push({ file, args, opts });
-      const p = Object.assign(new EventEmitter(), {
+      const emitter = new EventEmitter();
+      // The fake stands in for `IPty`, so it exposes the **same two members**
+      // the real host does — `onData` / `onExit` — and routes them through
+      // `emit` so the fence can fire an event. A fake that exposed `on`
+      // instead would typecheck against the seam it no longer matches, and
+      // the mismatch would only surface against a real `node-pty`.
+      const p = Object.assign(emitter, {
         write: vi.fn(),
         resize: vi.fn(),
         kill: vi.fn(),
         pid: 1000 + procs.length,
+        onData: (cb: (chunk: string | Buffer) => void) => { emitter.on('data', cb); },
+        onExit: (cb: (event: { exitCode?: number }) => void) => { emitter.on('exit', cb); },
       });
       procs.push(p);
       return p;
@@ -6132,16 +6655,32 @@ export const MAX_PTY_CHUNK = 16 * 1024;
 export const MAX_SESSIONS = 10;
 export const MAX_FRAME_BYTES = 64 * 1024;
 
+/**
+ * The `node-pty` seam, written against the surface `IPty` actually declares
+ * (`typings/node-pty.d.ts:117-190`): `onData` / `onExit`, not EventEmitter's
+ * `on`.
+ *
+ * **This is not a style choice and an earlier draft of this plan had it
+ * wrong.** `Terminal.prototype.on` delegates to a private `_socket` and is
+ * **absent from `IPty`'s declared type**, so a seam built on `on` cannot be
+ * satisfied by the real host at all — it needs a cast to typecheck, and that
+ * cast hides a runtime defect. `Terminal.prototype.emit` passes the event's
+ * payload as **positional argument 0** (`lib/terminal.js:147-156`), while the
+ * `_onExit` wrapper is what turns the positional args into
+ * `{ exitCode, signal }` (`:93`). An EventEmitter-shaped handler reading
+ * `event?.exitCode` therefore gets `undefined` on every real exit and reports
+ * `null`. That is precisely what the plan's own fence observed as `[-1]` and
+ * its `as never` cast kept out of `tsc`'s reach.
+ *
+ * `IEvent<T>` is `(listener: (e: T) => any): IDisposable` (`:212-214`), so the
+ * callback shapes below are the host's own, not invented here.
+ */
 export interface PtyProcess {
   write(data: Buffer): void;
   resize(cols: number, rows: number): void;
   kill(): void;
-  // Two overloads, not `(arg: never) => void`. `never` as a *parameter* type
-  // means "no argument can be passed", which no real host — and not even
-  // `EventEmitter` — is assignable to, so the fake in the test below would not
-  // typecheck against the seam it stands in for.
-  on(event: 'data', cb: (chunk: string | Buffer) => void): void;
-  on(event: 'exit', cb: (event: { exitCode?: number }) => void): void;
+  onData(cb: (chunk: string | Buffer) => void): void;
+  onExit(cb: (event: { exitCode?: number }) => void): void;
 }
 
 /** The `node-pty` seam. Tests supply a fake so no shell is ever spawned. */
@@ -6235,9 +6774,24 @@ export class PtyManager {
     if (this.sessions.size >= MAX_SESSIONS) {
       throw new PtyError('session-limit-reached', 'the agent already has 10 terminal sessions');
     }
+    // **The allowlist is consulted before a process exists**, as the Rust does
+    // (`lib.rs:1372-1400`): a peer-supplied shell is untrusted input, and
+    // checking it after `spawn` would already have executed it. The policy
+    // throws `ShellRefusedError` with the Rust's own wording; it is re-thrown
+    // as `pty-spawn-failed`, which is the frame the Rust sends for a refused
+    // shell too ("reuse the pinned spawn-failure frame … a third wire code
+    // would change a contract for no reader's benefit").
+    //
+    // An earlier draft declared `policy?: ShellPolicy` on the options and never
+    // read it, so any client-supplied shell spawned. `policy` is **optional at
+    // the seam and mandatory in production**: `runtime.ts` is where a manager is
+    // constructed, and it must always pass one. The two test cells below pin
+    // both halves — that a refused shell never reaches `spawn`, and that the
+    // **canonical path the policy resolved** is what spawns.
+    const shell = options.policy ? this.resolveShell(options.policy, options.shell) : options.shell;
     let process_: PtyProcess;
     try {
-      process_ = this.host.spawn(options.shell, [], {
+      process_ = this.host.spawn(shell, [], {
         name: 'xterm-256color',
         cols: options.cols,
         rows: options.rows,
@@ -6248,22 +6802,59 @@ export class PtyManager {
     } catch (error) {
       throw new PtyError('pty-spawn-failed', (error as Error).message);
     }
-    this.sessions.set(options.terminalId, { process: process_ });
     // With `encoding: null` a real `node-pty` emits Buffers. The `string` half
     // is tolerated only so a fake host cannot smuggle in a lossy decode
     // silently: `Buffer.from(string)` is the utf8 round trip this code exists
     // to avoid, so the string branch is a bug in the host adapter, not a
     // supported input — which is why the real host must pass `encoding: null`.
-    // No `as never` casts: the seam's overloads are what make this typecheck.
-    process_.on('data', (chunk: string | Buffer) => {
-      this.emitChunks(options.terminalId, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    process_.on('exit', (event: { exitCode?: number }) => {
-      this.sessions.delete(options.terminalId);
-      this.exitHandler?.({
-        terminalId: options.terminalId,
-        exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
+    //
+    // **Subscribe before registering the slot.** Registering first leaks a slot
+    // forever if a subscription throws: the map keeps an entry nothing will
+    // ever delete, so the agent silently offers 9 sessions instead of 10 for
+    // the rest of its life. On a throw, kill the spawned process — leaving it
+    // running unobserved is the second half of the same defect — and report the
+    // same `pty-spawn-failed` an unwireable spawn reports.
+    try {
+      process_.onData((chunk: string | Buffer) => {
+        this.emitChunks(options.terminalId, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
+      process_.onExit((event: { exitCode?: number }) => {
+        this.emitExit(options.terminalId, process_, event);
+      });
+    } catch (error) {
+      try {
+        process_.kill();
+      } catch {
+        // The process is already unusable; a failing kill changes nothing.
+      }
+      throw new PtyError('pty-spawn-failed', (error as Error).message);
+    }
+    this.sessions.set(options.terminalId, { process: process_ });
+  }
+
+  private resolveShell(policy: ShellPolicy, requested: string): string {
+    try {
+      return policy.resolveClientShell(requested);
+    } catch (error) {
+      throw new PtyError('pty-spawn-failed', `shell refused: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * **Only this process may free the slot.** `close()` drops the map entry but
+   * cannot unsubscribe, so an old process's exit handler outlives it; a reused
+   * id would then be deleted by a stranger's death, silencing a live terminal
+   * the browser still shows.
+   *
+   * The exit is still **reported** either way. Rust reports the exit and only
+   * guards the eviction; a port that also swallowed the event would hide a real
+   * terminal death from the browser, which is the worse half of the defect.
+   */
+  private emitExit(terminalId: string, process_: PtyProcess, event: { exitCode?: number }): void {
+    if (this.sessions.get(terminalId)?.process === process_) this.sessions.delete(terminalId);
+    this.exitHandler?.({
+      terminalId,
+      exitCode: typeof event?.exitCode === 'number' ? event.exitCode : null,
     });
   }
 
@@ -6333,7 +6924,7 @@ git add apps/agent/src/terminal apps/agent/test/terminal apps/agent/package.json
 git commit -m "feat(agent): add the node-pty manager with 16 KiB base64 chunking"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **12 new `it()` / 18 new `expect()`**. Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported**: the Rust test's name promised chunking it never exercised — its body synthesized a single frame and asserted `decoded.len() == len`, which is not the property the name claims. The TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes, each ≤ 16 KiB. Ruling: **code wins, the phantom is not ported**, and this is not a weakening — the Rust test asserted less than its name promised, so the TS asserts strictly more. The splitter itself is **not** a new behaviour invented here: B40 (`spec:604`) states 16 KiB chunks as the wire contract. The Rust met that contract, but at its **read site** rather than at its framer — `start_reader` allocates `vec![0u8; MAX_PTY_CHUNK]` (`pty.rs:392`) and hands on `buf[..n]` (`:397`), so `read()` could never return more than the buffer held; `frame_pty_output` (`pty.rs:141-143`) is length-agnostic by design, which is why the spec's `pty.rs:22,123-143` citation does not show the bound. `node-pty` has no such buffer: measured against 1.2.0-beta.12, 8 MiB of output arrived in 2 555 events with the largest at **18 433 bytes**, so framing one event per frame would exceed the size B40 states. `emitChunks` is therefore how the port keeps a bound the Rust got for free from its input source — not a repair of a broken contract, and not an invention. Plan 3's T8 records the disposition. Three are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`), the slot freeing on exit, and `hands the host the same bytes it was given`, which pins that `write()` does not utf8-round-trip the inbound bytes (`41 ff fe 42` must reach the child intact, not as `41 ef bf bd ef bf bd 42`). The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
+**TEST-INTEGRITY declaration:** two new files, **12 new `it()` / 17 new `expect()`**. (An earlier draft of this line said **18** `expect()`; the `it()` figure was always right. Recounted on committed blob `50dcc9e` — `pty.test.ts` 11 `it()` / 15 `expect()` + `pty-real.test.ts` 1 / 2 — the whole population, since both files are new in that commit and have no predecessor at `50dcc9e^`. The 18 is the same error class this plan corrected in Task 4 and R3: a count written from a story about the task rather than from the task's own lines.) Ports `frame_round_trip_preserves_arbitrary_bytes`, `resize_message_round_trip`, `frame_pty_exit_produces_valid_envelope`, `plaintext_frame_is_byte_identical_to_today`, `outbound_terminal_data_carries_raw_bytes`, `pty_echo_round_trip`. `chunk_boundaries` is **replaced, not ported**: the Rust test's name promised chunking it never exercised — its body synthesized a single frame and asserted `decoded.len() == len`, which is not the property the name claims. The TS test drives real output through the splitter and asserts two frames of 16 KiB and 100 bytes, each ≤ 16 KiB. Ruling: **code wins, the phantom is not ported**, and this is not a weakening — the Rust test asserted less than its name promised, so the TS asserts strictly more. The splitter itself is **not** a new behaviour invented here: B40 (`spec:604`) states 16 KiB chunks as the wire contract. The Rust met that contract, but at its **read site** rather than at its framer — `start_reader` allocates `vec![0u8; MAX_PTY_CHUNK]` (`pty.rs:392`) and hands on `buf[..n]` (`:397`), so `read()` could never return more than the buffer held; `frame_pty_output` (`pty.rs:141-143`) is length-agnostic by design, which is why the spec's `pty.rs:22,123-143` citation does not show the bound. `node-pty` has no such buffer: measured against 1.2.0-beta.12, 8 MiB of output arrived in 2 555 events with the largest at **18 433 bytes**, so framing one event per frame would exceed the size B40 states. `emitChunks` is therefore how the port keeps a bound the Rust got for free from its input source — not a repair of a broken contract, and not an invention. Plan 3's T8 records the disposition. Three are **new**: the 10-session cap (present in Rust, untested — `PtyManager` limit at `lib.rs:1241`), the slot freeing on exit, and `hands the host the same bytes it was given`, which pins that `write()` does not utf8-round-trip the inbound bytes (`41 ff fe 42` must reach the child intact, not as `41 ef bf bd ef bf bd 42`). The Rust's `ignores_a_foreign_channel` does not port — channel filtering lives in the data-channel router (Task 18), not the pty.
 
 **Ruling on the two control characters, and why they are here rather than in the audit.** The `encoding: null` requirement and the `write(Buffer)` shape are **not** test-count changes dressed as fixes — they are the two halves of one defect in this task's own fences, found by running the real `node-pty` (1.2.0-beta.12) rather than reading it: with the default `encoding: 'utf8'`, `onData` delivers a **string** and `0xff` arrives already replaced by U+FFFD, so `emitChunks`'s base64 is faithfully encoding corrupted bytes; and `write(Buffer.from(bytes).toString('utf8'))` turns an inbound `41 ff fe 42` into `41 ef bf bd ef bf bd 42` at the child. ADR-10 and B40 both say the payload is bytes. Deviating either way would be silent data loss on a channel the product already ships.
 
@@ -6692,8 +7283,9 @@ git commit -m "feat(agent): add the static-frame skip and the frame timing ring"
 - Test: `apps/agent/test/session/identity-proof.test.ts`
 
 **Interfaces:**
-- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), and `canonicalProofMessage` for the message string. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s (`createPublicKey` + `verify`), wrapped in this module.
+- Consumes: `normalizeFingerprint` and `parseSdpFingerprint` from `@ponter/shared` (**reuse, not port** — D-per-P3 §4: the TS already normalises the full `a=fingerprint:` line, where the Rust splits it across two functions), `canonicalProofMessage` for the message string, and `type SignalMessage` for the offer shape it validates — narrowed to the `offer` arm rather than re-declared, so a drift in the shared union is a `tsc` error here. **`@ponter/shared` has no verifier** — it exports the message builder only, and both peers build the string themselves. Signature verification is `node:crypto`'s, wrapped in this module, over the **raw 32-byte** key the offer carries: `createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x }, format: 'jwk' })` over the raw bytes, then `verify(null, message, key, signature)`. **Not** `{ format: 'der', type: 'spki' }` — that shape is 44 bytes and the wire value is 32, so an SPKI import throws `Failed to read asymmetric key` on every genuine offer and the module's own `catch` would report it as `BAD_SIGNATURE`. The OKP-JWK form is chosen over `webcrypto.subtle.importKey('raw', …)` for one reason: the latter is async and would re-type `verifyOfferIdentity`, which the Rust has sync (`verify_offer_identity -> Result<()>`, `lib.rs:989`; `verify_proof` over `UnparsedPublicKey`, `identity.rs:105`). Measured both ways in `.superpowers/probes/t14-ba-repair/`.
 - Produces:
+  - `type OfferMessage = Extract<SignalMessage, { type: 'offer' }>` — the local name for the arm this module validates. **Defined here, not imported**: the plan has no `OfferMessage` anywhere else, and `@ponter/shared` does not export one (its type is `SignalOffer`, carried inside `SignalMessage`'s offer arm at `packages/shared/src/types/signaling.ts:44`). An earlier draft imported it from `./messages.js`, a module this plan never creates — `src/session/messages.ts` does not exist, and `vitest` erases `import type` so the fence stayed green over it. Task 4's `signalling/messages.ts` is a different directory and does not re-export that name either.
   - `class OfferIdentityError extends Error { code: 'NO_PROOF' | 'NO_SIGNING_KEY' | 'MALFORMED_FINGERPRINT' | 'FINGERPRINT_MISMATCH' | 'BAD_SIGNATURE' }`
   - `function verifyOfferIdentity(offer: OfferMessage, sessionId: string): void`
   - `function advertisesE2ee(offer: OfferMessage): boolean`
@@ -6718,11 +7310,18 @@ const FINGERPRINT = 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01
 const SDP_SHA256 = createHash('sha256').update(SDP, 'utf8').digest('hex');
 
 function keypair() {
+  // The wire form is the browser's `publicKeyRawBase64` — **raw 32 bytes**
+  // (`apps/web/src/stores/auth.ts:226,296`, set from `exportSigningPublicKeyRaw`,
+  // `packages/crypto/src/index.ts:307`), relayed verbatim by the server
+  // (`apps/server/src/routes/signal.ts:106-117`) and decoded into `[u8; 32]` by
+  // the Rust (`apps/agent/src/lib.rs:1250-1258`). Deriving it the SPKI way
+  // (`export({ type: 'spki', format: 'der' })`, 44 bytes) is what made this
+  // fence certify its own bug: it exercised a shape no peer ever sends.
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const spki = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+  const raw = Buffer.from((publicKey.export({ format: 'jwk' }) as { x: string }).x, 'base64url');
   return {
     privateKey,
-    userSigningPublicKey: spki.toString('base64'),
+    userSigningPublicKey: raw.toString('base64'),
   };
 }
 
@@ -6827,8 +7426,16 @@ Expected: FAIL — module unresolved.
 ```ts
 // apps/agent/src/session/identity-proof.ts
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { canonicalProofMessage, parseSdpFingerprint } from '@ponter/shared';
-import type { OfferMessage } from './messages.js';
+import { canonicalProofMessage, parseSdpFingerprint, type SignalMessage } from '@ponter/shared';
+
+/**
+ * The arm of the shared signal union this module validates. Defined by
+ * narrowing — `verbatimModuleSyntax` keeps the type import erased, and a change
+ * to the shared `offer` shape becomes a `tsc` error here rather than a silent
+ * widening. There is no `OfferMessage` in `@ponter/shared` and none in this
+ * plan's Task 4 `signalling/messages.ts`; the name is local by design.
+ */
+export type OfferMessage = Extract<SignalMessage, { type: 'offer' }>;
 
 export type OfferIdentityFailure =
   | 'NO_PROOF'
@@ -6901,7 +7508,21 @@ export function verifyOfferIdentity(offer: OfferMessage, sessionId: string): voi
 }
 
 /**
- * Ed25519 verify over a base64 SPKI public key and a base64 signature.
+ * Ed25519 verify over a base64 **raw 32-byte** public key and a base64 signature.
+ *
+ * `data.userSigningPublicKey` is the browser's `publicKeyRawBase64`
+ * (`apps/web/src/stores/auth.ts:226,296`), relayed verbatim by the server
+ * (`apps/server/src/routes/signal.ts:106-117`) and decoded into `[u8; 32]` by the
+ * Rust (`apps/agent/src/lib.rs:1250-1258`). It is **not** SPKI DER: an SPKI key is
+ * 44 bytes, and `createPublicKey({ format: 'der', type: 'spki' })` over 32 raw
+ * bytes throws `Failed to read asymmetric key` — which the `catch` below would
+ * turn into `BAD_SIGNATURE`, rejecting every genuine offer.
+ *
+ * Stays **synchronous** so `verifyOfferIdentity` stays a sync function, matching
+ * the Rust (`verify_offer_identity -> Result<()>`, `lib.rs:989`): `createPublicKey`
+ * accepts an OKP JWK whose `x` is exactly the raw key in base64url. The 32-byte
+ * length check is explicit because a 44-byte SPKI value would otherwise reach the
+ * JWK path and fail there with a less legible error.
  *
  * `@ponter/shared` exports the **message builder**, not a verifier — it is
  * platform-neutral and both peers build the string themselves. Verification is
@@ -6909,12 +7530,17 @@ export function verifyOfferIdentity(offer: OfferMessage, sessionId: string): voi
  * and a hostile offer is exactly where that would happen. **A throw is a failed
  * signature**, never an escaping exception.
  */
-function verifyMessage(publicKeySpkiBase64: string, signatureBase64: string, message: string): boolean {
+function verifyMessage(
+  publicKeyRawBase64: string,
+  signatureBase64: string,
+  message: string,
+): boolean {
   try {
+    const raw = Buffer.from(publicKeyRawBase64, 'base64');
+    if (raw.length !== 32) return false;
     const key = createPublicKey({
-      key: Buffer.from(publicKeySpkiBase64, 'base64'),
-      format: 'der',
-      type: 'spki',
+      key: { kty: 'OKP', crv: 'Ed25519', x: raw.toString('base64url') },
+      format: 'jwk',
     });
     return verify(null, Buffer.from(message, 'utf8'), key, Buffer.from(signatureBase64, 'base64'));
   } catch {
@@ -6937,12 +7563,25 @@ export function advertisesE2ee(offer: OfferMessage): boolean {
 
 ```bash
 ./apps/agent/node_modules/.bin/vitest run test/session/identity-proof.test.ts
+./node_modules/.bin/tsc --noEmit -p apps/agent/tsconfig.json
 ./node_modules/.bin/prettier --write apps/agent/src/session/identity-proof.ts apps/agent/test/session/identity-proof.test.ts
 git add apps/agent/src/session apps/agent/test/session
 git commit -m "feat(agent): verify the offer identity proof before answering"
 ```
 
+`tsc` is **not** redundant with `vitest` here and its absence is why this task shipped a
+fence that did not compile. `vitest` transpiles without typechecking: it erases every
+`import type` at run time, so an unresolvable type import runs green. This task's earlier
+draft imported `OfferMessage` from `./messages.js` — a module the plan never creates —
+and stayed 11/11 because nothing ever typechecked it. The fence axis is four-way (runs /
+counts / **typechecks** / non-vacuous control); this line is the third. `apps/agent` is
+excluded from CI's typecheck jobs, so a missing `tsc` here is not caught later either.
+
 **TEST-INTEGRITY declaration:** one new file, **11 new `it()` / 11 new `expect()`**. Ports `verify_offer_identity`'s five failure modes as five tests plus the happy path, `carries_an_identity_proof`, `proof_is_optional_for_backward_shapes` and `parses_and_normalizes_sdp_fingerprint`'s assertion (as a *consumer* of `@ponter/shared`, per B9's reuse ruling — the normalisation itself is already tested there and is not duplicated). **New:** the code-level distinction between `FINGERPRINT_MISMATCH` and `BAD_SIGNATURE` (the Rust had one error type and lost that distinction at the boundary), and the `advertisesE2ee` absent-capabilities case.
+
+The raw-32 repair (fixture key shape, `verifyMessage`'s import path, and the Interfaces prescription) is **count-neutral by construction**: **11 / 11 before → 11 / 11 after, zero assertions added, removed, moved or rewritten**. No test name, no `expect()` line and no assertion kind changed — `keypair()` returns a different *shape* under the same property name, and `verifyMessage` imports that shape. Measured four ways on the extracted fence in `.superpowers/probes/t14-ba-repair/`: 11/11 vitest green, `tsc` exit 0, counts 11/11 by anchor regex, and the **must-error control** — the repaired fence run against the pre-repair SPKI implementation — goes **red on the happy path** (`expected [Function] to not throw an error but 'OfferIdentityError: the offer identity signature is invalid' was thrown`), 1 failed / 10 passed. That last axis is what makes the count meaningful: a count-preserving repair that the old bug still passes would have been a no-op.
+
+The `OfferMessage` repair (import line, the `offer`-arm narrowing, and the `tsc` gate) is **also count-neutral**: **11 / 11 before → 11 / 11 after**, measured on the same extracted fence with **no stub module supplied** — the earlier measurements at `.superpowers/probes/t14-ba-repair/fence/` passed only because that probe created a `messages.ts` the plan does not define, which is why it could not see this defect. Re-measured without one: `tsc -p tsconfig.json` exit 0 and vitest 11/11, and the **positive control** — the same invocation over the pre-repair import — exits 2 with `TS2307: Cannot find module './messages.js'`. Zero test names, zero `expect()` lines, zero assertion kinds moved. Evidence: `.superpowers/probes/t14-ba-repair/no-stub/`.
 
 ---
 
@@ -6974,7 +7613,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { InputLimiter, applyInput, bindInputApply, clamp01, decodeInput, toAbsolute } from '../../src/input/decode.js';
 import type { InputEvent, InputInjector, InputSource } from '../../src/input/decode.js';
 
-const frame = (payload: unknown) => new TextEncoder().encode(JSON.stringify(payload));
+/**
+ * Fixtures carry the `DataChannelMessage` envelope
+ * (`packages/webrtc-core/src/data-channel.ts:74-88`), exactly as the browser sends
+ * via `sendJson('control', 'desktop-input', event)`.
+ */
+const frame = (payload: unknown, channel = 'control', type = 'desktop-input') =>
+  new TextEncoder().encode(JSON.stringify({ channel, type, payload, timestamp: 0 }));
 
 /** A counting double, the Rust test's `CountingInjector` (`input.rs:756-770`). */
 function double(fail?: keyof InputInjector): InputInjector & { calls: string[] } {
@@ -7126,6 +7771,19 @@ describe('decodeInput', () => {
     // enters at the application site (`apply_if_allowed`, `input.rs:267`).
     // A zero/absent rect is `applyInput`'s concern.
     expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }))).not.toBeNull();
+  });
+
+  it('rejects a payload-level frame lacking the envelope wrapper (must-fail control)', () => {
+    // Port fidelity: the wire contract is the DataChannelMessage envelope, exactly as
+    // `decode_desktop_input` (`input.rs:180-198`) expects. A bare payload frame must
+    // fail decode deterministically so the router-decoder seam cannot silently drift.
+    const flatPayload = new TextEncoder().encode(JSON.stringify({ kind: 'pointer-move', x: 0.5, y: 0.5 }));
+    expect(decodeInput(flatPayload)).toBeNull();
+  });
+
+  it('rejects an envelope with wrong channel or wrong type', () => {
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }, 'terminal', 'desktop-input'))).toBeNull();
+    expect(decodeInput(frame({ kind: 'pointer-move', x: 0.5, y: 0.5 }, 'control', 'desktop-select'))).toBeNull();
   });
 });
 
@@ -7288,11 +7946,14 @@ export const INPUT_RATE_LIMIT_HZ = 120;
  * `packages/shared/src/types/desktop.ts:68-87`, mirrored by the Rust's
  * `DesktopInputWire`, `input.rs:75-107`).
  *
- * The discriminator is the payload's `kind` tag, **kebab-case** — not a
- * `type` field on an envelope-wrapped frame. The browser sends the event
- * itself as the `desktop-input` payload
- * (`desktop-core/src/client.ts:452,467`), so the first thing the decoder
- * sees is this object.
+ * The wire frame arrives as the `DataChannelMessage` envelope
+ * (`{ channel: 'control', type: 'desktop-input', payload, timestamp }`),
+ * exactly as `decode_desktop_input` (`input.rs:180-198`) expects. The decoder
+ * receives the raw frame bytes, verifies `channel === 'control'` and
+ * `type === 'desktop-input'`, and unwraps `envelope.payload`. Inside the
+ * payload, the discriminator is the `kind` tag, **kebab-case** — matching
+ * serde's internally-tagged enum (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
+ * `input.rs:73-74`).
  *
  * Coordinates are **normalized 0..1 within the streamed source** and stay
  * that way: the Rust's decoder clamps them (`clamp01`, `input.rs:197-222`)
@@ -7405,6 +8066,12 @@ const BUTTONS = new Set(['left', 'middle', 'right']);
  * Decodes one `desktop-input` payload (B28–B30) — the port of
  * `decode_desktop_input` (`input.rs:180-245`).
  *
+ * **The wire frame is an envelope:** `DataChannelMessage`
+ * (`{ channel: 'control', type: 'desktop-input', payload, timestamp }`),
+ * exactly as `decode_desktop_input` (`input.rs:187-191`) validates. The decoder
+ * receives the raw frame bytes, verifies `channel === 'control'` and
+ * `type === 'desktop-input'`, unwraps `envelope.payload`, and decodes the event.
+ *
  * **Decode before inject, always.** The Rust decoded the JSON first and only
  * then called into the platform injector, so an unknown message could never
  * reach an FFI boundary with unvalidated fields. Every rejection here is a
@@ -7412,19 +8079,19 @@ const BUTTONS = new Set(['left', 'middle', 'right']);
  * error, because a hostile peer must not be able to elicit a response by
  * sending garbage.
  *
- * **The discriminator is `kind`,** exactly as serde's internally-tagged enum
- * works (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
+ * **Inside the payload, the discriminator is `kind`,** exactly as serde's
+ * internally-tagged enum works (`#[serde(tag = "kind", rename_all = "kebab-case")]`,
  * `input.rs:73-74`): an unknown `kind` is a decode error, which is this
  * function's `null`. The plan's previous vocabulary (`input-pointer` etc. on a
  * `type` field) has **zero producers anywhere** on either side of the wire.
  *
  * **A crypted payload is rejected deterministically.** With the desktop E2EE
- * session armed the browser sends `{ data: <base64> }` instead of the event
- * (`desktop-core/src/client.ts:484-494`), and the Rust decrypts **before**
- * decode (`lib.rs:2413-2427`, fail-closed). Nothing in this plan owns that
- * decryption yet, so a crypted frame must not be able to half-parse into an
- * event: it has no `kind`, so it falls out of the `switch` as `null`. The
- * `{ data }` shape is named in the test so the drop is pinned rather than
+ * session armed the browser sends `{ data: <base64> }` as `payload` instead of
+ * the event (`desktop-core/src/client.ts:484-494`), and the Rust decrypts
+ * **before** decode (`lib.rs:2413-2427`, fail-closed). Nothing in this plan
+ * owns that decryption yet, so a crypted frame must not be able to half-parse
+ * into an event: it has no `kind`, so it falls out of the `switch` as `null`.
+ * The `{ data }` shape is named in the test so the drop is pinned rather than
  * incidental, and the missing owner is recorded in the follow-up register.
  */
 export function decodeInput(bytes: ArrayBuffer | Uint8Array): InputEvent | null {
@@ -7439,7 +8106,10 @@ export function decodeInput(bytes: ArrayBuffer | Uint8Array): InputEvent | null 
     return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
-  const message = parsed as Record<string, unknown>;
+  const envelope = parsed as Record<string, unknown>;
+  if (envelope.channel !== 'control' || envelope.type !== 'desktop-input') return null;
+  if (typeof envelope.payload !== 'object' || envelope.payload === null) return null;
+  const message = envelope.payload as Record<string, unknown>;
 
   switch (message.kind) {
     case 'pointer-move': {
@@ -7679,15 +8349,15 @@ git add apps/agent/src/input apps/agent/test/input
 git commit -m "feat(agent): decode, clamp and rate-limit peer input"
 ```
 
-**TEST-INTEGRITY declaration — revised by the MAJOR-2 repair (2026-10-24), re-counted by the MAJOR-5 item 5 repair:** the
+**TEST-INTEGRITY declaration — revised by the MAJOR-2 repair (2026-10-24), re-counted by the MAJOR-5 item 5 repair, and updated for the envelope seam repair:** the
 first landed version declared **16 new `it()` / 25 new `expect()`** for a file
 whose vocabulary (`input-pointer`/`input-key`/`input-wheel` on a `type` field,
 `deltaX`/`deltaY`, `kind: 'down'/'up'`, `key: 'A'`) has **zero producers
 anywhere** on the wire. The fence was rewritten to the real `kind`-tagged
-union (`desktop.ts:68-87`) and re-counted: **27 `it()` / 48 `expect()`** (was
-16 / 25; +11 `it()`, +23 `expect()`). All `it(` and `expect(` occurrences are
-literal; no `it.each(` in the file, so all three axes coincide (27/27/27,
-48/48/48). What the rewrite adds beyond the ported behaviours: the `text`
+union (`desktop.ts:68-87`), and updated to decode the `DataChannelMessage` envelope with a must-fail bare payload control and channel/type rejection tests: **29 `it()` / 51 `expect()`** (was
+27 / 48 before the seam repair; was 16 / 25 originally; +13 `it()`, +26 `expect()`). All `it(` and `expect(` occurrences are
+literal; no `it.each(` in the file, so all three axes coincide (29/29/29,
+51/51/51). What the rewrite adds beyond the ported behaviours: the `text`
 kind (the earlier `InputEvent` lacked it entirely), the `seq`-carried /
 `seq`-absent pair, the `{ data }` crypted-payload rejection (the E2EE owner
 gap — see the follow-up register), the zero-geometry guard's **removal** from
@@ -7908,14 +8578,20 @@ An earlier draft cited six names under a `sustain_ladder_*` scheme that appears 
 - Test: `apps/agent/test/desktop/control.test.ts`, `apps/agent/test/desktop/frames.test.ts`
 
 **Interfaces:**
-- Consumes: `ProfileId`, `DesktopProfile`.
+- Consumes: `ProfileId`, `DesktopProfile`; and — for the frames — the canonical wire types from `@ponter/shared` (`DataChannelMessage`, `DesktopStats`, `DesktopCursorPayload`, `DesktopSourceInfo`, `DesktopSourcesPayload`), which is where the browser's own parser reads them.
 - Produces:
   - `const MIN_BITRATE = 250_000`, `const MAX_BITRATE = 20_000_000`
   - `function clampBitrate(bps: number): number`
-  - `function decodeStreamControl(bytes): StreamControl | null` → `{ kind: 'pause' } | { kind: 'resume' } | { kind: 'stop' } | { kind: 'bitrate'; bitrate: number } | { kind: 'quality'; profile: ProfileId }`
-  - `function decodeDesktopSelect(bytes): { kind: 'monitor'; id: string } | { kind: 'window'; id: string } | { kind: 'test' } | null`
-  - `function buildStatsFrame(...)`, `function buildCursorFrame(...)`, `function buildSourcesFrame(...)`
+  - `function decodeStreamControl(message: Record<string, unknown>): StreamControl | null` → `{ kind: 'select'; sourceId: string } | BitrateControl` *(re-pointed by Task 26, `8fd1098` — see the note under this block)*
+  - `function decodeDesktopSelect(message: Record<string, unknown>): string | null` → the **scheme string** (`monitor:1` / `window:<id>` / `test:0`), unsplit *(re-pointed by Task 26, `8fd1098`)*
+  - `type StreamControl = { kind: 'select'; sourceId: string } | BitrateControl`, `type BitrateControl = { kind: 'bitrate'; bitrate: number }` — the Rust's two `StreamControl` variants, nothing else (`desktop.rs:1938-1947`)
+  - `type DesktopSource = { kind: 'monitor'; id: string } | { kind: 'window'; id: string } | { kind: 'test' }` — **not a decode result**: the capture layer's own input, consumed by `resolveDefaultSource` / `DesktopSession.select`
+  - `function buildStatsFrame(stats: DesktopStats, timestamp: number): string` → `DataChannelMessage<DesktopStats>` on `channel: 'control'`
+  - `function buildCursorFrame(cursor: DesktopCursorPayload, timestamp: number): string` → `DataChannelMessage<DesktopCursorPayload>` on `channel: 'control'`
+  - `function buildSourcesFrame(sources: DesktopSourceInfo[], inputEnabled: boolean, peerVerified: boolean, cursorInFrame: boolean, timestamp: number): string` → `DataChannelMessage<DesktopSourcesPayload>` on `channel: 'control'`
   - `function gopForFps(fps: number): number`
+
+**⚠️ Re-pointed by Task 26 (`8fd1098`) — the block above is the landed contract, not the original one.** As first written, this task ported a `stream-control`/`action` vocabulary (`pause`/`resume`/`stop`/`set-bitrate`/`set-quality`) with a `source: { kind, id }` select payload, and both decoders took `bytes: ArrayBuffer | Uint8Array`. **No producer on this wire ever sent that vocabulary** and the Rust has no arm for it, so the two decoders answered every real frame with `null` while their own fence certified them green (QA's Task 17 F-1). Task 26 landed the re-point: the decoders take the merged body the router already parsed, `StreamControl` drops to the Rust's two variants, `decodeDesktopSelect` returns the **scheme string** unsplit, and the bitrate is validated as `u32` before the clamp. The fence and impl blocks in this task carry the landed text; the accounting is in `### Task 26`.
 
 - [ ] **Step 1: Write the failing control test**
 
@@ -7931,7 +8607,27 @@ import {
   gopForFps,
 } from '../../src/desktop/control.js';
 
-const frame = (payload: unknown) => new TextEncoder().encode(JSON.stringify(payload));
+/**
+ * **The decoders take the merged body, not bytes.**
+ *
+ * `DataChannelRouter.handleFrame` has already parsed the envelope and gated on
+ * `channel === 'control'` (`session/data-channels.ts:399-409`) by the time
+ * `dispatchDesktop` runs, and what it hands on is `{ type, ...payload }`
+ * (`:409-419`). The Rust's `decode_control` does all three steps in one
+ * function because it takes `raw: &str` (`desktop.rs:1998-2007`); the TS
+ * router does the first two, so re-parsing here would duplicate both the parse
+ * and the gate.
+ *
+ * **The vocabulary is the browser's, not the plan's.** The literal type strings
+ * and field names below are copied from `desktop-core/src/client.ts:424,429`
+ * (`selectSource` → `sendControl('desktop-select', { sourceId })`,
+ * `setBitrate` → `sendControl('desktop-bitrate', { bitrateBps })`) and from the
+ * Rust the port is measured against (`desktop.rs:2011-2023`). If either side
+ * renames a field, this file must change — which is the point: the cells this
+ * file replaced encoded a `stream-control`/`action` vocabulary that **no
+ * producer on this wire ever sent**, so they stayed green while the real frames
+ * decoded to `null`.
+ */
 
 describe('clampBitrate', () => {
   it('clamps to [250 kbps, 20 Mbps]', () => {
@@ -7946,53 +8642,131 @@ describe('clampBitrate', () => {
 });
 
 describe('decodeStreamControl', () => {
-  it('decodes the four control kinds', () => {
-    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'pause' }))).toEqual({ kind: 'pause' });
-    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'resume' }))).toEqual({ kind: 'resume' });
-    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'stop' }))).toEqual({ kind: 'stop' });
+  it('decodes a desktop-select into the scheme string the Rust carries verbatim', () => {
+    // `{"sourceId": "window:0x4a00007"}` → `SourceSwap("window:0x4a00007")`
+    // (`desktop.rs:2951-2962`). The id is NOT split into `{kind, id}` here:
+    // the Rust splits it in `source_for` (`desktop.rs:922-948`), and the port
+    // leaves that split to the consumer for the same reason.
+    expect(
+      decodeStreamControl({
+        type: 'desktop-select',
+        sourceId: 'window:0x4a00007',
+      }),
+    ).toEqual({ kind: 'select', sourceId: 'window:0x4a00007' });
+    expect(
+      decodeStreamControl({ type: 'desktop-select', sourceId: 'monitor:1' }),
+    ).toEqual({ kind: 'select', sourceId: 'monitor:1' });
+    expect(
+      decodeStreamControl({ type: 'desktop-select', sourceId: 'test:0' }),
+    ).toEqual({ kind: 'select', sourceId: 'test:0' });
   });
 
-  it('clamps a bitrate inside the decode, not at the call site', () => {
-    // The clamp has to live here: three call sites exist (initial apply, live
-    // retarget, resume) and a clamp at one of them is a clamp at none.
-    const control = decodeStreamControl(
-      frame({ type: 'stream-control', action: 'set-bitrate', bitrate: 99_000_000 }),
-    );
-    expect(control).toEqual({ kind: 'bitrate', bitrate: MAX_BITRATE });
+  it('clamps a bitrate at the wire boundary, inside the decoder', () => {
+    // The clamp lives here and nowhere else (`desktop.rs:2015-2019`). A clamp
+    // at the call site is a clamp at none: there is more than one caller, and
+    // an out-of-range target is what makes the encoder refuse the retarget.
+    expect(
+      decodeStreamControl({ type: 'desktop-bitrate', bitrateBps: 99_000_000 }),
+    ).toEqual({ kind: 'bitrate', bitrate: MAX_BITRATE });
+    expect(
+      decodeStreamControl({ type: 'desktop-bitrate', bitrateBps: 1 }),
+    ).toEqual({ kind: 'bitrate', bitrate: MIN_BITRATE });
+    expect(
+      decodeStreamControl({ type: 'desktop-bitrate', bitrateBps: 3_000_000 }),
+    ).toEqual({ kind: 'bitrate', bitrate: 3_000_000 });
   });
 
-  it('decodes a quality change', () => {
-    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'set-quality', profile: '720p30' }))).toEqual({
-      kind: 'quality',
-      profile: '720p30',
-    });
+  it('drops a control type the Rust has no arm for', () => {
+    // `desktop-e2ee-hello` really does arrive on `control`
+    // (`desktop-core/src/client.ts:257`) and is not a stream control at all;
+    // an unknown type is dropped, never answered (`desktop.rs:2021-2023`).
+    expect(
+      decodeStreamControl({ type: 'desktop-e2ee-hello', publicKey: 'abc' }),
+    ).toBeNull();
   });
 
-  it('rejects an unknown profile instead of defaulting', () => {
-    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'set-quality', profile: '4k120' }))).toBeNull();
+  it('does not accept the dead stream-control vocabulary', () => {
+    // Neither of these exists on the wire or in the Rust: `StreamControl` has
+    // exactly two variants, `SetBitrate` and `SourceSwap`
+    // (`desktop.rs:1938-1947`). The pre-fix decoder answered
+    // `{kind:'pause'}` for the first of these.
+    expect(
+      decodeStreamControl({ type: 'stream-control', action: 'pause' }),
+    ).toBeNull();
+    expect(
+      decodeStreamControl({
+        type: 'stream-control',
+        action: 'set-quality',
+        profile: '720p30',
+      }),
+    ).toBeNull();
   });
 
-  it('rejects an unknown action and malformed JSON', () => {
-    expect(decodeStreamControl(frame({ type: 'stream-control', action: 'explode' }))).toBeNull();
-    expect(decodeStreamControl(new TextEncoder().encode('nope'))).toBeNull();
+  it('refuses a bitrate that is not a u32 instead of clamping it', () => {
+    // The Rust deserialises `bitrate_bps: u32` (`desktop.rs:1966-1970`), so a
+    // negative, fractional or oversized target is a malformed payload — not a
+    // value to coerce into range. Clamping these would apply a control the
+    // Rust refuses.
+    expect(
+      decodeStreamControl({ type: 'desktop-bitrate', bitrateBps: -1 }),
+    ).toBeNull();
+    expect(
+      decodeStreamControl({ type: 'desktop-bitrate', bitrateBps: 3_000_000.5 }),
+    ).toBeNull();
+    expect(
+      decodeStreamControl({
+        type: 'desktop-bitrate',
+        bitrateBps: 4_294_967_296,
+      }),
+    ).toBeNull();
+    expect(
+      decodeStreamControl({ type: 'desktop-bitrate', bitrateBps: '3000000' }),
+    ).toBeNull();
+    // Positive control through the SAME call: the bound is `u32`-inclusive, so
+    // `u32::MAX` is a legal target and clamps, while `u32::MAX + 1` above is
+    // malformed. Without this, a decoder that refused every large number would
+    // pass the four cases above.
+    expect(
+      decodeStreamControl({
+        type: 'desktop-bitrate',
+        bitrateBps: 4_294_967_295,
+      }),
+    ).toEqual({ kind: 'bitrate', bitrate: MAX_BITRATE });
+  });
+
+  it('refuses a desktop-select with no sourceId', () => {
+    expect(decodeStreamControl({ type: 'desktop-select' })).toBeNull();
   });
 });
 
 describe('decodeDesktopSelect', () => {
-  it('decodes monitor, window and test sources', () => {
-    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'monitor', id: '1' } }))).toEqual({
-      kind: 'monitor',
-      id: '1',
-    });
-    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'window', id: '0x40' } }))).toEqual({
-      kind: 'window',
-      id: '0x40',
-    });
-    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'test' } }))).toEqual({ kind: 'test' });
+  it('returns the scheme string rather than a parsed {kind, id} pair', () => {
+    expect(
+      decodeDesktopSelect({
+        type: 'desktop-select',
+        sourceId: 'window:0x4a00007',
+      }),
+    ).toBe('window:0x4a00007');
   });
 
-  it('rejects a monitor with no id', () => {
-    expect(decodeDesktopSelect(frame({ type: 'desktop-select', source: { kind: 'monitor' } }))).toBeNull();
+  it('refuses a missing, non-string or empty sourceId', () => {
+    // Neither an absent nor an empty id names a source. The Rust accepts an
+    // empty `source_id` at decode and refuses it in `source_for`
+    // (`desktop.rs:922-948`); this decoder refuses it one step earlier, since
+    // the port has no swap path yet — no source is selected either way.
+    expect(decodeDesktopSelect({ type: 'desktop-select' })).toBeNull();
+    expect(
+      decodeDesktopSelect({ type: 'desktop-select', sourceId: 1 }),
+    ).toBeNull();
+    expect(
+      decodeDesktopSelect({ type: 'desktop-select', sourceId: '' }),
+    ).toBeNull();
+  });
+
+  it('refuses a body of another control type', () => {
+    expect(
+      decodeDesktopSelect({ type: 'desktop-bitrate', bitrateBps: 3_000_000 }),
+    ).toBeNull();
   });
 });
 
@@ -8012,20 +8786,35 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/desktop/control.ts
-import type { ProfileId } from '@ponter/shared';
-
 export const MIN_BITRATE = 250_000;
 export const MAX_BITRATE = 20_000_000;
 
-const PROFILES = new Set<ProfileId>(['1080p60', '1080p30', '720p60', '720p30']);
-
+/**
+ * The inbound `control`-channel commands, mirroring the Rust's `StreamControl`
+ * (`desktop.rs:1938-1947`) — exactly two, `SetBitrate` and `SourceSwap`.
+ *
+ * The two members this type used to carry besides these — `pause`/`resume`/
+ * `stop` and a `quality` profile change — were a plan defect (B63, QA's Task 17
+ * F-1): no producer on this wire sends them, and the Rust has no arm for them,
+ * so nothing could ever construct them. `quality` in particular is not an
+ * inbound command at all — a profile change comes from the sustain ladder
+ * inside `DesktopSession`.
+ */
 export type StreamControl =
-  | { kind: 'pause' }
-  | { kind: 'resume' }
-  | { kind: 'stop' }
-  | { kind: 'bitrate'; bitrate: number }
-  | { kind: 'quality'; profile: ProfileId };
+  { kind: 'select'; sourceId: string } | BitrateControl;
 
+/** The one member of `StreamControl` a `DesktopSession` applies itself. */
+export type BitrateControl = { kind: 'bitrate'; bitrate: number };
+
+/**
+ * A capture source, as the capture layer takes it.
+ *
+ * Unrelated to the wire: the wire carries a **scheme string**
+ * (`monitor:1` / `window:<id>` / `test:0`) and the Rust splits it at the
+ * capture boundary (`source_for`, `desktop.rs:922-948`). This type is the
+ * capture layer's own input, used by `resolveDefaultSource` and
+ * `DesktopSourceList` — not a decode result.
+ */
 export type DesktopSource =
   | { kind: 'monitor'; id: string }
   | { kind: 'window'; id: string }
@@ -8035,58 +8824,73 @@ export function clampBitrate(bps: number): number {
   return Math.round(Math.min(Math.max(bps, MIN_BITRATE), MAX_BITRATE));
 }
 
-function parse(bytes: ArrayBuffer | Uint8Array): Record<string, unknown> | null {
-  try {
-    const text =
-      bytes instanceof Uint8Array
-        ? new TextDecoder().decode(bytes)
-        : new TextDecoder().decode(new Uint8Array(bytes));
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+/**
+ * The Rust deserialises the bitrate as `bitrate_bps: u32`
+ * (`desktop.rs:1966-1970`), so a negative, fractional or oversized target is a
+ * **malformed payload** and `decode_control` returns `Err` — it is clamped
+ * only once it is a `u32`. Accepting these here and clamping them instead
+ * would apply a control the Rust refuses, which is the kind of drift that
+ * makes two implementations of one contract disagree.
+ */
+function isU32(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 0xffff_ffff
+  );
 }
 
 /**
- * `StreamControl` decode (B20/B62).
+ * Decode one inbound control message into a `StreamControl`
+ * (`decode_control`, `desktop.rs:1998-2023`).
  *
- * The bitrate clamp lives **in the decoder**, not at the call site. There are
- * three places a bitrate arrives: the initial apply, a live retarget, and the
- * post-resume re-apply. A clamp at any one of them is a clamp at none, and the
- * encoder's own limits are what turn an out-of-range value into a hard failure.
+ * **Takes the merged body, not bytes.** `DataChannelRouter.handleFrame` has
+ * already parsed the envelope and gated on `channel === 'control'`
+ * (`session/data-channels.ts:399-409`) and hands on `{ type, ...payload }`
+ * (`:409-419`). The Rust does all three in one function because it takes
+ * `raw: &str`; the TS router does the first two, so re-parsing here would
+ * duplicate both the parse and the channel gate that already ran.
+ *
+ * The bitrate clamp lives **in the decoder**, not at the call site — the Rust
+ * puts it here too (`desktop.rs:2015-2019`). There is more than one caller of
+ * this union, and an out-of-range target is what makes the encoder refuse the
+ * retarget; a clamp at one call site is a clamp at none.
+ *
+ * An unknown type returns `null`, dropped and never answered — the Rust's
+ * `_ => Ok(None)` (`desktop.rs:2021-2023`). `desktop-e2ee-hello` really does
+ * arrive on this channel (`desktop-core/src/client.ts:257`).
  */
-export function decodeStreamControl(bytes: ArrayBuffer | Uint8Array): StreamControl | null {
-  const message = parse(bytes);
-  if (!message || message.type !== 'stream-control') return null;
-  switch (message.action) {
-    case 'pause':
-      return { kind: 'pause' };
-    case 'resume':
-      return { kind: 'resume' };
-    case 'stop':
-      return { kind: 'stop' };
-    case 'set-bitrate':
-      if (typeof message.bitrate !== 'number' || !Number.isFinite(message.bitrate)) return null;
-      return { kind: 'bitrate', bitrate: clampBitrate(message.bitrate) };
-    case 'set-quality':
-      if (typeof message.profile !== 'string' || !PROFILES.has(message.profile as ProfileId)) return null;
-      return { kind: 'quality', profile: message.profile as ProfileId };
-    default:
-      return null;
+export function decodeStreamControl(
+  message: Record<string, unknown>,
+): StreamControl | null {
+  const sourceId = decodeDesktopSelect(message);
+  if (sourceId !== null) return { kind: 'select', sourceId };
+  if (message.type === 'desktop-bitrate') {
+    if (!isU32(message.bitrateBps)) return null;
+    return { kind: 'bitrate', bitrate: clampBitrate(message.bitrateBps) };
   }
+  return null;
 }
 
-export function decodeDesktopSelect(bytes: ArrayBuffer | Uint8Array): DesktopSource | null {
-  const message = parse(bytes);
-  if (!message || message.type !== 'desktop-select') return null;
-  const source = message.source;
-  if (typeof source !== 'object' || source === null) return null;
-  const value = source as Record<string, unknown>;
-  if (value.kind === 'test') return { kind: 'test' };
-  if (value.kind !== 'monitor' && value.kind !== 'window') return null;
-  if (typeof value.id !== 'string' || value.id === '') return null;
-  return { kind: value.kind, id: value.id };
+/**
+ * The `sourceId` of a `desktop-select`, or `null` for any other body.
+ *
+ * Returns the **scheme string** the browser sends and the Rust carries
+ * verbatim: `{"sourceId": "window:0x4a00007"}` → `SourceSwap("window:0x4a00007")`
+ * (`desktop.rs:2951-2962`). Splitting it into `{ kind, id }` here would put the
+ * parse in the wrong layer — the Rust splits it in `source_for`
+ * (`desktop.rs:922-948`) and validates the id against the enumeration, which
+ * this decoder cannot do.
+ */
+export function decodeDesktopSelect(
+  message: Record<string, unknown>,
+): string | null {
+  if (message.type !== 'desktop-select') return null;
+  if (typeof message.sourceId !== 'string' || message.sourceId === '') {
+    return null;
+  }
+  return message.sourceId;
 }
 
 /** Two seconds of frames, rounded, floored at 1. */
@@ -8099,102 +8903,303 @@ export function gopForFps(fps: number): number {
 
 ```ts
 // apps/agent/test/desktop/frames.test.ts
+import type { DesktopSourceInfo } from '@ponter/shared';
 import { describe, expect, it } from 'vitest';
-import { buildCursorFrame, buildSourcesFrame, buildStatsFrame } from '../../src/desktop/frames.js';
+import {
+  buildCursorFrame,
+  buildSourcesFrame,
+  buildStatsFrame,
+} from '../../src/desktop/frames.js';
 
 const parse = (text: string) => JSON.parse(text);
 
 describe('buildStatsFrame', () => {
-  it('emits the documented field names', () => {
+  it('emits the DataChannelMessage envelope on the control channel', () => {
     const frame = parse(
-      buildStatsFrame({
-        seq: 10,
-        fps: 58.5,
-        bitrate: 4_000_000,
-        encodeMsP50: 7.2,
-        captureMsP50: 3.1,
-        skippedFrames: 12,
-        profile: '1080p30',
-      }),
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+        },
+        12_345,
+      ),
     );
-    expect(frame).toMatchObject({
-      type: 'desktop-stats',
-      data: {
-        seq: 10,
-        fps: 58.5,
-        bitrate: 4_000_000,
-        encodeMsP50: 7.2,
-        captureMsP50: 3.1,
-        skippedFrames: 12,
-        profile: '1080p30',
-      },
+    expect(frame.type).toBe('desktop-stats');
+    expect(frame.channel).toBe('control');
+    expect(frame.timestamp).toBe(12_345);
+  });
+
+  it('carries the stats fields the browser requires', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+        },
+        1,
+      ),
+    );
+    expect(frame.payload).toMatchObject({
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      targetBitrateBps: 4_000_000,
     });
   });
 
   it('rounds the two p50s to one decimal place', () => {
     const frame = parse(
-      buildStatsFrame({
-        seq: 1,
-        fps: 30,
-        bitrate: 1,
-        encodeMsP50: 7.25,
-        captureMsP50: 3.04,
-        skippedFrames: 0,
-        profile: '720p30',
-      }),
+      buildStatsFrame(
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          targetBitrateBps: 1,
+          encodeMsP50: 7.25,
+          captureMsP50: 3.04,
+        },
+        1,
+      ),
     );
-    expect(frame.data.encodeMsP50).toBe(7.3);
-    expect(frame.data.captureMsP50).toBe(3);
+    expect(frame.payload.encodeMsP50).toBe(7.3);
+    expect(frame.payload.captureMsP50).toBe(3);
+  });
+
+  it('omits every absent optional stats field', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          targetBitrateBps: 6_000_000,
+        },
+        1,
+      ),
+    );
+    for (const key of [
+      'status',
+      'frameSeq',
+      'captureMsP50',
+      'encodeMsP50',
+      'frameSamples',
+    ]) {
+      expect(key in frame.payload).toBe(false);
+    }
+  });
+
+  it('carries the optional stats fields when they are set, and omits only the unset one', () => {
+    const frame = parse(
+      buildStatsFrame(
+        {
+          width: 1280,
+          height: 720,
+          fps: 30,
+          targetBitrateBps: 4_000_000,
+          status: {
+            kind: 'quality-downgraded',
+            detail: '720p (quality downgraded)',
+          },
+          frameSeq: 42,
+          encodeMsP50: 11,
+          frameSamples: [{ seq: 42, captureEpochMs: 1000, encodeMs: 11 }],
+        },
+        3,
+      ),
+    );
+    expect(frame.payload.status).toEqual({
+      kind: 'quality-downgraded',
+      detail: '720p (quality downgraded)',
+    });
+    expect(frame.payload.frameSeq).toBe(42);
+    expect(frame.payload.frameSamples).toEqual([
+      { seq: 42, captureEpochMs: 1000, encodeMs: 11 },
+    ]);
+    expect('captureMsP50' in frame.payload).toBe(false);
   });
 });
 
 describe('buildCursorFrame', () => {
-  it('emits x, y, visible and shape', () => {
+  it('emits the envelope with x, y, visible and seq', () => {
     const frame = parse(
-      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default' }),
+      buildCursorFrame(
+        {
+          x: 0.25,
+          y: 0.75,
+          visible: true,
+          seq: 7,
+        },
+        1_700_000_000,
+      ),
     );
-    expect(frame).toEqual({
+    expect(frame).toMatchObject({
       type: 'desktop-cursor',
-      data: { x: 100, y: 200, visible: true, shape: 'default' },
+      channel: 'control',
+      timestamp: 1_700_000_000,
+      payload: {
+        x: 0.25,
+        y: 0.75,
+        visible: true,
+        seq: 7,
+      },
     });
   });
 
-  it('emits visible=false with a null shape rather than omitting the field', () => {
-    // The browser's cursor layer reads `data.shape` unconditionally; a missing
-    // field there draws the previous cursor shape at the new position.
-    const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
-    expect(frame.data).toEqual({ x: 0, y: 0, visible: false, shape: null });
+  it('omits shape when the cursor has none', () => {
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: false,
+          seq: 1,
+        },
+        1,
+      ),
+    );
+    expect('shape' in frame.payload).toBe(false);
+  });
+
+  it('emits the shape record when one is set', () => {
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: true,
+          seq: 0,
+          shape: {
+            png: 'iVBORw0KGgo=',
+            hotspotX: 4,
+            hotspotY: 8,
+            serial: 42,
+          },
+        },
+        1,
+      ),
+    );
+    expect(frame.payload.shape).toEqual({
+      png: 'iVBORw0KGgo=',
+      hotspotX: 4,
+      hotspotY: 8,
+      serial: 42,
+    });
   });
 
   it('stamps lastInputSeq on the wire when one is set', () => {
-    // ADR-47's echo: the browser's latency meter reads this field. The Rust
-    // pins `lastInputSeq: 3` on the payload (`desktop.rs:3758`).
     const frame = parse(
-      buildCursorFrame({ x: 100, y: 200, visible: true, shape: 'default', lastInputSeq: 3 }),
+      buildCursorFrame(
+        {
+          x: 100,
+          y: 200,
+          visible: true,
+          seq: 1,
+          lastInputSeq: 3,
+        },
+        1,
+      ),
     );
-    expect(frame.data).toMatchObject({ lastInputSeq: 3 });
+    expect(frame.payload).toMatchObject({ lastInputSeq: 3 });
   });
 
   it('omits lastInputSeq from the wire when none is set', () => {
-    // Mirrors `frame_desktop_cursor_omits_last_input_seq_when_none`
-    // (`desktop.rs:3766-3786`): `skip_serializing_if` on `None` — the field is
-    // absent from the JSON, not null.
-    const frame = parse(buildCursorFrame({ x: 0, y: 0, visible: false, shape: null }));
-    expect('lastInputSeq' in frame.data).toBe(false);
+    const frame = parse(
+      buildCursorFrame(
+        {
+          x: 0,
+          y: 0,
+          visible: false,
+          seq: 1,
+        },
+        1,
+      ),
+    );
+    expect('lastInputSeq' in frame.payload).toBe(false);
   });
 });
 
 describe('buildSourcesFrame', () => {
-  it('lists monitors and windows with their ids', () => {
-    const frame = parse(
-      buildSourcesFrame({
-        monitors: [{ id: '1', name: 'DP-1', width: 1920, height: 1080, primary: true }],
-        windows: [{ id: '0x40', title: 'Editor' }],
-      }),
-    );
+  it('emits the DesktopSourcesPayload shape', () => {
+    const frame = parse(buildSourcesFrame([], true, true, true, 7));
     expect(frame.type).toBe('desktop-sources');
-    expect(frame.data.monitors[0]).toMatchObject({ id: '1', primary: true });
-    expect(frame.data.windows[0]).toMatchObject({ id: '0x40', title: 'Editor' });
+    expect(frame.channel).toBe('control');
+    expect(frame.timestamp).toBe(7);
+    expect(frame.payload).toMatchObject({
+      sources: [],
+      inputEnabled: true,
+      peerVerified: true,
+      cursorInFrame: true,
+    });
+  });
+
+  it('renders inputEnabled, peerVerified and cursorInFrame in both directions', () => {
+    const t = parse(buildSourcesFrame([], true, true, true, 1));
+    expect(t.payload.inputEnabled).toBe(true);
+    expect(t.payload.peerVerified).toBe(true);
+    expect(t.payload.cursorInFrame).toBe(true);
+
+    const f = parse(buildSourcesFrame([], false, false, false, 1));
+    expect(f.payload.inputEnabled).toBe(false);
+    expect(f.payload.peerVerified).toBe(false);
+    expect(f.payload.cursorInFrame).toBe(false);
+  });
+
+  it('carries every DesktopSourceInfo field with the camelCase spelling', () => {
+    const source: DesktopSourceInfo = {
+      id: 'test:0',
+      kind: 'monitor',
+      name: 'Test pattern',
+      width: 1280,
+      height: 720,
+      x: 0,
+      y: 0,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: true,
+      default: true,
+    };
+    const frame = parse(buildSourcesFrame([source], true, true, true, 1));
+    expect(frame.payload.sources[0]).toEqual(source);
+    expect('scale_factor' in frame.payload.sources[0]).toBe(false);
+  });
+
+  it('carries multi-entry sources including windows and monitors', () => {
+    const monitor: DesktopSourceInfo = {
+      id: 'monitor:0',
+      kind: 'monitor',
+      name: 'Display 1',
+      width: 1920,
+      height: 1080,
+      x: 0,
+      y: 0,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: true,
+      default: true,
+    };
+    const window: DesktopSourceInfo = {
+      id: 'window:123',
+      kind: 'window',
+      name: 'Terminal',
+      width: 800,
+      height: 600,
+      x: 100,
+      y: 100,
+      scaleFactor: 1.0,
+      rotation: 0.0,
+      isPrimary: false,
+      default: false,
+    };
+    const frame = parse(
+      buildSourcesFrame([monitor, window], true, true, true, 1),
+    );
+    expect(frame.payload.sources).toHaveLength(2);
+    expect(frame.payload.sources[0]).toEqual(monitor);
+    expect(frame.payload.sources[1]).toEqual(window);
   });
 });
 ```
@@ -8206,94 +9211,116 @@ Expected: FAIL — module unresolved.
 
 ```ts
 // apps/agent/src/desktop/frames.ts
-import type { ProfileId } from '@ponter/shared';
+import type {
+  DataChannelMessage,
+  DesktopCursorPayload,
+  DesktopSourceInfo,
+  DesktopSourcesPayload,
+  DesktopStats,
+} from '@ponter/shared';
 
-export interface StatsInput {
-  seq: number;
-  fps: number;
-  bitrate: number;
-  encodeMsP50: number;
-  captureMsP50: number;
-  skippedFrames: number;
-  profile: ProfileId;
-}
-
-export interface CursorInput {
-  x: number;
-  y: number;
-  visible: boolean;
-  shape: string | null;
-  /**
-   * ADR-47's echo: the `seq` of the last input frame the agent **applied**,
-   * stamped on every `desktop-cursor` payload as `lastInputSeq` and read by the
-   * browser's latency meter. The Rust carries it as `last_input_seq:
-   * Option<u64>` with `skip_serializing_if = "Option::is_none"`
-   * (`desktop.rs:2176-2177`), so the field is **omitted from the wire when
-   * unset** — the builder below spreads it conditionally, never writing
-   * `lastInputSeq: undefined` (which would survive `JSON.stringify` as an
-   * absent key but would not survive a typed consumer that inspects
-   * `Object.keys`). The **runtime owns the single mutable holder** for this
-   * value — the Rust's hoisted `Arc<AtomicU64>`
-   * (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor
-   * loop reads it, and Task 19's desktop session loop owns that wiring.
-   */
-  lastInputSeq?: number;
-}
-
-export interface SourcesInput {
-  monitors: { id: string; name: string; width: number; height: number; primary: boolean }[];
-  windows: { id: string; title: string }[];
-}
-
+/**
+ * TS-only divergence from Rust: the Rust serialises f32 p50s unrounded (7.25 -> 7.25);
+ * the builder emits 7.3. Neither captureMsP50 nor encodeMsP50 has any reader in
+ * packages/desktop-core/src or apps/web/src (where readers are targetBitrateBps, width,
+ * height, status.kind, status.detail). The divergence is unobservable to readers
+ * and kept to avoid moving green cells for measurement noise.
+ */
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-export function buildStatsFrame(input: StatsInput): string {
+/**
+ * Stats frame builder. Mirrors Rust `frame_desktop_stats` (desktop.rs:2147).
+ *
+ * Optional fields (`status`, `frameSeq`, `captureMsP50`, `encodeMsP50`, `frameSamples`)
+ * are omitted when unset via conditional spread, matching Rust's `skip_serializing_if`.
+ */
+export function buildStatsFrame(
+  stats: DesktopStats,
+  timestamp: number,
+): string {
+  const payload: DesktopStats = {
+    width: stats.width,
+    height: stats.height,
+    fps: stats.fps,
+    targetBitrateBps: stats.targetBitrateBps,
+    ...(stats.status !== undefined ? { status: stats.status } : {}),
+    ...(stats.frameSeq !== undefined ? { frameSeq: stats.frameSeq } : {}),
+    ...(stats.captureMsP50 !== undefined
+      ? { captureMsP50: round1(stats.captureMsP50) }
+      : {}),
+    ...(stats.encodeMsP50 !== undefined
+      ? { encodeMsP50: round1(stats.encodeMsP50) }
+      : {}),
+    ...(stats.frameSamples !== undefined
+      ? { frameSamples: stats.frameSamples }
+      : {}),
+  };
   return JSON.stringify({
     type: 'desktop-stats',
-    data: {
-      seq: input.seq,
-      fps: round1(input.fps),
-      bitrate: input.bitrate,
-      encodeMsP50: round1(input.encodeMsP50),
-      captureMsP50: round1(input.captureMsP50),
-      skippedFrames: input.skippedFrames,
-      profile: input.profile,
-    },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopStats>);
 }
 
 /**
- * `shape: null` when the cursor is hidden is deliberate rather than omitting the
- * key: the web cursor layer reads `data.shape` unconditionally and would draw
- * the previous shape at the new position.
+ * Cursor frame builder. Mirrors Rust `frame_desktop_cursor` (desktop.rs:2093).
  *
- * `lastInputSeq` is the inverse: it is **omitted when unset**, mirroring the
- * Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176`) — the
- * browser treats an absent field and a `null` differently here (a stale echo
- * from an earlier input must not be re-sent forever; the holder resets to
- * null between applications). The conditional spread keeps the field off the
- * object rather than writing `undefined`.
+ * `shape` and `lastInputSeq` carry `skip_serializing_if = "Option::is_none"`
+ * in Rust (desktop.rs:2175-2179), so both fields are omitted from the wire
+ * when unset — the builder below uses conditional spread, never writing
+ * `undefined` or `null`.
  */
-export function buildCursorFrame(input: CursorInput): string {
+export function buildCursorFrame(
+  cursor: DesktopCursorPayload,
+  timestamp: number,
+): string {
+  const payload: DesktopCursorPayload = {
+    x: cursor.x,
+    y: cursor.y,
+    visible: cursor.visible,
+    seq: cursor.seq,
+    ...(cursor.lastInputSeq !== undefined
+      ? { lastInputSeq: cursor.lastInputSeq }
+      : {}),
+    ...(cursor.shape !== undefined ? { shape: cursor.shape } : {}),
+  };
   return JSON.stringify({
     type: 'desktop-cursor',
-    data: {
-      x: input.x,
-      y: input.y,
-      visible: input.visible,
-      shape: input.shape,
-      ...(input.lastInputSeq === undefined ? {} : { lastInputSeq: input.lastInputSeq }),
-    },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopCursorPayload>);
 }
 
-export function buildSourcesFrame(input: SourcesInput): string {
+/**
+ * Desktop sources frame builder. Mirrors Rust `frame_desktop_sources` (desktop.rs:2066).
+ *
+ * Takes `inputEnabled`, `peerVerified`, and `cursorInFrame` flags as parameters and
+ * renders each in both directions so that the wire format accurately reflects the
+ * admission and capture state.
+ */
+export function buildSourcesFrame(
+  sources: DesktopSourceInfo[],
+  inputEnabled: boolean,
+  peerVerified: boolean,
+  cursorInFrame: boolean,
+  timestamp: number,
+): string {
+  const payload: DesktopSourcesPayload = {
+    sources,
+    inputEnabled,
+    peerVerified,
+    cursorInFrame,
+  };
   return JSON.stringify({
     type: 'desktop-sources',
-    data: { monitors: input.monitors, windows: input.windows },
-  });
+    channel: 'control',
+    payload,
+    timestamp,
+  } satisfies DataChannelMessage<DesktopSourcesPayload>);
 }
 ```
 
@@ -8306,7 +9333,13 @@ git add apps/agent/src/desktop apps/agent/test/desktop
 git commit -m "feat(agent): decode stream control and build the desktop frames"
 ```
 
-**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 29 new `expect()`** — **15 / 27** as the previous revision landed it, **17 / 29** after the ADR-47 seq-echo repair (+2 `it()`, +2 `expect()`, both in `frames.test.ts`: the `lastInputSeq` set case and the `lastInputSeq` omitted case; `control.test.ts` is unchanged at 10 / 19, `frames.test.ts` goes 5 / 8 → 7 / 10). Ports `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
+**TEST-INTEGRITY declaration:** two new files, **17 new `it()` / 29 new `expect()`** — **15 / 27** as the previous revision landed it, **17 / 29** after the ADR-47 seq-echo repair (+2 `it()`, +2 `expect()`, both in `frames.test.ts`: the `lastInputSeq` set case and the `lastInputSeq` omitted case; `control.test.ts` is unchanged at 10 / 19, `frames.test.ts` goes 5 / 8 → 7 / 10).
+
+**Task 25 supersedes the `frames.test.ts` figures above.** When the builders moved to the `DataChannelMessage` wire format, the frames fence was rewritten and then extended by a test-only fix round: `frames.test.ts` now stands at **14 `it()` / 31 `expect()`**, so this task's two test files stand at **24 `it()` / 52 `expect()`** on the committed blobs (`control.test.ts` 10 / 21 + `frames.test.ts` 14 / 31). The full per-cell accounting is in `### Task 25`; nothing was deleted or skipped (`.skip` / `.only` / `.todo` = 0 throughout), and the four pre-wire cells were replaced with their wire equivalents.
+
+**Task 26 supersedes the `control.test.ts` figures above.** The landed `control.test.ts` stands at **12 `it()` / 27 `expect()`** on `8fd1098` (`apps/agent/test/desktop/control.test.ts`: +2 `it()` / +6 `expect()` over the 10 / 21 above), so the task's two files stand at **26 `it()` / 58 `expect()`**. The dead-vocabulary cells (`pause`/`resume`/`stop`, `set-quality`, the `source: { kind, id }` fixtures) were removed and replaced with the real wire cells — the full per-cell accounting is in `### Task 26`. Nothing was deleted or skipped (`.skip` / `.only` / `.todo` = 0 throughout). The fence block above now shows the landed text at `8fd1098`, so the drift paragraphs below are historical records, not current figures.
+
+**Ports:** `decode_control_reads_a_desktop_select`, `decode_control_reads_and_clamps_a_desktop_bitrate`, `decode_control_ignores_another_channel_and_an_unknown_type`, `decode_control_rejects_a_malformed_select_payload` (`desktop.rs:2951-3030`), `gop_frames_are_two_seconds_of_the_profile_fps`, `gop_frames_never_collapse_to_zero` (`desktop.rs:2479-2500`), `stream_profile_rejects_an_unknown_name` (`lib.rs:3354`), `frame_desktop_stats_uses_the_camel_case_wire_shape` (`desktop.rs:3146`) and `frame_desktop_cursor_includes_shape_when_some_and_omits_when_none` (`desktop.rs:3789`). **New:** the unknown-action and malformed-JSON cases as one test (the Rust covers the unknown *type* case inside `…ignores_another_channel_and_an_unknown_type`, not an unknown action), the one-decimal rounding of both p50s, and the sources frame shape.
 
 **ADR-47's echo declared (MAJOR-2/2d).** `buildCursorFrame` now carries `lastInputSeq?: number` and stamps it on the wire as `lastInputSeq` — the browser's latency meter reads that field, so without it the one-way-latency display is dead on arrival. **Omitted when absent**, mirroring the Rust's `skip_serializing_if = "Option::is_none"` (`desktop.rs:2176-2177`) and its two cursor-frame tests (`desktop.rs:3730-3763` asserts `p["lastInputSeq"] == 3`; `desktop.rs:3766-3786` asserts the field is **absent** when `None`) — the two new tests are those two, and the absent case asserts the key is **not in** the payload rather than that it is `null`, because "absent" and "null" are different on this wire. The **runtime owns the single mutable holder** for the echoed value, the way the Rust's hoisted `Arc<AtomicU64>` does (`lib.rs:2304-2312`, stored by the control task at `:2468`); the cursor loop reads it, and that wiring stays with Task 19's desktop session loop, which this commit does not touch.
 
@@ -8321,7 +9354,7 @@ An earlier draft cited `clamps_bitrate_to_the_supported_range`, `decodes_stream_
 - Test: `apps/agent/test/session/data-channels.test.ts`
 
 **Interfaces:**
-- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `clampBitrate` (Task 17), `decodeInput` / `InputLimiter` / `bindInputApply` / `InputEvent` (Task 15); `frameFiles` (Task 11); `MAX_DATA_CHANNEL_FRAME_BYTES` (Task 3). Task 17's `decodeStreamControl` / `decodeDesktopSelect` are **not** consumed — their vocabulary is not the wire's (see `dispatchDesktop`'s note, and the follow-up register entry it names).
+- Consumes: `PtyManager` (Task 12), `FilesSession` (Task 11), `decodeInput` / `InputLimiter` / `bindInputApply` / `InputEvent` (Task 15); `frameFiles` (Task 11); `MAX_DATA_CHANNEL_FRAME_BYTES` (Task 3). **Task 26 re-pointed the desktop consumption:** `dispatchDesktop` now routes through Task 17's `decodeStreamControl` / `decodeDesktopSelect` (which Task 26 re-ported to the real wire vocabulary), consuming `clampBitrate` through the same decoder — the pre-Task-26 state, where the router carried a duplicate hand-rolled decoder and Task 17's decoders were consumed by nothing, is recorded in Task 18's Ruling 2/3 and in `### Task 26`.
 - Produces:
   - `const CHANNEL_LABELS = { terminal: 'terminal', files: 'files', control: 'control' } as const` — the three labels a peer actually opens (`WebRTCChannelType` minus `'desktop'`, which is the capability/RTP media label, not a data channel; and without `input`/`cursor`, which exist nowhere).
   - `class DataChannelRouter { constructor(deps); attach(channel): void; detach(label): void; send(label, frame): void }`
@@ -8750,7 +9783,7 @@ Expected: FAIL — module unresolved.
 import { MAX_DATA_CHANNEL_FRAME_BYTES } from '../signalling/constants.js';
 import { frameFiles } from '../files/protocol.js';
 import type { FilesFrame } from '../files/session.js';
-import { clampBitrate } from '../desktop/control.js';
+import { decodeStreamControl } from '../desktop/control.js';
 // Task 15's wire union. The import is **load-bearing, not cosmetic**: without
 // it, `InputEvent` below resolves to the DOM global of the same name (`lib`
 // includes `DOM`), and `RouterDeps.input` silently declares the browser's
@@ -8999,6 +10032,35 @@ export class DataChannelRouter {
       return;
     }
 
+    /**
+     * **Input on the control channel: substring guard + admit BEFORE decode.**
+     *
+     * Input rides the control channel (ADR-26, input.rs:189, lib.rs:2411).
+     * In Rust (`lib.rs:2406-2469`), inbound bytes receive a substring check
+     * `text.contains("\"desktop-input\"")` before the gate (`allow_input`) and
+     * the rate cap (`input_limiter.allow()`), and only then calls `apply_if_allowed`
+     * which calls `decode_desktop_input` (the single full JSON parse).
+     *
+     * Gating on the substring pre-filter here preserves the DoS protection
+     * without double-parsing: `admit()` runs BEFORE `decode(bytes)`, so a frame
+     * refused by the limiter or closed gate never spends a JSON parse, and
+     * non-input control frames bypass this block entirely.
+     *
+     * The return value of `apply` is the applied event's `seq` (ADR-47) or `null`
+     * when the injector refused it; the runtime stores it in the holder
+     * `buildCursorFrame` reads. This router does not own that holder.
+     */
+    if (label === CHANNEL_LABELS.control) {
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(bytes);
+      if (text.includes('"desktop-input"')) {
+        if (!this.deps.input.admit((this.deps.now ?? Date.now)())) return;
+        const event = this.deps.input.decode(bytes);
+        if (event === null) return;
+        this.deps.input.apply(event, (this.deps.now ?? Date.now)());
+        return;
+      }
+    }
+
     const parsed = parseJson(bytes);
     if (parsed === null) {
       this.deps.logger.warn(`dropped a malformed ${label} frame`);
@@ -9092,32 +10154,6 @@ export class DataChannelRouter {
         return;
       }
       case CHANNEL_LABELS.control: {
-        // The control channel carries the desktop session's whole JSON
-        // vocabulary. Input rides **here**, not on a separate channel: the
-        // browser sends `sendJson('control', 'desktop-input', event)`
-        // (`desktop-core/src/client.ts:452,467`) and the Rust gates
-        // `channel == "control" && type == "desktop-input"` (`input.rs:189`).
-        //
-        // **The order is `admit → decode → apply`, and it is the Rust's**
-        // (`lib.rs:2427-2469`). Gate-A (`allow_input`) and the rate cap are
-        // checked **before** `apply_if_allowed`, and `apply_if_allowed` is
-        // what calls `decode_desktop_input` (`input.rs:277-286`) and then
-        // injects. The Rust says so at `lib.rs:2428-2430`: *"cap AFTER
-        // decrypt and the Gate-A check, BEFORE decode/inject"*. The rate cap
-        // is a DoS control; putting the JSON parser in front of it would
-        // spend the parse on exactly the frames it exists to refuse. The
-        // earlier version of this arm ran `decode → accept → inject` and
-        // attributed that order to the Rust — it was backwards.
-        if (message.type === 'desktop-input') {
-          if (!this.deps.input.admit((this.deps.now ?? Date.now)())) return;
-          const event = this.deps.input.decode(bytes);
-          if (event === null) return;
-          // The return value is the applied event's `seq` (ADR-47) or `null`
-          // when the injector refused it; the runtime stores it in the holder
-          // `buildCursorFrame` reads. This arm does not own that holder.
-          this.deps.input.apply(event, (this.deps.now ?? Date.now)());
-          return;
-        }
         this.dispatchDesktop(message);
         return;
       }
@@ -9143,21 +10179,34 @@ export class DataChannelRouter {
    * same scheme), exactly where the Rust puts it.
    *
    * **Byte source, stated: neither the envelope bytes nor a re-serialisation.**
-   * The body is already parsed (`message`); the two real types are decoded
-   * here. The comment this replaces claimed the decoders read the top-level
-   * frame; they never did — and handing them the envelope's bytes made every
-   * decode return `null`, because the envelope's `type` is not a field of the
-   * body they match.
+   * The body is already parsed (`message`), which is what makes Task 26's
+   * `Record<string, unknown>` signature the right one — passing bytes at this
+   * boundary would re-serialise a body the router already holds. The comment
+   * this paragraph replaces claimed the decoders read the top-level frame;
+   * they never did — and handing them the envelope's bytes made every decode
+   * return `null`, because the envelope's `type` is not a field of the body
+   * they match.
    *
-   * **Task 17 must follow.** Its `decodeStreamControl` / `decodeDesktopSelect`
-   * port (`:7587-7639`) reads a vocabulary the browser never sends —
-   * `stream-control`/`action` and `source: { kind, id }`. Re-porting those two
-   * decoders to the real vocabulary (`desktop-select { sourceId }`,
-   * `desktop-bitrate { bitrateBps }`) is **Task 17's own change** and is out of
-   * scope here (its fence is untouched). Until it lands, this boundary decodes
-   * the two real types itself and reuses only Task 17's `clampBitrate` — the
-   * one piece that is already right, and the same clamp the Rust runs inside
-   * `decode_control` (`desktop.rs:2016-2019`). `desktop-input` does not come
+   * **Task 17 followed — Task 26 landed it (`8fd1098`).** Its `decodeStreamControl` /
+   * `decodeDesktopSelect` port (`:7587-7639`) read a vocabulary the browser never sends —
+   * `stream-control`/`action` and `source: { kind, id }`. The plan's repair text below kept
+   * this boundary hand-rolling the two real types while Task 17 carried the obligation; the
+   * duplicate decoders then stayed green on both sides while no real frame decoded. Task 26
+   * closed it both ways at once: the decoders were re-ported to the real vocabulary and
+   * `dispatchDesktop` now routes through `decodeStreamControl` — no hand-rolled parsing
+   * remains here. The comment above ("decoded here, not in a separate module") was the
+   * **defect**: two decoders of one contract drift, which is exactly what happened.
+   *
+   * What Task 26 landed in this method: the dispatch calls `decodeStreamControl(message)`;
+   * `null` warns **only** when the type was one of the two known ones (`desktop-select` /
+   * `desktop-bitrate` — a malformed known frame is logged, an unknown one like
+   * `desktop-e2ee-hello` is dropped silently, the Rust's `_ => Ok(None)`); `kind: 'select'`
+   * goes to `onSelect(sourceId)` and the bitrate member to `onControl({ kind: 'bitrate',
+   * bitrate: control.bitrate })` — the router narrows the union member itself, because
+   * `RouterDeps.desktop.onControl` is typed `unknown` (QA's open finding, §8 of
+   * `qa-verdict-task-26.md`).
+   *
+   * `desktop-input` does not come
    * through here at all: the router's own arm runs **admit → decode → apply**
    * before any dispatch, which is the Rust's real order — the operator gate,
    * then the 120 Hz cap, then `apply_if_allowed` (which is what calls
@@ -9171,21 +10220,23 @@ export class DataChannelRouter {
    * way the Rust's `_ => Ok(None)` arm drops it.
    */
   private dispatchDesktop(message: Record<string, unknown>): void {
-    if (message.type === 'desktop-select') {
-      if (typeof message.sourceId !== 'string') {
-        this.deps.logger.warn('dropped a desktop-select frame with no sourceId');
-        return;
+    const control = decodeStreamControl(message);
+    if (!control) {
+      if (
+        message.type === 'desktop-select' ||
+        message.type === 'desktop-bitrate'
+      ) {
+        this.deps.logger.warn(
+          `dropped a malformed ${String(message.type)} frame`,
+        );
       }
-      this.deps.desktop.onSelect(message.sourceId);
       return;
     }
-    if (message.type === 'desktop-bitrate') {
-      if (typeof message.bitrateBps !== 'number' || !Number.isFinite(message.bitrateBps)) {
-        this.deps.logger.warn('dropped a desktop-bitrate frame with no bitrateBps');
-        return;
-      }
-      this.deps.desktop.onControl({ kind: 'bitrate', bitrate: clampBitrate(message.bitrateBps) });
+    if (control.kind === 'select') {
+      this.deps.desktop.onSelect(control.sourceId);
+      return;
     }
+    this.deps.desktop.onControl({ kind: 'bitrate', bitrate: control.bitrate });
   }
 
   /**
@@ -9251,15 +10302,26 @@ export class DataChannelRouter {
 }
 
 /**
- * `clampBitrate` comes from Task 17's module (`../desktop/control.js`). The
- * plan's earlier draft deferred the import behind a CommonJS `require()` —
- * apps/agent is `"type": "module"`, so that `require` never existed at
- * runtime. A static import is the honest shape: the router is attached to
- * every peer, including peers that never open a control channel, but an
- * import is not a branch — the module loads with everything else, and its
- * `clampBitrate` is the one piece of Task 17 this boundary reuses as-is. The
- * two wire decoders it ships are not on the wire the browser speaks (see
- * `dispatchDesktop`'s note) and are not used here.
+ * The desktop control decoder comes from Task 17's module
+ * (`../desktop/control.js`), and Task 26 is what made this boundary consume
+ * it. The plan's earlier draft deferred the import behind a CommonJS
+ * `require()` — apps/agent is `"type": "module"`, so that `require` never
+ * existed at runtime. A static import is the honest shape: the router is
+ * attached to every peer, including peers that never open a control channel,
+ * but an import is not a branch — the module loads with everything else.
+ * `clampBitrate` is reached **through** `decodeStreamControl` (the clamp lives
+ * inside the decoder, mirroring the Rust's `decode_control`), which is why this
+ * boundary keeps no hand-rolled parsing of its own: two decoders of one
+ * contract drift, and this file was the second one.
+ *
+ * *(Task 26 note: this block states the **correct** comment, which is what a
+ * Plan-3 builder should write. The landed `data-channels.ts` at `8fd1098` still
+ * carries the pre-Task-26 wording — "its `clampBitrate` is the one piece of
+ * Task 17 this boundary reuses as-is. The two wire decoders it ships are not on
+ * the wire the browser speaks … and are not used here" — which is the opposite
+ * of the truth after the re-port, and is the same defect class in a comment.
+ * It is reported to PM as a code-comment finding rather than fixed here, because
+ * this task is documentation-only.)*
  */
 ```
 
@@ -9316,22 +10378,44 @@ On the six-number axes: fence **23 `it()`** / call sites **23** (no `it.each(` i
 
 **Ruling 1 declared:** the terminal arm's type is `terminal-data` with a base64 `data` field and a `terminalId` router; `terminal-input` has no producer — before this repair its only two occurrences in the document were the two `envelope('terminal', 'terminal-input', …)` fixtures in the test fence, and both are now `terminal-data` fixtures (the remaining `terminal-input` strings are comments recording the retirement). `RouterDeps.terminal` is shaped as `PtyManager` really is (`write(terminalId, bytes)`, Task 12), not the plan's old string write.
 
-**Ruling 2/3 declared:** `dispatchDesktop` dispatches by the real wire types (`desktop-select` `{ sourceId }`, `desktop-bitrate` `{ bitrateBps }`), reuses only Task 17's `clampBitrate`, and **Task 17's own fence is untouched** — its `decodeStreamControl`/`decodeDesktopSelect` port the wrong vocabulary (`stream-control`/`action`, `source: { kind, id }`) and that re-port is Task 17's change, noted here so the plan carries the obligation.
+**Ruling 2/3 declared:** `dispatchDesktop` dispatches by the real wire types (`desktop-select` `{ sourceId }`, `desktop-bitrate` `{ bitrateBps }`). As this repair landed it, the method hand-rolled that parse itself and reused only Task 17's `clampBitrate`, because Task 17's `decodeStreamControl`/`decodeDesktopSelect` ported the wrong vocabulary (`stream-control`/`action`, `source: { kind, id }`) and **Task 17's own fence was left untouched** — the re-port was noted here as Task 17's obligation. **That obligation is discharged: Task 26 (`8fd1098`) re-ported both decoders to the real vocabulary and replaced this method's hand-rolled arms with a single `decodeStreamControl(message)` call**, so there is no longer a second decoder of this contract in the tree. The `dispatchDesktop` code block above now shows the landed Task 26 shape; the full accounting is in `### Task 26`.
 
-**Desktop outbound frames — the follow-up register entry (MAJOR-2 addendum, extended 2026-10-24).** Task 17's fence is untouched by this repair, so the obligations below are carried here rather than fixed. They are one class: **Task 17's builders, their own fence, and the browser disagree, and only the browser is the authority.** The probe `.superpowers/probes/b12g-send-stringify-pm/` (`test/frame-shape.test.ts`, `test/payload-fields.test.ts`) measures all of it; Task 17's fence passes 5/5 against its own builders, which is the point — they agree with each other and not with the reader.
+**Desktop outbound frames — the follow-up register entry (MAJOR-2 addendum, extended 2026-10-24).** Task 17's fence was untouched by that repair, so the obligations below were carried here rather than fixed. They are one class: **Task 17's builders, their own fence, and the browser disagree, and only the browser is the authority.** The probe `.superpowers/probes/b12g-send-stringify-pm/` (`test/frame-shape.test.ts`, `test/payload-fields.test.ts`) measures all of it; Task 17's fence passed 5/5 against its own builders, which is the point — they agreed with each other and not with the reader. *(Task 25 closed items 1 and 2; item 3 — the missing producer — remains open. Note that Task 26's re-point touched only the **inbound** decoders; the outbound builders were never part of that defect.)*
 
-1. **The builders produce no envelope.** `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` return `{ type, data }`. The Rust builds a full `DataChannelMessage` — `{ type, channel, payload, timestamp }` (`desktop.rs:2048-2085`, `:2093-2101`) — and the browser reads `msg.payload` (`desktop-core/src/client.ts:268-330`). The re-port must emit the envelope; `send()`'s string branch (MAJOR-3, landed in this commit) only stops the *double-encoding*, it does not wrap the frame.
-2. **The payload vocabularies are a third vocabulary.** Measured gates:
+1. **The builders produce no envelope.** *(CLOSED by Task 25, `95fd96c` + `833e6c1`.)* At the time this entry was written, `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` returned `{ type, data }`. The Rust builds a full `DataChannelMessage` — `{ type, channel, payload, timestamp }` (`desktop.rs:2048-2085`, `:2093-2101`) — and the browser reads `msg.payload` (`desktop-core/src/client.ts:268-330`). Task 25 re-ported all three builders onto the envelope; `send()`'s string branch (MAJOR-3) only stopped the *double-encoding* and never wrapped the frame, which is why the builders own it.
+2. **The payload vocabularies are a third vocabulary.** *(CLOSED by Task 25 for all three frames; the table below is the record of what was measured at BASE.)* Measured gates:
 
-   | frame | the plan sends | the browser requires | source |
+   | frame | the plan sent (BASE) | the browser requires | source |
    |---|---|---|---|
-   | `desktop-stats` | `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` | `width`, `height`, `fps`, `targetBitrateBps` — `parseStats` returns `null` without all four | `client.ts:356-368` |
-   | `desktop-cursor` | `shape: string` | `shape: DesktopShape` = `{ png, hotspotX, hotspotY, serial }`; `seq` required; `lastInputSeq?` (landed this commit on the sender side, 2d) | `desktop.ts:107-114` |
-   | `desktop-sources` | `{ monitors, windows }` | `{ sources: DesktopSourceInfo[], inputEnabled, peerVerified, cursorInFrame }` | `desktop.ts:11-27`, `:123-139` |
+   | `desktop-stats` | `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` | `width`, `height`, `fps`, `targetBitrateBps` — `parseStats` returns `null` without all four | `client.ts:358-370` |
+   | `desktop-cursor` | `shape: string` | `shape: DesktopShape` = `{ png, hotspotX, hotspotY, serial }`; `seq` required; `lastInputSeq?` (landed this commit on the sender side, 2d) | `desktop.ts:95-115` |
+   | `desktop-sources` | `{ monitors, windows }` | `{ sources: DesktopSourceInfo[], inputEnabled, peerVerified, cursorInFrame }` | `desktop.ts:11-28`, `:123-139` |
 
-   `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-27`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
-3. **Nothing calls `deps.send` for these frames.** Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. The `deps.send` seam exists and the router serves `control`; the producer does not.
-4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `AgentE2ee` has only the terminal arm (`beginTerminalE2ee/acceptHello/isArmed`), and the `desktop-e2ee-ack` outbound type exists with no producer (`:8212`). Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
+   `DesktopSourceInfo` carries `kind`, `name`, `width`, `height`, **`x`**, **`y`**, `scaleFactor`, `rotation`, `isPrimary`, `default` (`desktop.ts:11-28`). Those `x`/`y` are the source geometry Task 15's `applyInput` needs (2b), so `desktop-sources` is also where the real wiring gets `InputSource` — the argument is not invented at the decode task.
+3. **Nothing calls `deps.send` for these frames.** *(STILL OPEN — unaffected by Task 25.)* Task 19's desktop session loop has **zero** real `deps.send` call sites for `desktop-stats` / `desktop-cursor` / `desktop-sources` (measured: 0 in the session body), so whoever ends up producing them must be named when the re-port lands. Task 25 fixed the builders, not the wiring: `buildStatsFrame` / `buildCursorFrame` / `buildSourcesFrame` still have **no production caller** anywhere in `apps/agent/src` (grep: only `data-channels.ts:287`'s docblock mentions one). The `deps.send` seam exists, the router serves `control`, and the frames are now wire-correct — the producer is what is missing.
+4. **Desktop-input E2EE decrypt-before-decode has no owner (2c).** When the session is armed, `desktop-input`'s payload is `{ data: <base64> }` (`client.ts:484-494`) and the plaintext inside is the same kind-tagged event. The Rust decrypts **before** the gate and before decode, fail-closed, and rebuilds the envelope (`lib.rs:2413-2427`; the control path at `:2669-2690`). Nothing in the plan owns this: Task 7's `E2eeSession` (`acceptHello` / `encrypt` / `decrypt`) is a WS1 answerer and has no desktop path at all — the old `AgentE2ee`, with its `beginTerminalE2ee`/`isArmed` shape, named a class this plan no longer has — and the `desktop-e2ee-ack` outbound type is named with nothing that builds it: no Produces entry, no builder, no producer. Grep the plan for `desktop-e2ee-ack`. Until it lands, a crypted frame is dropped by `decodeInput` **deterministically** — it returns `null` for a payload with no `kind` tag, which this repair pins with a test — rather than half-parsing; with E2EE active, **every** input frame drops silently, and the re-port must wire the decrypt in front of `admit` to close it.
+5. **`verifyOfferIdentity` and `advertisesE2ee` have no production caller in Plan 2.** The Rust admission gate (`lib.rs:1162` in `run_one_session`) is not fenced; Task 19 runtime does not wire `onOffer`. Handed off to Plan 3 alongside the other unfenced session-loop wirings.
+6. **The one-session-at-a-time invariant is now a *caller* obligation, and nothing owns it.** The Rust refuses a second hello while a session is live, and it does so at the two dispatch sites rather than in `accept_hello`: the terminal path reads `let already_active = e2ee_guard.is_some();` and negotiates only `if !already_active` (`lib.rs:1313-1316`), the desktop path gates on `if negotiated && e2ee_session.is_none()` (`lib.rs:2364`). **Task 7's `E2eeSession.acceptHello` is a pure static constructor** — it takes no registry, sees no existing session, and cannot refuse anything; a second call simply derives a second key from the same `sessionId` and returns a second ack. So the invariant lives entirely with whoever calls it, and this plan currently has **no such caller at all**: Task 18's router drops an unknown `control` type and Task 19 wires no E2EE dispatch, both recorded above. Whoever lands the wiring must hold the session and check it before calling, or a peer's second hello silently re-keys a live terminal. **The Rust does not test this either**, stated plainly so the gap is not mistaken for a ported guarantee: `already_active` occurs only at those two production lines, `e2ee_session` occurs at seven production sites (`lib.rs:1267,1286,1630,2351,2364,2394,2416`) and **zero** times inside `#[cfg(test)]` (the test module starts at `lib.rs:3045`), and the two tests that drive `accept_hello` (`lib.rs:3548`, `:3691`) call it directly and bypass the gate entirely. This is therefore **not a regression against the authority** — it is an unfenced obligation the port inherits, and the first caller is where it must be pinned.
+7. **Task 10's unreadable-root probe is implemented but unfenced.** Rust's `root_resolution_fails_when_missing_not_a_dir_or_unreadable` (`files.rs:3258`) has three arms, asserting `NotFound`, `NotADirectory`, and `PermissionDenied` on a mode-000 directory. Task 10's production code implements the probe via `readdirSync` (`sandbox.ts:83`), but its fence omits that third arm, keeping only missing and not-a-directory. Reverting `readdirSync` to `statSync` leaves the fence 18/18 green because `stat` succeeds on a mode-000 directory owned by the test runner. The test cannot be added without changing the locked count (18 `it()` / 19 `expect()`), so pinning the unreadable-root probe is handed off as an open obligation for Plan 3 / integration tests.
+
+8. **The peer-shell allowlist fails OPEN in the production wiring — `shellPolicy` is optional and nothing supplies it.** *(**CLOSED** by Task 31 defect C, `8bf9509` + `024954c` + `a63aa44`. Introduced by B41's wiring at `3eac965`; it was OPEN when this entry was written.)*
+   **The record of the open state, kept because the measurement is the interesting part:** `RuntimeDeps.shellPolicy` was declared optional (`runtime.ts:190`) and the adapter forwarded it only when present —
+
+   ```ts
+   ...(options.shell === undefined
+     ? { shell: this.config.shell }
+     : { shell: options.shell, ...(this.deps.shellPolicy ? { policy: this.deps.shellPolicy } : {}) })
+   ```
+
+   — so with no policy, `pty.ts:139`'s ternary takes its false arm and the peer's string reaches `host.spawn` **unresolved**. Measured on the blob: `grep shellPolicy` in `apps/agent` returns **five** lines — `runtime.ts:190` (the declaration), `runtime.ts:302-303` (this ternary), and `runtime.test.ts:535`, `:563` (the two cells that pass one). **No production call site supplies it.** Both public entry points were silent on it: `AgentRuntime.start(config, deps = { send: … })` (`runtime.ts:320-327`) and `createAgentRuntime(config)` (`:370-374`), which forwards its argument by name and passes no `deps` at all. So a deployed agent accepted whatever shell a peer named — at `3eac965`. **That is no longer the state of the tree**; see the cure at the end of this entry. The Rust never did: `Some(requested) => shell_policy_for_dispatch.resolve_client_shell(&requested)` runs before the spawn (`lib.rs:1378-1405`), and Task 9's `ShellPolicy` implements exactly that refusal (`shell-policy.ts`).
+
+   **Precisely what is new here, since it is easy to overstate:** `RuntimeDeps` itself pre-dates this commit (`runtime.ts:161` at BASE `4339c0a`, carrying `send`, `now?`, `filesSession?`), and BASE `pty.ts:59` already declared `policy?: ShellPolicy` with the ternary at `:134-136`. New in `3eac965` is only the **wire-facing** half: `RuntimeDeps.pty`, `RuntimeDeps.shellPolicy`, the `runtime.terminal` adapter, and this conditional forward. That is what makes the fail-open reachable from a peer for the first time — before it, no wire path could ask for a shell at all, because there was no `terminal-create` arm. The fix is one line at each entry point (`shellPolicy: new ShellPolicy(…resolved from config…)`), which is why it belonged to whoever wires transport into `createAgentRuntime`, not to a redesign — and that is exactly what landed: **`shellPolicy: ShellPolicy` is now required** on `RuntimeDeps` (`runtime.ts:197` on the HEAD `a63aa44` blob), **`shellPolicyFromConfig(config)`** (`:224`) constructs it from the operator's shell, the POSIX floor and `/etc/shells`, and both public entry points derive it — `AgentRuntime.start`'s default deps (`:354`) and `createAgentRuntime` (`:406`). The conditional spread is gone: the adapter passes `policy: this.deps.shellPolicy` unconditionally (`:327`) alongside `shellSource: options.shell === undefined ? 'operator' : 'peer'` (`:326`), so the operator's own shell stays exempt exactly as the Rust exempts it (`lib.rs:1405`) while a peer-supplied shell is always resolved through the allowlist. Full accounting in `### Task 31`, Defect C.
+
+9. **Inbound `terminal-data` base64 is not validated, and the `catch` that claims to handle it cannot fire.** *(**CLOSED** by Task 31 defect B — `b467d13`, with the trailing-bits cure in `8f2c083`. **PRE-EXISTING at BASE**, not introduced by Task 27; it was OPEN when this entry was written.)* The arm body was **byte-identical** at BASE `:388-402` and the Task-27 blob `:465-479` (`diff` of the two extracted ranges: empty — only its `case` label changed, from an `if (message.type !== …) return;` guard at BASE `:387` to a `case 'terminal-data':` arm at HEAD `:464`): it gated on `typeof data === 'string'`, decoded with `Buffer.from(data, 'base64')`, and wrapped the write in `try { … } catch { /* Non-standard base64 (`Buffer` is lenient where Rust's STANDARD is strict) … */ }`. The comment stated the divergence accurately and then relied on a guard that does not exist. Measured, not assumed: `Buffer.from('!!!!', 'base64')` → **0 bytes, no throw**; `Buffer.from('@@@A', 'base64')` → 0 bytes, no throw; `Buffer.from('QQ', 'base64')` → `0x41`, i.e. an unpadded string is accepted. Node's decoder discards invalid characters instead of raising, so the `catch` only ever saw an error from `write` itself, and the documented "malformed ⇒ drop" behaviour was in fact **malformed ⇒ write zero or mangled bytes**. The Rust's live path gates the channel and then STANDARD-decodes, which is strict: `if envelope.channel != "terminal" { continue; }` before the type match (`lib.rs:1302-1304`), then `STANDARD_ENGINE.decode(...)` with `Err` → `continue`, so no write (`lib.rs:1474-1480`; `STANDARD_ENGINE` is `STANDARD` aliased at `lib.rs:212`). **Not** `pty.rs:181-198` — that function (`decode_pty_input_with_id`) carries `#[allow(dead_code)]` and has **one** occurrence in the whole crate, its own `pub fn` line; it is the unused mirror of the shipped path, and citing it would send a reader to code that proves nothing about what runs.
+
+   **The cure, on the HEAD blob:** the arm calls `decodeBase64Strict(data)` (`apps/agent/src/session/data-channels.ts:479`), returns on `bytes === null` with a `logger.warn` deliberately distinct from the unknown-type drop (`:481-486`), and writes only bytes that survived. The string `Buffer.from(` occurs in that file exactly **once** — at `:473`, inside the comment that explains why it was the wrong primitive — and **zero times in code**, so there is no lenient decode left on this path by any spelling, not merely at the one site the entry named. The helper lives in `apps/agent/src/base64.ts`; its third arm is the canonical re-encode round trip (`if (bytes.toString('base64') !== data) return null`) that refuses non-canonical trailing bits, the class `Buffer` is lenient about and an alphabet regex cannot see — added in `8f2c083`, which is why the strict helper alone was not the whole cure. Full accounting in `### Task 31`, Defect B.
+
+10. **`terminal-e2ee-hello` and `terminal-e2ee-ack` are unimplemented on the agent side; every peer that offers a terminal key is silently ignored.** *(OPEN — owner: **the transport-wiring task, Plan 3's first**, the same one as items 8 and 9 — named explicitly rather than left unassigned.)* `dispatchTerminal` has exactly **four** arms — `terminal-data` (`:464`), `terminal-create` (`:481`), `terminal-resize` (`:501`), `terminal-close` (`:522`) — and its `default:` returns without answering, mirroring the Rust's `_ => {}`. The browser, however, drives negotiation itself inside `createSession`: it sends `terminal-create` plaintext and then, when an E2EE driver exists, enqueues `terminal-e2ee-hello` on the same ordered send chain (`packages/terminal-core/src/client.ts:113-115`, `:150-154`) and installs its key only from a `terminal-e2ee-ack` (`:343-352`). The Rust answers both — `"terminal-e2ee-hello" =>` at `lib.rs:1307`, emitting `"type": "terminal-e2ee-ack"` at `:1341` — and the port has **no TS production code that names either frame**: `grep -n 'terminal-e2ee'` across `apps/agent/src` and `packages/*/src` returns the Rust sources plus the shared/terminal-core types and the `e2ee/manager.ts` docblock at `:28` that *describes* the hello, and nothing that handles it. `E2eeSession.acceptHello` has **zero production callers** — the only occurrence under `apps/agent/src` is its own declaration (`e2ee/manager.ts:58`); its eight other occurrences are call sites in its own fence, `apps/agent/test/e2ee/manager.test.ts`. The observable consequence is not a crash: the hello is dropped by the `default:` arm, no ack arrives, the browser's `isActive()` stays `false`, and every `terminal-data` frame the peer sends stays **plaintext** by the browser's own contract (`client.ts:173`). So the port silently declines to encrypt a channel the Rust encrypts, and the user is told nothing. That is why this entry names an owner instead of inheriting the "unassigned" phrasing elsewhere in this register: it is the terminal channel's answer to item 4's desktop-side gap, and the same wiring task closes both.
 
 Start the re-port from the reader, not the builder: every field above was already being sent by the Rust before the plan existed, and the browser's parse is the acceptance test.
 
@@ -9339,7 +10423,7 @@ The `accepts an inbound frame exactly at the cap` case is not padding: the drop 
 
 **R4's cap scope declared (MINOR 8):** the cap check runs for **every** channel, not only files — an SCTP message cap is per-channel by construction, and B-12g §1.5 scoped it to files because that was the path that asked; gating it on `label === 'files'` would re-arm the same unenforced-cap hole on `terminal` and `control`. The two cap tests use a `files` channel because that is the path with an observable consumer; the cap itself is before any label-specific dispatch.
 
-**And none of this file is gated**, which the declaration must say because it is a gap rather than a covered behaviour. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so every test above is green locally and invisible in CI. The Plan-3 handoff is the same as Task 19's: the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
+**And none of this file is gated**, which the declaration must say because it is a gap rather than a covered behaviour. Three mechanisms, each separately measured: `apps/agent/**` is absent from `ci-node.yml`'s **both** `paths:` filters, so an agent-only branch never triggers the job; the gating steps exclude the package by name (`--filter='!@ponter/agent-node'` on lint `:83`, typecheck `:86`, the test run `:108`), so a triggering push still would not run its `tsc` or `vitest`; and no other workflow covers it — `build-agent.yml`/`ci-e2e.yml`/`build-desktop.yml` run cargo and the webrtc e2e only. So every test above is green locally and invisible in CI. The Plan-3 handoff is the same as Task 19's, and it needs **both halves**: the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
 
 The count reconciles as **4 + 5 + 14 = 23**: the four label-gate cases above the table, the five B-12g cases in the table, and fourteen dispatcher/lifecycle cases that are neither. What those fourteen cover, stated as new work: terminal-data routed to the pty by id and as bytes; the no-terminalId drop; files binary `0x02` routed to the files session; files JSON routed to the files session unwrapped; the files session's output sent back wrapped, through the channel; desktop-select and desktop-bitrate on `control`; the `'desktop'` label closed; input running admit → decode → apply on `control`; a refused frame never reaching the decoder; corrupt JSON logged and ignored rather than thrown; `detach` removing the handlers; `send()` writing through to the attached channel and warning when it is absent; `send()` handing a binary frame through untouched; `send()` not double-encoding an already-serialised frame.
 
@@ -9362,7 +10446,7 @@ The Rust's gate is the specification for the first four — `rtc.rs:663-689` acc
 **Interfaces:**
 - Consumes: every prior task, and — load-bearing — **`packetizeAnnexB`** (Plan 1 Task 3) and the **`RTCRtpSenderLike`** seam (Plan 1 Task 2). For MAJOR-1 the runtime consumes `FilesSession` (Task 11), `FilesRoot` (Task 10), `FilesTicker`, `IDLE_TICK_MS`, `ACK_TICK_MS` (its own file), and `FILES_IDLE_TIMEOUT_MS` (Task 11) in the wiring test.
 - Produces:
-  - `class DesktopSession { constructor(deps); start(source, profile, bitrate): Promise<void>; control(control: StreamControl): void; select(source: DesktopSource): Promise<void>; stop(): Promise<void> }`
+  - `class DesktopSession { constructor(deps); start(source, profile, bitrate): Promise<void>; control(control: BitrateControl): void; select(source: DesktopSource): Promise<void>; stop(): Promise<void> }` — `control` takes **`BitrateControl`**, not the whole `StreamControl`: the `select` member is `select()`'s work (it **starts the new source first and stops the old one only after the new one resolves**) and a profile change is never an inbound command *(re-pointed by Task 26, `8fd1098`; the `select()` ordering re-pointed by Task 31, `661434e` — the Rust's `swap_source` builds before it stops anything, `desktop.rs:1264-1279`)*
   - `function resolveDefaultSource(config, sources): DesktopSource`
   - `class AgentRuntime { constructor(config, deps); static async start(config, deps?): Promise<AgentRuntime>; status(): RuntimeStatus; async stop(): Promise<void> }` — `deps` is the named `RuntimeDeps`, shared verbatim by the constructor and `static start` so the two cannot drift (MAJOR-6). It carries `send(label, frame)` (the seam Task 18's router exposes — the runtime→router binding is `send: router.send`), an optional `now`, and an optional `filesSession` factory (MAJOR-1's test seam; the default constructs the real `FilesRoot.open` + `FilesSession` and owns the two tick intervals)
   - `function createAgentRuntime(config): Promise<AgentRuntime>`
@@ -9915,19 +10999,31 @@ export async function createAgentRuntime(config: AgentConfig): Promise<AgentRunt
 ```ts
 // apps/agent/test/desktop/session.test.ts
 import { describe, expect, it, vi } from 'vitest';
+import type { DesktopSource } from '../../src/desktop/control.js';
 import { DesktopSession } from '../../src/desktop/session.js';
 
 function deps() {
   return {
     capture: {
-      sources: vi.fn(async () => ({ monitors: [{ id: '1', primary: true }], windows: [] })),
-      start: vi.fn(async () => undefined),
+      sources: vi.fn(async () => ({
+        monitors: [{ id: '1', primary: true }],
+        windows: [],
+      })),
+      start: vi.fn(async (_source?: DesktopSource) => undefined),
       stop: vi.fn(async () => undefined),
-      nextFrame: vi.fn(async () => ({ width: 4, height: 4, rgba: new Uint8Array(64).fill(7), seq: 1 })),
+      nextFrame: vi.fn(async () => ({
+        width: 4,
+        height: 4,
+        rgba: new Uint8Array(64).fill(7),
+        seq: 1,
+      })),
     },
     encode: {
       configure: vi.fn(),
-      encode: vi.fn(async () => ({ data: new Uint8Array([1, 2, 3]), keyframe: true })),
+      encode: vi.fn(async () => ({
+        data: new Uint8Array([1, 2, 3]),
+        keyframe: true,
+      })),
       close: vi.fn(),
     },
     /**
@@ -9936,7 +11032,9 @@ function deps() {
      * below, which install a real fake sender.
      */
     rtp: {
-      sender: vi.fn(() => null as { writeRtp(packet: Uint8Array): void } | null),
+      sender: vi.fn(
+        () => null as { writeRtp(packet: Uint8Array): void } | null,
+      ),
       payloadType: vi.fn(() => null as number | null),
     },
     send: vi.fn(),
@@ -9951,7 +11049,9 @@ describe('DesktopSession', () => {
     const d = deps();
     const session = new DesktopSession(d as never);
     await session.start({ kind: 'test' }, '720p30', 1_000_000);
-    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ gop: 60 }));
+    expect(d.encode.configure).toHaveBeenCalledWith(
+      expect.objectContaining({ gop: 60 }),
+    );
     expect(d.capture.start).toHaveBeenCalled();
   });
 
@@ -9959,7 +11059,9 @@ describe('DesktopSession', () => {
     const d = deps();
     const session = new DesktopSession(d as never);
     await session.start({ kind: 'test' }, '720p30', 1);
-    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ bitrate: 250_000 }));
+    expect(d.encode.configure).toHaveBeenCalledWith(
+      expect.objectContaining({ bitrate: 250_000 }),
+    );
   });
 
   it('stops capture before closing the encoder', async () => {
@@ -9977,14 +11079,14 @@ describe('DesktopSession', () => {
     expect(order).toEqual(['capture', 'encoder']);
   });
 
-  it('re-configures the encoder on a quality change', async () => {
-    const d = deps();
-    const session = new DesktopSession(d as never);
-    await session.start({ kind: 'test' }, '1080p60', 4_000_000);
-    d.encode.configure.mockClear();
-    session.control({ kind: 'quality', profile: '720p30' });
-    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ gop: 60 }));
-  });
+  // Task 26 removed the cell `re-configures the encoder on a quality change`.
+  // It drove `control({kind:'quality'})`, a member the Rust's `StreamControl`
+  // has never had (`desktop.rs:1938-1947` — `SetBitrate` and `SourceSwap`,
+  // nothing else) and no producer sends. The behaviour it covered — the
+  // encoder being reconfigured for a new profile — is real, but it is reached
+  // from exactly one place, the sustain ladder inside `pump()`, and the cell
+  // `downgrades on pump after 30 over-budget frames and resets the skip` below
+  // asserts it there (`toHaveBeenLastCalledWith` `{profile:'720p60', gop:120}`).
 
   it('resets the static-skip on a bitrate change', async () => {
     // One of the three reset sites: a bitrate change invalidates nothing about
@@ -10009,7 +11111,31 @@ describe('DesktopSession', () => {
     const session = new DesktopSession(d as never);
     session.control({ kind: 'bitrate', bitrate: 3_000_000 });
     await session.start({ kind: 'test' }, '720p30', 1_000_000);
-    expect(d.encode.configure).toHaveBeenCalledWith(expect.objectContaining({ bitrate: 3_000_000 }));
+    expect(d.encode.configure).toHaveBeenCalledWith(
+      expect.objectContaining({ bitrate: 3_000_000 }),
+    );
+  });
+
+  it('retargets the encoder on a bitrate received while streaming', async () => {
+    // The **live** half of the retarget, which the two cells around this one
+    // miss between them: the "before the first encode" cell above only
+    // exercises the `pendingBitrate` path, and the static-skip cell asserts
+    // `skipIsReset()`/`skippedFrames`, which the reset sets independently of
+    // the bitrate. A `control()` that forgot to record and apply the target
+    // passed both. This asserts the two things a retarget actually is — the
+    // encoder is reconfigured for the new target, and `stats()` reflects it,
+    // which is what the "reflect the effective value to the UI" requirement
+    // means (`desktop.rs:1580-1590`).
+    const d = deps();
+    const session = new DesktopSession(d as never);
+    await session.start({ kind: 'test' }, '720p30', 1_000_000);
+    session.control({ kind: 'bitrate', bitrate: 2_000_000 });
+    expect(d.encode.configure).toHaveBeenLastCalledWith({
+      profile: '720p30',
+      bitrate: 2_000_000,
+      gop: 60,
+    });
+    expect(session.stats().bitrate).toBe(2_000_000);
   });
 
   it('reports a stats frame with the sustained profile', async () => {
@@ -10036,7 +11162,9 @@ describe('DesktopSession', () => {
       keyframe: true,
     }));
     const written: Buffer[] = [];
-    d.rtp.sender = vi.fn(() => ({ writeRtp: (p: Uint8Array) => written.push(Buffer.from(p)) }));
+    d.rtp.sender = vi.fn(() => ({
+      writeRtp: (p: Uint8Array) => written.push(Buffer.from(p)),
+    }));
     d.rtp.payloadType = vi.fn(() => 102);
     const session = new DesktopSession(d as never);
     session.setRtpIdentity(0x1234);
@@ -10092,6 +11220,15 @@ describe('DesktopSession', () => {
     const d = deps();
     let clock = 0;
     d.now = () => (clock += 40);
+    // The default mock returns the same pixels every tick, which the
+    // static-skip gate suppresses for 29 of these 30 pumps — the ladder would
+    // see one sample and never reach SUSTAIN_FRAMES. Vary the CONTENT, not just
+    // the seq: `frameSignature` hashes the pixels and excludes `seq`.
+    let n = 0;
+    d.capture.nextFrame = vi.fn(async () => {
+      n += 1;
+      return { width: 4, height: 4, rgba: new Uint8Array(64).fill(n), seq: n };
+    });
     const session = new DesktopSession(d as never);
     await session.start({ kind: 'test' }, '1080p60', 4_000_000);
     for (let i = 0; i < 30; i += 1) await session.pump();
@@ -10100,6 +11237,81 @@ describe('DesktopSession', () => {
     expect(d.encode.configure).toHaveBeenLastCalledWith(
       expect.objectContaining({ profile: '720p60', gop: 120 }),
     );
+  });
+
+  describe('select (source swap)', () => {
+    it('stops the old source only after the new one is started (desktop.rs:3254)', async () => {
+      const order: string[] = [];
+      const d = deps();
+      const session = new DesktopSession(d as never);
+      await session.start({ kind: 'test' }, '720p30', 1_000_000);
+
+      d.capture.start = vi.fn(async () => {
+        order.push('start');
+      });
+      d.capture.stop = vi.fn(async () => {
+        order.push('stop');
+      });
+
+      await session.select({ kind: 'monitor', id: '2' });
+      expect(order).toEqual(['start', 'stop']);
+    });
+
+    it('refuses an invalid source without touching the live source (desktop.rs:3279)', async () => {
+      const d = deps();
+      const session = new DesktopSession(d as never);
+      await session.start({ kind: 'test' }, '720p30', 1_000_000);
+
+      d.capture.start = vi.fn(async () => {
+        throw new Error('unknown source id: window:999');
+      });
+      d.capture.stop = vi.fn(async () => undefined);
+
+      await expect(
+        session.select({ kind: 'window', id: '999' }),
+      ).rejects.toThrow('unknown source id: window:999');
+      expect(d.capture.stop).not.toHaveBeenCalled();
+    });
+
+    it('keeps the current stream running when the new source fails to start (desktop.rs:3304)', async () => {
+      // Fake capture device that tracks whether its current live source is active.
+      let live = true;
+      let framesProduced = 0;
+      const d = deps();
+      d.capture.start = vi.fn(async (source?: DesktopSource) => {
+        if (source && source.kind === 'window' && source.id === 'missing') {
+          throw new Error('portal failed to start window capture');
+        }
+        live = true;
+      });
+      d.capture.stop = vi.fn(async () => {
+        live = false;
+      });
+      d.capture.nextFrame = vi.fn(async () => {
+        if (!live) throw new Error('capture is stopped; cannot read nextFrame');
+        framesProduced += 1;
+        return {
+          width: 4,
+          height: 4,
+          rgba: new Uint8Array(64).fill(framesProduced),
+          seq: framesProduced,
+        };
+      });
+
+      const session = new DesktopSession(d as never);
+      await session.start({ kind: 'test' }, '720p30', 1_000_000);
+      expect(await session.pump()).toBe(true);
+
+      // Attempt swap that fails
+      await expect(
+        session.select({ kind: 'window', id: 'missing' }),
+      ).rejects.toThrow('portal failed to start window capture');
+
+      // The live source was never stopped, so pump continues to succeed
+      expect(d.capture.stop).not.toHaveBeenCalled();
+      expect(live).toBe(true);
+      expect(await session.pump()).toBe(true);
+    });
   });
 });
 ```
@@ -10113,7 +11325,12 @@ Expected: FAIL — module unresolved.
 // apps/agent/src/desktop/session.ts
 import type { ProfileId } from '@ponter/shared';
 import { packetizeAnnexB } from '../session/packetizer.js';
-import { clampBitrate, gopForFps, type DesktopSource, type StreamControl } from './control.js';
+import {
+  clampBitrate,
+  gopForFps,
+  type BitrateControl,
+  type DesktopSource,
+} from './control.js';
 import { StaticFrameSkip, type RawFrame } from './static-skip.js';
 import { SustainLadder } from './sustain.js';
 import { FrameTimingRing } from './timing-ring.js';
@@ -10129,7 +11346,10 @@ export interface RtpSenderSink {
   writeRtp(packet: Uint8Array): void;
 }
 
-const PROFILES: Record<ProfileId, { fps: number; width: number; height: number }> = {
+const PROFILES: Record<
+  ProfileId,
+  { fps: number; width: number; height: number }
+> = {
   '1080p60': { fps: 60, width: 1920, height: 1080 },
   '1080p30': { fps: 30, width: 1920, height: 1080 },
   '720p60': { fps: 60, width: 1280, height: 720 },
@@ -10138,13 +11358,26 @@ const PROFILES: Record<ProfileId, { fps: number; width: number; height: number }
 
 export interface DesktopSessionDeps {
   capture: {
-    sources(): Promise<{ monitors: { id: string; primary: boolean }[]; windows: unknown[] }>;
+    sources(): Promise<{
+      monitors: { id: string; primary: boolean }[];
+      windows: unknown[];
+    }>;
+    /**
+     * Start capturing `source`. **Additive**: it must not stop the source already
+     * running — `select()` stops that only after `start` resolves, which is the
+     * Rust's `build`-then-`current.stop()` order (`desktop.rs:1264-1279`). A
+     * rejecting `start` must leave the current source untouched.
+     */
     start(source: DesktopSource): Promise<void>;
     stop(): Promise<void>;
     nextFrame(): Promise<RawFrame>;
   };
   encode: {
-    configure(options: { profile: ProfileId; bitrate: number; gop: number }): void;
+    configure(options: {
+      profile: ProfileId;
+      bitrate: number;
+      gop: number;
+    }): void;
     encode(frame: RawFrame): Promise<{ data: Uint8Array; keyframe: boolean }>;
     close(): void;
   };
@@ -10172,7 +11405,12 @@ export interface DesktopSessionDeps {
    * capability string and the RTP media label (Task 18's BLOCKING-2).
    */
   send(label: 'control', frame: unknown): void;
-  logger: { info(m: string): void; warn(m: string): void; error(m: string): void; debug(m: string): void };
+  logger: {
+    info(m: string): void;
+    warn(m: string): void;
+    error(m: string): void;
+    debug(m: string): void;
+  };
   now?: () => number;
   /** Injectable clock for the 90 kHz RTP timestamp. Defaults to `Date.now`. */
   rtpClock?: () => number;
@@ -10237,7 +11475,11 @@ export class DesktopSession {
     this.rtpSsrc = ssrc;
   }
 
-  async start(source: DesktopSource, profile: ProfileId, bitrate: number): Promise<void> {
+  async start(
+    source: DesktopSource,
+    profile: ProfileId,
+    bitrate: number,
+  ): Promise<void> {
     this.profile = profile;
     const effective = clampBitrate(this.pendingBitrate ?? bitrate);
     this.pendingBitrate = null;
@@ -10246,53 +11488,50 @@ export class DesktopSession {
     this.skip = new StaticFrameSkip(geometry.fps);
     this.timing = new FrameTimingRing(32);
     this.ladder = new SustainLadder(profile, 1000 / geometry.fps);
-    this.deps.encode.configure({ profile, bitrate: effective, gop: gopForFps(geometry.fps) });
+    this.deps.encode.configure({
+      profile,
+      bitrate: effective,
+      gop: gopForFps(geometry.fps),
+    });
     await this.deps.capture.start(source);
     this.started = true;
   }
 
-  control(control: StreamControl): void {
-    switch (control.kind) {
-      case 'bitrate':
-        this.bitrate = control.bitrate;
-        this.skip?.reset();
-        this.skipWasReset = true;
-        this.ladder?.noteBitrateChange(control.bitrate);
-        if (!this.started) {
-          this.pendingBitrate = control.bitrate;
-          return;
-        }
-        this.deps.encode.configure({
-          profile: this.profile,
-          bitrate: control.bitrate,
-          gop: gopForFps(PROFILES[this.profile].fps),
-        });
-        return;
-      case 'quality': {
-        this.profile = control.profile;
-        const geometry = PROFILES[control.profile];
-        this.skip = new StaticFrameSkip(geometry.fps);
-        this.ladder = new SustainLadder(control.profile, 1000 / geometry.fps);
-        this.deps.encode.configure({
-          profile: control.profile,
-          bitrate: this.bitrate,
-          gop: gopForFps(geometry.fps),
-        });
-        return;
-      }
-      case 'pause':
-        return;
-      case 'resume':
-        this.skip?.reset();
-        return;
-      case 'stop':
-        return;
+  /**
+   * Apply an inbound control command.
+   *
+   * Takes `BitrateControl`, not the whole `StreamControl`: the `select` member
+   * is handled by `select()` (it stops and restarts capture, which is a
+   * different shape of work), and the three the type used to carry besides
+   * these — `pause`/`resume`/`stop` and a `quality` profile change — were a
+   * plan defect with no producer on the wire and no arm in the Rust's
+   * `StreamControl` (`desktop.rs:1938-1947`). A profile change is not an
+   * inbound command at all: it comes from the sustain ladder, which calls
+   * `applyProfile` from inside `pump()`.
+   */
+  control(control: BitrateControl): void {
+    this.bitrate = control.bitrate;
+    this.skip?.reset();
+    this.skipWasReset = true;
+    this.ladder?.noteBitrateChange(control.bitrate);
+    if (!this.started) {
+      this.pendingBitrate = control.bitrate;
+      return;
     }
+    this.deps.encode.configure({
+      profile: this.profile,
+      bitrate: control.bitrate,
+      gop: gopForFps(PROFILES[this.profile].fps),
+    });
   }
 
   async select(source: DesktopSource): Promise<void> {
-    await this.deps.capture.stop();
+    // The Rust builds before it stops anything (`desktop.rs:1264-1279`), and
+    // `sources.build` is additive — it never touches the live source. So this
+    // order is the port: a failed start leaves the current source running, which
+    // is ADR-22's guarantee. Stopping first would kill the stream on any refusal.
     await this.deps.capture.start(source);
+    await this.deps.capture.stop();
     // Source-swap reset: the new source is a new screen, so the previous
     // signature is meaningless and must not suppress the first frame.
     this.skip?.reset();
@@ -10392,12 +11631,15 @@ export class DesktopSession {
     // the multiplication is done modulo 2^32 rather than on the raw product.
     const rtpTimestamp = Math.floor((clock() * 90) % 2 ** 32);
 
-    const { packets, nextSequenceNumber } = packetizeAnnexB(Buffer.from(annexB), {
-      payloadType,
-      sequenceNumber: this.rtpSequence,
-      timestamp: rtpTimestamp,
-      ssrc: this.rtpSsrc,
-    });
+    const { packets, nextSequenceNumber } = packetizeAnnexB(
+      Buffer.from(annexB),
+      {
+        payloadType,
+        sequenceNumber: this.rtpSequence,
+        timestamp: rtpTimestamp,
+        ssrc: this.rtpSsrc,
+      },
+    );
     for (const packet of packets) sender.writeRtp(packet.bytes);
     this.rtpSequence = nextSequenceNumber;
   }
@@ -10412,7 +11654,12 @@ export class DesktopSession {
     });
   }
 
-  stats(): { seq: number; skippedFrames: number; profile: ProfileId; bitrate: number } {
+  stats(): {
+    seq: number;
+    skippedFrames: number;
+    profile: ProfileId;
+    bitrate: number;
+  } {
     return {
       seq: this.seq,
       skippedFrames: this.skippedFrames,
@@ -10461,6 +11708,8 @@ git commit -m "feat(agent): wire the runtime lifecycle and the desktop session"
 
 Per file, on the same fence axis: `runtime.test.ts` **15 `it()` / 23 `expect()`**,
 `desktop/session.test.ts` **11 / 27**. 15 + 11 = 26; 23 + 27 = 50.
+
+*(These are the counts as Task 19 landed them, at `d640a9d`. Later tasks moved them, and none of them deleted or skipped an assertion: **Task 27** (`3eac965`) took `runtime.test.ts` to **21 / 42** — the six terminal-path cells (B41) are accounted in Task 27's own section, and it left `desktop/session.test.ts` at **11 / 27**; **Task 26** (`8fd1098`) took `desktop/session.test.ts` to **11 / 28** — the dead quality cell was removed and re-homed to the sustain ladder (+0 `it()`, +1 `expect()`), with the accounting in `### Task 26`; **Task 31** (`661434e`) took it to **14 / 36** with the three `select` source-swap cells ported from the Rust (`desktop.rs:3254`, `:3279`, `:3304`); and **Task 31 defect C** (`8bf9509`) took `runtime.test.ts` to **24 / 47**. At HEAD `a63aa44` the two files are **14 / 36** and **24 / 47**. No commit after `8bf9509` touches either one — `8f2c083` and `bcc278f` before it went to `base64.ts`/`base64.test.ts` and `e2ee/manager.test.ts`, and the last two, `024954c` and `a63aa44`, both went to `terminal/pty.test.ts` only. Measured per blob, and the per-commit file lists measured with `--name-only`.)*
 
 **The B-12g repair added five `it()` and ten `expect()` to `runtime.test.ts`** —
 `runtime.test.ts` was **6 / 6** and is now **11 / 16**. All five are R3's
@@ -10531,13 +11780,909 @@ code in this document** — the two handles `AgentRuntime.start` owns
 wiring has its own three tests above. The ticker itself keeps the injected
 clock so no test sleeps.
 
-So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. What the twenty-six cover: five `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), five `FilesTicker` cases (the 1 s idle period; the 20 ms ack period; the catch-up count when a tick arrives late; that both ticks' frames are emitted; `stop()` ending ticking), four `AgentRuntime` cases (real intervals driving the session and emitting on `files`; `stop()` clearing the handles; a no-files-root config skipping the ticker; `status()` reporting the config it was started with), and twelve `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; re-configure on a quality change; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). **New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
+So this task is the largest single block of **new** coverage in Plan 2, and the declaration now says that rather than dressing it as an eight-test port. **The enumeration below is the record of what Task 19 landed at `d640a9d`** — the two files have moved since, and the movement is stated right after it rather than folded into the record. What the twenty-six cover: six `resolveDefaultSource` cases (primary by default; an explicit monitor id; the first monitor when none is flagged primary; the test source; a named throw when there are no sources; the unknown-selector throw), five `FilesTicker` cases (the 1 s idle period; the 20 ms ack period; the catch-up count when a tick arrives late; that both ticks' frames are emitted; `stop()` ending ticking), four `AgentRuntime` cases (real intervals driving the session and emitting on `files`; `stop()` clearing the handles; a no-files-root config skipping the ticker; `status()` reporting the config it was started with), and **eleven** `DesktopSession` cases (gop configured before the first frame; the initial bitrate through the same decode path; capture stopped before the encoder closes; **re-configure on a quality change**; the static-skip reset on a bitrate change; a bitrate applied before the first encode; the stats frame carrying the sustained profile; the pump writing RTP and not a data channel; the no-sender drop; the repeat-skip keeping the keepalive; the pump's downgrade after thirty over-budget frames). 6 + 5 + 4 + 11 = 26.
 
-**And one R3 consequence the declaration must state, because it is a gap rather than a covered behaviour:** `runtime.test.ts` — ticker and wiring alike — is **not** gated. `apps/agent/**` is absent from `ci-node.yml`'s `paths:` and the gating test run excludes `@ponter/agent-node` (`:105-111`), so its tests are green locally and invisible in CI — the same status Task 11's crossing test carries. The Plan-3 handoff is the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
+*(Two corrections to this paragraph, both measured on committed blobs. The group sizes read "five `resolveDefaultSource` cases" and "twelve `DesktopSession` cases"; the enumeration itself always listed **six** and **eleven**, and the per-file `it()` counts below (15 + 11 = 26) agree with the enumeration, not with the labels. The "twelve" also carried a cell that Task 26 removed — `re-configure on a quality change` — so the label was wrong twice over: the count and the membership. The list above is the Task 19 landing record and keeps the quality cell, because at `d640a9d` it was a real cell; what it must not do is claim the current file. The current file is **14 `it()` / 36 `expect()`** at `b467d13`: Task 26 (`8fd1098`) removed the quality cell and re-homed its behaviour to the sustain ladder, adding the live bitrate-retarget cell (+0 `it()`, +1 `expect()`), and Task 31 (`661434e`) added the three `select` source-swap cells (+3 `it()`, +8 `expect()`).)*
+
+**New (declared divergences):** the pre-first-encode bitrate is **applied, not dropped** — the Rust's production arm only `tracing::warn!`s on `cmInitExpected` (rc = 4) from `SetOption` before the encoder's lazy init (`desktop.rs:1601-1603`, per the test comment at `:3093-3096`) and does not update `profile.bitrate_bps`, so a `desktop-bitrate` arriving before the first frame is lost with no retry and the echoed `targetBitrateBps` never reflects it; the unknown-selector throw; the static-skip reset on a bitrate change; and the three `pump()` tests, which exercise the loop the Rust's tests never ran as a loop — including the downgrade-then-reset path that the stale-interval defect above makes unobservable in Rust.
+
+**And one R3 consequence the declaration must state, because it is a gap rather than a covered behaviour:** `runtime.test.ts` — ticker and wiring alike — is **not** gated. Three mechanisms, each separately measured: `apps/agent/**` is absent from `ci-node.yml`'s both `paths:` filters, so an agent-only branch never triggers the job; the gating steps exclude the package by name (`--filter='!@ponter/agent-node'` on lint `:83`, typecheck `:86`, the test run `:108`); and no other workflow runs vitest or `tsc` on it (`build-agent.yml`, `ci-e2e.yml` and `build-desktop.yml` are cargo and e2e only). So its tests are green locally and invisible in CI — the same status Task 11's crossing test carries. The Plan-3 handoff needs **both halves**: the path plus dropping the `!@ponter/agent-node` filter from `:83`, `:86` and `:108`.
 
 The `expect()` count is larger than the `it()` count by more than usual because the RTP test is one `it()` with ten assertions: it is checking a serialized packet byte by byte, and a packet is not one property.
 
 **New, and the most important two in this task:** the RTP-path test and the no-sender drop. An earlier draft of this task wired the encoder's Annex-B output to `deps.send('control', …)` — a data channel — which would have shipped a black video with no error anywhere. Both are **new**, not ports: the Rust never tested the write path in isolation because `write_sample` did the packetizing for it. The RTP test asserts the header's payload type, SSRC, RTP version, that the Annex-B start code is **absent** from the payload, and that `deps.send` was **not** called.
+
+---
+
+### Task 20: Defect repairs from the binding audits
+
+**Landed at:** `0a3f900db07238d3b6f92f7d57510ca23cae5d77`
+**Files:**
+- Modify: `apps/agent/src/files/session.ts` (defects 1, 2, 3, 4)
+- Modify: `apps/agent/src/terminal/pty.ts` (defects 5, 6, 7)
+- Modify: `apps/agent/src/files/sandbox.ts` (defect 8)
+- Test: `apps/agent/test/files/session.test.ts`, `apps/agent/test/terminal/pty.test.ts`, `apps/agent/test/files/sandbox.test.ts`
+
+**Origin and rationale:**
+Independent QA binding audits found eight concrete contract defects, all repaired in one commit:
+- **three** in the files transfer state machine, from QA's NOT-BOUND verdict on Task 11 (`52af996`): `remove()` ignored `recursive`, `beginUpload()` never sent the initial ack, the upload idle-timeout frame dropped `transferId` — plus a fourth, the wire-relative path check, which the same state machine owns;
+- **two** lifecycle leaks in the terminal PTY manager, from QA's NOT-BOUND verdict on Task 12 (`50dcc9e`): a phantom slot leak when a subscription throws, and a stale exit evicting a live session that reused the id;
+- **one** un-wired security allowlist (Task 12's `ShellPolicy` accepted but never read);
+- **one** containment case missing under a root of `/` (Task 10's `ensureContained`).
+
+That is four + two + one + one = eight. All were validated against an independent 45-cell QA probe matrix (`.superpowers/probes/t20-landing-qa/`) and verified clean across 14 mutants with zero gaps (QA BOUND PASS, `qa-verdict-task-20.md`).
+
+**The eight repairs, each against the Rust it cites:**
+
+1. **`remove()` honours `recursive` (CRITICAL)** — Rust `files.rs:911-951`: the root refusal is checked first, then `if recursive { remove_dir_all }` else the directory must be empty (`DirNotEmpty`). The port had omitted the recursive arm, refusing every non-empty folder delete. Landed: `Boolean(message.recursive)` selects `rmSync(target, { recursive: true })`; the non-recursive arm keeps `rmdirSync` + `ENOTEMPTY → DIR_NOT_EMPTY`; the root refusal sits above both. **This repair made `recursive` work; it did not make a non-boolean `recursive` safe — Task 22 did that**, by refusing the frame at the decode boundary before `remove()` is reached (see Task 22 below).
+2. **`beginUpload()` sends the initial cumulative ack (CRITICAL)** — Rust `files.rs:1623-1627` returns `vec![UploadAck { next_chunk_index: 0 }]` ("the begin is answered with the first cumulative ack, spec §6.1"). The port had returned `[]`. In `packages/file-core/src/client.ts:328-336`, `upload()` only arms the idle timer before sending `files-upload-begin`; the chunk pump is driven entirely from `onAck` (`:610`). Without the initial ack, no chunk is ever sent and uploads stall until the 30 s idle timeout. Landed: `return [{ type: 'files-upload-ack', transferId, nextChunkIndex: 0 }]`.
+3. **Upload idle-timeout frame carries `transferId`** — Rust `timeout_frame(direction, transfer_id)` (`files.rs:1259-1270`) sets the id on timeout frames in both directions. The download arm already did; the upload arm dropped it. **Measured consequence, not the obvious one:** the client does *not* hang — its own 30 s timer (`client.ts:328`) rejects the handle with a locally minted `TRANSFER_TIMEOUT`. What actually breaks is that the `files-error` arm only routes an error to a transfer when the frame carries its id (`client.ts:637-641`), so `client.transfers` never drops the entry: one dead entry per timed-out upload, for the life of the connection. The caller also gets the client's own message instead of the agent's frame, and the id-less error falls through to `onError` as an unsolicited error belonging to no request. Landed: `const { transferId } = this.upload;` read before `discardUpload`, emitted on `files-error`.
+4. **`files-upload-complete.path` is wire-relative** — Rust `files.rs:2281` emits `state.dest_rel`, constructed via `join_rel` (`:2069-2075`): `''` + name for root, `dir/name` otherwise. The port put `destPath` (the host absolute path) on the wire, leaking the sandbox root location. Landed: `UploadState` stores `destRel`; both `name` and `path` derive from it.
+5. **PTY registers slot after subscribing (phantom slot leak)** — The port called `sessions.set()` before subscribing `onData`/`onExit`. If subscription threw (e.g. invalid stream), the slot was registered but dead, leaking one of the 10 slots forever. Landed: subscribe first, register second. On throw, the child process is killed and `PtyError('pty-spawn-failed', ...)` is thrown.
+6. **Stale `onExit` cannot evict a live session** — In Node PTY, `close()` deletes the map entry but cannot unsubscribe native handlers. If a terminal ID was reused, an old process's exit handler would evict the new, live session. Landed: `emitExit` guards with `if (this.sessions.get(terminalId)?.process === process_) this.sessions.delete(terminalId)`. The exit event itself is still reported either way, matching Rust.
+7. **`ShellPolicy` consulted before process spawn** — Rust `lib.rs:1372-1400` resolves client-supplied shells against the allowlist in the dispatcher *before* `spawn_session`, answering refusals with the pinned spawn-failure frame. The port accepted `policy?: ShellPolicy` in `PtyCreateOptions` but never read it. Landed: `options.policy ? this.resolveShell(options.policy, options.shell) : options.shell`; a `ShellRefusedError` maps to `PtyError('pty-spawn-failed', 'shell refused: ...')`.
+8. **Containment check under a root of `/`** — Rust `ensure_contained` uses `Path::starts_with` (component-wise). In TS, `this.root + sep` when `root === '/'` produced `//`, which no normal path starts with, rejecting all valid files under root `/` with `PATH_OUTSIDE_ROOT`. Landed: `const prefix = this.root.endsWith(sep) ? this.root : this.root + sep;`.
+
+**TEST-INTEGRITY declaration:**
+
+Counts on committed blobs across `apps/agent/test/` at commit `0a3f900`:
+- **Before (at `d640a9d`):** 33 test files, **376 `it()` / 618 `expect()`**
+- **After (at `0a3f900`):** 33 test files, **388 `it()` / 643 `expect()`**
+- **Net change:** **+12 `it()` / +25 `expect()`**
+
+The suite run reports **34 files**, not 33, because `apps/agent/spike/spike.test.ts`
+sits outside `test/`; it holds 9 `it()` at both revisions and is not counted above,
+which is why the file count in this declaration (33) and in the suite result (34)
+differ by exactly that file.
+
+File-by-file breakdown:
+| Test File | Before `it()` | After `it()` | Before `expect()` | After `expect()` | Net Δ |
+|---|---|---|---|---|---|
+| `test/files/session.test.ts` | 30 | **37** | 62 | **76** | +7 / +14 |
+| `test/terminal/pty.test.ts` | 11 | **15** | 15 | **24** | +4 / +9 |
+| `test/files/sandbox.test.ts` | 18 | **19** | 19 | **21** | +1 / +2 |
+| **Total, the three touched files** | **59** | **71** | **96** | **121** | **+12 / +25** |
+
+The other 30 test files are untouched, which is why the three-file total above
+(59 → 71) differs from the suite total (376 → 388): every added `it()` is in one
+of the three files this task repaired.
+
+The 12 new test cases, quoted verbatim from the landed blobs, with the defect each fences:
+
+| # | `it()` title (verbatim) | File |
+|---|---|---|
+| 1 | `removes a non-empty directory when recursive is set` | `files/session.test.ts` |
+| 2 | `removes an empty directory without recursive (the non-recursive arm still works)` | `files/session.test.ts` |
+| 3 | `refuses a non-empty directory when recursive is absent or false` | `files/session.test.ts` |
+| 4 | `refuses the sandbox root even with recursive set` | `files/session.test.ts` |
+| 5 | `answers the begin with the initial cumulative ack (defect 2)` | `files/session.test.ts` |
+| 6 | `carries the transferId on an upload timeout frame (defect 3)` | `files/session.test.ts` |
+| 7 | `carries the wire-relative destination on files-upload-complete (defect 4)` | `files/session.test.ts` |
+| 8 | `does not leak a slot when a subscription throws (defect 5)` | `terminal/pty.test.ts` |
+| 9 | `does not let a closed process evict the live session reusing its id (defect 6)` | `terminal/pty.test.ts` |
+| 10 | `refuses a shell the policy disallows, before any spawn (defect 7)` | `terminal/pty.test.ts` |
+| 11 | `spawns the canonical path the policy resolved (defect 7)` | `terminal/pty.test.ts` |
+| 12 | `accepts a path under a root of "/" (defect 8)` | `files/sandbox.test.ts` |
+
+Defect 1 carries four cells (positive, negative, the empty-directory control that
+proves `recursive` is not mandatory, and the root refusal that precedes both arms).
+The two shell cells are a pair: one shows the refusal happens **before** any spawn,
+the other that the resolved canonical path is what actually executes.
+
+Zero assertions removed or weakened. Zero `.skip`, `.only`, or `.todo` introduced. Removed lines in `apps/agent/test/`: exactly **1** — the `node:fs` import line in `sandbox.test.ts`, rewritten to a multi-line form that **adds `realpathSync`** (`git diff d640a9d 0a3f900 -- apps/agent/test` → `31/1`, `172/0`, `149/0`). Suite passed: **34 files / 422 passed**.
+
+---
+
+### Task 21: Re-point `agent-api-access-gate.test.ts` at the TypeScript agent tree
+
+**Landed at:** `0b471e0c173305a47eca7b0c7ef659220b5e806d`
+**Files:**
+- Modify: `packages/api-client/test/agent-api-access-gate.test.ts`
+
+**Origin and Problem:**
+`plan-2-core.md:94` assigned `agent-api-access-gate.test.ts` to Plan 2 ("**Modify.** Re-point at the TS agent tree | R3, R6"), but no commit on this branch executed it while Tasks 1–20 landed. At `0a3f900` the file is **2 failed | 2 passed (4)**, reddening the gating CI job `@ponter/api-client#test`. Both failures are false positives on correct TypeScript, produced by rules translated from a Rust scan whose spelling conventions differ:
+1. `DEFAULT_SERVER = 'ws://localhost:8787/api/ws/agent'` in `apps/agent/src/config.ts:42` is the port of `main.rs:29`'s clap default — a sanctioned-set question, not a stray URL. Measured: it is the only file in the 32-file tree a `wss?://` literal appears in.
+2. `/\{\s*(error|code|message)\s*:/` fires on **3** files — `logging/index.ts` (the level table `{ error: 0, … }` and the method map `error: (f, m) => …`), `signalling/client.ts:110,118,137,165`, `signalling/inbound.ts:47` (all `logger.warn({ error: … })` / `{ code: … }` log fields) — while staying **silent** on a real `details` envelope. The Rust's own discriminator is `details` (`build-agent.yml:95-98`).
+
+**The landed change:**
+
+1. **The sanctioned set is per rule, not one shared directory.** One shared `api/` cannot express the Rust's `main.rs` + `api.rs` split: too narrow for the URL rule, too wide for the HTTP rule.
+   | rule | set | measured effect on the 32-file tree |
+   |---|---|---|
+   | `SANCTIONED_URL` | `['api/', 'config.ts']` | excludes exactly **1 of 32** |
+   | `SANCTIONED_ENVELOPE` | `['api/']` | excludes **0 of 32** — `apps/agent/src/api/` does not exist yet |
+   | `SANCTIONED_HTTP` | `[]` | excludes **0 of 32**; sanctioning `api/` here would sanction an absence |
+   `isSanctioned()` matches a directory prefix (`api/`) or an exact file (`config.ts`); `startsWith` alone would treat `config.ts.bak` as sanctioned. `governed(keys)` takes the rule's set as an argument.
+
+2. **The three patterns name the class, not one spelling** (a rule written against one spelling reports zero offenders on a tree that spells the class another way, which reads as a green gate):
+   ```ts
+   const HTTP_CLIENT =
+     /(?:from|require\(|import\()\s*['"]node:(?:http|https)['"]|from\s*['"]undici['"]|require\(\s*['"]undici['"]\s*\)|import\(\s*['"]undici['"]\s*\)/;
+   const LITERAL_URL = /['"`](?:https?|wss?):\/\//;
+   const ERROR_ENVELOPE =
+     /\bdetails\s*\??\s*:|\{[^{}]*\berror\s*:[^{}]*\bstatus\s*:|\{[^{}]*\bstatus\s*:[^{}]*\berror\s*:/;
+   ```
+   **Deliberately excluded from `ERROR_ENVELOPE`: `error` + `code` together.** The agent uses that pair for its own wire frames (`{ type: 'files-error', code: 'TRANSFER_TIMEOUT', … }`) and for logging, so including it would fire on the agent rather than on a hand-rolled envelope. The cost is a **documented gap** — an envelope carrying `error` + `code` and neither `details` nor `status` is not seen — pinned by a control so it stays a decision rather than an oversight.
+
+3. **The vacuity guard is the one that can fail.** `files.every(f => f.endsWith('.ts'))` is deleted: `walk()` pushes only paths already ending in `.ts`, so the assertion restated its own filter. Replaced 1 for 1 by the property that actually distinguishes the right root from the wrong one:
+   ```ts
+   expect(files.some((f) => relPath(f).includes('node_modules/'))).toBe(false);
+   ```
+   Measured both polarities through the file's own `walk()`: `apps/agent/src` → **32 walked, 0 under `node_modules/`** (passes); `apps/agent` one level up → **5907 walked, 5837 under `node_modules/`** (fails). `expect(files.length).toBeGreaterThan(0)` is kept — it is the live guard, since `walk()` has no `try` and a missing directory throws. A **sanctioned-set liveness** cell is added for the URL rule (`expect(governed(SANCTIONED_URL).length).toBeLessThan(walk(AGENT_SRC).length)`, measured `31 < 32`): a set that names nothing real makes its rule unconditionally strict, and no fixture can show that. No file count is pinned, so a legitimate source addition keeps it green.
+
+4. **Positive controls, driving the same `RegExp` objects.** A `describe` block of **3 cells / 20 assertions**: 4 HTTP import spellings, 2 URL quote styles, 5 envelope forms that must fire (including the type-annotation form `as { error?: string; details?: unknown }`), and 6 logging / prose / wire-frame forms that must stay silent — **plus the accepted gap**, pinned. Measured before writing: **20 fixtures, 0 mismatches**. Without these, the "no offenders" scans would be unfalsifiable: a pattern matching nothing at all passes every one of them.
+
+5. **Cross-host paths.** `relPath(f) = relative(AGENT_SRC, f).split(sep).join('/')` is used by both `isSanctioned()` and the `node_modules` control, so `api/` and the control agree on a Windows runner where `relative()` returns backslashes.
+
+**Deliberately not written:** the `api/`-boundary half ("the envelope filter removes at least one file"). It is false today — `apps/agent/src/api/` does not exist, so `governed(SANCTIONED_ENVELOPE).length === 32`. Writing it now forces `it.skip`, which the Global Constraints forbid; the omission is stated in the `SANCTIONED_ENVELOPE` docblock so it is a ruling rather than a hole. It belongs to the commit that adds `apps/agent/src/api/`.
+
+**TEST-INTEGRITY declaration:**
+
+Counts on committed blobs (`git show 0a3f900:…` vs `git show 0b471e0:…`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+- **Before:** **4 `it()` / 6 `expect()`**
+- **After:** **8 `it()` / 26 `expect()`**
+- **Net:** **+4 / +20**; `.skip` / `.only` / `.todo` **0 → 0**
+
+Package total `packages/api-client`: **2 failed | 39 passed (41) → 45 passed (45)** — +4, exactly the added cells. `apps/agent` unchanged at **422 passed / 34 files**, as required. Every removed line has a declared replacement: the dead `every('.ts')` assertion, the single-spelling `HTTP_CLIENT`, the `{error|code|message :` envelope rule, `SANCTIONED = 'api/'`, `governed()` without an argument, the `node:path` import (adds `sep`), and docblock lines stating the old rationale.
+
+**Gating requirement, measured:** the turbo job
+`pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always` → **9/9**. `tsc --noEmit` and `prettier --check` (on the committed blob, with `--ignore-path /dev/null --config`) clean. Both polarities measured: three offenders planted in a scratch tree under `/tmp` (none in the repo) → **3 failed | 5 passed**, 8/8 after removal; and 6 in-file mutants **6 killed, 0 survivors** — including one that weakens the liveness cell to `toBeLessThanOrEqual` and shows the strict comparison is what gives that cell teeth. Report: `task-21-report.md`.
+
+---
+
+### Task 22: Validate the inbound files frame at the decode boundary
+
+**Landed at:** `2e3f7636ee75fbc0d059b600e7de57add488baab`
+**Files:**
+- Modify: `apps/agent/src/files/session.ts` (**+169 / −0**, two hunks, zero deletions)
+- Test: `apps/agent/test/files/session.test.ts` (**+359 / −0**, zero deletions)
+
+**Origin: the class, not one spelling.**
+QA's Task 20 verdict found **one** member — `remove()` selects the destructive arm with `Boolean(message.recursive)`, so a peer sending the **string** `"false"` deletes the tree. PM then measured the whole class: every field of every one of the twelve inbound types against a Rust oracle, in one run. The defect is not twelve bugs; it is **the absence of a validator**. The Rust decodes each payload with `serde_json::from_value` into typed fields (`files.rs:582-600`), so a wrong JSON kind or a missing required field fails the whole frame, which `lib.rs:1969-1975` answers as `BAD_FRAME`. The port's `decodeFilesFrame` checked only that `type` was one of twelve names, and each handler then coerced. Measured consequences, each a payload the Rust refuses and the port accepted:
+
+| payload | port's action before the repair | disk |
+|---|---|---|
+| `files-delete`, `recursive: "false"` / `"0"` / `"true"` / `1` / `[]` / `{}` | **deleted the tree** | tree gone |
+| `files-upload-begin`, `size: "abc"` / `{}` (NaN) | created `.part` | **past the size cap** |
+| `files-upload-begin`, `size: null` / `-1` / `1.5` | created `.part` | wrong size recorded |
+| `files-upload-begin`, `name` **missing** | created `undefined.ponter-part` | a file named `undefined` |
+| `files-list`, `path: 12` / `requestId: 5` | accepted | — |
+| `files-pause`, `direction: "sideways"` | refused downstream as `TRANSFER_UNKNOWN` | — |
+
+The size-cap row is the one to read twice. `beginUpload` guards with `if (size > FILE_MAX_BYTES)` — a **comparison**, and `NaN` is false against every comparison, so `Number()` yielding `NaN` walks straight past the only limit on upload size. The Rust has no equivalent because `u64` cannot hold `NaN`.
+
+Severity, honestly: the shipped browser client types every field correctly (`packages/file-core/src/client.ts` — `delete(path, recursive: boolean = false)`), so none of this is reachable from the product today. It is reachable from a hand-written peer, it is **fail-open on a destructive operation and on a size limit**, and it diverges from the Rust's contract — which is why it was fixed before merge rather than carried.
+
+**The landed shape**, all in `apps/agent/src/files/session.ts` beside `FILES_INBOUND_TYPES`:
+
+- `type FieldKind = 'string' | 'u64' | 'bool' | 'direction'` and `interface InboundShape { required; optional }`.
+- `INBOUND_FIELDS: Record<FilesInboundType, InboundShape>` — **12 types / 32 fields** (29 required, 3 optional). The `Record` keyed by `FilesInboundType` is load-bearing: a thirteenth type added to the enumeration is a `tsc` error (TS2741) until it has a shape, so the contract cannot be skipped by a new arm.
+- `matchesKind(value, kind)`. The `u64` arm is `typeof v === 'number' && Number.isInteger(v) && Number.isSafeInteger(v) && v >= 0` — rejecting a string, a non-integral number, a negative number, `NaN`, `Infinity`, `null`, an array and an object. `Number.isSafeInteger` is the honest bound: `serde_json`'s `u64` is 64-bit and `MAX_SAFE_INTEGER` is the closest a double gets, while the browser never declares a size above `FILE_MAX_BYTES`.
+- `inboundShapeValid(message)` — required fields present and of kind; optional fields absent, `null`, or of kind; extra keys ignored.
+- **Wiring:** `handle()` already owned a `try/catch` at BASE (`session.ts:199`), so the guard was inserted **into** it, not wrapped around `dispatch`:
+
+  ```ts
+  const decoded = decodeFilesFrame(message);
+  if (decoded === null) return [];
+  try {
+    if (!inboundShapeValid(decoded)) {
+      throw new SandboxError('BAD_FRAME', 'the frame could not be decoded');
+    }
+    return this.dispatch(decoded);
+  } catch (error) { /* unchanged: ACTION_TYPES → files-action-result, else files-error */ }
+  ```
+
+  Throwing **inside** that `try` is what keeps the failure routing intact: the three action types answer on `files-action-result` with `success: false, error: 'BAD_FRAME'`, everything else on `files-error` with `code: 'BAD_FRAME'`, and `requestId` / `transferId` extraction is the same code path a bad *path* already took. The message string is the Rust's own — `"the frame could not be decoded"` (`lib.rs:1972`) — so the two ports answer identically. The check is **above** the `try` in zero implementations: placing it there would require re-implementing the action/transfer routing, and the three action frames are exactly the ones a bad payload is most likely to name.
+
+**Two oracle properties the check must respect**, both measured against Rust rather than assumed:
+
+1. **`serde` does not deny unknown fields.** `deny_unknown_fields` occurs **0** times in `files.rs`. An extra key is ignored, so the validator checks the named fields and ignores everything else. A stricter "no key outside the table" rule would refuse frames the Rust accepts — a new divergence introduced by a fix for divergence.
+2. **`Option<T>` accepts an explicit `null`.** The oracle measures `recursive = null` as **ACCEPTED** (then `unwrap_or(false)` takes the non-recursive arm). So absent and `null` are both fine for an optional field, and a present non-null value must still be of the right kind. `recursive: "false"` is `BAD_FRAME`; `recursive: null` is not. Only `files-delete` (`recursive: bool`) and `files-cancel` (`requestId`, `transferId`: both strings) declare optional fields.
+
+**What the boundary does *not* cover, stated so the claim is not over-read.**
+`acceptBinaryChunk` is a second public entry into the same state machine and never passes through `handle()`: `session/data-channels.ts:263` routes a `0x02`-prefixed binary frame straight to it. Its boundary is `decodeUploadChunk` (`files/protocol.ts:86`), which has its own `BAD_FRAME` throws for a truncated header and an over-cap payload — a separate instrument for a separate encoding. "The decode boundary is validated" is a claim about the **JSON** path. Also unchanged by design: `String(message.type).replace('files-', '')` in `actionFailure` / `actionResult` stays correct — `type` is the discriminant the decode already validated.
+
+**Why the coercions stay.** `String(...)`, `Number(...)` and `Boolean(...)` are all still in the handlers after this commit, and the plan's own fences still show them. That is correct, and the class comment above `dispatch` says why: every value reaching an arm has passed the boundary, so the coercion is the *narrowing* from `unknown` to the handler's parameter type — not a validation. `Boolean(message.recursive)` sees only `true`, `false`, `null` or absent, and maps all four correctly. Rewriting it to `message.recursive === true` would restore fail-open behaviour for the case the boundary now refuses; leaving the boundary out would make every one of those lines a bug again at once.
+
+**TEST-INTEGRITY declaration:**
+
+Blob counts on the committed blobs (`git show e171f88:…` vs `git show 2e3f763:…`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+
+| scope | before (BASE `e171f88`) | after (`2e3f763`) | net |
+|---|---|---|---|
+| `test/files/session.test.ts` | **37 `it()` / 76 `expect()`** | **45 / 110** | **+8 / +34** |
+| `apps/agent/test/` (33 files) | **388 / 643** | **396 / 677** | **+8 / +34** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Removed lines in both files: **0** — the commit is 528 insertions and **zero deletions** (`git diff --numstat e171f88 2e3f763` → `169 0` and `359 0`; `git show --stat 2e3f763` → `2 files changed, 528 insertions(+)`). The plan states blob counts and not a runner total on purpose: the runner reports 56 cells for this file at HEAD against 45 `it()` because `it.each` expands, so a runner count is task-local and cannot be compared across revisions.
+
+The `apps/agent` suite total (excluding `apps/agent/spike/spike.test.ts`, which sits outside `test/` and is unchanged at 9 `it()`): **430 passed / 34 files**, up from 422.
+
+The 8 new cells, quoted verbatim, with the brief cell each fences and what it proves:
+
+| # | `it()` title (verbatim) | fences |
+|---|---|---|
+| 1 | `files-delete rejects non-boolean recursive with BAD_FRAME and preserves tree` | brief cell 1 — **S-1 itself**: six non-boolean values each answer `BAD_FRAME` *and* the tree survives (a fix that deleted first and refused after would pass a frame-shape assertion); controls: `true` deletes, `false` and omitted answer `DIR_NOT_EMPTY` |
+| 2 | `files-upload-begin rejects non-u64 size with BAD_FRAME without creating .part file` | cell 2 — seven invalid sizes, each with **no `.part` on disk**; control `size: 10` acks, `MAX + 1` answers `FILE_TOO_LARGE` |
+| 3 | `rejects missing required field with BAD_FRAME and does not coerce to undefined string` | cell 3 — missing `name` refused and no `undefined.ponter-part`; control `name: "undefined"` (a legal string) **is** accepted, so the cell cannot pass by banning the word |
+| 4 | `files-list rejects non-string path and requestId with BAD_FRAME` | cell 4 — plus a string control that still lists |
+| 5 | `files-pause rejects invalid direction with BAD_FRAME before transfer lookup (code assertion)` | cell 5 — a **code** assertion by design: `BAD_FRAME`, not the downstream `TRANSFER_UNKNOWN`; control `"upload"` reaches the lookup and answers `TRANSFER_UNKNOWN` |
+| 6 | `INBOUND_FIELDS schema table has an entry for every declared inbound type` | cell 6 — and it is not a key-existence check: each entry's **own** declared kinds synthesise a frame that must pass, then one required field is broken and must fail. Anti-vacuity: the table must declare exactly **32** fields, so emptying an entry reds it instead of quietly shrinking what is validated |
+| 7 | `tolerates extra unknown keys without rejecting the frame (serde parity)` | cell 8 — junk keys on a legal `files-list` still list |
+| 8 | `optional field accepts explicit null while rejecting non-boolean string` | cell 9 — **same fixture, two outcomes**: `recursive: null` → `DIR_NOT_EMPTY`, `recursive: "false"` → `BAD_FRAME`. This pair is the proof the check is per-kind, not "reject anything that is not `true`" |
+
+Brief cell 7 (the unknown-`type` arm still drops) required no new cell: the pre-existing `drops a type outside the twelve instead of reaching an arm` (asserting `files-explode` → `[]`) is its positive control, and it keeps passing — the boundary did not swallow warn-and-ignore.
+
+**Both polarities, measured independently by BA and by QA.** BA's reachability probe (3 cells, written against the landed source) is **2 failed at BASE `e171f88`, 3 passed at HEAD**, with the accept-control green at both — so the probe can see the defect it claims is fixed. QA's matrix (`.superpowers/probes/t22-landing-qa/`) runs 56 cells in one pass: at BASE exactly the **7** demonstrator cells red, all 56 green at HEAD; and **9/9 mutants killed** (M1 `u64` → cell 2; M2 `bool` → cells 1, 9; M3 required-fields → cells 2–6; M4b table entry removed → cell 6 + `tsc` TS2741; M5 `direction` → cell 5; M6 `string` → cells 3, 4, 6; M7 unknown-keys-rejected → cell 7; M8 `null`-rejected → cell 8; M9 boundary bypassed → cells 1–5, 8). M4 (making the table `Partial`) survives vitest because it is a type-only change and is killed by `tsc --noEmit` (TS18048) — which is the fourth axis doing the work vitest cannot.
+
+**A correction to the audit artifacts, recorded because the plan must not inherit it.** `qa-verdict-task-22.md` states the `session.ts` diff three ways and two of them are wrong: its §1 scope row says `+72 / −1` and its §7 block says `431 insertions(+), 1 deletion(-)`, with a §2 narrative that names a "removed line 1". The commit has **zero deletions** on both files, as measured above three ways (`--numstat`, `show --stat`, and `diff -u` between the two blobs). The verdict's counts are stale; this section carries the measured ones. QA has been given the measurement to correct its own artifact.
+
+Two non-blocking observations from QA's audit, carried rather than closed: **O-1** `this.actionFailure` does not string-coerce `message.requestId`, so a non-string id on an action frame is echoed as-is — pre-existing at BASE and now **unreachable through `handle()`** for the same reason the coercions are (the boundary refuses a non-string `requestId` on every action type); **O-2** the Rust drops a malformed frame that carries no extractable string id (`lib.rs:1966` → `Vec::new()`), while the port answers `files-error` without an id. O-2 is a real behavioural difference with no protocol impact (the browser has nothing to match it to) and is recorded as a divergence, not repaired.
+
+---
+
+### Task 23: Temp-dir teardown in the five test files
+
+**Landed at:** `35e8a32ba7a862c72542f52a8fb55bdb6c45369d`
+**Files (tests only, 0 source files modified):**
+- `apps/agent/test/files/sandbox.test.ts` (+25 / −3)
+- `apps/agent/test/files/session.test.ts` (+30 / −13)
+- `apps/agent/test/identity/store.test.ts` (+23 / −3)
+- `apps/agent/test/terminal/pty.test.ts` (+17 / −3)
+- `apps/agent/test/terminal/shell-policy.test.ts` (+17 / −2)
+- Total: **5 files changed, 112 insertions(+), 24 deletions(-)** (`git diff --shortstat 6b47ede 35e8a32`); `git diff --name-only 6b47ede 35e8a32 | grep -c '^apps/agent/src/'` → **0**.
+
+**Origin & Purpose:**
+At BASE, `apps/agent/test/` had 22 `mkdtempSync` occurrences across five files (17 call sites + 5 import lines) and zero teardown hooks. Every test execution left its fixtures in `/tmp`, leaking +106 temporary directories per full suite run (`+106` measured at BASE across three independent runs). Task 23 installs a clean, self-contained teardown mechanism across all five files without introducing shared global state or altering test semantics.
+
+**The Landed Pattern:**
+Each file maintains an isolated module-scope registry, a registering helper, and a single top-level `afterAll` hook:
+
+```ts
+/** Every temp dir this file creates, removed once the file finishes. */
+const TMP_DIRS: string[] = [];
+function tmpDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  TMP_DIRS.push(dir);
+  return dir;
+}
+afterAll(() => {
+  for (const dir of TMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+```
+
+- **Call sites converted:** All 17 `mkdtempSync(join(tmpdir(), ...))` call sites across the five files were replaced with `tmpDir(...)` (sandbox: 2, session: 12, store: 1, pty: 1, shell-policy: 1). Outside the helper bodies, zero `mkdtempSync` calls remain.
+- **Teardown flags:** `recursive: true` is strictly mandatory because fixtures nest subdirectories; omitting it (`recursive: false`) fails all five files with `EISDIR`. `force: true` ensures teardown is idempotent and cannot throw if an assertion cell already deleted its target directory (e.g., destructive delete tests).
+- **Per-file isolation:** No global registries are used (`git grep 'globalThis.*TMP_DIRS'` is empty). Each test file's teardown runs independently under vitest's process isolation, verified by disabling `afterAll` in `session.test.ts` alone: only session's 68 directories leak, not a union of files.
+
+**The Sibling Cell: Variant C vs. Variant B (Why Variant B was rejected):**
+In `apps/agent/test/files/sandbox.test.ts:126-142`, the component-wise containment cell creates a second directory that is not produced by `mkdtempSync`:
+
+```ts
+const sibling = `${dir}2`;
+mkdirSync(sibling);
+TMP_DIRS.push(sibling); // added
+```
+
+Routing this creation through `tmpDir('ponter-sibling-')` (Variant B) was initially considered and rejected after measurement. The cell exists specifically to verify that `Sandbox` checks path component boundaries rather than a naive string `startsWith` prefix:
+- `${dir}2` shares a string prefix with `dir` (`/tmp/.../ponter-files-XYZ` vs. `/tmp/.../ponter-files-XYZ2`) without being path-contained by it.
+- Under the mutant `const prefix = this.root` at `apps/agent/src/files/sandbox.ts:159` (naive string prefix without trailing separator), Variant B generates random prefixes that share only `/tmp/ponter-`, causing the mutant to **SURVIVE** (19 passed — assertion satisfied by absence of signal).
+- Under Variant C (`${dir}2` kept + `TMP_DIRS.push(sibling)`), the common string prefix is retained, and the mutant is **KILLED** (`1 failed | 18 passed`). Restoring the code passes all 19 tests, ensuring both polarities hold.
+
+**TEST-INTEGRITY Declaration:**
+Counted on committed blobs (`git show 6b47ede:<path>` vs. `git show 35e8a32:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` and `grep -oP '\bexpect\s*\('`:
+
+| File | `it()` BASE → HEAD | `expect()` BASE → HEAD | `.skip / .only / .todo` |
+|---|---|---|---|
+| `apps/agent/test/files/sandbox.test.ts` | 19 → **19** | 21 → **21** | 0 → 0 |
+| `apps/agent/test/files/session.test.ts` | 45 → **45** | 110 → **110** | 0 → 0 |
+| `apps/agent/test/identity/store.test.ts` | 5 → **5** | 6 → **6** | 0 → 0 |
+| `apps/agent/test/terminal/pty.test.ts` | 15 → **15** | 24 → **24** | 0 → 0 |
+| `apps/agent/test/terminal/shell-policy.test.ts` | 12 → **12** | 13 → **13** | 0 → 0 |
+| **Total** | **96 → 96** | **174 → 174** | **0 → 0** |
+
+All five rows are **identical**. Test title sets are also identical (105 titles, `diff` empty). Zero test-side assertions were added, weakened, or removed:
+- Audit of the **24 deleted lines**: exactly 7 import lines that expanded to include `afterAll`/`rmSync`, and 17 `mkdtempSync` call sites converted to `tmpDir`. Zero deleted lines contain `expect(`.
+- Text vs. runner reconciliation: The text recipe reports 96 `it()` across the five files while the runner reports 107 passed because `session.test.ts:617` contains `it.each(FILES_INBOUND_TYPES)` with 12 cases (45 text → 56 runtime; 19 + 56 + 5 + 15 + 12 = 107).
+
+**The Seven Measured Axes (All verified in one run):**
+1. **Run:** `cd apps/agent && ./node_modules/.bin/vitest run`: **34 files / 430 passed (430)**, exit 0. The 5 touched files alone: **5 files / 107 passed**.
+2. **Text:** 96 → 96 `it()`, 174 → 174 `expect()`, 0 `.skip/.only/.todo`.
+3. **Typecheck:** `cd apps/agent && ./node_modules/.bin/tsc --noEmit`: **exit 0**. Must-error control (appending bad type to `sandbox.test.ts`) exits **2** (TS2322), proving `test/` is in `tsconfig.json`'s include scope.
+4. **Format:** Prettier check on all 5 committed blobs exits 0; positive control exits 1; repo `pnpm format:check` exits 0.
+5. **The Leak:** Full `/tmp` superset detector across three consecutive full suite runs: **0, 0, 0** new entries (`233 → 233` entries, delta 0). BASE was **+106**.
+6. **Must-Error Controls:**
+   - **C1** (disable `afterAll` in all 5 files): **+106** entries.
+   - **C2** (disable `afterAll` in `sandbox.test.ts` only): **+20** entries (18 `root()` factory calls + 1 sibling + 1 outside = 20), matching the file's runtime creation count.
+   - **C3** (disable `afterAll` in all 5 files across full suite): **+106** entries (`C1 == R0 == C3 == 106`).
+   - **C4** (drop only `TMP_DIRS.push(sibling)` in `sandbox.test.ts`): **+1** entry (`ponter-files-XYZ2`).
+   - **Failure path:** Injected test failure in `sandbox.test.ts` still runs `afterAll` (exit 1, leak delta 0).
+7. **Workspace Gating Job:** `pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force`: **9 successful, 9 total** (`@ponter/mobile` has no test script, dropping from 10 to 9). As `@ponter/agent-node` is excluded from CI gating, manual verification of axes 1–6 is load-bearing.
+
+---
+
+### Task 24: Literal pin of the PTY session cap
+
+**Landed at:** `783dda143809e5d330b529663faf8e8dafdeaeac`
+**Files (tests only, 0 source files modified):**
+- Modify: `apps/agent/test/terminal/pty.test.ts` (+10 / −0)
+- Total: **1 file changed, 10 insertions(+)** (`git diff --numstat 35e8a32 783dda1` → `10 0`); `git diff --name-only 35e8a32 783dda1 | grep -c '^apps/agent/src/'` → **0**.
+
+**Origin & Purpose: The circular assertion defect.**
+Register Item 5 / Brief §1 identified a circular assertion hole in `apps/agent/test/terminal/pty.test.ts`. Existing tests asserted `expect(accepted).toBe(MAX_SESSIONS)` where `accepted` counted iterations in a loop explicitly bounded by `for (let i = 0; i < MAX_SESSIONS; i += 1)`. In TypeScript, both sides of the assertion read the identical imported module-level constant symbol. Consequently, the test asserted `constant === constant`, never verifying what the constant actually was. At BASE (`35e8a32`), mutating `MAX_SESSIONS` from 10 to 1, 2, 3, 5, 9, 11, 16, or 100 left the test suite 100% blind and green.
+
+The Rust codebase did not have this blind spot because its PTY cap was an explicit constructor parameter (`PtyManager::new(max_sessions)`, `lib.rs:2871-2879`), so Rust unit tests passed literal values (such as `PtyManager::new(1)`) and asserted observable overflow behaviour (`lib.rs:3132-3156`). When the TypeScript port converted the cap into a module-level constant (`apps/agent/src/terminal/pty.ts:5`), it lost the literal parameter that made the Rust assertions non-circular.
+
+**The Landed Cell:**
+A dedicated test cell was added to `apps/agent/test/terminal/pty.test.ts:96-104` inside the `describe('PtyManager.create', ...)` block, mirroring the precedent in `apps/agent/test/files/session.test.ts:400` (`FILES_IDLE_TIMEOUT_MS`):
+
+```ts
+  // Only the literal `10` is asserted. "The prod cap equals the constant"
+  // is NOT asserted, because in TS both sides are the same symbol — asserting
+  // that `MAX_SESSIONS` equals itself cannot fail. Rust could assert the
+  // equivalent by passing a literal to its constructor (`PtyManager::new(1)`);
+  // TS made the cap a module constant, so only asserting against the literal
+  // wire value `10` makes the assertion non-circular.
+  it('pins the session cap to the wire value', () => {
+    expect(MAX_SESSIONS).toBe(10);
+  });
+```
+
+The comment preceding the cell was carefully drafted in prose to avoid writing `expect(` syntax inside comments (unlike a prior comment in `session.test.ts:396`), ensuring naive text-search recipes `\bexpect\s*\(` accurately match only executable assertions.
+
+**TEST-INTEGRITY Declaration:**
+Recounted on committed blobs (`git show 35e8a32:apps/agent/test/terminal/pty.test.ts` vs. `git show 783dda1:apps/agent/test/terminal/pty.test.ts`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` and `grep -oP '\bexpect\s*\('`:
+
+| Scope | Before (BASE `35e8a32`) | After (`783dda1`) | Net |
+|---|---|---|---|
+| `apps/agent/test/terminal/pty.test.ts` | **15 `it()` / 24 `expect()`** | **16 / 25** | **+1 / +1** |
+| `apps/agent/test/` (33 files) | **396 / 677** | **397 / 678** | **+1 / +1** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Deleted lines: **0** (`git diff --numstat` → `10 0`). Title-set diff: exactly `+ "pins the session cap to the wire value"`, with zero existing cells modified, renamed, or deleted.
+
+**Seven Measured Axes (All verified independently):**
+1. **Single-file run:** `cd apps/agent && ./node_modules/.bin/vitest run test/terminal/pty.test.ts`: **16 passed (16)**, exit 0.
+1b. **Full suite run:** `cd apps/agent && ./node_modules/.bin/vitest run`: **34 files / 431 passed (431)** (430 at BASE + 1), exit 0.
+2. **Text recount on committed blob:** 15/24 → 16/25 (+1 it / +1 expect), 0 skips.
+3. **Typecheck:** `cd apps/agent && ./node_modules/.bin/tsc --noEmit`: **exit 0**, 0 diagnostics. Must-error control with string cap `MAX_SESSIONS = "10"`: **exit 2, 4 diagnostics** (`error TS2365: Operator '>=' cannot be applied to types 'number' and 'string'`).
+4. **Format:** Prettier check on committed blob exits 0; positive control exits 1; repo-wide `pnpm format:check` exits 0.
+5. **Both polarities:** Unmutated control `MAX_SESSIONS = 10` is green (16/16). Mutant `MAX_SESSIONS = 3` is **RED (1 failed | 15 passed)** on `pins the session cap to the wire value` with `AssertionError: expected 3 to be 10` (mutant killed).
+6. **No other cell moved:** Under mutant `MAX_SESSIONS = 3`, exactly the single pin cell fails while all other 15 existing test cells remain green. Specificity controls U1 (`MAX_PTY_CHUNK` mutated to 32 KiB) and U2 (enforcement `>=` mutated to `>`) fail their own respective cells while the pin cell remains green.
+7. **Workspace gating job:** `pnpm exec turbo run test --filter='!@ponter/agent-node' --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force`: **9 successful, 9 total**, exit 0.
+
+**QA Scope Finding (§6): Unpinned Constants in the Workspace:**
+QA's independent mechanical census and multi-point band mutation of all 24 numeric exported constants in `apps/agent/src/**` revealed that the brief's claim ("`MAX_SESSIONS` is the only member") was incomplete. Three other constants admit material value mutations while leaving the entire 431-test suite green:
+1. `FILE_MAX_BYTES` (1 GiB, `apps/agent/src/files/protocol.ts:10`): The only test exercising it (`session.test.ts:780`) tests `size: FILE_MAX_BYTES + 1` (circular rejection above constant), leaving values such as 512 MiB or 2 GiB completely unpinned. A literal pin `expect(FILE_MAX_BYTES).toBe(1073741824)` is proven by QA's `gap-cure.mjs` to catch this gap.
+2. `ACK_FLUSH_INTERVAL_MS` (20 ms, `apps/agent/src/files/protocol.ts:9`): Zero tests import or verify this constant; any value ≤ 20 ms passes because the test harness advances mock time in 20 ms ticks.
+3. `MAX_FRAME_BYTES` (64 KiB, `apps/agent/src/terminal/pty.ts:11`): A dead port artifact with **zero production callers** in the TypeScript codebase (as recorded in `data-channels.ts:236`), allowing any value from 1 KiB to 1 MiB to ship green. Scheduled for removal in Task 27.
+
+---
+
+### Task 25: Put the three desktop control frames on the wire the browser reads
+
+**Landed at:** `95fd96c035830b0a9c0f0d0a52ebbeb53297722a` (landing) + `833e6c1d4237cf4abd3900df06fddafff6db69da` (test-only fix round)
+**Files modified:**
+- Landing commit (`95fd96c`, +429 / −147, 3 files):
+  - `apps/agent/src/desktop/frames.ts` (+92 / −78, 1 product file)
+  - `apps/agent/test/desktop/frames.test.ts` (+185 / −69)
+  - `packages/desktop-core/test/frames-composition.test.ts` (+152 / −0, new composition test file)
+- Fix commit (`833e6c1`, +69 / −4, 2 files, 0 in `src/`):
+  - `apps/agent/test/desktop/frames.test.ts` (+66 / −0)
+  - `packages/desktop-core/test/frames-composition.test.ts` (+3 / −4)
+
+**Origin & Purpose: The Three Composition Defects (D-1, D-2, D-3):**
+Driving the agent's desktop control frames through `webrtc-core`'s typed listener and `packages/desktop-core`'s browser client parsers at BASE revealed three independent defects that silently broke control frame delivery despite green unit tests:
+1. **D-1 (No envelope):** All three builders emitted `{ type, data }`. The browser and WebRTC wire format requires `DataChannelMessage { type, channel: 'control', payload, timestamp }` (`packages/shared/src/types/webrtc.ts:9-14`). The browser reads `msg.payload`, so `data` was ignored: stats and cursor frames were dropped silently, and sources frames arrived with `payload === undefined`.
+2. **D-2 (Sources payload shape mismatch):** Agent emitted `{ monitors, windows }` with non-wire shapes. The browser parser (`client.ts:270-291`) reads `DesktopSourcesPayload` (`sources`, `inputEnabled`, `peerVerified`, `cursorInFrame`), where each source in `sources` requires 11 camelCase fields (`id, kind, name, width, height, x, y, scaleFactor, rotation, isPrimary, default`). At BASE, the browser normalized this to `{ sources: [], inputEnabled: false, peerVerified: false, cursorInFrame: false }` — an empty display picker and an input gate that read closed even when open.
+3. **D-3 (Stats and cursor validation failure):** `parseStats` (`client.ts:358-370`) requires finite numbers for `width`, `height`, `fps`, and `targetBitrateBps`. The agent emitted `{ seq, fps, bitrate, encodeMsP50, captureMsP50, skippedFrames, profile }` without `width`, `height`, or `targetBitrateBps`. The stats line could never render. For cursor, `seq` was missing, causing `watch(() => desktopCursor?.seq)` to never trigger latency/extrapolation resets. In addition, `shape: null` was emitted instead of omitting the field when unset (violating Rust's `skip_serializing_if = "Option::is_none"`).
+
+**Implementation & Parity with Rust:**
+- **Wire envelope:** All three builders return serialized JSON matching `DataChannelMessage<T> satisfies`: `{ type, channel: 'control', payload, timestamp }`.
+- **Shared Types:** Uses canonical types from `@ponter/shared` (`DesktopStats`, `DesktopSourcesPayload`, `DesktopSourceInfo`, `DesktopCursorPayload`, `DataChannelMessage`). Local non-wire interfaces (`StatsInput`, `CursorInput`, `SourcesInput`) are eliminated.
+- **Optional field omission:** Rust serde uses `skip_serializing_if = "Option::is_none"`. In TypeScript, conditional spreads (`...(field !== undefined ? { field } : {})`) are used for `status`, `frameSeq`, `captureMsP50`, `encodeMsP50`, `frameSamples`, `shape`, and `lastInputSeq`, ensuring unset keys are completely absent from serialized JSON.
+- **`buildSourcesFrame` parameterization:** Takes `(sources, inputEnabled, peerVerified, cursorInFrame, timestamp)` and passes all flags directly, enabling two-direction verification mirroring Rust `desktop.rs:3036-3088`.
+- **`round1` divergence:** Retained and declared in docblock. Rust serializes `f32` unrounded (`7.25`), whereas TS emits `7.3`. P50 values are unread by client UI/stores (which read `width`, `height`, `fps`, `targetBitrateBps`, `status.kind`, `status.detail`).
+
+**The Test-Only Fix Round (Commit `833e6c1` closing F-1..F-4):**
+QA audit on landing commit `95fd96c` reported four fence gaps (F-1..F-4) with zero product defects:
+- **F-1 (Optional stats set-direction):** Added test cell `carries the optional stats fields when they are set, and omits only the unset one` (+4 `expect()`), killing mutants dropping `status`, `frameSeq`, and `frameSamples`.
+- **F-2 (Sources envelope timestamp):** Cell 10 added `expect(frame.timestamp).toBe(7)` (+1 `expect()`), killing mutant timestamp omission.
+- **F-3 (Masked cross-tree type gate & false comment):** Deleted all three `as never` casts and stale comment in `packages/desktop-core/test/frames-composition.test.ts`. Unmasked call-site type checking verified live (drifting parameter types causes `tsc` TS2345 in `desktop-core`).
+- **F-4 (Multi-entry sources & windows):** Added test cell `carries multi-entry sources including windows and monitors` (+3 `expect()`), asserting full preservation of multi-entry sources with both `monitor` and `window` kinds.
+
+**Cross-Tree Composition Gate:**
+`packages/desktop-core/test/frames-composition.test.ts` imports the agent's builders directly (`import ... from '../../../apps/agent/src/desktop/frames'`). Because `@ponter/desktop-core#typecheck` and `#test` are gated in `ci-node.yml`, `apps/agent/src/desktop/frames.ts` is now covered by a CI-gated compiler check. The cross-package gate is active, unmasked, and verified.
+
+**TEST-INTEGRITY Declaration & Accounting:**
+Recounted on committed blobs (`git show 69ffc18:<path>` vs. `git show 833e6c1:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` and `grep -oP '\bexpect\s*\('`:
+
+| File | Before (`69ffc18`) | Landing (`95fd96c`) | Fix (`833e6c1`) | Net Delta |
+|---|---|---|---|---|
+| `apps/agent/test/desktop/frames.test.ts` | 7 `it()` / 10 `expect()` | 12 / 23 | **14 / 31** | **+7 / +21** |
+| `packages/desktop-core/test/frames-composition.test.ts` | 0 / 0 (absent) | 3 / 7 | **3 / 7** | **+3 / +7** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Zero tests weakened. All 4 old cells were replaced with justification (plan fields replaced with wire schema, shape record decoupled, null shape replaced with key omission, sources decoupled into wire payload + multi-entry cells).
+
+**Final Suite & Package Test Counts** (measured on commit `833e6c1`, not on a shared working tree — later untracked work in the tree changes both figures):
+- `apps/agent`: 34 files / **438 passed (438)** (+7 net tests vs BASE 431; 436 at landing `95fd96c`, +2 in the fix round).
+- `packages/desktop-core`: 2 files / **54 passed (54)** (+3 tests in `frames-composition.test.ts` vs BASE 51).
+
+**QA Binding Verdicts:**
+- Landing commit `95fd96c`: **BOUND PASS** (QA verdict `qa-verdict-task-25.md`).
+- Fix commit `833e6c1`: **BOUND PASS** (QA verdict `qa-verdict-task-25-re-review.md`).
+
+---
+
+### Task 26: Decode the desktop control types the browser actually sends
+
+**Landed at:** `8fd1098425a97edba422eb21e75e54cf8d202037` — 6 files, **+516 / −247**.
+**Files modified:**
+- `apps/agent/src/desktop/control.ts` (+80 / −66, decoders repointed to real wire format, dead vocabulary removed)
+- `apps/agent/src/desktop/session.ts` (+26 / −37, `control(control: BitrateControl)` restricted to bitrate)
+- `apps/agent/src/session/data-channels.ts` (+38 / −49, `dispatchDesktop` wired through `decodeStreamControl`, duplicate arms removed)
+- `apps/agent/test/desktop/control.test.ts` (+121 / −85, unit fence repointed at real wire fixtures)
+- `apps/agent/test/desktop/session.test.ts` (+30 / −10, dead quality cell removed, live bitrate retarget cell added)
+- `packages/desktop-core/test/control-composition.test.ts` (+221 / −0, **new** cross-tree composition fence)
+
+**Origin & Purpose: The Dead Desktop Control Vocabulary (QA Task 17 F-1):**
+At BASE, `apps/agent/src/desktop/control.ts` exported two decoders that decoded a vocabulary no producer on this wire ever sends:
+1. **`decodeStreamControl`** parsed `type: 'stream-control'` with `action: 'pause' | 'resume' | 'stop' | 'set-bitrate' | 'set-quality'` into a 5-member `StreamControl` union. Neither the browser nor Rust ever produces or consumes this vocabulary.
+2. **`decodeDesktopSelect`** parsed `type: 'desktop-select'` with `source: { kind, id }`, splitting the source into `{ kind: 'monitor' | 'window', id } | { kind: 'test' }`.
+
+What the browser actually sends (`packages/desktop-core/src/client.ts:424`, `:429`):
+- `selectSource(sourceId: string)`: `sendControl('desktop-select', { sourceId })`
+- `setBitrate(bitrateBps: number)`: `sendControl('desktop-bitrate', { bitrateBps })`
+
+What Rust implements (`apps/agent/src/desktop.rs:1998-2023`):
+- `desktop-select`: extracts `source_id: String` verbatim as `StreamControl::SourceSwap(source_id)` without splitting.
+- `desktop-bitrate`: deserializes `bitrate_bps: u32` and clamps it via `clamp_bitrate` to `[250_000, 20_000_000]`.
+- Unknown control types return `Ok(None)`: dropped silently, never answered.
+
+**Why every fence was green at BASE (The Duplicate Implementation Defect):**
+`apps/agent/test/desktop/control.test.ts` fed the decoders the dead plan-invented vocabulary, certifying an implementation against a contract no one else used. Meanwhile, `apps/agent/src/session/data-channels.ts:dispatchDesktop` had implemented a second, hand-rolled decoder for the real types, consuming only `clampBitrate` from `control.ts`. Thus, both unit fences passed green while certifying drifted, duplicated contracts.
+
+**The Deliverable (Shape A: Repoint & Wire):**
+- **Decoder Signature Takes Merged Body:** In Rust, `decode_control` takes raw `&str` and performs envelope parsing, channel gating (`channel == "control"`), and deserialization. In TypeScript, `DataChannelRouter.handleFrame` already parsed the envelope, gated `channel !== label`, and built `{ type, ...payload }` before `dispatchDesktop` is called. Therefore, `decodeStreamControl` and `decodeDesktopSelect` take `Record<string, unknown>` (the merged body), avoiding duplicate parsing and channel checks.
+- **`StreamControl` Union Reduced to 2 Members:** `{ kind: 'select'; sourceId: string } | BitrateControl`, matching Rust's `SourceSwap` and `SetBitrate` (`desktop.rs:1938-1947`). Dead variants (`pause`, `resume`, `stop`, `quality`) are removed.
+- **`BitrateControl`:** `{ kind: 'bitrate'; bitrate: number }`.
+- **`DesktopSource` Retained for Capture Layer:** Kept in `control.ts` but re-documented as the capture layer's input specification, explicitly *not* a wire decode output.
+- **`DesktopSession.control()` Takes `BitrateControl`:** Accepts only `{ kind: 'bitrate', bitrate }`. Stream profile reconfiguration is triggered strictly from the sustain ladder in `pump()` (`applyProfile`), never from inbound control messages.
+- **Deduplication in `data-channels.ts`:** Hand-rolled decoding in `dispatchDesktop` is replaced by `decodeStreamControl`. Unknown control types drop silently (matching Rust `_ => Ok(None)`); known types with invalid payloads log a warning.
+- **Strict `u32` Boundary Validation (`isU32`):** Rust deserializes `bitrate_bps: u32` (`desktop.rs:1970`). A negative, fractional, or oversized number fails deserialization before reaching `clamp_bitrate`. At BASE, the TS hand-rolled arm accepted non-integers (e.g., `3_000_000.5` clamped to `3_000_001`). The port introduces `isU32`, rejecting invalid values as `null` at the decode boundary to match Rust serde strictness.
+
+**Cross-Tree Composition Fence:**
+`packages/desktop-core/test/control-composition.test.ts` connects the real browser client (`DesktopClient.selectSource` / `setBitrate`) through `webrtc-core`'s `DataChannelManager` into the agent's `DataChannelRouter`.
+- 6 real test cells:
+  1. `selectSource reaches onSelect as the scheme string it sent`
+  2. `setBitrate reaches onControl clamped at the wire boundary` (99 Mbps → 20 Mbps)
+  3. `a bitrate inside the range passes through unchanged` (positive control)
+  4. `drops the dead stream-control vocabulary the old fence certified`
+  5. `refuses a fractional bitrate instead of rounding it onto the wire` (RED at BASE)
+  6. `warns on a malformed known type instead of dropping it silently` (RED at BASE)
+- **One** of the six cells is RED at BASE, not two: `refuses a fractional bitrate instead of rounding it onto the wire`. Cell 6 (`warns on a malformed known type instead of dropping it silently`) reads green at BASE because the pre-Task-26 `dispatchDesktop` already warned on a `desktop-select` with no `sourceId` (`dropped a desktop-select frame with no sourceId`), which `toContain('desktop-select')` accepts — so it is a regression pin, not a defect demonstrator. Cell 5 catches the fractional-bitrate leak. The other five cells act as regression pins verifying that the working duplicate in `data-channels.ts` was preserved during the rewrite. *(Corrected against `qa-verdict-task-26.md` §5, which measured `1 failed | 5 passed (6)` at BASE; the earlier "2 failed | 4 passed" figure was a report defect, F-1.)*
+
+**TEST-INTEGRITY Declaration:**
+Measured on committed blobs (`git show {3eac965,8fd1098}:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+
+| File | BASE `3eac965` | HEAD `8fd1098` | Delta |
+|---|---|---|---|
+| `apps/agent/test/desktop/control.test.ts` | 10 `it()` / 21 `expect()` | 12 / 27 | **+2 / +6** |
+| `apps/agent/test/desktop/session.test.ts` | 11 / 27 | 11 / 28 | **+0 / +1** |
+| `packages/desktop-core/test/control-composition.test.ts` (new) | — | 8 / 16 (recipe) / 6 / 16 (real cells) | **+8 / +16 (recipe)** |
+
+*(Correction: this row first read "6 / 14 (real cells)". Re-measured on the `8fd1098` blob — `grep -cP '^\s*it\('` → 6, `grep -oP '\bexpect\s*\(' \| wc -l` → **16** — and QA measured the same 16 in `qa-verdict-task-26.md` §2. The 14 was a transcription error in the original report.)*
+
+`.skip` / `.only` / `.todo`: **0 → 0** across all touched files.
+
+**Accounting for Cell Removals & Replacements:**
+- `control.test.ts`:
+  - `decodes the four control kinds` (3 `expect`): Removed. Pinned `pause`/`resume`/`stop`, which have no variants in Rust `StreamControl`. Replaced by cell asserting dead vocabulary decodes to `null`.
+  - `decodes a quality change` (1 `expect`): Removed. `set-quality` is not an inbound wire command. Replaced by `refuses a bitrate that is not a u32 instead of clamping it`.
+  - `rejects an unknown profile instead of defaulting` (1 `expect`): Folded into the above.
+  - `rejects an unknown action and malformed JSON` (2 `expect`): Replaced by `drops a control type the Rust has no arm for` and `does not accept the dead stream-control vocabulary`.
+  - `decodes monitor, window and test sources` (3 `expect`): Replaced by `returns the scheme string rather than a parsed {kind, id} pair`.
+  - `rejects a monitor with no id or an empty one` (3 `expect`): Replaced by `refuses a missing, non-string or empty sourceId`.
+- `session.test.ts`:
+  - `re-configures the encoder on a quality change` (1 `expect`): Removed. Profile changes are internal to the sustain ladder in `pump()`. Replaced by `retargets the encoder on a bitrate received while streaming` (+2 `expect`), which is one of the three cells QA measured the surviving mutant M-j killing (`qa-verdict-task-26.md` §6, F-3 — the developer report claimed 1 cell; the measured count is 3).
+- `control-composition.test.ts` recipe anomaly:
+  - The recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` matches lines 135 (`must clamp it (`) and 166 (`arm for it (`), yielding 8 matches for 6 real test cells. Vitest runner executes exactly **6** tests.
+
+**Suite Counts (clean checkouts):**
+- `apps/agent`: BASE **35 files / 466 tests** → HEAD **35 files / 468 tests**, exit 0 (+2 tests net).
+- `packages/desktop-core`: BASE **2 files / 54 tests** → HEAD **3 files / 60 tests**, exit 0 (+6 tests).
+
+---
+
+### Task 27: Own the terminal message set on the wire (B41)
+
+**Landed at:** `3eac9653e301eae0b0dd3f4006c151271cbb4c49` — 9 files, **+1475 / −27**.
+**Files modified:**
+- `apps/agent/src/terminal/frames.ts` (+117 / −0, **new** — the three builders)
+- `apps/agent/src/session/data-channels.ts` (+191 / −19, the four inbound arms)
+- `apps/agent/src/runtime.ts` (+130 / −1, the `pty`/`shellPolicy` deps, the subscriptions, `runtime.terminal`)
+- `apps/agent/src/terminal/pty.ts` (+39 / −7, chunk emit + the policy option)
+- `apps/agent/test/session/data-channels.test.ts` (+297 / −0)
+- `apps/agent/test/runtime.test.ts` (+324 / −0)
+- `apps/agent/test/terminal/pty.test.ts` (+69 / −0)
+- `apps/agent/test/terminal/frames.test.ts` (+122 / −0, **new**)
+- `packages/terminal-core/test/frames-composition.test.ts` (+186 / −0, **new**)
+
+**Zero deletions in every pre-existing test file.** The only deletions in the commit are 19 lines in `data-channels.ts` and 7 in `pty.ts`, all replaced by the arms and comments below.
+
+**Origin & Purpose: the terminal wire had no owner.**
+At BASE the router could write bytes into a pty and held a `resize` member nothing called, and that was the whole terminal surface. Measured on the blob, not read off the task story:
+
+1. **No outbound terminal frame existed at all.** `terminal-data`, `terminal-exit` and `terminal-error` were types with no builder anywhere in `apps/agent/src`. The Rust builds all three — `build_terminal_data_frame` (`pty.rs:123-134`), `frame_pty_exit` (`:295-306`), `frame_pty_error` (`:80-97`) — from the same envelope struct it shares with every other frame (`pty.rs:38-45`). The consequence is Task 25's D-1 on a different channel, and the mechanism is worth stating exactly because it is the opposite of a validation: `webrtc-core`'s typed listener parses the frame and fires on **one** condition only, `typeof parsed.type === 'string'` (`data-channel.ts:37`) — it never looks at `channel`. Every consumer then reads `msg.payload` (`terminal-core/src/client.ts:271-274`); with no envelope `payload` is `undefined`, the consumer throws on `payload.terminalId` **inside the listener's `try`**, and the bare `catch` at `:42-44` swallows it. So a flat frame is not rejected — it is dispatched to a handler that explodes invisibly, and the `terminal` channel's own fence could not see it.
+2. **Three of the four inbound types had no arm.** The browser sends `terminal-create`, `terminal-resize`, `terminal-close` and `terminal-data` on the `terminal` channel (`terminal-core/src/client.ts:106`, `:220`, `:248`, `:179`), and the Rust dispatches all four (`lib.rs:1366`, `:1436`, `:1452`, `:1463`). BASE had `terminal-data` plus a `resize` member on `RouterDeps` (`data-channels.ts:101`) **with no caller at all** — the port's only `resize` implementation is `pty.ts:223-225` (whose body calls `process.resize` at `:224`), and nothing in `apps/agent/src` or its tests calls it — so a peer that resized or closed a terminal was silently ignored, and one that tried to create a terminal got nothing, because there was no create path to refuse.
+3. **A refused spawn was invisible.** `PtyManager.create` rejects with a `PtyError` carrying one of two pinned kebab-case codes (`pty.ts:65-75`, `:124-131`); with no create arm, that rejection had no wire representation. The Rust answers exactly this case through `spawn_failure_frame` at the **dispatch site** (`lib.rs:1431-1434`, defined `:2833-2849`) and its own comment says why: a refused shell with no frame is a blank terminal the user cannot distinguish from a slow one.
+
+**The deliverable, against the Rust it cites:**
+
+- **Three builders, each taking its `timestamp` as a parameter** (`frames.ts:62-117`), mirroring the Rust's signature (`pty.rs:123`, `:295`, `:80`). A builder that read `Date.now()` could not be pinned and two identical calls would disagree — which is exactly why the Rust passes the clock in. `type` is a **sibling** of `payload`, `channel: 'terminal'`.
+- **`exitCode: null` is written, not omitted.** `@ponter/shared` declares `exitCode?: number`, which cannot express the Rust's `None`; Rust's field is `Option<u32>` with **no** `skip_serializing_if` (`pty.rs:271-275`), so serde writes `"exitCode": null`. The builder widens locally as `TerminalExitPayload` rather than editing the shared type — the browser reads `payload.exitCode` and `markExited(exitCode?: number)` treats `null` as `undefined` (`terminal-core/src/session.ts:49-55`), so nothing downstream changes. This is deliberately **not** Task 25's rule: `DesktopStats` omits its five optional fields because they carry the attribute (`desktop.rs:2111-2119`).
+- **`data` is already base64 and is passed through untouched.** The encode lives in `PtyManager.emitChunks` (`pty.ts:275-280`), which base64s each 16 KiB slice (`MAX_PTY_CHUNK`, `pty.ts:4`). Encoding again at the builder would send the base64 of the base64 text.
+- **Four inbound arms** in `dispatchTerminal` (`data-channels.ts:462-542`). `cols`/`rows` are validated as a strict `u16` — `Number.isInteger && > 0 && <= 0xffff` — and **dropped, never clamped**, mirroring Rust's serde rejection plus the dispatch site's log-and-drop (`lib.rs:1440-1443`). Clamping would resize a live terminal to a geometry the peer never asked for, and the peer has no way to learn its request was altered.
+- **One `terminal-error` framer, at the dispatch site only.** The Rust frames a refused create in the dispatcher (`lib.rs:1431-1434`, via `spawn_failure_frame` `:2833-2849`), not inside `pty.rs`; framing in both places would send two frames for one refusal and the browser would show the message twice, with the duplicate arriving second. The port keeps the rejection in `PtyManager` and turns it into the frame in `DataChannelRouter.createTerminal` (`data-channels.ts:554-587`). **Pinned on three sides:** `pty.test.ts`'s three `rejects.toMatchObject` cells (`:124`, `:379`, `:456` on the HEAD blob) keep `create` a rejection, `runtime.ts:273-281`'s comment records why the runtime does not frame, and the runtime cell `reports a refused shell to the browser on the terminal channel` (`runtime.test.ts:552`) asserts **`channel.send` called exactly once** (`:625` in the cell) — because reading only the last frame cannot see a second one.
+- **The error's `code` is read off the thrown object, not parsed from the message.** The Rust matches the string `"maximum concurrent PTY sessions"` (`lib.rs:2835-2842`) only because `anyhow::Error` erases the type. TS keeps the class, so the discriminator is `code`; an unrecognised code falls back to `pty-spawn-failed`, the Rust's own fallback arm (`lib.rs:2841-2842`).
+- **`AgentRuntime` owns the framing subscription.** `RuntimeDeps` grows `pty?: PtyHost` (`runtime.ts:183`) — the same injection shape `filesSession` already uses, with the lazy real `node-pty` adapter as the production default (`:247`) — and `shellPolicy?: ShellPolicy` (`:190`); the constructor subscribes `PtyManager.onData`/`onExit` and builds the frames there, where the channel that carries them is known (`runtime.ts:253-272`), and exposes `runtime.terminal` as the `RouterDeps['terminal']` adapter (`:282-308`). `PtyManager` itself still never serialises — so no `pty.test.ts` cell asserts an envelope its subject does not own.
+- **New cross-tree fence** `packages/terminal-core/test/frames-composition.test.ts`: the real agent builders driven through the real `TerminalClient` (`terminal-core/src/client.ts`) and `webrtc-core`'s real `DataChannelManager` — no hand-built envelopes. This is the **composition axis**: two green fences in isolation did not prove the seam, and Task 25's D-1 is precisely a seam defect that both sides' own tests certified as correct.
+
+**TEST-INTEGRITY declaration** — measured on committed blobs (`git show {4339c0a,3eac965}:<path>`), recipe `grep -oP '(?<![.\w])it(?:\.each)?\s*\('` / `grep -oP '\bexpect\s*\('`:
+
+| file | BASE `4339c0a` | HEAD `3eac965` | delta |
+|---|---|---|---|
+| `apps/agent/test/session/data-channels.test.ts` | 23 / 40 | 34 / 61 | **+11 / +21** |
+| `apps/agent/test/runtime.test.ts` | 15 / 23 | 21 / 42 | **+6 / +19** |
+| `apps/agent/test/terminal/pty.test.ts` | 16 / 25 | 19 / 33 | **+3 / +8** |
+| `apps/agent/test/terminal/pty-real.test.ts` | 1 / 2 | 1 / 2 | 0 / 0 |
+| `apps/agent/test/terminal/frames.test.ts` (new) | — | 9 / 21 | **+9 / +21** |
+| `packages/terminal-core/test/frames-composition.test.ts` (new) | — | 6 / 12 | **+6 / +12** |
+
+`.skip` / `.only` / `.todo`: **0 → 0** in all five touched `apps/agent` files and in the new package file.
+
+**Two figures that look like errors and are not — stated so a later reader does not "fix" a correct number.**
+
+- **`frames.test.ts` declares 9 `it()` and holds 8 cells.** The recipe's lookbehind `(?<![.\w])` excludes a preceding `.` or word character, but not a space: line 16 is a **comment** reading `a frame without it (or filed under another label)`, and `it (` matches. Counted at line start, the file has exactly **8** real cells, all named below. The declaration carries the recipe's 9 because the recipe is the instrument; the suite below carries 8 because the runner counts cells. Verified both ways: `grep -cP '^\s*it\('` → 8, full recipe → 9.
+- **The per-file deltas sum to 35 `it()` while the suite delta is 28.** Both are right, for two independent reasons. (a) The suite figure counts `apps/agent` only, and `frames-composition.test.ts` lives in `packages/terminal-core`. (b) The suite anchor uses `frames.test.ts`'s **8** real cells, not the recipe's 9. So 35 − 6 (package) − 1 (over-count) = 28.
+
+**Suite, measured in a clean worktree at each commit** (not in the shared tree, which Task 26 was writing to during this documentation):
+- `apps/agent`: BASE **34 files / 438 tests** → HEAD **35 / 466**, both exit 0.
+- `packages/terminal-core`: BASE **5 files / 40 tests** → HEAD **6 / 46**, both exit 0.
+
+**The eight real cells in `frames.test.ts`**: `emits the DataChannelMessage envelope on the terminal channel`; `carries the base64 it was handed, without encoding it again`; `takes its timestamp from the caller, never from the clock`; `types its payload as the shared TerminalDataMessage`; `emits the envelope with the reaped exit code`; `keeps the exitCode key with a null value when no code was reaped`; `names the failure with the pinned kebab-case code`; `carries session-limit-reached unchanged`.
+
+**What is bound:** the three outbound frames' envelope and payloads, including both polarities of `exitCode`; the four inbound arms including the create→error path; the `u16` bound in both directions (non-integer and out-of-range both dropped); the runtime subscription building frames rather than the manager; and the seam from the builders through the real browser client.
+
+**Not touched, and deliberately:** Task 17's `decodeStreamControl` / `decodeDesktopSelect` vocabulary — *(discharged afterwards by Task 26, `8fd1098`, which re-ported both decoders and replaced Task 18's hand-rolled arms with a single `decodeStreamControl(message)` call; it was open when this commit landed)* — and `apps/agent/**`'s CI gating — still absent from `ci-node.yml`'s `paths:` with `@ponter/agent-node` filtered out of lint, typecheck and the test run, so every cell above is green locally and invisible in CI. Same Plan-3 handoff as Tasks 19 and 25, and it needs both halves: the path plus dropping the filter from `:83`, `:86` and `:108`.
+
+### Task 28: Widen the HTTP-client gate rule to the class, not one spelling
+
+**Landed at:** `a5bdc54c8407e29944b6aaf0d0e45c94c32ccd92` — 1 file, **+19 / −3**.
+**Files modified:**
+- `packages/api-client/test/agent-api-access-gate.test.ts` (+19 / −3, the `HTTP_CLIENT` pattern's `node:` prefix made optional, six fixture cells added)
+
+**Origin:** `packages/api-client/test/agent-api-access-gate.test.ts` is the only **CI-gated** test on the agent boundary (`@ponter/api-client` runs in the gating step; `apps/agent` is excluded from `ci-node.yml` both by `paths:` and by the turbo filter). Its `HTTP_CLIENT` rule required the `node:` prefix:
+
+```ts
+const HTTP_CLIENT =
+  /(?:from|require\(|import\()\s*['"]node:(?:http|https)['"]|…/;
+```
+
+Node and TypeScript resolve a bare `http` / `https` module specifier to the identical built-in runtime, so the rule was blind to the bare spelling of its own class. The Rust gate it mirrors (`build-agent.yml` R-G1b) names the *class* (`reqwest::|hyper::Client|ureq::`), not a spelling.
+
+**The fix, both-sided so the fence is symmetric:**
+
+```ts
+const HTTP_CLIENT =
+  /(?:from|require\(|import\()\s*['"](?:node:)?(?:http|https)['"]|…/;
+```
+
+**A latent hole, closed before any offender could arrive — QA's wording, and the accurate one.** QA measured **0 offenders across 33 `.ts` files** in `apps/agent/src` both **before and after** `a5bdc54`: nothing in the branch imports an HTTP client today (Plan 3 wires the transport). The brief's framing — "a hole that would have passed offenders through" — over-stated what the tree contained. What was true is narrower and is the reason landing it is still correct: the *gate* was blind to the class, and the class-vs-spelling rule is the file's own stated contract, so the moment an offender arrives is the wrong time to discover the gate could not see it. QA's verdict (`qa-verdict-task-28-29.md` §T28-5) confirms both halves of that sentence — the hole was latent, and landing it belongs in this PR.
+
+**TEST-INTEGRITY declaration** (measured on committed blobs `git show {7803cac,a5bdc54}:packages/api-client/test/agent-api-access-gate.test.ts`):
+
+| File | BASE `7803cac` | HEAD `a5bdc54` | Delta |
+|---|---|---|---|
+| `packages/api-client/test/agent-api-access-gate.test.ts` | 8 `it()` / 0 `it.each` / 26 `expect()` | 8 / 0 / 32 | **+0 / +0 / +6** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Six assertions added (three bare-`http`/`https` must-fire cells, three must-not-fire cells for `fs`, `node:path` and a bare `'http'` string), and no existing assertion removed or weakened.
+
+**Mutants, 2/2 killed:** M-BASE reverts the optional prefix (`node:` required again) → the bare-`https` cell is red; M-OVERFIRE broadens the group to `fs`/`path` → 2 cells red with the 5 named offender files (`config.ts`, `files/sandbox.ts`, `files/session.ts`, `identity/store.ts`, `terminal/shell-policy.ts`).
+
+**QA Binding Verdict:** **BOUND PASS** (`qa-verdict-task-28-29.md` Part 2).
+
+---
+
+### Task 29: Drop the dead and type-only imports that made the workspace lint red
+
+**Landed at:** `7803cac571672cc5f5d953c96ce705cd69a1cf23` — 3 files, **+4 / −7**.
+**Files modified:**
+- `apps/agent/test/e2ee/manager.test.ts` (+1 / −5, `createPublicKey` removed from the `node:crypto` import)
+- `apps/agent/test/files/sandbox.test.ts` (+2 / −1, `SandboxError` split to `import type`)
+- `apps/agent/test/input/decode.test.ts` (+1 / −1, the unused `vi` removed from the `vitest` import)
+
+**Origin:** root `pnpm lint` is `turbo run lint` with **no filter**, and `apps/agent`'s `lint` is `eslint .` over `test/**` as well as `src/**`. The branch carried **3** lint errors, all in the agent test tree: an unused `createPublicKey`, an `SandboxError` import used only as a type, and an unused `vi`. All three files are **absent at merge-base `90d4941`** — branch-introduced, none inherited (`4d765ff`, `411e632`, `be1d4fb` respectively).
+
+**Why CI never said so:** every gating step in `ci-node.yml` carries `--filter='!@ponter/agent-node'`, and `paths:` omits `apps/agent/**` entirely — so the job does not trigger for an agent-only branch *and* would skip the package if it did. `ci-node.yml:10-16` says in its own header that the exclusion is temporary and Plan 3 adds `apps/agent/**` to `paths:`; the filter is what keeps a not-yet-gating package out of a job that runs on unrelated pushes, which is why the handoff needs both halves. The red was invisible to the pipeline, not absent.
+
+**Each fix at its source, with no rule disabled and no `_`-prefixed rename.** An unused import is dead code and silencing the rule hides the next one; `import type` is the repository's own convention for a type-only import (`consistent-type-imports`).
+
+**TEST-INTEGRITY declaration** (measured on committed blobs):
+
+| File | BASE `8fd1098` | HEAD `7803cac` | Delta |
+|---|---|---|---|
+| `apps/agent/test/e2ee/manager.test.ts` | 8 `it()` / 12 `expect()` | 8 / 12 | **0 / 0** |
+| `apps/agent/test/files/sandbox.test.ts` | 19 / 21 | 19 / 21 | **0 / 0** |
+| `apps/agent/test/input/decode.test.ts` | 35 / 61 | 35 / 61 | **0 / 0** |
+
+**Zero assertion deltas in every file** — this task changed imports and nothing else. `.skip` / `.only` / `.todo`: **0 → 0**.
+
+**Mutant:** re-adding `vi` to `decode.test.ts`'s import → `eslint` reports `'vi' is defined but never used`, exit 1.
+
+**QA Binding Verdict:** **BOUND PASS** (`qa-verdict-task-28-29.md` Part 1).
+
+---
+
+### Task 31: Three defects whose fix needs no infrastructure — swap ordering, strict base64, mandatory shell policy
+
+**Landed across seven commits, and all three defects are closed.** Defect A: `661434e1ac5333deba3ed8fbf6adb1c40155ac9e`. Defect B: `b467d13cc6ef523644918b3697f7c661ac5187fe`, with its trailing-bits cure in `8f2c0831dc428d52cd35cec147e5116218309858` and one vacuous cell replaced in `bcc278fee9acfe677a5ecd5b258b0683e4c7951d`. Defect C: `8bf950906649ee668d4bc8ec97131369172cfd28`, with the inner gate pinned in `024954c496434138a7647b1e89a0fce43d75211e` and that gate given a runtime tooth in `a63aa44172b151e119d3616cb3f862ecb3401a2f`. Nothing in this section is in flight.
+
+#### Defect A — `DesktopSession.select()` stopped the live source before the new one worked
+
+**The Rust's guarantee** (`apps/agent/src/desktop.rs:1249-1281`, `swap_source`): validate the id **first** (`bail!` before any side effect), build the new source inside a timeout, and stop the old one **last** — *"the new source is live, so the old one is stopped now — never before, so a failed swap leaks nothing and kills nothing."* Three Rust tests pin it: `swap_source_stops_the_old_source_only_after_the_new_one_is_built` (`:3254`), `swap_source_refuses_an_unenumerated_id_without_touching_the_current_source` (`:3279`), `swap_source_keeps_the_current_source_when_the_new_one_fails_to_start` (`:3304`).
+
+**The port did the opposite**, and the plan was the source: `plan-2-core.md:11207-11213` specified stop-then-start verbatim, comment included, and the implementer transcribed it faithfully. This was a **spec defect** of the same category as the `recursive` finding — a plan that dropped a Rust guarantee and was never reconciled.
+
+**The landed fix** (`661434e`, 2 files, +88 / −2): the order is inverted and the contract is documented on the dep that owns it:
+
+```ts
+  async select(source: DesktopSource): Promise<void> {
+    // The Rust builds before it stops anything (`desktop.rs:1264-1279`), and
+    // `sources.build` is additive — it never touches the live source. So this
+    // order is the port: a failed start leaves the current source running, which
+    // is ADR-22's guarantee. Stopping first would kill the stream on any refusal.
+    await this.deps.capture.start(source);
+    await this.deps.capture.stop();
+```
+
+The `capture.start` dep carries the same guarantee in its own docblock: **additive** — it must not stop the source already running, and a rejecting `start` must leave the current source untouched.
+
+**The fence is behavioural, not a call-order assertion.** The third cell drives a stateful fake capture that tracks whether its live source is active, and asserts `pump()` still succeeds after a rejected swap — ADR-22's guarantee, observed rather than inferred from a spy.
+
+**TEST-INTEGRITY declaration** (`git show {8fd1098,b467d13}:apps/agent/test/desktop/session.test.ts`):
+
+| File | BASE `8fd1098` | HEAD `661434e` | Delta |
+|---|---|---|---|
+| `apps/agent/test/desktop/session.test.ts` | 11 `it()` / 28 `expect()` | 14 / 36 | **+3 / +8** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. Nothing was removed.
+
+#### Defect B — `Buffer.from(x, 'base64')` silently skips non-alphabet characters
+
+**The class, not one site.** Node's `Buffer.from(x, 'base64')` **drops** characters outside the standard alphabet instead of failing, so a corrupted payload can arrive one character longer and still decode to exactly the expected length with **different content** — which a length check cannot see. The Rust uses strict `base64::engine::general_purpose::STANDARD.decode` at every counterpart, and refuses the frame outright. Five decode sites existed in the port: `session/data-channels.ts` (`terminal-data`), `files/session.ts` (`chunkUpload`), and `session/identity-proof.ts` + `e2ee/manager.ts` (the key/signature pair).
+
+**The one shared helper** (`apps/agent/src/base64.ts`, **new**):
+
+```ts
+const BASE64_STANDARD = /^[A-Za-z0-9+/]*={0,2}$/;
+
+export function decodeBase64Strict(data: string): Uint8Array | null {
+  if (data.length % 4 !== 0 || !BASE64_STANDARD.test(data)) return null;
+  const bytes = Buffer.from(data, 'base64');
+  if (bytes.toString('base64') !== data) return null;
+  return new Uint8Array(bytes);
+}
+```
+
+That is the helper as **`8f2c083`** left it, not as `b467d13` first landed it. The third arm is the cure for the trailing-bits class below: the shape check cannot see non-zero discarded bits, and a canonical round trip is the only test that does. The docblock the file carries states it in the same terms — *"Re-encoding is the last arm, because the regex cannot see trailing bits."*
+
+One helper rather than five site-local regexes: per-site patterns invite a sixth spelling. The helper is placed at `apps/agent/src/base64.ts` because the five sites span `session/`, `files/` and `e2ee/`, so a helper under `session/` would be an import that reads wrong from the other two.
+
+**The failure modes are classified, not conflated.** At the identity/e2ee sites the defect is a **classification** failure, not a corruption one: junk *inserted* into a key decodes to the identical bytes under a lenient decode (so the payload the Rust refuses outright is accepted), and junk *substituted* decodes to different bytes (so the failure is reported as a bad signature rather than a bad encoding). The two send an operator to different places, so they get different codes: `verifyMessage` now returns `'bad-encoding' | 'bad-signature'`, and `verifyOfferIdentity` throws `BAD_ENCODING` for the first.
+
+**TEST-INTEGRITY declaration** (measured on committed blobs `git show {661434e,b467d13}:<path>`):
+
+| File | BASE `661434e` | HEAD `b467d13` | Delta |
+|---|---|---|---|
+| `apps/agent/test/base64.test.ts` (new) | — | 2 `it()` + 1 `it.each` / 6 `expect()` | **+2 / +1 / +6** |
+| `apps/agent/test/session/data-channels.test.ts` | 34 / 61 | 40 / 73 | **+6 / +12** |
+| `apps/agent/test/files/session.test.ts` | 44 / 110 | 47 / 120 | **+3 / +10** |
+| `apps/agent/test/session/identity-proof.test.ts` | 13 / 13 | 16 / 17 | **+3 / +4** |
+| `apps/agent/test/e2ee/manager.test.ts` | 8 / 12 | 9 / 14 | **+1 / +2** |
+
+`.skip` / `.only` / `.todo`: **0 → 0** across all five files. Zero removed, zero weakened.
+
+**Two rows moved after this table was first written, and both are recorded rather than folded in.** `8f2c083` added the `"AB=="` row to `base64.test.ts`'s `it.each` table — the table stays **2 `it()` + 1 `it.each` / 6 `expect()`**, because the new row is data inside an existing `it.each` and its body already carried both assertions. `bcc278f` **replaced** the `e2ee/manager.test.ts` cell, taking that file to **9 `it()` / 16 `expect()`** at HEAD (`8a35f62` → `bcc278f`: **8 / 12 → 9 / 16**); the replaced cell pinned nothing, which is why replacing it weakens nothing — see the `bcc278f` paragraph above.
+
+**The oracle table is the fence.** `base64.test.ts` states the Rust's `STANDARD.decode` as its oracle and every row carries its reason: `""` is **accepted** (`STANDARD.decode("")` is `Ok(vec![])`), `"abc"` is **refused** on length, `"ab=c"` on misplaced padding, `"!!!!"` because a non-alphabet character decodes to empty under the lenient primitive, and `"-_"` because the URL-safe alphabet is a different encoding. Each accepted row asserts the **bytes**, not just the verdict — an implementation that accepted the right inputs while decoding them wrongly would pass a verdict-only assertion, and this is the primitive the pty and the file writer call.
+
+**Two measurement corrections recorded, because both numbers were wrong in the source material and a later reader will otherwise re-derive them:**
+
+1. **The helper's accept-set is still wider than the Rust's.** PM measured it against a **real** `base64 0.23.1` oracle (the version `cargo tree -i base64@0.23.1` shows `ponter-agent` depends on), over 67,386 systematic rows: **40,704 divergences, all one class** — `Invalid last symbol`, i.e. a final symbol whose discarded trailing bits are non-zero (`"AB=="`, `"AAB="`, `"Ah=="`). The landed helper has no trailing-bits check, so it accepts every non-canonical spelling of a padded final group. The direction is **leniency, not corruption**: `TS = ERR, Rust = OK` → 0, and "both OK but different bytes" → 0. It is malleability and port fidelity — one 32-byte Ed25519 key has four accepted wire spellings where the Rust accepts one.
+2. **The brief's own oracle table carries a wrong figure.** `task-31-brief.md` states that `"YWJjZA="` decodes to 5 bytes; it decodes to **4** (`rt="YWJjZA=="`). The other 14 rows reproduce exactly. No test asserted the wrong figure — the cell asserts the *refuse* verdict only — but the text was wrong.
+
+**The cure, measured before it landed and measured again after: `8f2c083`.** PM measured the canonical re-encode against the same oracle *before* the commit: systematic **0** divergences (down from 40,704), randomized 1,012-row sweep **0** (down from 118), the brief's 15-row table still **0** mismatches, full suite green, `tsc` **0**. The commit then added the one oracle row the class needed (`"AB=="` → refuse) and changed nothing else: `8f2c083` is **2 files, +18 / −1** — `base64.ts` **+14 / −1** (the round-trip arm and its docblock) and `base64.test.ts` **+5 / −0** (the row). Its own mutation check, reported verbatim: dropping the round-trip line gives `base64.test.ts` **1 failed / 17 passed**, the new row red for the intended reason, while the five consumer fences stay **124/124** green — expected, because their fixtures are canonical and the arm is pinned by the unit fence alone.
+
+**The plan may now claim byte-equivalence where it could not before.** With the round trip in place every accepted row is a canonical encoding, so the helper's accept-set is the Rust's accept-set over the classes it was measured on. Two limits are worth keeping rather than trimming: the oracle is `base64 0.23.1` (`cargo tree -i base64@0.23.1`), and a *different* engine version could differ on a class nobody here enumerated.
+
+**A second correction to the same defect, in the fence rather than the helper (`bcc278f`).** The Defect B cell for the `e2ee/manager.ts` site was **vacuously green at BASE**: measured in an isolated `git archive 8a35f62` tree, its input (a key with `'!!!'` appended) returned `null` at BASE *and* at HEAD, so it could not tell the two apart. The reason is that the decode that matters on that path is `packages/crypto`'s `importSigningPublicKeyRaw`, which uses **`atob`** — and `atob` *throws* on a non-alphabet character, which `acceptHello` catches. The old comment described `Buffer.from`, which never ran there. The spelling that discriminates is trailing whitespace: `atob` tolerates it and yields the same 32 bytes, so BASE derived a full E2EE session from a key the Rust refuses. `bcc278f` **replaced** that cell (it pinned nothing, so nothing was weakened) and asserts the three measured facts it rests on. `e2ee/manager.test.ts` goes **8 `it()` / 12 `expect()`** at `8a35f62` → **9 / 16** at `bcc278f`; against its immediate parent `b467d13` the same file is **9 → 9 `it()`, 14 → 16 `expect()`**.
+
+**PM Binding Verdict:** `661434e` — **BOUND PASS**; `b467d13` — **BOUND PASS** on everything it claims (attribution, all five TEST-INTEGRITY rows, polarity **8 failed / 133 passed** at BASE, mutants **3/3 killed**), with **F-1** above recorded as a **spec** defect, not an implementation one — the brief gave the helper verbatim and the implementer wrote exactly that.
+
+**Not cured here, and scoped out deliberately:** the same leniency class survives on two reachable **`atob`** sites — `packages/crypto/src/index.ts` (`base64ToBuffer`, reached from `importPublicKeySpki` and `verifyProof`), which diverges **257 / 1,012 (25.4 %)** on the same sweep and is worse than the helper in a direction the helper is not: a 122-char unpadded 91-byte SPKI and an 86-char unpadded 64-byte signature both decode *correctly* where the Rust answers `Invalid padding`. `packages/crypto` is shared with the browser (`apps/web/src/stores/terminal.ts:212` → `verifyProof`), so curing it changes FE behaviour and needs its own task, oracle and FE review. **Task 33.**
+
+#### Defect C — `ShellPolicy` was optional, so a peer-supplied shell was spawned unvalidated
+
+**Landed at `8bf9509` — 5 files, +245 / −18.** The Rust resolves the shell a client asks for through the policy **always** (`lib.rs:1379-1387`), and the policy is constructed non-optionally from config (`lib.rs:714`); the field on the dispatch struct (`lib.rs:567`) is **not** `Option`, and its docblock at `:564-566` says why: *"H1: the allowlist every client-supplied `terminal-create.shell` must…"*.
+
+The port had `RuntimeDeps.shellPolicy?: ShellPolicy` — **optional** — spread conditionally into the deps, so a peer-supplied shell reached `node-pty` with no allowlist applied at all: a fail-open allowlist. Measured at BASE: `evil.sh`, executable and outside the allowlist, spawned under `{ send, pty }` with no `shellPolicy` field at all. The cure is a config-to-dependency construction, needs no unwritten infrastructure, and is why PM reversed his own earlier "defer to Plan 3" standard for it.
+
+**The shape ruling is the interesting half, and it is a place where the brief was wrong and the Rust was right.** The brief's literal step said to run `resolveShell` unconditionally on both arms. That routes the operator's own shell through the allowlist and contradicts the Rust's `None => shell_for_dispatch.clone()` (`lib.rs:1405`) — a deployment whose `AGENT_SHELL` sits outside its own allowlist would refuse its own terminal. Mutant C2 (that literal shape) kills the pre-existing green cell `spawns the operator shell without consulting the allowlist when the peer asked for none`, which is the measurement the ruling rests on. The landed split separates the two questions instead of inferring one from the other: **`shellSource: 'peer' | 'operator'`** states which arm the spawn is on, and **`policy` is required on both arms but consulted only for `peer`**. Stating the arm rather than inferring it from whether a policy happened to be passed is what stops the original coupling — "no policy means spawn unchecked" — from reappearing.
+
+**`shellPolicyFromConfig(config)`** (`runtime.ts:224`) is the production derivation, the Rust's `ShellPolicy::from_config(&config.shell)`: the operator's shell, the POSIX floor, and `/etc/shells` via `readEtcShells()`. Both public entry points use it — `AgentRuntime.start`'s default deps (`:354`) and `createAgentRuntime` (`:406`) — so the shape is constructible and both derive it the same way. `this.terminal.create` derives `shellSource` from whether the peer supplied a shell.
+
+**TEST-INTEGRITY declaration** (measured on committed blobs `git show {8a35f62,8bf9509,024954c,a63aa44}:<path>`):
+
+| File | BASE `8a35f62` | `8bf9509` (defect C) | `024954c` (inner gate) | HEAD `a63aa44` | Delta vs BASE |
+|---|---|---|---|---|---|
+| `apps/agent/test/runtime.test.ts` | 21 `it()` / 42 `expect()` | 24 / 47 | 24 / 47 | 24 / 47 | **+3 / +5** |
+| `apps/agent/test/terminal/pty.test.ts` | 19 / 33 | 19 / 33 | 20 / 34 | 20 / **35** | **+1 / +2** |
+| `apps/agent/test/terminal/pty-real.test.ts` | 1 / 2 | 1 / 2 | 1 / 2 | 1 / 2 | **0 / 0** |
+
+`.skip` / `.only` / `.todo`: **0 → 0** across all three. Nothing removed, skipped or weakened. The `runtime.test.ts` delta is `8bf9509`'s three cells (the compile-time gate and the two allowlist polarities); the `pty.test.ts` delta is `024954c`'s one cell plus `a63aa44`'s tooth, and the intermediate state is worth naming because it is a measurement trap: `8bf9509` added 21 `shellSource`/`policy` fields to existing `manager.create` call sites and **no** cell — a count of 19 → 20 there was a regex artefact, `\bit\s*\(` matching the string "it (" inside a newly added docblock. Measured strictly anchored (`^\s*it(?:\.each)?\s*\(`) the file is **19 → 19** at `8bf9509`. That is the `counting-recipe-blind-spots` class in the small: the count moved because a comment appeared, not because a test did.
+
+**`a63aa44` is the one commit in this group that REMOVES an `expect()`, and it strengthens.** `024954c`'s cell ended `expect(typeof call).toBe('function')` on a closure it never invoked — true for any function, with no failure mode at all, presented in the body as a runtime safety net that "would throw rather than pass". It could not throw. `a63aa44` deletes that expectation and adds two: `await expect(call()).rejects.toMatchObject({ code: 'pty-spawn-failed' })` and `expect(spawned).toHaveLength(0)`. `it()` stays at 20; `expect()` goes **34 → 35** (one removed, two added). The cell now has a failure mode: under the original defect shape — `policy` optional *and* consulted only when present — the call resolves and spawns, so `rejects` fails and `spawned` is non-empty. Measured on the blob: **C0 kills it (1 failed / 19 passed)** and no other cell in the file does. Re-run at HEAD `a63aa44` in an isolated worktree: whole suite **36 files / 506 passed**, `tsc --noEmit` **exit 0**.
+
+**Mutants, five in one run each, reported by their effect:**
+
+- **C1** (`const shell = options.shell;` — never consult the policy): **5 failed** — `reports a refused shell to the browser on the terminal channel`, `refuses a peer shell outside the allowlist with the config-derived policy`, `still accepts an allowlisted peer shell`, `refuses a shell the policy disallows, before any spawn (defect 7)`, `spawns the canonical path the policy resolved (defect 7)`.
+- **C2** (`resolveShell` on both arms — the brief's literal shape): **2 failed** — `joins the router to the manager: a terminal-create frame spawns, a resize forwards` and `spawns the operator shell without consulting the allowlist when the peer asked for none`. This is the measurement the shape ruling rests on.
+- **C3** (`shellPolicy?: ShellPolicy` restored on `RuntimeDeps`): **killed by the compiler** — `test/runtime.test.ts (664,9): error TS2578: Unused '@ts-expect-error' directive`.
+- **C4** (`policy?: ShellPolicy` restored on `PtyCreateOptions`): **SURVIVED at `8bf9509`** — `tsc --noEmit` exit **0**, no diagnostic, every cell green. This was a real fence gap and it is the one `024954c` closes. The reason it survived is that the runtime cells all pass a policy explicitly, so a field made optional again is invisible to them; and `C3`'s gate sits on `RuntimeDeps`, while the shell actually reaches `spawn` through `PtyCreateOptions`. `024954c` adds the inner gate — a cell whose `@ts-expect-error` sits above the **`create()` argument**, not on the trailing property, because `tsc` reports a missing required property against the whole argument (`TS2345 … Property 'policy' is missing`) and a directive on the property itself is unused. Measured: with the directive above the argument `tsc` exits 0; with `policy` optional again the tree gives `error TS2578` and exit 2 — at **`024954c` the citation is `pty.test.ts (95,9)`, and at HEAD `a63aa44` it is `(92,9)`**, because `a63aa44` deleted three lines of the docblock above and nothing else shifted; `a63aa44` also adds `src/terminal/pty.ts(168,29): error TS2345` to the same run, since `options.policy` is now `ShellPolicy | undefined` at the consult site. Both diagnostics, both commits, measured on isolated trees. **C4 is now killed — by the compiler only**, at every commit in the group: `a63aa44` gives vitest **20 passed** and `tsc` exit **2** under C4, unchanged.
+- **C0** (the original defect shape: `policy` optional **and** consulted only when present — `options.policy ? … : options.shell`): **1 failed / 19 passed** at HEAD `a63aa44`, `FAIL > cannot be called without a policy … AssertionError: promise resolved "undefined" instead of rejecting`. This is the sharpest statement of what `a63aa44` bought: the mutation that *made the whole defect real* was invisible to every runtime cell until the new tooth landed, and the new tooth is the only cell that sees it. C4 and C0 are deliberately both reported, because they are not the same regression: C4 relaxes the type while keeping the consult unconditional (compiler-only), C0 also makes the consult conditional (now a runtime failure). Claiming "dual-enforced everywhere" from C0 alone would be the overstatement the commit body explicitly declines.
+
+**Both compile-time gates (C3, C4) are enforced by `tsc`, not by vitest, and no CI job runs `tsc` on this package** — the mechanism, stated once here because three later sections rely on it: `apps/agent/**` is absent from `ci-node.yml`'s `paths:` (both `push:` and `pull_request:`, which list `apps/server/**`, `apps/web/**`, `apps/mobile/**` and `packages/**` and not the agent); every gating step there carries `--filter='!@ponter/agent-node'` (lint `:83`, typecheck `:86`, the test run `:108`), so a turbo dry-run resolves the typecheck to **12 packages** and the test run to **10**, with `@ponter/agent-node` in neither; and no other workflow runs vitest or `tsc` on the package — `build-agent.yml` and `ci-e2e.yml` do list `apps/agent/**` in their `paths:` but they run `cargo fmt`/`clippy`/`test`/`build` and the webrtc e2e, and `build-desktop.yml`'s agent step is `cargo test --locked`. So a green local suite is the only evidence this defect's behavioural cells have, and the type gates are defence in depth against a future refactor rather than the thing that makes the fix safe. The **behavioural** cells are what make it safe: the refusal cell and its positive control, plus the two `pty.test.ts` defect-7 cells, all of which C1 kills.
+
+#### Three findings in the landed code, recorded here and raised rather than repaired
+
+This task is documentation-only. These three are **code** defects found while re-pointing the text; fixing them here would put an undeclared production change in a docs commit, so each is measured, written down, and escalated with the commit that would carry it.
+
+1. **`session.ts`'s `pump()` docblock says the ladder is rebuilt in `control()`** (`:232-233` on the HEAD blob: *"The ladder is rebuilt in `control()` and the interval is the caller's, so there is nothing left to go stale"*). It stopped being true when Task 26 removed `control()`'s `quality` member; `control()` now touches neither the profile nor the ladder. A comment, not a behaviour — but it is the comment that made the P5 #11 note wrong in the first place.
+2. **`data-channels.ts`'s trailing docblock says the two wire decoders "are not on the wire the browser speaks … and are not used here"** (`:733-734` on the HEAD blob). That was written before Task 26 and is now exactly inverted: `dispatchDesktop` calls `decodeStreamControl(message)` (`:639` on the HEAD blob) and that call **is** the path. **This one is already recorded** — Task 18's impl block carries a `*(Task 26 note: …)*` at `:10317-10324` that states the correct wording and reports the divergence without fixing it. It is repeated here only so the three code findings sit together; the authoritative entry is Task 18's, and it names the same defect.
+3. **The sustain ladder's budget never follows the profile, where the Rust's does.** Measured below rather than read off the source; it is the behaviour P5 #11 was written about.
+
+**The ladder divergence, measured.** The Rust reconstructs its monitor on every downgrade — `sustain = SustainMonitor::new(profile)` (`desktop.rs:1734`) — and `SustainMonitor::new` re-derives `budget: profile.frame_budget()` (`:1411`). The port constructs a `SustainLadder` in exactly **one** place, `start()` (`session.ts:166`); `applyProfile()` (`:323` on the HEAD blob) assigns `this.profile` and reconfigures the encoder, and constructs nothing. `budgetMs` is `private readonly` with no setter (`sustain.ts:37` on the HEAD blob), so it cannot move after construction.
+
+Probe, on the committed `sustain.ts`, in an isolated `git archive` tree: a ladder started at **720p60** (budget 16.67 ms), driven with 30 frames of 40 ms (downgrades to `720p30`), then fed **29 frames of 25 ms**. At 720p30 the correct budget is 33.3 ms, so 25 ms is on-budget and the streak should stay **0**; measured, `consecutive()` is **29** — every one of those frames was counted as over-budget. The counter is the discriminator, not the profile: 720p60 → 720p30 is the only rung that changes fps and it lands on the floor, where `SUSTAIN_LADDER[profile]` is `null` and no further downgrade is possible, so the profile alone cannot show the difference. (An earlier version of this probe asserted on the profile and "passed" — it was satisfied by the absence of a signal, which is the `assertion-satisfied-by-absence-of-signal` trap.)
+
+**Blast radius, stated so this is neither over- nor under-read.** As the branch stands the divergence is **not reachable in production at all**: `DesktopSession` has **no production construction site** — `git grep DesktopSession` over `apps/agent/src` returns the class, its deps interface and three docblock mentions, and nothing that news it up — so `pump()` is never driven by the runtime and the ladder never runs outside its fence. Even once it is wired, the only observable difference at today's ladder is the streak counter: 720p60 → 720p30 is the only rung that changes fps and it lands on the floor, where `SUSTAIN_LADDER[profile]` is `null` and no further downgrade is possible, so the profile path is identical. It becomes behaviourally observable the moment a rung is added below 720p30 or the ladder gains a climb-back — and the Rust's `note_bitrate_change` reads `downgrade_for(current)` (`:1449`), so a stale `current` would also change when the latch re-opens.
+
+**Mutant check on this finding, because "the profile did not change" is the trap here.** A first version of the probe asserted only `stats().profile === '720p30'` after the frames and **passed** — satisfied by the absence of a signal, since the floor cannot downgrade further. The discriminator is `consecutive()`, and it separates the two implementations cleanly: **29** on the landed ladder (budget never moved) versus **0** on one rebuilt at the new profile. That is the ratio the finding rests on, not the profile.
+
+---
+
+### Task 34: Gate `apps/agent` in `ci-node.yml` and cure the load-dependent PTY test
+
+**Owner ruling (2026-10-26): option (b), full gating now, not deferred to Plan 3.**
+
+`apps/agent/**` was previously absent from `ci-node.yml`'s `paths:` lists, and each gating step
+(`lint`, `typecheck`, `test`) passed `--filter='!@ponter/agent-node'`. This task fully gates
+`@ponter/agent-node` in CI and cures the one test cell that failed under concurrent load.
+
+#### Changes
+
+1. **Gate inclusion in `.github/workflows/ci-node.yml`:**
+   - Added `- 'apps/agent/**'` to both `on.push.paths` and `on.pull_request.paths`.
+   - Dropped `--filter='!@ponter/agent-node'` from `Lint workspace`, `Typecheck workspace`, and
+     `Run Node test suites`.
+   - Added Playwright chromium installation step (`pnpm --filter @ponter/agent-node exec playwright install chromium --with-deps`)
+     prior to test execution, required because `vitest run` includes `spike/spike.test.ts` driving Chromium.
+   - Updated header and inline comments to reflect that `@ponter/agent-node` is now fully gated.
+
+2. **Cure for `apps/agent/test/terminal/pty-real.test.ts`:**
+   - Replaced two fixed `setTimeout(300)` sleeps with condition-based `waitFor(predicate, what, timeoutMs = 10_000)` polling.
+   - Fixed sleeps caused deterministic test failures under concurrent CPU load (exit event arrived at ~600ms, exceeding the 300ms guess).
+   - Condition polling resolves immediately when the event arrives (healthy run: ~440ms; under 16-worker CPU saturation: 1.64s).
+   - Added must-fail timeout verification (`timed out after 10000ms waiting for the child to exit`).
+
+#### Measured Before / After
+
+| Gate Command | Before (a129ea1) | After (Task 34) |
+|---|---|---|
+| `pnpm exec turbo run lint` | 11/11 tasks (agent excluded) | **12/12 tasks**, 0 cached, exit 0 |
+| `pnpm exec turbo run typecheck` | 12/12 tasks (agent excluded) | **13/13 tasks**, 0 cached, exit 0 |
+| `pnpm exec turbo run test` (gated subset) | 9/9 tasks (agent excluded) | **10/10 tasks**, 0 cached, exit 0 |
+
+**The prospective gate run was already red at `a129ea1` with the agent included.** Running the post-Task-34 gate commands against `a129ea1` with `@ponter/agent-node` included gives:
+
+| Command | Result at `a129ea1` |
+|---|---|
+| `pnpm exec turbo run lint --force` | **12/12 tasks**, `0 cached`, exit 0 |
+| `pnpm exec turbo run typecheck --force` | **13/13 tasks**, `0 cached`, exit 0 |
+| `pnpm exec turbo run test --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force` | **exit 1**, `Failed: @ponter/agent-node#test` |
+| the same test command with `--concurrency=1` | **10/10 tasks**, exit 0 |
+
+The failing cell is `test/terminal/pty-real.test.ts > a real shell > echoes, then delivers terminal-exit after the child exits`, failing with `AssertionError: expected [] to deeply equal [ 7 ]` — `exits` is empty, i.e. the event had not arrived, not a wrong code. This is why the gate change alone could not land: without the cure, the first push would have been a red CI job, so the cure is part of the same task rather than a follow-up. The `--concurrency=1` observation confirms the test passes when run alone — which is exactly the load-dependence, so `--concurrency=1` is a diagnostic, not a cure; the committed fix is the condition-based `waitFor`, not the flag (do not add `--concurrency=1` to CI).
+
+**TEST-INTEGRITY declaration (`pty-real.test.ts`):**
+- `it()`: 1 → 1
+- `expect()`: 2 → 2
+- Fixed `setTimeout` waits: 2 → 0 (replaced with condition waits)
+
+---
+
+### Task 35: Cure SonarCloud Reliability bug (S4158) and clean-code smells
+
+**Landed at:** `4ea89f4241ff7801f4abac2f60a22e29b66eac4a` (`4ea89f4`) — 10 files, **+186 / −76**.  
+**Author:** `Ngo Tuan Anh <ngotuananh2101@gmail.com>` (zero trailers, no `Co-authored-by`).  
+**Independent code review:** `APPROVE`.
+
+#### Context: SonarCloud Quality Gate Failure on PR #178
+
+PR #178 SonarCloud Quality Gate failed with `new_reliability_rating: 2 (B)` vs the required `1 (A)`. There was exactly 1 reliability bug reported on new code, alongside several clean-code and modern TypeScript smells:
+- `apps/agent/src/logging/index.ts:26` (rule S4158, *Empty collections should not be accessed or iterated*): `export const NOISE: readonly NoiseRule[] = [];` was checked via `NOISE.some(...)`. Because `NOISE` ships empty (as recorded in R5, every legacy rule named Rust crate targets and werift uses a different logging mechanism), iterating over an empty array constant was flagged as a defect.
+
+#### Remediation (commit `4ea89f4`)
+
+Remediation cured the reliability bug and cleaned up modern TypeScript smells across 10 files while strictly preserving behavioral contracts:
+
+1. **`apps/agent/src/logging/index.ts` (S4158, S4624):**
+   - Parameterized `isNoise(target: string, message: string, rules: readonly NoiseRule[] = NOISE)` with an upfront empty guard: `if (rules.length === 0) return false;`. The default argument preserves existing call sites reading the shipped table while allowing callers and tests to supply rules.
+   - Extracted nested template literal in `createLogger` (`S4624`): `const suffix = extra ? \` (\${extra})\` : ''; sink(\`\${level.toUpperCase()} \${message}\${suffix}\`);`.
+
+2. **`apps/agent/test/logging/index.test.ts` (Positive/Negative Controls & TEST-INTEGRITY):**
+   - Added `sampleRules` to verify `isNoise` matches target AND message, keeps unknown lines from noisy targets, and verifies the empty-table contract.
+   - TEST-INTEGRITY: 3 `it()` / 3 `expect()` → 3 `it()` / 7 `expect()` (+4 assertions). Zero deleted or weakened tests.
+
+3. **`apps/agent/src/files/protocol.ts` (S7781):**
+   - Replaced `transferId.replace(/-/g, '')` with `transferId.replaceAll('-', '')`.
+
+4. **`apps/agent/src/runtime.ts` (S7503, S7737 & Rejection Contract):**
+   - Removed `async` from `AgentRuntime.start()` and `stop()` (`S7503`).
+   - Resolved default `deps` inside the function body (`const resolvedDeps: RuntimeDeps = deps ?? { ... }`) rather than an in-parameter default object literal evaluating `config` per call (`S7737`).
+   - Wrapped `start` body in `try { ... return Promise.resolve(runtime); } catch (error) { return Promise.reject(error); }`: `FilesRoot.open` throws a `SandboxError` on an unresolvable root. Callers `await` `start()`; removing `async` without rejection wrapping would cause a bare synchronous throw to escape before the promise exists.
+
+5. **`apps/agent/src/terminal/pty.ts` (S7503 & Rejection Contract):**
+   - Removed `async` from `PtyManager.create()` and `close()` (`S7503`), wrapping synchronous session execution in `try { ... return Promise.resolve(); } catch (error) { return Promise.reject(error); }`.
+   - **Load-bearing rejection contract:** Every caller treats `create` as returning a Promise (`data-channels.ts:568` wraps in `Promise.resolve(...).catch(...)` to answer with a `terminal-error` frame; four `pty.test.ts` cells assert `expect(manager.create(...)).rejects.toMatchObject(...)`). A bare `throw` would escape before promise creation, bypassing `.catch` and bubbling into werift's `async datachannelReceive` as an `unhandledRejection` causing process termination (`process.exit(1)`).
+
+6. **`apps/agent/src/e2ee/manager.ts` (S7763, S6582, S7503):**
+   - Direct re-export: `export { WS1_TERMINAL_INFO } from '@ponter/shared'` (`S7763`).
+   - Optional chaining: `if (raw?.length !== 32) return null;` (`S6582`).
+   - Wrapped `encrypt()` and `decrypt()` in `try/catch` returning `Promise.resolve()` / `Promise.reject()` to preserve the rejection contract of `EncryptionManager` (`S7503`).
+
+7. **`apps/agent/src/files/session.ts` (S3735, S6509, S6551, S6582):**
+   - Removed dead assignment `void download;` in `discardUpload` (`S3735`).
+   - Replaced `Boolean(message.recursive)` with `message.recursive`: `inboundShapeValid` already validates `recursive` as a boolean, avoiding the bug where `"false"` coerced to `true` (`S6509`).
+   - Introduced helper `safeString(val: unknown): string { return typeof val === 'string' ? val : ''; }` to eliminate unsafe `String(val ?? '')` type coercions on wire message fields (`S6551`).
+   - Optional chaining: `state?.pendingAck == null` and `state?.transferId !== transferId` (`S6582`).
+
+8. **`apps/agent/src/desktop/control.ts` (S7749):**
+   - Replaced `0xffff_ffff` with `0xffffffff` in `isU32` (`S7749`).
+
+9. **`apps/agent/src/session/peer.ts` (S6582):**
+   - Optional chaining: `if (mode?.[1] === '1')` (`S6582`).
+
+10. **`apps/agent/src/session/data-channels.ts` (S1940):**
+    - Replaced boolean negation `!(typeof data === 'string')` with `typeof data !== 'string'` (`S1940`).
+
+#### TEST-INTEGRITY Declaration
+
+Measured on committed blobs `git show {4ea89f4^,4ea89f4}:<path>`:
+
+| File | BASE `4ea89f4^` | HEAD `4ea89f4` | Delta |
+|---|---|---|---|
+| `apps/agent/test/logging/index.test.ts` | 3 `it()` / 0 `it.each` / 3 `expect()` | 3 / 0 / 7 | **+0 / +0 / +4** |
+
+`.skip` / `.only` / `.todo`: **0 → 0**. No test deleted or weakened. +4 assertions added for positive and negative controls.
+
+#### Measured Verification at `4ea89f4`
+
+| Gate Command | Result |
+|---|---|
+| `pnpm exec turbo run lint --force` | **12/12 tasks**, `0 cached`, exit 0 |
+| `pnpm exec turbo run typecheck --force` | **13/13 tasks**, `0 cached`, exit 0 |
+| `pnpm run format:check` | **All matched files use Prettier code style!**, exit 0 |
+| `pnpm exec turbo run test --filter='!@ponter/web' --filter='!@ponter/shared' --continue=always --force` | **10/10 tasks**, `@ponter/agent-node` 36/36 files, 506/506 tests passed, exit 0 |
 
 ---
 
@@ -10678,11 +12823,7 @@ containment, not string prefix`; forever-identical desktop frame → Task 13's
 keepalive-count test plus Task 19's bitrate reset.
 
 **Two P5 contradictions ruled here, both stated at their task:**
-**#11** (the never-rebuilt sustain ticker): the TS rebuilds the ladder in
-`control()` on a quality change because the ladder's `budgetMs` is derived from
-the profile's fps — a stale ladder would compare 33 ms frames against a 16.7 ms
-budget and downgrade to the floor immediately. The Rust's single-construction
-ticker is a **defect**, recorded as such in Task 19's review note.
+**#11** (the never-rebuilt sustain ticker): the intent is that the ladder's `budgetMs` follows the profile, because it is derived from the profile's fps — a stale budget would compare 33 ms frames against a 16.7 ms one. The Rust does exactly that: on every downgrade it **reconstructs the monitor** (`sustain = SustainMonitor::new(profile)`, `desktop.rs:1734`), and `SustainMonitor::new` re-derives `budget: profile.frame_budget()` (`:1411`). The Rust's single-construction **ticker** (`:1528`) is a separate defect, recorded as such in Task 19's review note. *(Two corrections, and the second one matters more than the first. This note used to say "rebuilds the ladder in `control()` on a quality change"; after Task 26 removed the dead `quality` member, `control()` no longer touches the profile at all. The replacement said the rebuild sites are `start()` and `applyProfile()` — **and that is not what the landed code does.** Measured on the committed blob: `session.ts` constructs a `SustainLadder` in exactly **one** place, `start()` (`:166` on the HEAD blob); `applyProfile()` (`:323` on the HEAD blob) sets `this.profile` and reconfigures the encoder and constructs nothing, and `budgetMs` is `private readonly` with no setter (`sustain.ts:37` on the HEAD blob), so it cannot move after construction. Probe, on the committed `sustain.ts`: a ladder started at 720p60 (16.67 ms budget) downgraded to 720p30 and then fed 29 frames of 25 ms — healthy at 30 fps — reports `consecutive() === 29`, i.e. still over-budget. **So the port diverges from the Rust here.** The blast radius is narrow: 720p60 → 720p30 is the only rung that changes fps, and it lands on the floor, where no further downgrade is possible — so the observable difference is the streak counter, not the profile. It is recorded rather than repaired because it is a **code** finding outside this plan-text task's scope; it is raised to the owner with the measurement above. Until it is ruled on, this note must not claim the ladder follows the profile.)*
 **#15** (the pre-first-encode `apply_bitrate` no-op): **fixed, not reproduced** —
 Task 19's `applies a bitrate received before the first encode` asserts the
 setting survives, with the divergence declared in the class comment.
